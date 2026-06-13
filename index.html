@@ -328,19 +328,32 @@ document.getElementById('loginPass').addEventListener('keydown',e=>{if(e.key==='
 // ─── INIT APP ────────────────────────────────────────────────────────────────
 async function initApp(user){
   currentUser=user;
-  // Cargar perfil de usuario
-  const {data:prof}=await sb.from('usuarios').select('*').eq('id',user.id).single();
-  // Si no existe en tabla usuarios (primer login), crear perfil básico
+  // Cargar perfil — intentar con select normal
+  let prof=null;
+  try {
+    const res=await sb.from('usuarios').select('*').eq('id',user.id).maybeSingle();
+    prof=res.data;
+  } catch(e){ prof=null; }
+  // Si no existe, construir perfil desde el email sin tocar la DB
   if(!prof){
-    // Detectar rol por email — director es josue/jp
-    const esDirector=user.email.includes('jp')||user.email.includes('josue')||user.email.includes('director');
-    const nombre=user.email.split('@')[0];
-    await sb.from('usuarios').upsert({id:user.id,email:user.email,nombre,rol:esDirector?'director':'vendedor'});
-    const {data:p2}=await sb.from('usuarios').select('*').eq('id',user.id).single();
-    userProfile=p2;
-  } else {
-    userProfile=prof;
+    const esDirector=user.email.includes('jp')||user.email.includes('josue')||user.email.includes('joss')||user.email.includes('director');
+    const nombreRaw=user.email.split('@')[0];
+    const nombre=nombreRaw.charAt(0).toUpperCase()+nombreRaw.slice(1);
+    // Intentar insertar solo si no existe — ignorar error de conflicto
+    try {
+      await sb.from('usuarios').insert({id:user.id,email:user.email,nombre,rol:esDirector?'director':'vendedor'});
+    } catch(e){}
+    // Re-intentar leer
+    try {
+      const res2=await sb.from('usuarios').select('*').eq('id',user.id).maybeSingle();
+      prof=res2.data;
+    } catch(e){}
+    // Si aún falla, construir perfil local sin DB
+    if(!prof){
+      prof={id:user.id,email:user.email,nombre,rol:esDirector?'director':'vendedor',activo:true};
+    }
   }
+  userProfile=prof;
   document.getElementById('loginScreen').style.display='none';
   document.getElementById('appScreen').style.display='block';
   document.getElementById('userName').textContent=userProfile.nombre;
