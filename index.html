@@ -374,19 +374,20 @@ async function initApp(user){
   document.getElementById('appScreen').style.display='block';
   document.getElementById('userName').textContent=userProfile.nombre;
   document.getElementById('userAv').textContent=userProfile.nombre.substring(0,2).toUpperCase();
-  document.getElementById('viewLabel').textContent=userProfile.rol==='director'?'Vista Director':'Mi Mes';
+  document.getElementById('viewLabel').textContent=userProfile.rol==='director'?'Vista Director':userProfile.rol==='telemarketing'?'Telemarketing':'Mi Mes';
   // Month selector
   const msel=document.getElementById('monthSel');
   msel.style.display='block';
   const meses=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
   msel.innerHTML=meses.map((m,i)=>`<option value="${i+1}" ${i+1===currentMonth?'selected':''}>${m} ${currentYear}</option>`).join('');
-  // Build UI
+  // Build UI by role
   if(userProfile.rol==='director') buildDirectorUI();
+  else if(userProfile.rol==='telemarketing') buildTeleUI();
   else buildVendorUI();
 }
 
 // ─── MONTH SELECT ─────────────────────────────────────────────────────────────
-function setMonth(m){currentMonth=parseInt(m);if(userProfile.rol==='director')renderDirector();else renderVendor();}
+function setMonth(m){currentMonth=parseInt(m);if(userProfile.rol==='director')renderDirector();else if(userProfile.rol==='telemarketing')renderTele();else renderVendor();}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // VENDOR VIEW
@@ -941,6 +942,207 @@ function getDiasTranscurridos(y,m){
   return count;
 }
 const MO={1:{dias:22},2:{dias:20},3:{dias:22},4:{dias:20},5:{dias:20},6:{dias:22},7:{dias:23},8:{dias:21},9:{dias:22},10:{dias:22},11:{dias:21},12:{dias:23}};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TELEMARKETING VIEW
+// ══════════════════════════════════════════════════════════════════════════════
+function buildTeleUI(){
+  document.getElementById('tabsBar').innerHTML=`
+    <div class="tab active" onclick="swT('miMes')">Mi actividad</div>
+    <div class="tab" onclick="swT('registro')">Registrar día</div>
+    <div class="tab" onclick="swT('historico')">Histórico</div>`;
+  renderTele();
+}
+function swT(id){
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['miMes','registro','historico'][i]===id));
+  if(id==='miMes')renderTele();
+  else if(id==='registro')renderTeleRegistro();
+  else renderTeleHistorico();
+}
+async function renderTele(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
+  const desde=`${currentYear}-${String(currentMonth).padStart(2,'0')}-01`;
+  const lastDay=new Date(currentYear,currentMonth,0).getDate();
+  const hasta=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+  const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).gte('fecha',desde).lte('fecha',hasta).order('fecha');
+  const rs=regs||[];
+  // Totals
+  const tot={llamadas:0,prospectos:0,confirmaciones:0,siigo:0,seguimientos:0};
+  for(const r of rs){
+    tot.llamadas+=r.llamadas_efectivas||0;
+    tot.prospectos+=r.prospectos_canalizados||0;
+    tot.confirmaciones+=r.confirmaciones_evento||0;
+    tot.siigo+=r.siigo_activaciones||0;
+    tot.seguimientos+=r.seguimientos_post||0;
+  }
+  // Bono calculation
+  const MINIMO=15;
+  const bono=tot.prospectos>=MINIMO?tot.prospectos*50:0;
+  const diasHab=getDiasHabiles(currentYear,currentMonth);
+  const hoy=new Date();
+  const esEsteMes=hoy.getMonth()+1===currentMonth&&hoy.getFullYear()===currentYear;
+  const diasTrans=esEsteMes?getDiasTranscurridos(currentYear,currentMonth):diasHab;
+  const diasRest=Math.max(diasHab-diasTrans,0);
+  const proyPros=diasTrans>0?Math.round(tot.prospectos/diasTrans*diasHab):0;
+  const proyBono=proyPros>=MINIMO?proyPros*50:0;
+  const falta=Math.max(MINIMO-tot.prospectos,0);
+  const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+  mc.innerHTML=`
+  <!-- BONO HERO -->
+  <div class="hero" style="margin-bottom:16px;">
+    <div class="hero-lbl">Bono del mes — ${meses[currentMonth]} ${currentYear}</div>
+    <div class="hero-grid">
+      <div>
+        <div class="comm-num" style="color:${bono>0?'#fff':'rgba(255,255,255,0.3)'};">${fmt(bono)}</div>
+        <div class="comm-sub">
+          ${tot.prospectos>=MINIMO
+            ? `<b style="color:var(--teal);">${tot.prospectos} prospectos</b> × $50 · mínimo alcanzado ✓`
+            : `Faltan <b style="color:var(--gold);">${falta} prospectos</b> para activar el bono (mínimo ${MINIMO})`}
+        </div>
+        <div class="rate-chip">$50 por prospecto · mínimo ${MINIMO}</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:13px;color:rgba(255,255,255,0.4);margin-bottom:4px;">Proyección cierre</div>
+        <div style="font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${proyBono>0?'var(--teal)':'var(--gold)'};">${fmt(proyBono)}</div>
+        <div style="font-size:11px;color:rgba(255,255,255,0.35);margin-top:2px;">~${proyPros} prospectos estimados</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- KPI CARDS -->
+  <div class="shead">Actividad acumulada — ${meses[currentMonth]}</div>
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:18px;">
+    ${[
+      {icon:'📞',n:'Llamadas efectivas',v:tot.llamadas,m:300,col:'#0D2240'},
+      {icon:'🎯',n:'Prospectos canalizados',v:tot.prospectos,m:40,col:'#00A99D'},
+      {icon:'📅',n:'Confirmaciones evento',v:tot.confirmaciones,m:60,col:'#0D2240'},
+      {icon:'💼',n:'Pruebas Siigo',v:tot.siigo,m:20,col:'#F5A623'},
+      {icon:'📋',n:'Seguimientos post-evento',v:tot.seguimientos,m:100,col:'#0D2240'},
+    ].map(k=>{
+      const p=Math.min(k.v/k.m,1),pp=Math.round(p*100);
+      const cls=p>=1?'bg':p>=0.7?'bo':'br';
+      return `<div class="sc"><div class="sc-icon">${k.icon}</div>
+        <div class="sc-val" style="color:${k.col};">${k.v}</div>
+        <div class="sc-name">${k.n}</div>
+        <div class="sc-sub"><span class="badge ${cls}">${pp}%</span></div>
+      </div>`;
+    }).join('')}
+  </div>
+
+  <!-- PROGRESO BONO -->
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:18px 22px;margin-bottom:18px;">
+    <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px;">Progreso hacia el bono</div>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:8px;">
+      <span style="font-size:12px;color:var(--text2);min-width:140px;">Prospectos calificados</span>
+      <div style="flex:1;height:10px;background:var(--bg);border-radius:5px;overflow:hidden;">
+        <div style="height:100%;width:${Math.min(tot.prospectos/MINIMO*100,100)}%;background:${tot.prospectos>=MINIMO?'#27AE60':'#F5A623'};border-radius:5px;transition:width 0.8s;"></div>
+      </div>
+      <span style="font-size:13px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${tot.prospectos>=MINIMO?'#27AE60':'#F5A623'};">${tot.prospectos}/${MINIMO}</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px;">
+      <div style="background:var(--surf2);border-radius:var(--radsm);padding:10px 14px;">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Por día necesitas</div>
+        <div style="font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--text);">${diasRest>0&&tot.prospectos<MINIMO?Math.ceil(falta/diasRest):tot.prospectos>=MINIMO?'✓':'—'}</div>
+        <div style="font-size:11px;color:var(--text3);">${diasRest} días restantes</div>
+      </div>
+      <div style="background:var(--surf2);border-radius:var(--radsm);padding:10px 14px;">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Bono actual</div>
+        <div style="font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${bono>0?'#27AE60':'var(--text3)'};">${fmt(bono)}</div>
+        <div style="font-size:11px;color:var(--text3);">${tot.prospectos>=MINIMO?'Activo ✓':'Pendiente'}</div>
+      </div>
+      <div style="background:var(--surf2);border-radius:var(--radsm);padding:10px 14px;">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Bono proyectado</div>
+        <div style="font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${proyBono>0?'var(--teal)':'var(--text3)'};">${fmt(proyBono)}</div>
+        <div style="font-size:11px;color:var(--text3);">al ritmo actual</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- REGISTRO DIARIO TABLE -->
+  <div class="card">
+    <div class="card-head"><span class="card-title">Actividad diaria</span><span class="badge bt">${rs.length} días registrados</span></div>
+    <table class="daily">
+      <thead><tr><th>Fecha</th><th>Llamadas</th><th>Prospectos</th><th>Confirmaciones</th><th>Siigo</th><th>Seguimientos</th></tr></thead>
+      <tbody>${rs.length?rs.map(r=>{
+        const isT=r.fecha===new Date().toISOString().split('T')[0];
+        return `<tr class="${isT?'today-row':''}">
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${r.fecha.slice(5)}${isT?' 🔵':''}</td>
+          <td style="text-align:center;font-weight:500;">${r.llamadas_efectivas||0}</td>
+          <td style="text-align:center;font-weight:600;color:${(r.prospectos_canalizados||0)>0?'#00A99D':'var(--text3)'};">${r.prospectos_canalizados||0}</td>
+          <td style="text-align:center;">${r.confirmaciones_evento||0}</td>
+          <td style="text-align:center;">${r.siigo_activaciones||0}</td>
+          <td style="text-align:center;">${r.seguimientos_post||0}</td>
+        </tr>`;
+      }).join(''):'<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text3);font-size:12px;">Sin registros — usa Registrar día</td></tr>'}</tbody>
+    </table>
+  </div>`;
+}
+
+async function renderTeleRegistro(){
+  const today=new Date().toISOString().split('T')[0];
+  const {data:existing}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).eq('fecha',today).maybeSingle();
+  const r=existing||{};
+  document.getElementById('mainContent').innerHTML=`
+  <div class="reg-form">
+    <div class="form-title">📞 Registro del día — <span style="color:var(--teal);">${today}</span>
+      ${existing?'<span class="badge bg">Editando</span>':'<span class="badge bt">Nuevo</span>'}
+    </div>
+    <div class="shead">Actividad de hoy</div>
+    <div class="form-grid fg3">
+      <div class="form-field"><label>Llamadas efectivas</label><input type="number" id="fLlam" value="${r.llamadas_efectivas||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Prospectos calificados canalizados</label><input type="number" id="fPros" value="${r.prospectos_canalizados||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Confirmaciones a evento</label><input type="number" id="fConf" value="${r.confirmaciones_evento||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Pruebas Siigo activadas</label><input type="number" id="fSiigo" value="${r.siigo_activaciones||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Seguimientos post-evento</label><input type="number" id="fSeg" value="${r.seguimientos_post||''}" placeholder="0" min="0"></div>
+    </div>
+    <div class="form-actions">
+      <button class="btn-save" id="btnSave" onclick="saveTeleRegistro('${today}')">💾 Guardar registro</button>
+    </div>
+    <div class="save-msg" id="saveMsg"></div>
+  </div>`;
+}
+
+async function saveTeleRegistro(fecha){
+  const btn=document.getElementById('btnSave');
+  const msg=document.getElementById('saveMsg');
+  btn.disabled=true;btn.textContent='Guardando...';
+  const payload={
+    usuario_id:currentUser.id,fecha,
+    llamadas_efectivas:parseInt(document.getElementById('fLlam').value)||0,
+    prospectos_canalizados:parseInt(document.getElementById('fPros').value)||0,
+    confirmaciones_evento:parseInt(document.getElementById('fConf').value)||0,
+    siigo_activaciones:parseInt(document.getElementById('fSiigo').value)||0,
+    seguimientos_post:parseInt(document.getElementById('fSeg').value)||0,
+    updated_at:new Date().toISOString(),
+  };
+  const {error}=await sb.from('registros_diarios').upsert(payload,{onConflict:'usuario_id,fecha'});
+  btn.disabled=false;btn.textContent='💾 Guardar registro';
+  if(error){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}
+  else{msg.style.color='var(--green)';msg.textContent='✓ Registro guardado correctamente';}
+}
+
+async function renderTeleHistorico(){
+  document.getElementById('mainContent').innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
+  const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).order('fecha',{ascending:false}).limit(60);
+  const rs=regs||[];
+  document.getElementById('mainContent').innerHTML=`
+  <div class="card">
+    <div class="card-head"><span class="card-title">Histórico de actividad</span><span class="badge bt">${rs.length} días</span></div>
+    <table class="daily">
+      <thead><tr><th>Fecha</th><th>Llamadas</th><th>Prospectos</th><th>Confirmaciones</th><th>Siigo</th><th>Seguimientos</th></tr></thead>
+      <tbody>${rs.map(r=>`<tr>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${r.fecha}</td>
+        <td style="text-align:center;">${r.llamadas_efectivas||0}</td>
+        <td style="text-align:center;font-weight:600;color:${(r.prospectos_canalizados||0)>0?'#00A99D':'var(--text3)'};">${r.prospectos_canalizados||0}</td>
+        <td style="text-align:center;">${r.confirmaciones_evento||0}</td>
+        <td style="text-align:center;">${r.siigo_activaciones||0}</td>
+        <td style="text-align:center;">${r.seguimientos_post||0}</td>
+      </tr>`).join('')||'<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text3);">Sin registros</td></tr>'}</tbody>
+    </table>
+  </div>`;
+}
 
 // ─── DIRECTOR CONFIG PANEL ───────────────────────────────────────────────────
 async function renderDirectorConfig(){
