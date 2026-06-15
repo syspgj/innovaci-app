@@ -290,8 +290,12 @@ const sb = supabase.createClient(SURL, SKEY);
 // ─── COMMISSION TABLE ────────────────────────────────────────────────────────
 const CT=[{min:0,max:.7999,r:0},{min:.8,max:.9999,r:.04},{min:1,max:1.1999,r:.09},
   {min:1.2,max:1.3999,r:.095},{min:1.4,max:1.5999,r:.10},{min:1.6,max:1.7999,r:.105},{min:1.8,max:99,r:.11}];
-function getRate(v,m){const p=v/m;for(const t of CT)if(p>=t.min&&p<=t.max)return t.r;return 0;}
-function getComm(v,m){return v*getRate(v,m);}
+// Tabla de comisiones Mireya (cursos/membresías)
+const CT_MIREYA=[{min:0,max:.7999,r:0},{min:.8,max:.9999,r:.03},{min:1,max:1.1999,r:.06},
+  {min:1.2,max:1.3999,r:.065},{min:1.4,max:1.5999,r:.07},{min:1.6,max:1.7999,r:.075},{min:1.8,max:99,r:.08}];
+function isMireya(u){return u&&u.email&&u.email.toLowerCase().includes('mireya');}
+function getRate(v,m,u){const tbl=isMireya(u)?CT_MIREYA:CT;const p=v/m;for(const t of tbl)if(p>=t.min&&p<=t.max)return t.r;return 0;}
+function getComm(v,m,u){return v*getRate(v,m,u);}
 function fmt(n){return '$'+Math.round(n).toLocaleString('es-MX');}
 function fmtK(n){return n>=1000?'$'+(n/1000).toFixed(0)+'K':'$'+Math.round(n);}
 function pcol(p){return p>=1?'#27AE60':p>=0.8?'#F5A623':'#E84040';}
@@ -423,7 +427,7 @@ async function renderVendorMiMes(){
   for(const k of kpiConfig) metas[k.kpi_key]={m:k[metaKey]||0,n:k.kpi_nombre,t:k.tipo,cat:k.categoria};
   const svcMeta=metas.svc?.m||80000;
   const svcPct=tot.svc/svcMeta;
-  const rate=getRate(tot.svc,svcMeta);
+  const rate=getRate(tot.svc,svcMeta,userProfile);
   const commission=tot.svc*rate;
   // Días
   const hoy=new Date();
@@ -550,7 +554,7 @@ async function renderVendorMiMes(){
   // Projection
   const avgPD=diasTrans>0?tot.svc/diasTrans:0;
   const projFin=tot.svc+avgPD*diasRest;
-  const projComm=getComm(projFin,svcMeta);
+  const projComm=getComm(projFin,svcMeta,userProfile);
   document.getElementById('projFin').textContent=fmt(projFin);
   document.getElementById('projComm').textContent=fmt(projComm);
   const gap=Math.max(svcMeta-tot.svc,0);
@@ -603,6 +607,8 @@ async function renderRegistroForm(){
       <div class="form-field"><label>Cursos 24/7 / Membresías</label><input type="number" id="fCur" value="${r.cursos||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Siigo Fiscal</label><input type="number" id="fSf" value="${r.siigo_fiscal||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Suscripciones nuevas</label><input type="number" id="fSus" value="${r.suscripciones||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Renovaciones Aspel</label><input type="number" id="fRen" value="${r.renovaciones||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Prospectos canalizados</label><input type="number" id="fPros" value="${r.prospectos_canalizados||''}" placeholder="0" min="0"></div>
     </div>
     <div class="form-actions">
       <button class="btn-save" id="btnSave" onclick="saveRegistro('${today}','${existing?.id||''}')">💾 Guardar registro</button>
@@ -629,6 +635,7 @@ async function saveRegistro(fecha,existingId){
     cursos:parseInt(document.getElementById('fCur').value)||0,
     siigo_fiscal:parseInt(document.getElementById('fSf').value)||0,
     suscripciones:parseInt(document.getElementById('fSus').value)||0,
+    renovaciones:parseInt(document.getElementById('fRen')?document.getElementById('fRen').value:0)||0,
     updated_at:new Date().toISOString(),
   };
   const {error}=await sb.from('registros_diarios').upsert(payload,{onConflict:'usuario_id,fecha'});
@@ -667,7 +674,8 @@ function buildDirectorUI(){
     <div class="tab active" onclick="swD('resumen')">Resumen</div>
     <div class="tab" onclick="swD('vendedores')">Vendedores</div>
     <div class="tab" onclick="swD('kpis')">KPIs</div>
-    <div class="tab" onclick="swD('liberaciones')">Liberaciones</div>`;
+    <div class="tab" onclick="swD('liberaciones')">Liberaciones</div>
+    <div class="tab" onclick="swD('config')" style="color:#F5A623;">⚙ Configuración</div>`;
   renderDirector();
 }
 function swD(id){
@@ -711,7 +719,7 @@ async function renderDirectorResumen(){
     const svcMeta=svcM?svcM[metaKey]:80000;
     const aspelM=kpiConfig.find(k=>k.kpi_key==='aspel');
     const aspelMeta=aspelM?aspelM[metaKey]:45000;
-    const r=getRate(tot.svc,svcMeta),c=tot.svc*r;
+    const r=getRate(tot.svc,svcMeta,u),c=tot.svc*r;
     return {u,tot,svcMeta,aspelMeta,rate:r,comm:c};
   });
   const totalSvc=vData.reduce((s,v)=>s+v.tot.svc,0);
@@ -804,13 +812,13 @@ async function renderDirectorVendedores(){
     const metaKey=u.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
     const svcM=kpiConfig.find(k=>k.kpi_key==='svc');
     const svcMeta=svcM?svcM[metaKey]:80000;
-    const r=getRate(tot.svc,svcMeta),c=tot.svc*r;
+    const r=getRate(tot.svc,svcMeta,u),c=tot.svc*r;
     const col=u.email.toLowerCase().includes('dulce')?'#00A99D':'#0D2240';
     const ini=u.nombre.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase();
     const gap=Math.max(svcMeta-tot.svc,0),perDay=diasRest>0&&gap>0?gap/diasRest:0;
     const avgDay=diasTrans>0?tot.svc/diasTrans:0;
     const projFin=tot.svc+avgDay*diasRest;
-    const projComm=getComm(projFin,svcMeta);
+    const projComm=getComm(projFin,svcMeta,userProfile);
     const allK=kpiConfig.map(k=>{
       const totMap={svc:tot.svc,aspel:tot.aspel,it:tot.it,cursos:tot.cursos,sf:tot.sf,demos:tot.demos,val:tot.val,cn:tot.cn,dip:tot.dip,sus:tot.sus};
       const kv=totMap[k.kpi_key]||0,km=k[metaKey]||1,p=Math.min(kv/km,1),pc=pcol(p);
@@ -931,6 +939,112 @@ function getDiasTranscurridos(y,m){
   return count;
 }
 const MO={1:{dias:22},2:{dias:20},3:{dias:22},4:{dias:20},5:{dias:20},6:{dias:22},7:{dias:23},8:{dias:21},9:{dias:22},10:{dias:22},11:{dias:21},12:{dias:23}};
+
+// ─── DIRECTOR CONFIG PANEL ───────────────────────────────────────────────────
+async function renderDirectorConfig(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando configuración...</div>';
+  // Load current kpi_config for current month
+  const {data:kc}=await sb.from('kpi_config').select('*').eq('anio',currentYear).eq('mes',currentMonth).order('orden');
+  const configs=kc||[];
+  const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  mc.innerHTML=`
+  <div style="max-width:700px;">
+    <div class="insight">⚙️ <strong>Panel de configuración</strong> — ${meses[currentMonth]} ${currentYear} · Los cambios aplican en tiempo real para todos los vendedores.</div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);overflow:hidden;margin-bottom:20px;">
+      <div class="card-head"><span class="card-title">KPIs activos — ${meses[currentMonth]} ${currentYear}</span>
+        <span style="font-size:11px;color:var(--text3);">${configs.length} KPIs configurados</span></div>
+      <div style="padding:16px 20px;">
+        ${configs.length===0?`<p style="font-size:13px;color:var(--text3);text-align:center;padding:20px;">No hay KPIs configurados para este mes. Usa el formulario de abajo para agregar.</p>`:''}
+        ${configs.map(k=>`
+        <div style="display:grid;grid-template-columns:1fr 100px 100px 80px 60px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);font-size:12px;">
+          <div><strong style="color:var(--text);">${k.kpi_nombre}</strong><br><span style="color:var(--text3);">${k.tipo==='$'?'Monto $':'Cantidad'} · ${k.categoria}</span></div>
+          <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Meta Dulce/Mireya</label>
+            <input type="number" value="${k.meta_dulce}" id="md_${k.id}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;"></div>
+          <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Meta Manuel</label>
+            <input type="number" value="${k.meta_manuel}" id="mm_${k.id}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;"></div>
+          <div style="text-align:center;"><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Peso %</label>
+            <input type="number" value="${k.peso}" id="pw_${k.id}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:center;"></div>
+          <div style="text-align:center;"><button onclick="saveKpi('${k.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button></div>
+        </div>`).join('')}
+      </div>
+    </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:20px;margin-bottom:20px;">
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px;">🔄 Meta de renovaciones Mireya — ${meses[currentMonth]}</div>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6;">Define cuántas renovaciones Aspel vencen este mes. Ese número será el 100% de la meta de Mireya.</p>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <input type="number" id="metaRenovaciones" placeholder="Ej: 30" min="1" max="200"
+          style="width:120px;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:16px;font-family:'JetBrains Mono',monospace;color:var(--text);">
+        <button onclick="saveRenovaciones()" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Definir meta</button>
+        <span style="font-size:12px;color:var(--text3);" id="renMsg"></span>
+      </div>
+    </div>
+
+    <div style="background:var(--surface);border:2px dashed var(--border);border-radius:var(--rad);padding:20px;">
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px;">➕ Agregar KPI al mes</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Nombre del KPI</label>
+          <input type="text" id="nNombre" placeholder="Ej: Renovaciones Aspel" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;"></div>
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Key (sin espacios)</label>
+          <input type="text" id="nKey" placeholder="Ej: renovaciones" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'JetBrains Mono',monospace;"></div>
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Tipo</label>
+          <select id="nTipo" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
+            <option value="qty">Cantidad (qty)</option><option value="$">Monto ($)</option></select></div>
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Categoría</label>
+          <select id="nCat" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
+            <option value="principal">Principal</option><option value="secundario">Secundario</option><option value="extra">Extra</option></select></div>
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Meta Dulce/Mireya</label>
+          <input type="number" id="nMetaD" placeholder="0" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'JetBrains Mono',monospace;"></div>
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Meta Manuel</label>
+          <input type="number" id="nMetaM" placeholder="0" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'JetBrains Mono',monospace;"></div>
+      </div>
+      <button onclick="addKpi()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Agregar KPI</button>
+      <span style="font-size:12px;margin-left:10px;" id="addKpiMsg"></span>
+    </div>
+  </div>`;
+}
+
+async function saveKpi(id){
+  const md=parseFloat(document.getElementById('md_'+id).value)||0;
+  const mm=parseFloat(document.getElementById('mm_'+id).value)||0;
+  const pw=parseInt(document.getElementById('pw_'+id).value)||0;
+  const {error}=await sb.from('kpi_config').update({meta_dulce:md,meta_manuel:mm,peso:pw,updated_at:new Date().toISOString()}).eq('id',id);
+  if(!error){
+    const btn=document.querySelector(`button[onclick="saveKpi('${id}')"]`);
+    if(btn){btn.textContent='✓';btn.style.background='#27AE60';setTimeout(()=>{btn.textContent='Guardar';btn.style.background='var(--teal)';},1500);}
+  }
+}
+
+async function saveRenovaciones(){
+  const meta=parseInt(document.getElementById('metaRenovaciones').value)||0;
+  const msg=document.getElementById('renMsg');
+  if(!meta||meta<1){msg.style.color='var(--red)';msg.textContent='Ingresa un número válido';return;}
+  // Upsert renovaciones KPI for Mireya
+  const {error}=await sb.from('kpi_config').upsert({
+    anio:currentYear,mes:currentMonth,kpi_key:'renovaciones',
+    kpi_nombre:'Renovaciones Aspel',tipo:'qty',categoria:'principal',
+    peso:40,meta_dulce:meta,meta_manuel:0,orden:0,activo:true
+  },{onConflict:'anio,mes,kpi_key'});
+  if(!error){msg.style.color='var(--green)';msg.textContent='✓ Meta de renovaciones guardada: '+meta;}
+  else{msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}
+}
+
+async function addKpi(){
+  const msg=document.getElementById('addKpiMsg');
+  const key=document.getElementById('nKey').value.trim().toLowerCase().replace(/\s+/g,'_');
+  const nombre=document.getElementById('nNombre').value.trim();
+  const tipo=document.getElementById('nTipo').value;
+  const cat=document.getElementById('nCat').value;
+  const md=parseFloat(document.getElementById('nMetaD').value)||0;
+  const mm=parseFloat(document.getElementById('nMetaM').value)||0;
+  if(!key||!nombre){msg.style.color='var(--red)';msg.textContent='Nombre y key son requeridos';return;}
+  const maxOrden=await sb.from('kpi_config').select('orden').eq('anio',currentYear).eq('mes',currentMonth).order('orden',{ascending:false}).limit(1);
+  const orden=(maxOrden.data&&maxOrden.data[0]?.orden||0)+1;
+  const {error}=await sb.from('kpi_config').insert({anio:currentYear,mes:currentMonth,kpi_key:key,kpi_nombre:nombre,tipo,categoria:cat,peso:10,meta_dulce:md,meta_manuel:mm,orden,activo:true});
+  if(!error){msg.style.color='var(--green)';msg.textContent='✓ KPI agregado';setTimeout(()=>renderDirectorConfig(),800);}
+  else{msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}
+}
 
 // ─── AUTO-LOGIN CHECK ─────────────────────────────────────────────────────────
 sb.auth.getSession().then(({data:{session}})=>{
