@@ -293,22 +293,22 @@ const CT=[{min:0,max:.7999,r:0},{min:.8,max:.9999,r:.04},{min:1,max:1.1999,r:.09
   {min:1.2,max:1.3999,r:.095},{min:1.4,max:1.5999,r:.10},{min:1.6,max:1.7999,r:.105},{min:1.8,max:99,r:.11}];
 const CT_MIREYA=[{min:0,max:.7999,r:0},{min:.8,max:.9999,r:.03},{min:1,max:1.1999,r:.06},
   {min:1.2,max:1.3999,r:.065},{min:1.4,max:1.5999,r:.07},{min:1.6,max:1.7999,r:.075},{min:1.8,max:99,r:.08}];
-const TASA_MEDIOCRIDAD=0.02;
 // Departmental target — loaded from kpi_config each render
 let metaDepto=160000;
 let deptoAlcanzado=false; // set after loading all vendor data
 
 function isMireya(u){return u&&u.email&&u.email.toLowerCase().includes('mireya');}
 function getRate(v,m,u){
-  // If department hasn't reached target, everyone gets 2% (tasa de mediocridad)
-  if(!deptoAlcanzado) return TASA_MEDIOCRIDAD;
+  // CONDICIÓN DOBLE: depto debe llegar a meta Y vendedor debe cumplir su meta individual
+  if(!deptoAlcanzado) return 0; // Depto no cumplió → $0 para todos
+  if(v<m) return 0; // Vendedor no cumplió su meta individual → $0
   const tbl=isMireya(u)?CT_MIREYA:CT;
   const p=v/m;
   for(const t of tbl)if(p>=t.min&&p<=t.max)return t.r;
   return 0;
 }
-function getRateReal(v,m,u){
-  // Always returns the "real" rate regardless of dept — for display purposes
+function getRateDisplay(v,m,u){
+  // Para mostrar la tasa potencial si se cumplen las condiciones
   const tbl=isMireya(u)?CT_MIREYA:CT;
   const p=v/m;
   for(const t of tbl)if(p>=t.min&&p<=t.max)return t.r;
@@ -502,8 +502,16 @@ async function renderVendorMiMes(){
     <div class="hero-grid">
       <div>
         <div class="comm-num" style="color:${commission>0?'#fff':'rgba(255,255,255,0.3)'};">${fmt(commission)}</div>
-        <div class="comm-sub">Tasa activa <b>${(rate*100).toFixed(1)}%</b> · sobre <b>${fmt(tot.svc)}</b> en servicios</div>
-        <div class="rate-chip">Tasa ${(rate*100).toFixed(1)}% · ${pctFmt}% de meta</div>
+        <div class="comm-sub">
+          ${!deptoAlcanzado
+            ? 'Área pendiente de <b>'+fmt(metaDepto)+'</b> — comisiones bloqueadas'
+            : tot.svc<svcMeta
+            ? 'Meta individual no cumplida — comisión <b>$0</b>'
+            : 'Tasa activa <b>'+(rate*100).toFixed(1)+'%</b> · sobre <b>'+fmt(tot.svc)+'</b> en servicios'}
+        </div>
+        <div class="rate-chip" style="background:${commission>0?'var(--teal-bg)':'var(--red-bg)'};border-color:${commission>0?'var(--teal-b)':'rgba(232,64,64,0.2)'};color:${commission>0?'var(--teal)':'var(--red)'};">
+          ${commission>0?'Tasa '+(rate*100).toFixed(1)+'% · '+pctFmt+'% de meta':!deptoAlcanzado?'⛔ Área: '+Math.round(totalDeptoSvc/metaDepto*100)+'% de $'+Math.round(metaDepto/1000)+'K':'⛔ Meta individual: '+pctFmt+'%'}
+        </div>
       </div>
       <div style="text-align:right;">
         <div class="ring-wrap"><canvas id="ringC" width="78" height="78" role="img" aria-label="Anillo de cumplimiento ${pctFmt}%"></canvas>
