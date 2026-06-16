@@ -973,94 +973,140 @@ async function renderTele(){
   const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).gte('fecha',desde).lte('fecha',hasta).order('fecha');
   const rs=regs||[];
   // Totals
-  const tot={llamadas:0,prospectos:0,confirmaciones:0,siigo:0,seguimientos:0};
+  const tot={llamadas:0,prospectos:0,confirmaciones:0,siigo:0,seguimientos:0,cursos:0,renovaciones:0,crm:0};
   for(const r of rs){
     tot.llamadas+=r.llamadas_efectivas||0;
     tot.prospectos+=r.prospectos_canalizados||0;
     tot.confirmaciones+=r.confirmaciones_evento||0;
     tot.siigo+=r.siigo_activaciones||0;
     tot.seguimientos+=r.seguimientos_post||0;
+    tot.cursos+=r.venta_cursos_tele||0;
+    tot.renovaciones+=r.renovaciones||0;
+    tot.crm+=r.crm_actualizaciones||0;
   }
-  // Bono calculation
+  // Bono prospectos
   const MINIMO=15;
-  const bono=tot.prospectos>=MINIMO?tot.prospectos*50:0;
+  const bonoPros=tot.prospectos>=MINIMO?tot.prospectos*50:0;
+  // Bono cursos — tabla Mireya 3%-8%
+  const META_CURSOS=8000;
+  function getTasaMireya(v,m){
+    const p=v/m;
+    const tbl=[{min:0,max:.7999,r:0},{min:.8,max:.9999,r:.03},{min:1,max:1.1999,r:.06},
+      {min:1.2,max:1.3999,r:.065},{min:1.4,max:1.5999,r:.07},{min:1.6,max:1.7999,r:.075},{min:1.8,max:99,r:.08}];
+    for(const t of tbl) if(p>=t.min&&p<=t.max) return t.r;
+    return 0;
+  }
+  const tasaCursos=getTasaMireya(tot.cursos,META_CURSOS);
+  const bonoCursos=tot.cursos*tasaCursos;
+  const bonoTotal=bonoPros+bonoCursos;
   const diasHab=getDiasHabiles(currentYear,currentMonth);
   const hoy=new Date();
   const esEsteMes=hoy.getMonth()+1===currentMonth&&hoy.getFullYear()===currentYear;
   const diasTrans=esEsteMes?getDiasTranscurridos(currentYear,currentMonth):diasHab;
   const diasRest=Math.max(diasHab-diasTrans,0);
   const proyPros=diasTrans>0?Math.round(tot.prospectos/diasTrans*diasHab):0;
-  const proyBono=proyPros>=MINIMO?proyPros*50:0;
+  const proyCursos=diasTrans>0?Math.round(tot.cursos/diasTrans*diasHab):0;
+  const proyBonoPros=proyPros>=MINIMO?proyPros*50:0;
+  const proyBonoCursos=proyCursos*getTasaMireya(proyCursos,META_CURSOS);
+  const proyBono=proyBonoPros+proyBonoCursos;
   const falta=Math.max(MINIMO-tot.prospectos,0);
   const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
   mc.innerHTML=`
   <!-- BONO HERO -->
   <div class="hero" style="margin-bottom:16px;">
-    <div class="hero-lbl">Bono del mes — ${meses[currentMonth]} ${currentYear}</div>
+    <div class="hero-lbl">Compensación variable — ${meses[currentMonth]} ${currentYear}</div>
     <div class="hero-grid">
       <div>
-        <div class="comm-num" style="color:${bono>0?'#fff':'rgba(255,255,255,0.3)'};">${fmt(bono)}</div>
+        <div class="comm-num" style="color:${bonoTotal>0?'#fff':'rgba(255,255,255,0.3)'};">${fmt(bonoTotal)}</div>
         <div class="comm-sub">
-          ${tot.prospectos>=MINIMO
-            ? `<b style="color:var(--teal);">${tot.prospectos} prospectos</b> × $50 · mínimo alcanzado ✓`
-            : `Faltan <b style="color:var(--gold);">${falta} prospectos</b> para activar el bono (mínimo ${MINIMO})`}
+          Prospectos <b style="color:var(--teal);">${fmt(bonoPros)}</b> + Cursos <b style="color:var(--teal);">${fmt(bonoCursos)}</b>
         </div>
-        <div class="rate-chip">$50 por prospecto · mínimo ${MINIMO}</div>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <div class="rate-chip">$50/prospecto · mín. ${MINIMO}</div>
+          <div class="rate-chip">Cursos ${(tasaCursos*100).toFixed(1)}% · ${Math.round(tot.cursos/META_CURSOS*100)}% meta</div>
+        </div>
       </div>
       <div style="text-align:right;">
-        <div style="font-size:13px;color:rgba(255,255,255,0.4);margin-bottom:4px;">Proyección cierre</div>
-        <div style="font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${proyBono>0?'var(--teal)':'var(--gold)'};">${fmt(proyBono)}</div>
-        <div style="font-size:11px;color:rgba(255,255,255,0.35);margin-top:2px;">~${proyPros} prospectos estimados</div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.4);margin-bottom:4px;">Proyección cierre</div>
+        <div style="font-size:26px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${proyBono>0?'var(--teal)':'var(--gold)'};">${fmt(proyBono)}</div>
+        <div style="font-size:10px;color:rgba(255,255,255,0.35);margin-top:2px;">al ritmo actual</div>
       </div>
     </div>
   </div>
 
   <!-- KPI CARDS -->
   <div class="shead">Actividad acumulada — ${meses[currentMonth]}</div>
-  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:18px;">
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px;">
     ${[
       {icon:'📞',n:'Llamadas efectivas',v:tot.llamadas,m:300,col:'#0D2240'},
       {icon:'🎯',n:'Prospectos canalizados',v:tot.prospectos,m:40,col:'#00A99D'},
+      {icon:'🎓',n:'Cursos 24/7 / Membresías',v:fmt(tot.cursos),m:fmt(META_CURSOS),col:tasaCursos>0?'#00A99D':'#E84040',raw:true},
+      {icon:'💼',n:'Siigo Fiscal',v:tot.siigo,m:2,col:'#F5A623'},
+    ].map(k=>{
+      const p=k.raw?Math.min(tot.cursos/META_CURSOS,1):Math.min(k.v/k.m,1),pp=Math.round(p*100);
+      const cls=p>=1?'bg':p>=0.7?'bo':'br';
+      return \`<div class="sc"><div class="sc-icon">\${k.icon}</div>
+        <div class="sc-val" style="color:\${k.col};">\${k.raw?k.v:k.v}</div>
+        <div class="sc-name">\${k.n}</div>
+        <div class="sc-sub"><span class="badge \${cls}">\${pp}%</span></div>
+      </div>\`;
+    }).join('')}
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px;">
+    ${[
+      {icon:'🔄',n:'Renovaciones Aspel',v:tot.renovaciones,m:30,col:'#0D2240'},
       {icon:'📅',n:'Confirmaciones evento',v:tot.confirmaciones,m:60,col:'#0D2240'},
-      {icon:'💼',n:'Pruebas Siigo',v:tot.siigo,m:20,col:'#F5A623'},
       {icon:'📋',n:'Seguimientos post-evento',v:tot.seguimientos,m:100,col:'#0D2240'},
+      {icon:'🗂️',n:'Actualización CRM',v:tot.crm,m:60,col:'#0D2240'},
     ].map(k=>{
       const p=Math.min(k.v/k.m,1),pp=Math.round(p*100);
       const cls=p>=1?'bg':p>=0.7?'bo':'br';
-      return `<div class="sc"><div class="sc-icon">${k.icon}</div>
-        <div class="sc-val" style="color:${k.col};">${k.v}</div>
-        <div class="sc-name">${k.n}</div>
-        <div class="sc-sub"><span class="badge ${cls}">${pp}%</span></div>
-      </div>`;
+      return \`<div class="sc"><div class="sc-icon">\${k.icon}</div>
+        <div class="sc-val" style="color:\${k.col};">\${k.v}</div>
+        <div class="sc-name">\${k.n}</div>
+        <div class="sc-sub"><span class="badge \${cls}">\${pp}%</span></div>
+      </div>\`;
     }).join('')}
   </div>
 
-  <!-- PROGRESO BONO -->
+  <!-- PROGRESO BONOS -->
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:18px 22px;margin-bottom:18px;">
-    <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px;">Progreso hacia el bono</div>
-    <div style="display:flex;align-items:center;gap:14px;margin-bottom:8px;">
-      <span style="font-size:12px;color:var(--text2);min-width:140px;">Prospectos calificados</span>
-      <div style="flex:1;height:10px;background:var(--bg);border-radius:5px;overflow:hidden;">
-        <div style="height:100%;width:${Math.min(tot.prospectos/MINIMO*100,100)}%;background:${tot.prospectos>=MINIMO?'#27AE60':'#F5A623'};border-radius:5px;transition:width 0.8s;"></div>
+    <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px;">Progreso hacia compensación</div>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;">
+      <span style="font-size:12px;color:var(--text2);min-width:160px;">Prospectos (mín. ${MINIMO})</span>
+      <div style="flex:1;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;">
+        <div style="height:100%;width:${Math.min(tot.prospectos/MINIMO*100,100)}%;background:${tot.prospectos>=MINIMO?'#27AE60':'#F5A623'};border-radius:4px;"></div>
       </div>
-      <span style="font-size:13px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${tot.prospectos>=MINIMO?'#27AE60':'#F5A623'};">${tot.prospectos}/${MINIMO}</span>
+      <span style="font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${tot.prospectos>=MINIMO?'#27AE60':'#F5A623'};">${tot.prospectos}/${MINIMO}</span>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px;">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;">
+      <span style="font-size:12px;color:var(--text2);min-width:160px;">Cursos 24/7</span>
+      <div style="flex:1;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;">
+        <div style="height:100%;width:${Math.min(tot.cursos/META_CURSOS*100,100)}%;background:${tot.cursos>=META_CURSOS?'#27AE60':'#00A99D'};border-radius:4px;"></div>
+      </div>
+      <span style="font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace;color:#00A99D;">${fmt(tot.cursos)}/${fmt(META_CURSOS)}</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;">
       <div style="background:var(--surf2);border-radius:var(--radsm);padding:10px 14px;">
-        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Por día necesitas</div>
-        <div style="font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--text);">${diasRest>0&&tot.prospectos<MINIMO?Math.ceil(falta/diasRest):tot.prospectos>=MINIMO?'✓':'—'}</div>
-        <div style="font-size:11px;color:var(--text3);">${diasRest} días restantes</div>
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Bono prospectos</div>
+        <div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${bonoPros>0?'#27AE60':'var(--text3)'};">${fmt(bonoPros)}</div>
+        <div style="font-size:10px;color:var(--text3);">${tot.prospectos>=MINIMO?'Activo ✓':falta+' faltan'}</div>
       </div>
       <div style="background:var(--surf2);border-radius:var(--radsm);padding:10px 14px;">
-        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Bono actual</div>
-        <div style="font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${bono>0?'#27AE60':'var(--text3)'};">${fmt(bono)}</div>
-        <div style="font-size:11px;color:var(--text3);">${tot.prospectos>=MINIMO?'Activo ✓':'Pendiente'}</div>
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Comisión cursos</div>
+        <div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${bonoCursos>0?'#00A99D':'var(--text3)'};">${fmt(bonoCursos)}</div>
+        <div style="font-size:10px;color:var(--text3);">tasa ${(tasaCursos*100).toFixed(1)}%</div>
       </div>
       <div style="background:var(--surf2);border-radius:var(--radsm);padding:10px 14px;">
-        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Bono proyectado</div>
-        <div style="font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${proyBono>0?'var(--teal)':'var(--text3)'};">${fmt(proyBono)}</div>
-        <div style="font-size:11px;color:var(--text3);">al ritmo actual</div>
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Total actual</div>
+        <div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${bonoTotal>0?'#27AE60':'var(--text3)'};">${fmt(bonoTotal)}</div>
+        <div style="font-size:10px;color:var(--text3);">este mes</div>
+      </div>
+      <div style="background:var(--surf2);border-radius:var(--radsm);padding:10px 14px;">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Proyección cierre</div>
+        <div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${proyBono>0?'var(--teal)':'var(--text3)'};">${fmt(proyBono)}</div>
+        <div style="font-size:10px;color:var(--text3);">al ritmo actual</div>
       </div>
     </div>
   </div>
@@ -1094,13 +1140,22 @@ async function renderTeleRegistro(){
     <div class="form-title">📞 Registro del día — <span style="color:var(--teal);">${today}</span>
       ${existing?'<span class="badge bg">Editando</span>':'<span class="badge bt">Nuevo</span>'}
     </div>
-    <div class="shead">Actividad de hoy</div>
+    <div class="shead">Telemarketing</div>
     <div class="form-grid fg3">
       <div class="form-field"><label>Llamadas efectivas</label><input type="number" id="fLlam" value="${r.llamadas_efectivas||''}" placeholder="0" min="0"></div>
-      <div class="form-field"><label>Prospectos calificados canalizados</label><input type="number" id="fPros" value="${r.prospectos_canalizados||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Prospectos canalizados a ventas</label><input type="number" id="fPros" value="${r.prospectos_canalizados||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Confirmaciones a evento</label><input type="number" id="fConf" value="${r.confirmaciones_evento||''}" placeholder="0" min="0"></div>
-      <div class="form-field"><label>Pruebas Siigo activadas</label><input type="number" id="fSiigo" value="${r.siigo_activaciones||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Seguimientos post-evento</label><input type="number" id="fSeg" value="${r.seguimientos_post||''}" placeholder="0" min="0"></div>
+    </div>
+    <div class="shead">Ventas directas</div>
+    <div class="form-grid fg3">
+      <div class="form-field"><label>Venta Cursos 24/7 / Membresías ($)</label><div class="prefix"><input type="number" id="fCurTele" value="${r.venta_cursos_tele||''}" placeholder="0.00" min="0" step="0.01"></div></div>
+      <div class="form-field"><label>Siigo Fiscal cerrados</label><input type="number" id="fSiigo" value="${r.siigo_activaciones||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Renovaciones Aspel</label><input type="number" id="fRen" value="${r.renovaciones||''}" placeholder="0" min="0"></div>
+    </div>
+    <div class="shead">Gestión de cuentas</div>
+    <div class="form-grid">
+      <div class="form-field"><label>Actualización cuentas CRM</label><input type="number" id="fCrm" value="${r.crm_actualizaciones||''}" placeholder="0" min="0"></div>
     </div>
     <div class="form-actions">
       <button class="btn-save" id="btnSave" onclick="saveTeleRegistro('${today}')">💾 Guardar registro</button>
@@ -1120,6 +1175,9 @@ async function saveTeleRegistro(fecha){
     confirmaciones_evento:parseInt(document.getElementById('fConf').value)||0,
     siigo_activaciones:parseInt(document.getElementById('fSiigo').value)||0,
     seguimientos_post:parseInt(document.getElementById('fSeg').value)||0,
+    venta_cursos_tele:parseFloat(document.getElementById('fCurTele')?document.getElementById('fCurTele').value:0)||0,
+    renovaciones:parseInt(document.getElementById('fRen')?document.getElementById('fRen').value:0)||0,
+    crm_actualizaciones:parseInt(document.getElementById('fCrm')?document.getElementById('fCrm').value:0)||0,
     updated_at:new Date().toISOString(),
   };
   const {error}=await sb.from('registros_diarios').upsert(payload,{onConflict:'usuario_id,fecha'});
