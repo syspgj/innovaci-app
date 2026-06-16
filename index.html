@@ -291,11 +291,29 @@ const sb = supabase.createClient(SURL, SKEY);
 // ─── COMMISSION TABLE ────────────────────────────────────────────────────────
 const CT=[{min:0,max:.7999,r:0},{min:.8,max:.9999,r:.04},{min:1,max:1.1999,r:.09},
   {min:1.2,max:1.3999,r:.095},{min:1.4,max:1.5999,r:.10},{min:1.6,max:1.7999,r:.105},{min:1.8,max:99,r:.11}];
-// Tabla de comisiones Mireya (cursos/membresías)
 const CT_MIREYA=[{min:0,max:.7999,r:0},{min:.8,max:.9999,r:.03},{min:1,max:1.1999,r:.06},
   {min:1.2,max:1.3999,r:.065},{min:1.4,max:1.5999,r:.07},{min:1.6,max:1.7999,r:.075},{min:1.8,max:99,r:.08}];
+const TASA_MEDIOCRIDAD=0.02;
+// Departmental target — loaded from kpi_config each render
+let metaDepto=160000;
+let deptoAlcanzado=false; // set after loading all vendor data
+
 function isMireya(u){return u&&u.email&&u.email.toLowerCase().includes('mireya');}
-function getRate(v,m,u){const tbl=isMireya(u)?CT_MIREYA:CT;const p=v/m;for(const t of tbl)if(p>=t.min&&p<=t.max)return t.r;return 0;}
+function getRate(v,m,u){
+  // If department hasn't reached target, everyone gets 2% (tasa de mediocridad)
+  if(!deptoAlcanzado) return TASA_MEDIOCRIDAD;
+  const tbl=isMireya(u)?CT_MIREYA:CT;
+  const p=v/m;
+  for(const t of tbl)if(p>=t.min&&p<=t.max)return t.r;
+  return 0;
+}
+function getRateReal(v,m,u){
+  // Always returns the "real" rate regardless of dept — for display purposes
+  const tbl=isMireya(u)?CT_MIREYA:CT;
+  const p=v/m;
+  for(const t of tbl)if(p>=t.min&&p<=t.max)return t.r;
+  return 0;
+}
 function getComm(v,m,u){return v*getRate(v,m,u);}
 function fmt(n){return '$'+Math.round(n).toLocaleString('es-MX');}
 function fmtK(n){return n>=1000?'$'+(n/1000).toFixed(0)+'K':'$'+Math.round(n);}
@@ -414,6 +432,15 @@ async function renderVendorMiMes(){
   // Cargar KPI config del mes
   const {data:kc}=await sb.from('kpi_config').select('*').eq('anio',currentYear).eq('mes',currentMonth).eq('activo',true).order('orden');
   kpiConfig=(kc&&kc.length>0)?kc:DEFAULT_KPI_CONFIG;
+  // Load departmental target and check if reached
+  const metaDeptoRow=kpiConfig.find(k=>k.kpi_key==='meta_depto');
+  metaDepto=metaDeptoRow?metaDeptoRow.meta_dulce:160000;
+  const desde2=`${currentYear}-${String(currentMonth).padStart(2,'0')}-01`;
+  const lastDay2=new Date(currentYear,currentMonth,0).getDate();
+  const hasta2=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(lastDay2).padStart(2,'0')}`;
+  const {data:allRegs}=await sb.from('registros_diarios').select('svc').gte('fecha',desde2).lte('fecha',hasta2);
+  const totalDeptoSvc=(allRegs||[]).reduce((s,r)=>s+(r.svc||0),0);
+  deptoAlcanzado=totalDeptoSvc>=metaDepto;
   // Cargar registros del mes
   const desde=`${currentYear}-${String(currentMonth).padStart(2,'0')}-01`;
   const lastDay=new Date(currentYear,currentMonth,0).getDate();
@@ -444,8 +471,32 @@ async function renderVendorMiMes(){
   const diasRest=Math.max(diasHabiles-diasTrans,0);
   // Build HTML
   const ringColor=svcPct>=1?'#00A99D':svcPct>=0.8?'#F5A623':'#E84040';
+  const deptoPct=Math.min(totalDeptoSvc/metaDepto,1);
+  const deptoPctFmt=Math.round(deptoPct*100);
+  const deptoCol=deptoAlcanzado?'#27AE60':deptoPct>=0.8?'#F5A623':'#E84040';
+  const deptoMsg=deptoAlcanzado
+    ?'✅ Meta departamental alcanzada — comisiones completas liberadas'
+    :`⚡ Falta ${fmt(metaDepto-totalDeptoSvc)} para liberar comisiones completas — tasa actual: 2%`;
   const pctFmt=Math.round(svcPct*100);
   mc.innerHTML=`
+  <!-- BANNER DEPARTAMENTAL -->
+  <div style="background:${deptoAlcanzado?'var(--green-bg)':'var(--navy)'};border:1px solid ${deptoAlcanzado?'rgba(39,174,96,0.3)':'transparent'};border-radius:var(--rad);padding:14px 20px;margin-bottom:14px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+      <div style="font-size:11px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:${deptoAlcanzado?'var(--green)':'rgba(255,255,255,0.4)'};">
+        Meta del departamento de ventas
+      </div>
+      <div style="font-size:11px;font-weight:600;color:${deptoAlcanzado?'var(--green)':'rgba(255,255,255,0.7)'};">
+        ${fmt(totalDeptoSvc)} / ${fmt(metaDepto)}
+      </div>
+    </div>
+    <div style="height:8px;background:${deptoAlcanzado?'rgba(39,174,96,0.2)':'rgba(255,255,255,0.1)'};border-radius:4px;overflow:hidden;margin-bottom:10px;">
+      <div style="height:100%;width:${deptoPctFmt}%;background:${deptoCol};border-radius:4px;transition:width 1s ease;"></div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <div style="font-size:12px;color:${deptoAlcanzado?'var(--green)':'rgba(255,255,255,0.6)'};">${deptoMsg}</div>
+      <div style="font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${deptoCol};">${deptoPctFmt}%</div>
+    </div>
+  </div>
   <div class="hero">
     <div class="hero-lbl">Comisión del mes — ${getNombreMes(currentMonth)} ${currentYear}</div>
     <div class="hero-grid">
@@ -736,6 +787,10 @@ async function renderDirectorResumen(){
   const totalAspel=vData.reduce((s,v)=>s+v.tot.aspel,0);
   const metaSvc=vData.reduce((s,v)=>s+v.svcMeta,0);
   const metaAspel=vData.reduce((s,v)=>s+v.aspelMeta,0);
+  // Set global dept status
+  const metaDeptoRow=kpiConfig.find(k=>k.kpi_key==='meta_depto');
+  metaDepto=metaDeptoRow?metaDeptoRow.meta_dulce:160000;
+  deptoAlcanzado=totalSvc>=metaDepto;
   const totalComm=vData.reduce((s,v)=>s+v.comm,0);
   const hoy=new Date();
   const esEsteMes=hoy.getMonth()+1===currentMonth&&hoy.getFullYear()===currentYear;
@@ -1016,7 +1071,30 @@ async function renderTele(){
   const falta=Math.max(MINIMO-tot.prospectos,0);
   const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
+  // Load dept status for telemarketing view too
+  const {data:kc2}=await sb.from('kpi_config').select('*').eq('anio',currentYear).eq('mes',currentMonth).eq('kpi_key','meta_depto');
+  if(kc2&&kc2[0]) metaDepto=kc2[0].meta_dulce;
+  const {data:deptoRegs}=await sb.from('registros_diarios').select('svc,usuario_id')
+    .gte('fecha',desde).lte('fecha',hasta);
+  const totalDeptoSvc2=(deptoRegs||[]).reduce((s,r)=>s+(r.svc||0),0);
+  deptoAlcanzado=totalDeptoSvc2>=metaDepto;
+  const deptoPct2=Math.min(totalDeptoSvc2/metaDepto,1);
+  const deptoCol2=deptoAlcanzado?'#27AE60':deptoPct2>=0.8?'#F5A623':'#E84040';
+
   mc.innerHTML=`
+  <!-- BANNER DEPARTAMENTAL TELE -->
+  <div style="background:${deptoAlcanzado?'var(--green-bg)':'var(--navy)'};border:1px solid ${deptoAlcanzado?'rgba(39,174,96,0.3)':'transparent'};border-radius:var(--rad);padding:12px 18px;margin-bottom:12px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <div style="font-size:10px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:${deptoAlcanzado?'var(--green)':'rgba(255,255,255,0.4)'};">Meta del departamento de ventas</div>
+      <div style="font-size:11px;font-weight:600;color:${deptoAlcanzado?'var(--green)':'rgba(255,255,255,0.7)'};">${fmt(totalDeptoSvc2)} / ${fmt(metaDepto)}</div>
+    </div>
+    <div style="height:6px;background:${deptoAlcanzado?'rgba(39,174,96,0.2)':'rgba(255,255,255,0.1)'};border-radius:3px;overflow:hidden;margin-bottom:8px;">
+      <div style="height:100%;width:${Math.round(deptoPct2*100)}%;background:${deptoCol2};border-radius:3px;"></div>
+    </div>
+    <div style="font-size:11px;color:${deptoAlcanzado?'var(--green)':'rgba(255,255,255,0.5)'};">
+      ${deptoAlcanzado?'✅ Meta alcanzada — comisiones de ventas liberadas':'⚡ '+fmt(metaDepto-totalDeptoSvc2)+' pendientes para liberar comisiones del equipo de ventas'}
+    </div>
+  </div>
   <!-- BONO HERO -->
   <div class="hero" style="margin-bottom:16px;">
     <div class="hero-lbl">Compensación variable — ${meses[currentMonth]} ${currentYear}</div>
@@ -1683,7 +1761,16 @@ async function renderDirectorConfig(){
     </div>
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:20px;margin-bottom:20px;">
-      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px;">🔄 Meta de renovaciones Mireya — ${meses[currentMonth]}</div>
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px;">🏢 Meta departamental de ventas — ${meses[currentMonth]}</div>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6;">Define el total de servicios que Dulce + Manuel deben vender este mes para liberar comisiones completas. Si no se alcanza, todos cobran 2% (tasa de mediocridad).</p>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
+      <input type="number" id="metaDeptoInput" placeholder="Ej: 160000" min="1"
+        style="width:160px;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:16px;font-family:'JetBrains Mono',monospace;color:var(--text);">
+      <button onclick="saveMetaDepto()" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Definir meta</button>
+      <span style="font-size:12px;color:var(--text3);" id="deptoMsg2"></span>
+    </div>
+    <div style="border-top:1px solid var(--border);padding-top:20px;margin-bottom:14px;"></div>
+    <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px;">🔄 Meta de renovaciones Mireya — ${meses[currentMonth]}</div>
       <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6;">Define cuántas renovaciones Aspel vencen este mes. Ese número será el 100% de la meta de Mireya.</p>
       <div style="display:flex;align-items:center;gap:12px;">
         <input type="number" id="metaRenovaciones" placeholder="Ej: 30" min="1" max="200"
@@ -1725,6 +1812,25 @@ async function saveKpi(id){
   if(!error){
     const btn=document.querySelector(`button[onclick="saveKpi('${id}')"]`);
     if(btn){btn.textContent='✓';btn.style.background='#27AE60';setTimeout(()=>{btn.textContent='Guardar';btn.style.background='var(--teal)';},1500);}
+  }
+}
+
+async function saveMetaDepto(){
+  const meta=parseFloat(document.getElementById('metaDeptoInput').value)||0;
+  const msg=document.getElementById('deptoMsg2');
+  if(!meta||meta<1){msg.style.color='var(--red)';msg.textContent='Ingresa un monto válido';return;}
+  const {error}=await sb.from('kpi_config').upsert({
+    anio:currentYear,mes:currentMonth,kpi_key:'meta_depto',
+    kpi_nombre:'Meta Departamental',tipo:'$',categoria:'principal',
+    peso:0,meta_dulce:meta,meta_manuel:0,orden:-1,activo:true
+  },{onConflict:'anio,mes,kpi_key'});
+  if(!error){
+    metaDepto=meta;
+    msg.style.color='var(--green)';
+    msg.textContent='✓ Meta departamental guardada: '+fmt(meta);
+  } else {
+    msg.style.color='var(--red)';
+    msg.textContent='Error: '+error.message;
   }
 }
 
