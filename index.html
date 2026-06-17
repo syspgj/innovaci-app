@@ -411,15 +411,20 @@ function setMonth(m){currentMonth=parseInt(m);if(userProfile.rol==='director')re
 // VENDOR VIEW
 // ══════════════════════════════════════════════════════════════════════════════
 function buildVendorUI(){
+  const esVendedor=userProfile.email.includes('dulce')||userProfile.email.includes('manuel');
   document.getElementById('tabsBar').innerHTML=`
     <div class="tab active" onclick="swV('miMes')">Mi mes</div>
+    ${esVendedor?'<div class="tab" onclick="swV('anual')">Mi año</div>':''}
     <div class="tab" onclick="swV('registro')">Registrar día</div>
     <div class="tab" onclick="swV('historico')">Histórico</div>`;
   renderVendor();
 }
 function swV(id){
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['miMes','registro','historico'][i]===id));
+  const esVendedor=userProfile.email.includes('dulce')||userProfile.email.includes('manuel');
+  const tabs=esVendedor?['miMes','anual','registro','historico']:['miMes','registro','historico'];
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',tabs[i]===id));
   if(id==='miMes')renderVendorMiMes();
+  else if(id==='anual')renderVendorAnual();
   else if(id==='registro')renderRegistroForm();
   else renderHistorico();
 }
@@ -1452,54 +1457,247 @@ async function agregarVtigerUrl(id){
   }
 }
 
-function abrirDetalle(id){
-  const p=window._prospectos?.find(p=>p.id===id);
-  if(!p) return;
+// ── MODAL PROSPECTO COMPLETO ──────────────────────────────────────────────────
+const RESULTADOS_LLAMADA=[
+  'No contestó','Buzón','Interesado','No le interesa','Registrado al taller','Volver a llamar'
+];
+
+async function abrirDetalle(id){
+  const ps=window._prospectos||[];
+  const idx=ps.findIndex(p=>p.id===id);
+  if(idx<0) return;
+  const p=ps[idx];
+
+  // Fetch historial en paralelo
+  const [evRes, llRes]=await Promise.all([
+    sb.from('prospecto_eventos').select('*').eq('prospecto_id',id).order('fecha_registro',{ascending:true}),
+    sb.from('prospecto_llamadas').select('*,usuarios(nombre)').eq('prospecto_id',id).order('fecha',{ascending:false})
+  ]);
+  const eventos=evRes.data||[];
+  const llamadas=llRes.data||[];
+
+  // Nav arrows
+  const hasPrev=idx>0, hasNext=idx<ps.length-1;
+  const navBtn=(dir,disabled)=>`
+    <button onclick="modalNav('${id}','${dir}')" ${disabled?'disabled':''}
+      style="background:${disabled?'var(--surface-2)':'var(--navy)'};color:${disabled?'var(--text3)':'#fff'};border:1px solid var(--border);
+             border-radius:var(--radsm);padding:6px 12px;font-size:14px;cursor:${disabled?'default':'pointer'};font-weight:600;">
+      ${dir==='prev'?'←':'→'}
+    </button>`;
+
   const modal=document.createElement('div');
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  modal.id='modalDetalle';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+  const telLimpio=(p.telefono||'').replace(/[^0-9]/g,'');
+
   modal.innerHTML=`
-    <div style="background:var(--surface);border-radius:var(--rad);padding:28px;max-width:480px;width:100%;max-height:80vh;overflow-y:auto;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-        <div style="font-size:16px;font-weight:600;color:var(--text);">${p.nombre}</div>
-        <button onclick="this.closest('[style*=fixed]').remove()"
-          style="background:none;border:none;font-size:18px;cursor:pointer;color:var(--text3);">✕</button>
+  <div style="background:var(--surface);border-radius:var(--rad);width:100%;max-width:520px;max-height:90vh;overflow-y:auto;display:flex;flex-direction:column;">
+
+    <!-- HEADER -->
+    <div style="padding:20px 22px 16px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:2;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+        <div>
+          <div style="font-size:16px;font-weight:700;color:var(--text);">${p.nombre}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px;">
+            ${idx+1} de ${ps.length} &nbsp;·&nbsp;
+            <span style="color:${ESTATUS_COLORS[p.estatus]||'#888'};font-weight:600;">${p.estatus}</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          ${navBtn('prev',!hasPrev)}
+          ${navBtn('next',!hasNext)}
+          <button onclick="document.getElementById('modalDetalle').remove()"
+            style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);padding:0 4px;line-height:1;">✕</button>
+        </div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;font-size:13px;">
-        <div><span style="color:var(--text3);">Teléfono</span><div style="font-weight:500;font-family:'JetBrains Mono',monospace;">${p.telefono||'—'}</div></div>
-        <div><span style="color:var(--text3);">Email</span><div style="font-weight:500;">${p.email||'—'}</div></div>
-        <div><span style="color:var(--text3);">Evento</span><div style="font-weight:500;">${p.evento||'—'}</div></div>
-        <div><span style="color:var(--text3);">Origen</span><div style="font-weight:500;">${p.origen||'Meta Ads'}</div></div>
-        <div><span style="color:var(--text3);">Estatus</span><div style="font-weight:600;color:${ESTATUS_COLORS[p.estatus]||'#888'};">${p.estatus}</div></div>
-        <div><span style="color:var(--text3);">Último contacto</span><div style="font-weight:500;">${p.fecha_contacto||'—'}</div></div>
+    </div>
+
+    <!-- BODY -->
+    <div style="padding:18px 22px;display:flex;flex-direction:column;gap:18px;">
+
+      <!-- DATOS -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12px;">
+        <div>
+          <div style="color:var(--text3);margin-bottom:2px;">Teléfono</div>
+          <div style="font-weight:600;font-family:'JetBrains Mono',monospace;">${p.telefono||'—'}</div>
+        </div>
+        <div>
+          <div style="color:var(--text3);margin-bottom:2px;">Email</div>
+          <div style="font-weight:500;word-break:break-all;">${p.email||'—'}</div>
+        </div>
+        <div>
+          <div style="color:var(--text3);margin-bottom:2px;">Empresa</div>
+          <div style="font-weight:500;">${p.empresa||'—'}</div>
+        </div>
+        <div>
+          <div style="color:var(--text3);margin-bottom:2px;">Origen</div>
+          <div style="font-weight:500;">${p.origen||'Meta Ads'}</div>
+        </div>
+        ${p.vtiger_url?`
+        <div style="grid-column:1/-1;">
+          <div style="color:var(--text3);margin-bottom:2px;">Liga VTiger</div>
+          <a href="${p.vtiger_url}" target="_blank" style="font-size:11px;color:var(--teal);word-break:break-all;">${p.vtiger_url}</a>
+        </div>`:''}
       </div>
-      <div style="margin-bottom:14px;">
-        <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:5px;">Notas</label>
-        <textarea id="notasModal" rows="4" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;resize:vertical;">${p.notas||''}</textarea>
+
+      <!-- EVENTOS -->
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">
+          📅 Eventos registrados (${eventos.length})
+        </div>
+        ${eventos.length===0
+          ? `<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin eventos registrados</div>`
+          : eventos.map(ev=>`
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);margin-bottom:5px;font-size:12px;">
+              <div style="font-weight:500;color:var(--text);">${ev.evento}</div>
+              <div style="color:var(--text3);white-space:nowrap;margin-left:8px;">${ev.fecha_registro||'—'}</div>
+            </div>`).join('')}
       </div>
-      ${p.vtiger_url?`<div style="margin-bottom:14px;">
-        <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:5px;">Liga VTiger</label>
-        <a href="${p.vtiger_url}" target="_blank" style="font-size:12px;color:var(--teal);word-break:break-all;">${p.vtiger_url}</a>
-      </div>`:''}
-      <div style="display:flex;gap:8px;margin-top:8px;">
-        <button onclick="guardarNotas('${p.id}',document.getElementById('notasModal').value);this.closest('[style*=fixed]').remove();"
-          style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
-          Guardar notas
+
+      <!-- NUEVA LLAMADA -->
+      <div style="background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);padding:14px;">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">
+          📞 Registrar llamada
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+          ${RESULTADOS_LLAMADA.map(r=>`
+            <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
+              <input type="radio" name="resLlamada" value="${r}" style="accent-color:var(--teal);">
+              ${r}
+            </label>`).join('')}
+        </div>
+        <textarea id="notasLlamada" placeholder="Notas de la llamada (opcional)..." rows="2"
+          style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;resize:vertical;box-sizing:border-box;"></textarea>
+        <button onclick="registrarLlamada('${p.id}')"
+          style="margin-top:8px;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+          Guardar llamada
         </button>
-        <a href="https://wa.me/52${(p.telefono||'').replace(/[^0-9]/g,'')}" target="_blank"
-          style="background:#25D366;color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;">
-          WhatsApp
-        </a>
       </div>
-    </div>`;
+
+      <!-- HISTORIAL LLAMADAS -->
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">
+          🗂 Historial de llamadas (${llamadas.length})
+        </div>
+        <div id="histLlamadas">
+          ${llamadas.length===0
+            ? `<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin llamadas registradas</div>`
+            : llamadas.map(l=>{
+                const res=l.resultado||'';
+                const col=res==='Interesado'?'#27AE60':res==='No le interesa'||res==='Buzón'?'#E74C3C':res==='Volver a llamar'?'#F5A623':'#888';
+                return `<div style="border-left:3px solid ${col};padding:8px 12px;margin-bottom:7px;background:var(--surface);border-radius:0 var(--radsm) var(--radsm) 0;font-size:12px;">
+                  <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+                    <span style="font-weight:600;color:${col};">${res}</span>
+                    <span style="color:var(--text3);">${l.fecha||'—'}</span>
+                  </div>
+                  ${l.notas?`<div style="color:var(--text);font-size:11px;">${l.notas}</div>`:''}
+                </div>`;
+              }).join('')}
+        </div>
+      </div>
+
+      <!-- NOTAS + ESTATUS -->
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">
+          ✏️ Notas y estatus
+        </div>
+        <select id="estatusModal" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;margin-bottom:8px;color:${ESTATUS_COLORS[p.estatus]||'#888'};font-weight:600;">
+          ${Object.keys(ESTATUS_COLORS).map(e=>`<option value="${e}" ${e===p.estatus?'selected':''}>${e}</option>`).join('')}
+        </select>
+        <textarea id="notasModal" placeholder="Notas generales del prospecto..." rows="3"
+          style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;resize:vertical;box-sizing:border-box;">${p.notas||''}</textarea>
+      </div>
+    </div>
+
+    <!-- FOOTER -->
+    <div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;gap:8px;position:sticky;bottom:0;background:var(--surface);">
+      <button onclick="guardarProspecto('${p.id}')"
+        style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+        Guardar
+      </button>
+      <a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}" target="_blank"
+        style="background:#25D366;color:#fff;border:none;border-radius:var(--radsm);padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;white-space:nowrap;">
+        WhatsApp
+      </a>
+    </div>
+  </div>`;
+
+  // Remove existing modal if open
+  document.getElementById('modalDetalle')?.remove();
   document.body.appendChild(modal);
   modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
 }
 
-async function guardarNotas(id, notas){
-  await sb.from('prospectos').update({notas,updated_at:new Date().toISOString()}).eq('id',id);
-  const p=window._prospectos?.find(p=>p.id===id);
-  if(p) p.notas=notas;
+async function registrarLlamada(prospecto_id){
+  const resultado=document.querySelector('input[name="resLlamada"]:checked')?.value;
+  if(!resultado){alert('Selecciona el resultado de la llamada');return;}
+  const notas=document.getElementById('notasLlamada')?.value||'';
+  const hoy=new Date().toISOString().split('T')[0];
+  const {error}=await sb.from('prospecto_llamadas').insert({
+    prospecto_id, usuario_id:currentUser.id,
+    fecha:hoy, resultado, notas
+  });
+  if(error){alert('Error al guardar: '+error.message);return;}
+  // Update fecha_contacto in prospectos
+  await sb.from('prospectos').update({fecha_contacto:hoy,updated_at:new Date().toISOString()}).eq('id',prospecto_id);
+  const p=window._prospectos?.find(p=>p.id===prospecto_id);
+  if(p) p.fecha_contacto=hoy;
+  // Refresh call history in modal
+  const {data:llamadas}=await sb.from('prospecto_llamadas').select('*,usuarios(nombre)').eq('prospecto_id',prospecto_id).order('fecha',{ascending:false});
+  const hist=document.getElementById('histLlamadas');
+  if(hist){
+    const ls=llamadas||[];
+    hist.innerHTML=ls.length===0
+      ? `<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin llamadas registradas</div>`
+      : ls.map(l=>{
+          const res=l.resultado||'';
+          const col=res==='Interesado'?'#27AE60':res==='No le interesa'||res==='Buzón'?'#E74C3C':res==='Volver a llamar'?'#F5A623':'#888';
+          return `<div style="border-left:3px solid ${col};padding:8px 12px;margin-bottom:7px;background:var(--surface);border-radius:0 var(--radsm) var(--radsm) 0;font-size:12px;">
+            <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+              <span style="font-weight:600;color:${col};">${res}</span>
+              <span style="color:var(--text3);">${l.fecha||'—'}</span>
+            </div>
+            ${l.notas?`<div style="color:var(--text);font-size:11px;">${l.notas}</div>`:''}
+          </div>`;
+        }).join('');
+  }
+  // Reset form
+  document.querySelectorAll('input[name="resLlamada"]').forEach(r=>r.checked=false);
+  const nt=document.getElementById('notasLlamada');
+  if(nt) nt.value='';
 }
+
+async function guardarProspecto(id){
+  const estatus=document.getElementById('estatusModal')?.value;
+  const notas=document.getElementById('notasModal')?.value||'';
+  const hoy=new Date().toISOString().split('T')[0];
+  const upd={notas,updated_at:new Date().toISOString()};
+  if(estatus) upd.estatus=estatus;
+  if(estatus) upd.fecha_contacto=hoy;
+  await sb.from('prospectos').update(upd).eq('id',id);
+  const p=window._prospectos?.find(p=>p.id===id);
+  if(p){Object.assign(p,upd);}
+  if(estatus==='Canalizado a ventas'){
+    const vtUrl=prompt('¡Prospecto canalizado! 🎯\n\nPega el URL del contacto en VTiger (opcional):');
+    if(vtUrl&&vtUrl.trim()){
+      await sb.from('prospectos').update({vtiger_url:vtUrl.trim()}).eq('id',id);
+      if(p) p.vtiger_url=vtUrl.trim();
+    }
+  }
+  const row=document.getElementById('row_'+id);
+  if(row&&p) row.outerHTML=filaProspecto(p);
+  document.getElementById('modalDetalle')?.remove();
+}
+
+function modalNav(currentId, dir){
+  const ps=window._prospectos||[];
+  const idx=ps.findIndex(p=>p.id===currentId);
+  const next=dir==='prev'?ps[idx-1]:ps[idx+1];
+  if(next) abrirDetalle(next.id);
+}
+
+// guardarNotas merged into guardarProspecto above
 
 // ── DIRECTOR CRM ──────────────────────────────────────────────────────────────
 async function renderDirectorCRM(){
@@ -1875,6 +2073,169 @@ async function addKpi(){
 // ══════════════════════════════════════════════════════════════════════════════
 // MINI CRM — PROSPECTOS
 // ══════════════════════════════════════════════════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD ANUAL — Vendedor
+// ══════════════════════════════════════════════════════════════════════════════
+async function renderVendorAnual(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando año completo...</div>';
+
+  // Load all months of current year
+  const desde=`${currentYear}-01-01`;
+  const hasta=`${currentYear}-12-31`;
+  const {data:regs}=await sb.from('registros_diarios').select('fecha,svc,aspel,it,diplomados')
+    .eq('usuario_id',currentUser.id).gte('fecha',desde).lte('fecha',hasta).order('fecha');
+
+  // Load kpi_config for all months to get meta_svc
+  const {data:allKpis}=await sb.from('kpi_config').select('mes,kpi_key,meta_dulce,meta_manuel')
+    .eq('anio',currentYear).eq('kpi_key','svc');
+
+  const metaKey=userProfile.email.includes('dulce')?'meta_dulce':'meta_manuel';
+  const metasPorMes={};
+  for(const k of allKpis||[]) metasPorMes[k.mes]=k[metaKey]||80000;
+
+  // Aggregate by month
+  const mesesData={};
+  for(let m=1;m<=12;m++) mesesData[m]={svc:0,aspel:0,it:0,dip:0,meta:metasPorMes[m]||80000,dias:0};
+  for(const r of regs||[]){
+    const m=parseInt(r.fecha.slice(5,7));
+    mesesData[m].svc+=r.svc||0;
+    mesesData[m].aspel+=r.aspel||0;
+    mesesData[m].it+=r.it||0;
+    mesesData[m].dip+=r.diplomados||0;
+    mesesData[m].dias++;
+  }
+
+  const MESES_N=['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const MESES_FULL=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const TRIMESTRES=[[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
+
+  // Calculate totals
+  const totalSvc=Object.values(mesesData).reduce((s,m)=>s+m.svc,0);
+  const totalAspel=Object.values(mesesData).reduce((s,m)=>s+m.aspel,0);
+  const mesesCumplidos=Object.entries(mesesData).filter(([m,d])=>d.svc>0&&d.svc>=d.meta).length;
+  const mesesConData=Object.values(mesesData).filter(d=>d.svc>0).length;
+
+  // Trimestral bonus calculation
+  const bonosTrim=TRIMESTRES.map((trim,ti)=>{
+    const mesesTrim=trim.map(m=>({m,d:mesesData[m]}));
+    const tieneData=mesesTrim.some(({d})=>d.svc>0);
+    const todosCumplen=mesesTrim.every(({d})=>d.svc>=d.meta&&d.svc>0);
+    const totalTrimSvc=mesesTrim.reduce((s,{d})=>s+d.svc,0);
+    const bono=todosCumplen?totalTrimSvc*0.005:0;
+    const mesActual=new Date().getMonth()+1;
+    const trimActivo=trim.includes(mesActual)&&currentYear===new Date().getFullYear();
+    const trimPasado=trim[2]<mesActual||currentYear<new Date().getFullYear();
+    return {trim,ti,mesesTrim,tieneData,todosCumplen,totalTrimSvc,bono,trimActivo,trimPasado};
+  });
+  const totalBonoTrim=bonosTrim.reduce((s,t)=>s+t.bono,0);
+
+  // Build chart data
+  const chartSvc=Object.values(mesesData).map(d=>Math.round(d.svc));
+  const chartMeta=Object.values(mesesData).map(d=>Math.round(d.meta));
+
+
+  // Build trimestre cards HTML
+  let trimHTML='';
+  bonosTrim.forEach(function(bt){
+    const trim=bt.trim,ti=bt.ti,mesesTrim=bt.mesesTrim,todosCumplen=bt.todosCumplen;
+    const totalTrimSvc=bt.totalTrimSvc,bono=bt.bono,trimActivo=bt.trimActivo;
+    const cumples=mesesTrim.filter(function(x){return x.d.svc>=x.d.meta&&x.d.svc>0;}).length;
+    const bg=todosCumplen?'var(--green-bg)':trimActivo?'var(--navy)':'var(--surface)';
+    const border=todosCumplen?'rgba(39,174,96,0.3)':trimActivo?'transparent':'var(--border)';
+    const textCol=trimActivo&&!todosCumplen?'rgba(255,255,255,0.9)':'var(--text)';
+    const subCol=trimActivo&&!todosCumplen?'rgba(255,255,255,0.5)':'var(--text3)';
+    let mesRows='';
+    mesesTrim.forEach(function(x){
+      const p=x.d.svc>0?Math.min(Math.round(x.d.svc/x.d.meta*100),200):null;
+      const col=p===null?'var(--text3)':p>=100?'#27AE60':p>=80?'#F5A623':'#E84040';
+      mesRows+='<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:12px;">'
+        +'<span style="width:28px;color:'+subCol+';">'+MESES_N[x.m]+'</span>'
+        +'<div style="flex:1;height:5px;background:rgba(0,0,0,0.08);border-radius:3px;overflow:hidden;">'
+        +'<div style="height:100%;width:'+(p||0)+'%;background:'+col+';border-radius:3px;"></div></div>'
+        +'<span style="font-size:11px;font-weight:600;color:'+col+';min-width:32px;text-align:right;">'
+        +(p===null?'—':p+'%')+'</span></div>';
+    });
+    trimHTML+='<div style="background:'+bg+';border:1px solid '+border+';border-radius:var(--rad);padding:16px;">'
+      +'<div style="font-size:10px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:'+subCol+';margin-bottom:10px;">'
+      +'T'+(ti+1)+' · '+MESES_N[trim[0]]+'-'+MESES_N[trim[2]]
+      +(todosCumplen?' <span style="color:#27AE60;">✓</span>':trimActivo?' <span style="color:#F5A623;">●</span>':'')
+      +'</div>'+mesRows
+      +'<div style="border-top:1px solid '+(trimActivo?'rgba(255,255,255,0.1)':'var(--border)')+';margin-top:10px;padding-top:10px;">'
+      +'<div style="font-size:11px;color:'+subCol+';">Total servicios</div>'
+      +'<div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:'+(todosCumplen?'#27AE60':textCol)+';"> '+fmt(totalTrimSvc)+'</div>'
+      +(todosCumplen
+        ?'<div style="margin-top:6px;"><span style="font-size:13px;font-weight:700;color:#27AE60;">Bono: '+fmt(bono)+'</span></div>'
+        :'<div style="font-size:11px;color:'+subCol+';margin-top:4px;">'+cumples+'/3 meses cumplidos</div>')
+      +'</div></div>';
+  });
+
+  // Build monthly rows HTML
+  let monthRows='';
+  for(let i=0;i<12;i++){
+    const m=i+1;
+    const d=mesesData[m];
+    const p=d.svc>0?Math.round(d.svc/d.meta*100):null;
+    const col=p===null?'var(--text3)':p>=100?'#27AE60':p>=80?'#F5A623':'#E84040';
+    const ti=Math.floor(i/3)+1;
+    const esActual=m===new Date().getMonth()+1&&currentYear===new Date().getFullYear();
+    monthRows+='<tr style="'+(esActual?'background:var(--teal-bg);':'')+'">'
+      +'<td style="font-weight:'+(esActual?'600':'400')+';color:'+(esActual?'var(--teal)':'var(--text)')+';">'+MESES_FULL[m]+(esActual?' ●':'')+'</td>'
+      +'<td style="font-family:'JetBrains Mono',monospace;font-weight:500;color:'+(d.svc>0?col:'var(--text3)')+';">'+(d.svc>0?fmt(d.svc):'—')+'</td>'
+      +'<td style="font-family:'JetBrains Mono',monospace;color:var(--text3);">'+fmt(d.meta)+'</td>'
+      +'<td>'+(p===null?'<span style="color:var(--text3);">Sin datos</span>':'<span style="font-weight:600;color:'+col+';">'+p+'%</span>')+'</td>'
+      +'<td style="font-family:'JetBrains Mono',monospace;color:var(--text2);">'+(d.aspel>0?fmt(d.aspel):'—')+'</td>'
+      +'<td><span style="font-size:11px;color:var(--text3);">T'+ti+'</span></td>'
+      +'</tr>';
+  }
+
+  mc.innerHTML=
+  // RESUMEN ANUAL
+  '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">'
+  +'<div class="thc" style="background:var(--navy);border-color:transparent;">'
+  +'<div class="th-lbl" style="color:rgba(255,255,255,0.4);">Servicios '+currentYear+'</div>'
+  +'<div class="th-val" style="color:#fff;">'+fmtK(totalSvc)+'</div>'
+  +'<div class="th-sub" style="color:rgba(255,255,255,0.4);">'+mesesConData+' meses con actividad</div></div>'
+  +'<div class="thc"><div class="th-lbl">Meses al 100%</div>'
+  +'<div class="th-val" style="color:'+(mesesCumplidos>=10?'#27AE60':mesesCumplidos>=7?'#F5A623':'#E84040')+';">'+mesesCumplidos+'/12</div>'
+  +'<div class="th-sub">de 12 meses</div></div>'
+  +'<div class="thc"><div class="th-lbl">Bonos trimestrales</div>'
+  +'<div class="th-val" style="color:'+(totalBonoTrim>0?'#00A99D':'var(--text3)')+';">'+fmt(totalBonoTrim)+'</div>'
+  +'<div class="th-sub">'+bonosTrim.filter(function(t){return t.todosCumplen;}).length+' trimestre(s) completados</div></div>'
+  +'<div class="thc"><div class="th-lbl">Aspel + IT acum.</div>'
+  +'<div class="th-val">'+fmtK(totalAspel)+'</div>'
+  +'<div class="th-sub">ventas complementarias</div></div></div>'
+  // GRÁFICA
+  +'<div class="chart-card" style="margin-bottom:20px;">'
+  +'<div class="chart-head"><span class="chart-title">Servicios mensuales vs meta — '+currentYear+'</span>'
+  +'<div class="cleg"><span><span class="lsq" style="background:#00A99D;"></span>Servicios</span>'
+  +'<span><span class="lsq" style="background:rgba(0,0,0,0.15);border:1px dashed #888;"></span>Meta</span></div></div>'
+  +'<div style="position:relative;height:200px;"><canvas id="anualChart" role="img" aria-label="Servicios anuales"></canvas></div></div>'
+  // TRIMESTRES
+  +'<div class="shead">Bonos trimestrales — 0.5% sobre servicios si los 3 meses al 100%</div>'
+  +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">'+trimHTML+'</div>'
+  // TABLA MENSUAL
+  +'<div class="shead">Detalle mensual</div>'
+  +'<div class="card"><table class="daily" style="font-size:12px;">'
+  +'<thead><tr><th>Mes</th><th>Servicios</th><th>Meta</th><th>Cumplimiento</th><th>Aspel</th><th>Trimestre</th></tr></thead>'
+  +'<tbody>'+monthRows+'</tbody></table></div>';
+
+  // Chart
+  setTimeout(function(){
+    const ctx=document.getElementById('anualChart');
+    if(!ctx) return;
+    if(window._anualChart) window._anualChart.destroy();
+    window._anualChart=new Chart(ctx.getContext('2d'),{type:'bar',data:{labels:MESES_N.slice(1),datasets:[
+      {label:'Servicios',data:chartSvc,backgroundColor:chartSvc.map(function(v,i){return v>=chartMeta[i]?'#00A99D':v>0?'#F5A623':'rgba(13,34,64,0.15)';}),borderRadius:4,borderSkipped:false},
+      {label:'Meta',data:chartMeta,type:'line',borderColor:'rgba(0,0,0,0.2)',borderDash:[5,4],borderWidth:1.5,pointRadius:0,fill:false},
+    ]},options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:function(c){return fmt(c.parsed.y);}}}},
+      scales:{x:{ticks:{color:'#8BA0B8',font:{size:11}},grid:{display:false}},
+        y:{ticks:{color:'#8BA0B8',font:{size:10},callback:function(v){return fmtK(v);}},grid:{color:'rgba(13,34,64,0.05)'}}}
+    }});
+  },100);
+}
 
 // ─── AUTO-LOGIN CHECK ─────────────────────────────────────────────────────────
 sb.auth.getSession().then(({data:{session}})=>{
