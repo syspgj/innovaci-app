@@ -315,6 +315,18 @@ function getRateDisplay(v,m,u){
   return 0;
 }
 function getComm(v,m,u){return v*getRate(v,m,u);}
+// Aplica un ajuste manual de comisión (si existe) sobre el cálculo automático.
+// ajuste: {tipo_ajuste:'porcentaje'|'monto_fijo', valor:number, motivo:string} | null
+// Retorna {comisionFinal, tasaFinal, tieneAjuste, motivo}
+function aplicarAjusteComision(comisionBase, tasaBase, ventas, ajuste){
+  if(!ajuste) return {comisionFinal:comisionBase, tasaFinal:tasaBase, tieneAjuste:false, motivo:null};
+  if(ajuste.tipo_ajuste==='monto_fijo'){
+    return {comisionFinal:ajuste.valor, tasaFinal:ventas>0?ajuste.valor/ventas:0, tieneAjuste:true, motivo:ajuste.motivo};
+  }
+  // porcentaje: se suma a la tasa final ya calculada (incluye bono KPI), luego se recalcula sobre ventas
+  const tasaAjustada=tasaBase+(ajuste.valor/100);
+  return {comisionFinal:ventas*tasaAjustada, tasaFinal:tasaAjustada, tieneAjuste:true, motivo:ajuste.motivo};
+}
 function fmt(n){return '$'+Math.round(n).toLocaleString('es-MX');}
 function fmtK(n){return n>=1000?'$'+(n/1000).toFixed(0)+'K':'$'+Math.round(n);}
 function pcol(p){return p>=1?'#27AE60':p>=0.8?'#F5A623':'#E84040';}
@@ -546,8 +558,14 @@ async function renderVendorMiMes(){
   const alcanceBono=calcAlcanceBono(kpiConfig,tot,metaKey,isMireya(userProfile));
   const pctExtra=getBonoKpiExtra(alcanceBono);
   const rateConBono=Math.max(0,rate+pctExtra);
-  const commission=tot.svc*rateConBono;
+  const commissionAuto=tot.svc*rateConBono;
   const commissionBase=tot.svc*rate;
+  // Ajuste manual de comisión (si el director capturó uno para este vendedor/mes)
+  const {data:ajusteRow}=await sb.from('ajustes_comision').select('*')
+    .eq('usuario_id',currentUser.id).eq('anio',currentYear).eq('mes',currentMonth).maybeSingle();
+  const ajusteResult=aplicarAjusteComision(commissionAuto,rateConBono,tot.svc,ajusteRow);
+  const commission=ajusteResult.comisionFinal;
+  const rateMostrada=ajusteResult.tasaFinal;
   // Días
   const hoy=new Date();
   const esEsteMes=hoy.getMonth()+1===currentMonth&&hoy.getFullYear()===currentYear;
@@ -588,16 +606,20 @@ async function renderVendorMiMes(){
       <div>
         <div class="comm-num" style="color:${commission>0?'#fff':'rgba(255,255,255,0.3)'};">${fmt(commission)}</div>
         <div class="comm-sub">
-          ${!deptoAlcanzado
+          ${ajusteResult.tieneAjuste
+            ? 'Ajuste manual aplicado'+(ajusteResult.motivo?': <b>'+ajusteResult.motivo+'</b>':'')
+            : !deptoAlcanzado
             ? 'Área pendiente de <b>'+fmt(metaDepto)+'</b> — comisiones bloqueadas'
             : tot.svc<svcMeta
             ? 'Meta individual no cumplida — comisión <b>$0</b>'
             : 'Tasa activa <b>'+(rate*100).toFixed(1)+'%</b> · sobre <b>'+fmt(tot.svc)+'</b> en servicios'}
         </div>
-        <div class="rate-chip" style="background:${commission>0?'var(--teal-bg)':'var(--red-bg)'};border-color:${commission>0?'var(--teal-b)':'rgba(232,64,64,0.2)'};color:${commission>0?'var(--teal)':'var(--red)'};">
+        ${ajusteResult.tieneAjuste?`<div class="rate-chip" style="background:rgba(245,166,35,0.12);border-color:rgba(245,166,35,0.3);color:#B8740A;">
+          ⭐ Ajuste especial · ${ajusteRow.tipo_ajuste==='porcentaje'?(ajusteRow.valor>0?'+':'')+ajusteRow.valor+'% adicional':'Comisión fija '+fmt(ajusteRow.valor)}
+        </div>`:`<div class="rate-chip" style="background:${commission>0?'var(--teal-bg)':'var(--red-bg)'};border-color:${commission>0?'var(--teal-b)':'rgba(232,64,64,0.2)'};color:${commission>0?'var(--teal)':'var(--red)'};">
           ${commission>0?'Tasa '+(rateConBono*100).toFixed(2)+'% · '+pctFmt+'% de meta':!deptoAlcanzado?'⛔ Área: '+Math.round(totalDeptoSvc/metaDepto*100)+'% de $'+Math.round(metaDepto/1000)+'K':'⛔ Meta individual: '+pctFmt+'%'}
-        </div>
-        ${rate>0?`<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
+        </div>`}
+        ${rate>0&&!ajusteResult.tieneAjuste?`<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
           <span style="font-size:10px;background:rgba(0,0,0,0.06);padding:3px 8px;border-radius:20px;color:var(--text2);">Tasa base: ${(rate*100).toFixed(1)}%</span>
           <span style="font-size:10px;padding:3px 8px;border-radius:20px;font-weight:600;
             background:${pctExtra>0?'rgba(39,174,96,0.1)':pctExtra<0?'rgba(232,64,64,0.1)':'rgba(0,0,0,0.05)'};
@@ -1145,6 +1167,10 @@ async function renderDirectorResumen(){
   metaDepto=metaDeptoRow?metaDeptoRow.meta_dulce:160000;
   const totalSvcPreliminar=vendedoresRes.reduce((s,u)=>s+getTotals(allRegistros,u.id).svc,0);
   deptoAlcanzado=totalSvcPreliminar>=metaDepto;
+  // Cargar ajustes manuales del mes (una sola consulta, no por vendedor)
+  const {data:ajustesMes}=await sb.from('ajustes_comision').select('*').eq('anio',currentYear).eq('mes',currentMonth);
+  const ajustesPorUsuario={};
+  (ajustesMes||[]).forEach(a=>{ajustesPorUsuario[a.usuario_id]=a;});
   const vData=vendedoresRes.map(u=>{
     const tot=getTotals(allRegistros,u.id);
     const svcM=kpiConfig.find(k=>k.kpi_key==='svc');
@@ -1152,8 +1178,11 @@ async function renderDirectorResumen(){
     const svcMeta=svcM?svcM[metaKey]:80000;
     const aspelM=kpiConfig.find(k=>k.kpi_key==='aspel');
     const aspelMeta=aspelM?aspelM[metaKey]:45000;
-    const r=getRate(tot.svc,svcMeta,u),c=tot.svc*r;
-    return {u,tot,svcMeta,aspelMeta,rate:r,comm:c};
+    const r=getRate(tot.svc,svcMeta,u);
+    const cAuto=tot.svc*r;
+    const ajusteU=ajustesPorUsuario[u.id]||null;
+    const ajusteRes=aplicarAjusteComision(cAuto,r,tot.svc,ajusteU);
+    return {u,tot,svcMeta,aspelMeta,rate:ajusteRes.tasaFinal,comm:ajusteRes.comisionFinal,tieneAjuste:ajusteRes.tieneAjuste};
   });
   const totalSvc=vData.reduce((s,v)=>s+v.tot.svc,0);
   const totalAspel=vData.reduce((s,v)=>s+v.tot.aspel,0);
@@ -1201,7 +1230,7 @@ async function renderDirectorResumen(){
     const pills=secK.map(k=>{const kv=totMap2[k.kpi_key]||0,km=k[metaKey]||1,ok=kv>=km;
       return `<div class="pill"><span class="pd" style="background:${ok?'#27AE60':'#E84040'};"></span>${k.kpi_nombre}: <span class="pv">${kv}/${km}</span></div>`;}).join('');
     return `<div class="vc"><div class="vc-top"><div class="vc-head">
-      <div style="display:flex;align-items:center;gap:10px;"><div class="vc-av" style="background:${col};">${ini}</div><div><div class="vc-name">${v.u.nombre}</div><div class="vc-role">Vendedor B2B</div></div></div>
+      <div style="display:flex;align-items:center;gap:10px;"><div class="vc-av" style="background:${col};">${ini}</div><div><div class="vc-name">${v.u.nombre}${v.tieneAjuste?' <span style="font-size:10px;background:rgba(245,166,35,0.15);color:#B8740A;padding:1px 7px;border-radius:10px;font-weight:600;">⭐ ajuste</span>':''}</div><div class="vc-role">Vendedor B2B</div></div></div>
       <div class="vc-cr"><div class="vc-clbl">Comisión</div><div class="vc-cval" style="color:${cc};">${fmtK(v.comm)}</div><div class="vc-crate" style="color:${cc};">tasa ${(v.rate*100).toFixed(1)}%</div></div>
     </div><div>${bars}</div></div><div class="vc-bot">${pills}</div></div>`;
   }).join('')}</div>
@@ -1246,6 +1275,10 @@ async function renderDirectorVendedores(){
   metaDepto=metaDeptoRowV?metaDeptoRowV.meta_dulce:160000;
   const totalSvcPreliminarV=vendedores.reduce((s,u)=>s+getTotals(allRegistros,u.id).svc,0);
   deptoAlcanzado=totalSvcPreliminarV>=metaDepto;
+  // Cargar ajustes manuales del mes (una sola consulta, no por vendedor)
+  const {data:ajustesMesV}=await sb.from('ajustes_comision').select('*').eq('anio',currentYear).eq('mes',currentMonth);
+  const ajustesPorUsuarioV={};
+  (ajustesMesV||[]).forEach(a=>{ajustesPorUsuarioV[a.usuario_id]=a;});
   const diasHab=getDiasHabiles(currentYear,currentMonth);
   const hoy=new Date();
   const esEsteMes=hoy.getMonth()+1===currentMonth&&hoy.getFullYear()===currentYear;
@@ -1258,7 +1291,10 @@ async function renderDirectorVendedores(){
     const metaKey=u.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
     const svcM=kpiConfig.find(k=>k.kpi_key==='svc');
     const svcMeta=svcM?svcM[metaKey]:80000;
-    const r=getRate(tot.svc,svcMeta,u),c=tot.svc*r;
+    const rAuto=getRate(tot.svc,svcMeta,u),cAuto=tot.svc*rAuto;
+    const ajusteUV=ajustesPorUsuarioV[u.id]||null;
+    const ajResV=aplicarAjusteComision(cAuto,rAuto,tot.svc,ajusteUV);
+    const r=ajResV.tasaFinal,c=ajResV.comisionFinal;
     const col=u.email.toLowerCase().includes('dulce')?'#00A99D':'#0D2240';
     const ini=u.nombre.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase();
     const gap=Math.max(svcMeta-tot.svc,0),perDay=diasRest>0&&gap>0?gap/diasRest:0;
@@ -1281,7 +1317,7 @@ async function renderDirectorVendedores(){
       <div style="background:${col};padding:14px 18px;display:flex;align-items:center;justify-content:space-between;">
         <div style="display:flex;align-items:center;gap:10px;">
           <div style="width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,0.2);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;">${ini}</div>
-          <div><div style="font-size:14px;font-weight:600;color:#fff;">${u.nombre}</div><div style="font-size:11px;color:rgba(255,255,255,0.6);">Vendedor B2B</div></div>
+          <div><div style="font-size:14px;font-weight:600;color:#fff;">${u.nombre}${ajResV.tieneAjuste?' <span style="font-size:9px;background:rgba(255,255,255,0.25);padding:1px 6px;border-radius:10px;">⭐ ajuste</span>':''}</div><div style="font-size:11px;color:rgba(255,255,255,0.6);">Vendedor B2B</div></div>
         </div>
         <div style="text-align:right;"><div style="font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#fff;">${fmt(c)}</div><div style="font-size:11px;color:rgba(255,255,255,0.55);">tasa ${(r*100).toFixed(1)}%</div></div>
       </div>
@@ -2664,7 +2700,89 @@ async function renderDirectorConfig(){
       <button onclick="addKpi()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Agregar KPI</button>
       <span style="font-size:12px;margin-left:10px;" id="addKpiMsg"></span>
     </div>
+
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:20px;margin-top:20px;">
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px;">⭐ Ajuste manual de comisión — ${meses[currentMonth]} ${currentYear}</div>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:14px;line-height:1.6;">Para casos especiales (bono adicional, comisión fija pactada, etc.). Un ajuste por vendedor por mes — guardar uno nuevo reemplaza el anterior del mismo mes. El vendedor verá este ajuste reflejado en su "Mi mes" con una indicación de que es especial.</p>
+      <div id="ajustesExistentes" style="margin-bottom:16px;"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Vendedor</label>
+          <select id="ajVendedor" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;"></select></div>
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Tipo de ajuste</label>
+          <select id="ajTipo" onchange="toggleAjusteValorLabel()" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
+            <option value="porcentaje">% adicional sobre tasa final</option>
+            <option value="monto_fijo">Comisión fija (monto exacto)</option>
+          </select></div>
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;" id="ajValorLabel">Valor (%)</label>
+          <input type="number" id="ajValor" placeholder="Ej: 2" step="0.01" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'JetBrains Mono',monospace;"></div>
+      </div>
+      <div class="form-field" style="margin-bottom:12px;">
+        <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Motivo (se le mostrará al vendedor)</label>
+        <input type="text" id="ajMotivo" placeholder="Ej: Concepto especial enero 2026" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
+      </div>
+      <button onclick="saveAjusteComision()" style="background:#F5A623;color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">⭐ Guardar ajuste</button>
+      <span style="font-size:12px;margin-left:10px;" id="ajusteMsg"></span>
+    </div>
   </div>`;
+  await cargarAjustesUI();
+}
+
+function toggleAjusteValorLabel(){
+  const tipo=document.getElementById('ajTipo')?.value;
+  const lbl=document.getElementById('ajValorLabel');
+  if(lbl) lbl.textContent=tipo==='monto_fijo'?'Valor ($)':'Valor (%)';
+}
+
+async function cargarAjustesUI(){
+  const vendedoresSel=document.getElementById('ajVendedor');
+  if(!vendedoresSel) return;
+  const {data:users}=await sb.from('usuarios').select('*').eq('activo',true).eq('rol','vendedor').order('nombre');
+  vendedoresSel.innerHTML=(users||[]).map(u=>`<option value="${u.id}">${u.nombre}</option>`).join('');
+  const {data:ajustes}=await sb.from('ajustes_comision').select('*,usuarios(nombre)')
+    .eq('anio',currentYear).eq('mes',currentMonth);
+  const cont=document.getElementById('ajustesExistentes');
+  if(!cont) return;
+  if(!ajustes||ajustes.length===0){
+    cont.innerHTML=`<p style="font-size:12px;color:var(--text3);font-style:italic;">Sin ajustes manuales este mes.</p>`;
+    return;
+  }
+  cont.innerHTML=ajustes.map(a=>`
+    <div style="display:flex;justify-content:space-between;align-items:center;background:rgba(245,166,35,0.08);border:1px solid rgba(245,166,35,0.25);border-radius:var(--radsm);padding:10px 14px;margin-bottom:8px;">
+      <div>
+        <strong style="font-size:13px;color:var(--text);">${a.usuarios?.nombre||'—'}</strong>
+        <span style="font-size:12px;color:var(--text2);margin-left:8px;">${a.tipo_ajuste==='porcentaje'?(a.valor>0?'+':'')+a.valor+'% adicional':'Comisión fija '+fmt(a.valor)}</span>
+        ${a.motivo?`<div style="font-size:11px;color:var(--text3);margin-top:2px;">${a.motivo}</div>`:''}
+      </div>
+      <button onclick="eliminarAjuste('${a.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);border-radius:6px;padding:4px 10px;font-size:11px;color:var(--red);cursor:pointer;font-family:'Inter',sans-serif;">Quitar</button>
+    </div>`).join('');
+}
+
+async function saveAjusteComision(){
+  const usuario_id=document.getElementById('ajVendedor').value;
+  const tipo_ajuste=document.getElementById('ajTipo').value;
+  const valor=parseFloat(document.getElementById('ajValor').value);
+  const motivo=document.getElementById('ajMotivo').value.trim();
+  const msg=document.getElementById('ajusteMsg');
+  if(!usuario_id){msg.style.color='var(--red)';msg.textContent='Selecciona un vendedor';return;}
+  if(isNaN(valor)){msg.style.color='var(--red)';msg.textContent='Ingresa un valor válido';return;}
+  const {error}=await sb.from('ajustes_comision').upsert({
+    usuario_id,anio:currentYear,mes:currentMonth,tipo_ajuste,valor,motivo:motivo||null,
+    creado_por:currentUser.id,updated_at:new Date().toISOString()
+  },{onConflict:'usuario_id,anio,mes'});
+  if(!error){
+    msg.style.color='var(--green)';msg.textContent='✓ Ajuste guardado';
+    document.getElementById('ajValor').value='';
+    document.getElementById('ajMotivo').value='';
+    await cargarAjustesUI();
+  } else {
+    msg.style.color='var(--red)';msg.textContent='Error: '+error.message;
+  }
+}
+
+async function eliminarAjuste(id){
+  if(!confirm('¿Quitar este ajuste manual? El vendedor volverá a ver su comisión calculada automáticamente.')) return;
+  await sb.from('ajustes_comision').delete().eq('id',id);
+  await cargarAjustesUI();
 }
 
 async function saveKpi(id){
