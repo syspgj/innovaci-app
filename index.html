@@ -1895,16 +1895,14 @@ async function renderTele(){
   // Bono prospectos
   const MINIMO=15;
   const bonoPros=tot.prospectos>=MINIMO?tot.prospectos*50:0;
-  // Bono cursos — tabla Mireya 3%-8%
-  const META_CURSOS=8000;
-  function getTasaMireya(v,m){
-    const p=v/m;
-    const tbl=[{min:0,max:.7999,r:0},{min:.8,max:.9999,r:.03},{min:1,max:1.1999,r:.06},
-      {min:1.2,max:1.3999,r:.065},{min:1.4,max:1.5999,r:.07},{min:1.6,max:1.7999,r:.075},{min:1.8,max:99,r:.08}];
-    for(const t of tbl) if(p>=t.min&&p<=t.max) return t.r;
-    return 0;
-  }
-  const tasaCursos=getTasaMireya(tot.cursos,META_CURSOS);
+  // Bono cursos 24/7 — regla fija (todo o nada): meta y tasa configurables por el director en kpi_config
+  const {data:cfgTeleRows}=await sb.from('kpi_config').select('*').eq('anio',currentYear).eq('mes',currentMonth).in('kpi_key',['meta_cursos_tele','tasa_cursos_tele']);
+  const metaCursosRow=(cfgTeleRows||[]).find(k=>k.kpi_key==='meta_cursos_tele');
+  const tasaCursosRow=(cfgTeleRows||[]).find(k=>k.kpi_key==='tasa_cursos_tele');
+  const META_CURSOS=metaCursosRow?metaCursosRow.meta_dulce:20000;
+  const TASA_CURSOS=tasaCursosRow?tasaCursosRow.meta_dulce/100:0.05;
+  function getTasaCursos(v,m){return v>=m?TASA_CURSOS:0;}
+  const tasaCursos=getTasaCursos(tot.cursos,META_CURSOS);
   const bonoCursos=tot.cursos*tasaCursos;
   const bonoTotal=bonoPros+bonoCursos;
   const diasHab=getDiasHabiles(currentYear,currentMonth);
@@ -1915,7 +1913,7 @@ async function renderTele(){
   const proyPros=diasTrans>0?Math.round(tot.prospectos/diasTrans*diasHab):0;
   const proyCursos=diasTrans>0?Math.round(tot.cursos/diasTrans*diasHab):0;
   const proyBonoPros=proyPros>=MINIMO?proyPros*50:0;
-  const proyBonoCursos=proyCursos*getTasaMireya(proyCursos,META_CURSOS);
+  const proyBonoCursos=proyCursos*getTasaCursos(proyCursos,META_CURSOS);
   const proyBono=proyBonoPros+proyBonoCursos;
   const falta=Math.max(MINIMO-tot.prospectos,0);
   const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -2145,7 +2143,7 @@ async function renderTeleHistorico(){
 const ESTATUS_COLORS = {
   'Nuevo':'#8BA0B8','Contactado':'#0D2240','No contestó':'#F5A623',
   'En WhatsApp':'#00A99D','Interesado':'#27AE60',
-  'Canalizado a ventas':'#1a7a4a','No interesado':'#E84040','Perdido':'#999'
+  'Canalizado a ventas':'#1a7a4a','Cliente 24/7':'#00A99D','No interesado':'#E84040','Perdido':'#999'
 };
 
 async function renderProspectos(){
@@ -2274,9 +2272,17 @@ async function actualizarEstatus(id, estatus){
     // Update local data
     const p=window._prospectos?.find(p=>p.id===id);
     if(p){p.estatus=estatus;p.fecha_contacto=hoy;}
-    // If canalizado, offer VTiger
+    // If canalizado, ask for vendedor and offer VTiger
     if(estatus==='Canalizado a ventas'){
-      const vtUrl=prompt('¡Prospecto canalizado! 🎯\n\nPega el URL del contacto en VTiger (opcional):');
+      const {data:vendedores}=await sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre');
+      const lista=(vendedores||[]).map((v,i)=>`${i+1}. ${v.nombre}`).join('\n');
+      const seleccion=prompt(`¡Prospecto canalizado! 🎯\n\n¿Qué vendedor lo toma? Escribe el número:\n${lista}`);
+      const idx=parseInt(seleccion)-1;
+      if(vendedores&&vendedores[idx]){
+        await sb.from('prospectos').update({vendedor_asignado:vendedores[idx].id}).eq('id',id);
+        if(p) p.vendedor_asignado=vendedores[idx].id;
+      }
+      const vtUrl=prompt('Pega el URL del contacto en VTiger (opcional):');
       if(vtUrl&&vtUrl.trim()){
         await sb.from('prospectos').update({vtiger_url:vtUrl.trim()}).eq('id',id);
         if(p) p.vtiger_url=vtUrl.trim();
@@ -2322,7 +2328,8 @@ async function toggleRespondioModal(id,checked){
 
 // ── MODAL PROSPECTO COMPLETO ──────────────────────────────────────────────────
 const RESULTADOS_LLAMADA=[
-  'No contestó','Buzón','Interesado','No le interesa','Registrado al taller','Volver a llamar'
+  'No contestó','Buzón','Interesado','No le interesa','Registrado al taller','Volver a llamar',
+  'Canalizado a ventas','Compró el taller 24/7'
 ];
 
 async function abrirDetalle(id){
@@ -2332,12 +2339,14 @@ async function abrirDetalle(id){
   const p=ps[idx];
 
   // Fetch historial en paralelo
-  const [evRes, llRes]=await Promise.all([
+  const [evRes, llRes, vendRes]=await Promise.all([
     sb.from('prospecto_eventos').select('*').eq('prospecto_id',id).order('fecha_registro',{ascending:true}),
-    sb.from('prospecto_llamadas').select('*,usuarios(nombre)').eq('prospecto_id',id).order('fecha',{ascending:false})
+    sb.from('prospecto_llamadas').select('*,usuarios(nombre)').eq('prospecto_id',id).order('fecha',{ascending:false}),
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre')
   ]);
   const eventos=evRes.data||[];
   const llamadas=llRes.data||[];
+  const vendedoresB2B=vendRes.data||[];
 
   // Nav arrows
   const hasPrev=idx>0, hasNext=idx<ps.length-1;
@@ -2365,6 +2374,7 @@ async function abrirDetalle(id){
           <div style="font-size:11px;color:var(--text3);margin-top:2px;">
             ${idx+1} de ${ps.length} &nbsp;·&nbsp;
             <span style="color:${ESTATUS_COLORS[p.estatus]||'#888'};font-weight:600;">${p.estatus}</span>
+            ${p.vendedor_asignado?` &nbsp;·&nbsp; <span style="color:var(--text3);">Vendedor: <b>${vendedoresB2B.find(v=>v.id===p.vendedor_asignado)?.nombre||'—'}</b></span>`:''}
           </div>
         </div>
         <div style="display:flex;gap:6px;align-items:center;">
@@ -2447,9 +2457,21 @@ async function abrirDetalle(id){
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
           ${RESULTADOS_LLAMADA.map(r=>`
             <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
-              <input type="radio" name="resLlamada" value="${r}" style="accent-color:var(--teal);">
+              <input type="radio" name="resLlamada" value="${r}" onchange="onResultadoLlamadaChange()" style="accent-color:var(--teal);">
               ${r}
             </label>`).join('')}
+        </div>
+        <div id="campoVendedorCanaliza" style="display:none;margin-bottom:8px;">
+          <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Vendedor que lo toma</label>
+          <select id="vendedorCanaliza" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+            <option value="">Selecciona vendedor...</option>
+            ${vendedoresB2B.map(v=>`<option value="${v.id}">${v.nombre}</option>`).join('')}
+          </select>
+        </div>
+        <div id="campoMontoCompra" style="display:none;margin-bottom:8px;">
+          <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Monto de la venta ($)</label>
+          <input type="number" id="montoCompra24_7" placeholder="Ej: 5000" min="0" step="0.01"
+            style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'JetBrains Mono',monospace;">
         </div>
         <textarea id="notasLlamada" placeholder="Notas de la llamada (opcional)..." rows="2"
           style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;resize:vertical;box-sizing:border-box;"></textarea>
@@ -2513,9 +2535,26 @@ async function abrirDetalle(id){
   modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
 }
 
+function onResultadoLlamadaChange(){
+  const valor=document.querySelector('input[name="resLlamada"]:checked')?.value;
+  const campoVend=document.getElementById('campoVendedorCanaliza');
+  const campoMonto=document.getElementById('campoMontoCompra');
+  if(campoVend) campoVend.style.display=valor==='Canalizado a ventas'?'block':'none';
+  if(campoMonto) campoMonto.style.display=valor==='Compró el taller 24/7'?'block':'none';
+}
+
 async function registrarLlamada(prospecto_id){
   const resultado=document.querySelector('input[name="resLlamada"]:checked')?.value;
   if(!resultado){alert('Selecciona el resultado de la llamada');return;}
+  let vendedorId=null, montoCompra=null;
+  if(resultado==='Canalizado a ventas'){
+    vendedorId=document.getElementById('vendedorCanaliza')?.value;
+    if(!vendedorId){alert('Selecciona el vendedor que va a tomar este prospecto');return;}
+  }
+  if(resultado==='Compró el taller 24/7'){
+    montoCompra=parseFloat(document.getElementById('montoCompra24_7')?.value);
+    if(!montoCompra||montoCompra<=0){alert('Ingresa el monto de la venta');return;}
+  }
   const notas=document.getElementById('notasLlamada')?.value||'';
   const hoy=new Date().toISOString().split('T')[0];
   const {error}=await sb.from('prospecto_llamadas').insert({
@@ -2524,9 +2563,26 @@ async function registrarLlamada(prospecto_id){
   });
   if(error){alert('Error al guardar: '+error.message);return;}
   // Update fecha_contacto in prospectos
-  await sb.from('prospectos').update({fecha_contacto:hoy,updated_at:new Date().toISOString()}).eq('id',prospecto_id);
+  const updProspecto={fecha_contacto:hoy,updated_at:new Date().toISOString()};
+  if(resultado==='Canalizado a ventas'){
+    updProspecto.estatus='Canalizado a ventas';
+    updProspecto.vendedor_asignado=vendedorId;
+  }
+  if(resultado==='Compró el taller 24/7'){
+    updProspecto.estatus='Cliente 24/7';
+  }
+  await sb.from('prospectos').update(updProspecto).eq('id',prospecto_id);
   const p=window._prospectos?.find(p=>p.id===prospecto_id);
-  if(p) p.fecha_contacto=hoy;
+  if(p) Object.assign(p,updProspecto);
+  // Si compró, sumar el monto a la venta de cursos del día (registros_diarios.venta_cursos_tele)
+  if(resultado==='Compró el taller 24/7'){
+    const {data:regHoy}=await sb.from('registros_diarios').select('venta_cursos_tele').eq('usuario_id',currentUser.id).eq('fecha',hoy).maybeSingle();
+    const nuevoTotal=(regHoy?.venta_cursos_tele||0)+montoCompra;
+    const {error:errVenta}=await sb.from('registros_diarios').upsert({
+      usuario_id:currentUser.id,fecha:hoy,venta_cursos_tele:nuevoTotal,updated_at:new Date().toISOString()
+    },{onConflict:'usuario_id,fecha'});
+    if(errVenta){alert('La llamada se guardó, pero hubo un error al registrar la venta del día: '+errVenta.message);}
+  }
   // Refresh call history in modal
   const {data:llamadas}=await sb.from('prospecto_llamadas').select('*,usuarios(nombre)').eq('prospecto_id',prospecto_id).order('fecha',{ascending:false});
   const hist=document.getElementById('histLlamadas');
@@ -2583,7 +2639,15 @@ async function guardarProspecto(id){
   const p=window._prospectos?.find(p=>p.id===id);
   if(p){Object.assign(p,upd);}
   if(estatus==='Canalizado a ventas'){
-    const vtUrl=prompt('¡Prospecto canalizado! 🎯\n\nPega el URL del contacto en VTiger (opcional):');
+    const {data:vendedores}=await sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre');
+    const lista=(vendedores||[]).map((v,i)=>`${i+1}. ${v.nombre}`).join('\n');
+    const seleccion=prompt(`¡Prospecto canalizado! 🎯\n\n¿Qué vendedor lo toma? Escribe el número:\n${lista}`);
+    const idx=parseInt(seleccion)-1;
+    if(vendedores&&vendedores[idx]){
+      await sb.from('prospectos').update({vendedor_asignado:vendedores[idx].id}).eq('id',id);
+      if(p) p.vendedor_asignado=vendedores[idx].id;
+    }
+    const vtUrl=prompt('Pega el URL del contacto en VTiger (opcional):');
     if(vtUrl&&vtUrl.trim()){
       await sb.from('prospectos').update({vtiger_url:vtUrl.trim()}).eq('id',id);
       if(p) p.vtiger_url=vtUrl.trim();
@@ -2912,6 +2976,19 @@ async function renderDirectorConfig(){
         <button onclick="saveRenovaciones()" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Definir meta</button>
         <span style="font-size:12px;color:var(--text3);" id="renMsg"></span>
       </div>
+      <div style="border-top:1px solid var(--border);padding-top:20px;margin-top:20px;"></div>
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px;">🎓 Comisión Cursos 24/7 — Telemarketing — ${meses[currentMonth]}</div>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.6;">Regla fija (todo o nada): si el equipo de telemarketing alcanza la meta de venta de Cursos 24/7 del mes, cobra la tasa indicada sobre el total vendido. Si no la alcanza, $0.</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;">
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Meta mensual ($)</label>
+          <input type="number" id="metaCursosTele" placeholder="Ej: 20000" min="1"
+            style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:14px;font-family:'JetBrains Mono',monospace;color:var(--text);"></div>
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Tasa si se alcanza (%)</label>
+          <input type="number" id="tasaCursosTele" placeholder="Ej: 5" min="0" max="100" step="0.1"
+            style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:14px;font-family:'JetBrains Mono',monospace;color:var(--text);"></div>
+        <button onclick="saveCursosTele()" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
+      </div>
+      <span style="font-size:12px;color:var(--text3);display:block;margin-top:8px;" id="cursosTeleMsg"></span>
     </div>
 
     <div style="background:var(--surface);border:2px dashed var(--border);border-radius:var(--rad);padding:20px;">
@@ -3073,6 +3150,26 @@ async function saveRenovaciones(){
   },{onConflict:'anio,mes,kpi_key'});
   if(!error){msg.style.color='var(--green)';msg.textContent='✓ Meta de renovaciones guardada: '+meta;}
   else{msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}
+}
+
+async function saveCursosTele(){
+  const meta=parseFloat(document.getElementById('metaCursosTele').value)||0;
+  const tasa=parseFloat(document.getElementById('tasaCursosTele').value);
+  const msg=document.getElementById('cursosTeleMsg');
+  if(!meta||meta<1){msg.style.color='var(--red)';msg.textContent='Ingresa una meta válida';return;}
+  if(isNaN(tasa)||tasa<0){msg.style.color='var(--red)';msg.textContent='Ingresa una tasa válida';return;}
+  const {error:e1}=await sb.from('kpi_config').upsert({
+    anio:currentYear,mes:currentMonth,kpi_key:'meta_cursos_tele',
+    kpi_nombre:'Meta Cursos 24/7 Telemarketing',tipo:'$',categoria:'extra',
+    peso:0,meta_dulce:meta,meta_manuel:0,orden:50,activo:true
+  },{onConflict:'anio,mes,kpi_key'});
+  const {error:e2}=await sb.from('kpi_config').upsert({
+    anio:currentYear,mes:currentMonth,kpi_key:'tasa_cursos_tele',
+    kpi_nombre:'Tasa Cursos 24/7 Telemarketing (%)',tipo:'qty',categoria:'extra',
+    peso:0,meta_dulce:tasa,meta_manuel:0,orden:51,activo:true
+  },{onConflict:'anio,mes,kpi_key'});
+  if(!e1&&!e2){msg.style.color='var(--green)';msg.textContent='✓ Guardado: meta '+fmt(meta)+' · tasa '+tasa+'%';}
+  else{msg.style.color='var(--red)';msg.textContent='Error: '+(e1?.message||e2?.message);}
 }
 
 async function addKpi(){
