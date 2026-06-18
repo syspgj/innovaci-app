@@ -364,12 +364,13 @@ function getBonoKpiExtra(alcance){
   for(const t of BONO_KPI_TABLE) if(alcance>=t.min&&alcance<=t.max) return t.extra;
   return 0;
 }
-function calcAlcanceBono(kpiCfg, tot, metaKey){
-  // Solo KPIs con peso > 0 para bono
-  // Excluir 'svc' de junio 2026 en adelante (peso=0)
+function calcAlcanceBono(kpiCfg, tot, metaKey, esMireya){
+  // Solo KPIs con peso > 0 para bono. Filtrar filas _m (Mireya) vs normales según corresponda,
+  // para no duplicar el peso ponderado sumando KPIs de ambos universos a la vez.
   let totalPeso=0, ponderado=0;
   const totMap=buildTotMap(tot);
-  for(const k of kpiCfg){
+  const kpisAplicables=kpiCfg.filter(k=>esMireya?/_m$/.test(k.kpi_key):!/_m$/.test(k.kpi_key));
+  for(const k of kpisAplicables){
     if(!k.peso||k.peso===0) continue;
     const meta=k[metaKey]||1;
     const actual=totMap[k.kpi_key]||0;
@@ -382,7 +383,9 @@ function calcAlcanceBono(kpiCfg, tot, metaKey){
 }
 function buildTotMap(tot){
   return {
-    svc:tot.svc,aspel:tot.aspel,it:tot.it,
+    svc:tot.svc,svc_m:tot.svc,
+    aspel:tot.aspel,aspel_m:tot.aspel,
+    it:tot.it,
     cursos:tot.cursos,cur:tot.cursos,cur247:tot.cursos,cur_m:tot.cursos,
     sf:tot.sf,sf_m:tot.sf,siigo_fiscal:tot.sf,
     demos:tot.demos,demos_m:tot.demos,
@@ -525,8 +528,9 @@ async function renderVendorMiMes(){
   // Calcular totales
   const tot={svc:0,aspel:0,it:0,cursos:0,sf:0,demos:0,val:0,cn:0,dip:0,sus:0,cur_vivo:0};
   for(const r of registros){tot.svc+=r.svc||0;tot.aspel+=r.aspel||0;tot.it+=r.it||0;tot.cursos+=r.cursos||0;tot.sf+=r.siigo_fiscal||0;tot.demos+=r.demos||0;tot.val+=r.valoraciones||0;tot.cn+=r.clientes_nuevos||0;tot.dip+=r.diplomados||0;tot.sus+=r.suscripciones||0;tot.cur_vivo+=r.talleres_vivo||0;}
-  // Metas del vendedor
-  const metaKey=userProfile.email.includes('dulce')?'meta_dulce':'meta_manuel';
+  // Metas del vendedor — Mireya usa meta_dulce (ahí vive su meta histórica: svc_m=2000,
+  // aspel_m=5000, cur_m=20000, confirmado en kpi_config), no meta_manuel por descarte.
+  const metaKey=isMireya(userProfile)||userProfile.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
   const metas={};
   for(const k of kpiConfig){
     metas[k.kpi_key]={m:k[metaKey]||0,n:k.kpi_nombre,t:k.tipo,cat:k.categoria};
@@ -534,11 +538,12 @@ async function renderVendorMiMes(){
     const aliases={cur:['cursos','cur247','cur_m'],sf:['siigo_fiscal','sf_m'],demos:['demos_m'],val:['val_m'],cn:['cn_m'],dip:['dip_m'],cur_m:['cursos','cur','cur247'],sf_m:['sf','siigo_fiscal']};
     if(aliases[k.kpi_key]) aliases[k.kpi_key].forEach(a=>{ if(!metas[a]) metas[a]={m:k[metaKey]||0,n:k.kpi_nombre,t:k.tipo,cat:k.categoria}; });
   }
-  const svcMeta=metas.svc?.m||80000;
+  const svcKeyVendedor=isMireya(userProfile)?'svc_m':'svc';
+  const svcMeta=metas[svcKeyVendedor]?.m||80000;
   const svcPct=tot.svc/svcMeta;
   const rate=getRate(tot.svc,svcMeta,userProfile);
   // Calcular bono/penalización por KPIs
-  const alcanceBono=calcAlcanceBono(kpiConfig,tot,metaKey);
+  const alcanceBono=calcAlcanceBono(kpiConfig,tot,metaKey,isMireya(userProfile));
   const pctExtra=getBonoKpiExtra(alcanceBono);
   const rateConBono=Math.max(0,rate+pctExtra);
   const commission=tot.svc*rateConBono;
