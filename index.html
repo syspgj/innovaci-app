@@ -321,7 +321,9 @@ function pcol(p){return p>=1?'#27AE60':p>=0.8?'#F5A623':'#E84040';}
 function pbadge(p){const pct=Math.round(p*100),cls=p>=1?'bg':p>=0.8?'bo':'br',i=p>=1?'✓':p>=0.8?'→':'↓';return `<span class="badge ${cls}">${i} ${pct}%</span>`;}
 
 // ─── DEFAULT KPI CONFIG ──────────────────────────────────────────────────────
-const DEFAULT_KPI_CONFIG=[
+// KPI config por mes — junio 2026 en adelante usa nueva estructura
+// Para meses anteriores (ene-may 2026) se usa DEFAULT_KPI_CONFIG_LEGACY
+const DEFAULT_KPI_CONFIG_LEGACY=[
   {kpi_key:'svc', kpi_nombre:'Venta de Servicios',tipo:'$', categoria:'principal', peso:40,meta_dulce:80000,meta_manuel:80000,orden:1},
   {kpi_key:'aspel',kpi_nombre:'Venta Aspel',      tipo:'$', categoria:'principal', peso:25,meta_dulce:45000,meta_manuel:45000,orden:2},
   {kpi_key:'it',  kpi_nombre:'Venta IT',          tipo:'$', categoria:'principal', peso:5, meta_dulce:20000,meta_manuel:20000,orden:3},
@@ -329,8 +331,68 @@ const DEFAULT_KPI_CONFIG=[
   {kpi_key:'demos',kpi_nombre:'Demos',            tipo:'qty',categoria:'secundario',peso:10,meta_dulce:3,meta_manuel:2,orden:5},
   {kpi_key:'val', kpi_nombre:'Valoraciones',      tipo:'qty',categoria:'secundario',peso:10,meta_dulce:8,meta_manuel:8,orden:6},
   {kpi_key:'sf',  kpi_nombre:'Siigo Fiscal',      tipo:'qty',categoria:'extra',     peso:10,meta_dulce:2,meta_manuel:2,orden:7},
-  {kpi_key:'cur', kpi_nombre:'Cursos 24/7',       tipo:'qty',categoria:'extra',     peso:10,meta_dulce:10,meta_manuel:10,orden:8},
+  {kpi_key:'cur', kpi_nombre:'Cursos 24/7/Membresías',tipo:'qty',categoria:'extra',peso:10,meta_dulce:10,meta_manuel:10,orden:8},
 ];
+// Junio 2026 en adelante — nueva estructura sin Servicios en bono
+const DEFAULT_KPI_CONFIG=[
+  {kpi_key:'svc', kpi_nombre:'Venta de Servicios',tipo:'$', categoria:'principal', peso:0, meta_dulce:80000,meta_manuel:80000,orden:1},
+  {kpi_key:'aspel',kpi_nombre:'Venta Aspel',      tipo:'$', categoria:'principal', peso:20,meta_dulce:45000,meta_manuel:45000,orden:2},
+  {kpi_key:'it',  kpi_nombre:'Venta IT',          tipo:'$', categoria:'secundario',peso:10,meta_dulce:20000,meta_manuel:20000,orden:3},
+  {kpi_key:'cn',  kpi_nombre:'Clientes nuevos',   tipo:'qty',categoria:'secundario',peso:0, meta_dulce:3,meta_manuel:3,orden:4},
+  {kpi_key:'demos',kpi_nombre:'Demos',            tipo:'qty',categoria:'secundario',peso:10,meta_dulce:3,meta_manuel:2,orden:5},
+  {kpi_key:'val', kpi_nombre:'Valoraciones',      tipo:'qty',categoria:'secundario',peso:10,meta_dulce:8,meta_manuel:8,orden:6},
+  {kpi_key:'sf',  kpi_nombre:'Siigo Fiscal',      tipo:'qty',categoria:'extra',     peso:20,meta_dulce:2,meta_manuel:2,orden:7},
+  {kpi_key:'sus', kpi_nombre:'Suscripciones/Distribuidor',tipo:'qty',categoria:'extra',peso:20,meta_dulce:2,meta_manuel:2,orden:8},
+  {kpi_key:'cur', kpi_nombre:'Cursos 24/7/Membresías',tipo:'qty',categoria:'extra', peso:10,meta_dulce:10,meta_manuel:10,orden:9},
+  {kpi_key:'cur_vivo',kpi_nombre:'Cursos en Vivo',tipo:'$', categoria:'extra',      peso:10,meta_dulce:10000,meta_manuel:10000,orden:10},
+];
+function getDefaultKpiConfig(anio,mes){
+  // Antes de junio 2026: estructura legacy
+  if(anio<2026||(anio===2026&&mes<6)) return DEFAULT_KPI_CONFIG_LEGACY;
+  return DEFAULT_KPI_CONFIG;
+}
+// Tabla % extra por alcance de bono KPIs
+const BONO_KPI_TABLE=[
+  {min:0,   max:0.7999, extra:-0.01},
+  {min:0.8, max:0.9499, extra:0},
+  {min:0.95,max:0.9999, extra:0.005},
+  {min:1.0, max:1.0999, extra:0.01},
+  {min:1.1, max:1.1999, extra:0.02},
+  {min:1.2, max:99,     extra:0.04},
+];
+function getBonoKpiExtra(alcance){
+  for(const t of BONO_KPI_TABLE) if(alcance>=t.min&&alcance<=t.max) return t.extra;
+  return 0;
+}
+function calcAlcanceBono(kpiCfg, tot, metaKey){
+  // Solo KPIs con peso > 0 para bono
+  // Excluir 'svc' de junio 2026 en adelante (peso=0)
+  let totalPeso=0, ponderado=0;
+  const totMap=buildTotMap(tot);
+  for(const k of kpiCfg){
+    if(!k.peso||k.peso===0) continue;
+    const meta=k[metaKey]||1;
+    const actual=totMap[k.kpi_key]||0;
+    const alcance=Math.min(actual/meta,1.5); // cap at 150%
+    ponderado+=alcance*(k.peso/100);
+    totalPeso+=k.peso/100;
+  }
+  if(totalPeso===0) return 0;
+  return ponderado/totalPeso;
+}
+function buildTotMap(tot){
+  return {
+    svc:tot.svc,aspel:tot.aspel,it:tot.it,
+    cursos:tot.cursos,cur:tot.cursos,cur247:tot.cursos,cur_m:tot.cursos,
+    sf:tot.sf,sf_m:tot.sf,siigo_fiscal:tot.sf,
+    demos:tot.demos,demos_m:tot.demos,
+    val:tot.val,val_m:tot.val,
+    cn:tot.cn,cn_m:tot.cn,
+    dip:tot.dip,dip_m:tot.dip,
+    sus:tot.sus,suscripciones:tot.sus,renovaciones:tot.sus,
+    cur_vivo:tot.cur_vivo,
+  };
+}
 // ─── STATE ───────────────────────────────────────────────────────────────────
 let currentUser=null, userProfile=null;
 let currentMonth=new Date().getMonth()+1, currentYear=new Date().getFullYear();
@@ -416,7 +478,7 @@ function buildVendorUI(){
   _t.innerHTML='';
   const _tabs=[{l:'Mi mes',v:'miMes',a:true}];
   if(esVendedor)_tabs.push({l:'Mi año',v:'anual',a:false});
-  _tabs.push({l:'Registrar día',v:'registro',a:false},{l:'Histórico',v:'historico',a:false});
+  _tabs.push({l:'Registrar día',v:'registro',a:false},{l:'Proyección',v:'proyeccion',a:false},{l:'Histórico',v:'historico',a:false});
   _tabs.forEach(t=>{
     const d=document.createElement('div');
     d.className='tab'+(t.a?' active':'');
@@ -433,6 +495,7 @@ function swV(id){
   if(id==='miMes')renderVendorMiMes();
   else if(id==='anual')renderVendorAnual();
   else if(id==='registro')renderRegistroForm();
+  else if(id==='proyeccion')renderProyeccion();
   else renderHistorico();
 }
 
@@ -443,7 +506,7 @@ async function renderVendorMiMes(){
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando datos...</div>';
   // Cargar KPI config del mes
   const {data:kc}=await sb.from('kpi_config').select('*').eq('anio',currentYear).eq('mes',currentMonth).eq('activo',true).order('orden');
-  kpiConfig=(kc&&kc.length>0)?kc:DEFAULT_KPI_CONFIG;
+  kpiConfig=(kc&&kc.length>0)?kc:getDefaultKpiConfig(currentYear,currentMonth);
   // Load departmental target and check if reached
   const metaDeptoRow=kpiConfig.find(k=>k.kpi_key==='meta_depto');
   metaDepto=metaDeptoRow?metaDeptoRow.meta_dulce:160000;
@@ -460,10 +523,9 @@ async function renderVendorMiMes(){
   const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).gte('fecha',desde).lte('fecha',hasta).order('fecha');
   registros=regs||[];
   // Calcular totales
-  const tot={svc:0,aspel:0,it:0,cursos:0,sf:0,demos:0,val:0,cn:0,dip:0,sus:0};
-  for(const r of registros){tot.svc+=r.svc||0;tot.aspel+=r.aspel||0;tot.it+=r.it||0;tot.cursos+=r.cursos||0;tot.sf+=r.siigo_fiscal||0;tot.demos+=r.demos||0;tot.val+=r.valoraciones||0;tot.cn+=r.clientes_nuevos||0;tot.dip+=r.diplomados||0;tot.sus+=r.suscripciones||0;}
+  const tot={svc:0,aspel:0,it:0,cursos:0,sf:0,demos:0,val:0,cn:0,dip:0,sus:0,cur_vivo:0};
+  for(const r of registros){tot.svc+=r.svc||0;tot.aspel+=r.aspel||0;tot.it+=r.it||0;tot.cursos+=r.cursos||0;tot.sf+=r.siigo_fiscal||0;tot.demos+=r.demos||0;tot.val+=r.valoraciones||0;tot.cn+=r.clientes_nuevos||0;tot.dip+=r.diplomados||0;tot.sus+=r.suscripciones||0;tot.cur_vivo+=r.talleres_vivo||0;}
   // Metas del vendedor
-  const metaKey=userProfile.email.includes('dulce')?'meta_dulce':'meta_manuel';
   const metas={};
   for(const k of kpiConfig){
     metas[k.kpi_key]={m:k[metaKey]||0,n:k.kpi_nombre,t:k.tipo,cat:k.categoria};
@@ -474,7 +536,13 @@ async function renderVendorMiMes(){
   const svcMeta=metas.svc?.m||80000;
   const svcPct=tot.svc/svcMeta;
   const rate=getRate(tot.svc,svcMeta,userProfile);
-  const commission=tot.svc*rate;
+  // Calcular bono/penalización por KPIs
+  const metaKey=userProfile.email.includes('dulce')?'meta_dulce':'meta_manuel';
+  const alcanceBono=calcAlcanceBono(kpiConfig,tot,metaKey);
+  const pctExtra=getBonoKpiExtra(alcanceBono);
+  const rateConBono=Math.max(0,rate+pctExtra);
+  const commission=tot.svc*rateConBono;
+  const commissionBase=tot.svc*rate;
   // Días
   const hoy=new Date();
   const esEsteMes=hoy.getMonth()+1===currentMonth&&hoy.getFullYear()===currentYear;
@@ -522,8 +590,16 @@ async function renderVendorMiMes(){
             : 'Tasa activa <b>'+(rate*100).toFixed(1)+'%</b> · sobre <b>'+fmt(tot.svc)+'</b> en servicios'}
         </div>
         <div class="rate-chip" style="background:${commission>0?'var(--teal-bg)':'var(--red-bg)'};border-color:${commission>0?'var(--teal-b)':'rgba(232,64,64,0.2)'};color:${commission>0?'var(--teal)':'var(--red)'};">
-          ${commission>0?'Tasa '+(rate*100).toFixed(1)+'% · '+pctFmt+'% de meta':!deptoAlcanzado?'⛔ Área: '+Math.round(totalDeptoSvc/metaDepto*100)+'% de $'+Math.round(metaDepto/1000)+'K':'⛔ Meta individual: '+pctFmt+'%'}
+          ${commission>0?'Tasa '+(rateConBono*100).toFixed(2)+'% · '+pctFmt+'% de meta':!deptoAlcanzado?'⛔ Área: '+Math.round(totalDeptoSvc/metaDepto*100)+'% de $'+Math.round(metaDepto/1000)+'K':'⛔ Meta individual: '+pctFmt+'%'}
         </div>
+        ${rate>0?`<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:10px;background:rgba(0,0,0,0.06);padding:3px 8px;border-radius:20px;color:var(--text2);">Tasa base: ${(rate*100).toFixed(1)}%</span>
+          <span style="font-size:10px;padding:3px 8px;border-radius:20px;font-weight:600;
+            background:${pctExtra>0?'rgba(39,174,96,0.1)':pctExtra<0?'rgba(232,64,64,0.1)':'rgba(0,0,0,0.05)'};
+            color:${pctExtra>0?'#27AE60':pctExtra<0?'#E84040':'var(--text3)'};">
+            KPIs bono: ${pctExtra>0?'+':''}${(pctExtra*100).toFixed(1)}% (${Math.round(alcanceBono*100)}% alcance)
+          </span>
+        </div>`:''}
       </div>
       <div style="text-align:right;">
         <div class="ring-wrap"><canvas id="ringC" width="78" height="78" role="img" aria-label="Anillo de cumplimiento ${pctFmt}%"></canvas>
@@ -535,6 +611,18 @@ async function renderVendorMiMes(){
     <span class="prog-lbl">Servicios</span>
     <div class="prog-outer"><div class="prog-fill" id="progFill" style="width:${Math.min(svcPct*100,100)}%;background:${ringColor};"></div></div>
     <div class="prog-meta"><strong>${pctFmt}%</strong>${fmt(tot.svc)} de ${fmt(svcMeta)}</div>
+  </div>
+  <div style="background:${pctExtra>0?'rgba(39,174,96,0.08)':pctExtra<0?'rgba(232,64,64,0.06)':'var(--surface-2,#f8f9fa)'};border:1px solid ${pctExtra>0?'rgba(39,174,96,0.2)':pctExtra<0?'rgba(232,64,64,0.2)':'var(--border)'};border-radius:var(--radsm);padding:10px 14px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
+    <div>
+      <div style="font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px;">Bono KPIs secundarios</div>
+      <div style="font-size:12px;color:var(--text2);">Alcance ponderado: <strong>${Math.round(alcanceBono*100)}%</strong></div>
+    </div>
+    <div style="text-align:right;">
+      <div style="font-size:18px;font-weight:700;color:${pctExtra>0?'#27AE60':pctExtra<0?'#E84040':'var(--text3)'};">
+        ${pctExtra>0?'+':''}${(pctExtra*100).toFixed(1)}%
+      </div>
+      <div style="font-size:10px;color:var(--text3);">sobre tasa base ${(rate*100).toFixed(1)}%</div>
+    </div>
   </div>
   <div class="chart-card">
     <div class="chart-head"><span class="chart-title">Acumulado diario vs ritmo ideal</span>
@@ -599,7 +687,7 @@ async function renderVendorMiMes(){
   ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.parsed.y)}}},scales:{x:{ticks:{color:'#8BA0B8',font:{size:10},maxTicksLimit:11},grid:{display:false}},y:{ticks:{color:'#8BA0B8',font:{size:10},callback:v=>fmtK(v)},grid:{color:'rgba(13,34,64,0.05)'}}}}});
   // Main KPIs
   const mainK=kpiConfig.filter(k=>k.categoria==='principal');
-  const totMap={svc:tot.svc,aspel:tot.aspel,it:tot.it,cursos:tot.cursos,cur:tot.cursos,cur247:tot.cursos,cur_m:tot.cursos,sf:tot.sf,sf_m:tot.sf,siigo_fiscal:tot.sf,demos:tot.demos,demos_m:tot.demos,val:tot.val,val_m:tot.val,cn:tot.cn,cn_m:tot.cn,dip:tot.dip,dip_m:tot.dip,sus:tot.sus,renovaciones:tot.sus};
+  const totMap=buildTotMap(tot);
   document.getElementById('mainKpis').innerHTML=mainK.map(k=>{
     const v=totMap[k.kpi_key]||0,m=metas[k.kpi_key]?.m||1,p=Math.min(v/m,1),c=pcol(p),pp=Math.round(p*100);
     const vf=k.tipo==='$'?fmt(v):v,mf=k.tipo==='$'?fmtK(m):m;
@@ -683,18 +771,19 @@ async function renderRegistroForm(){
       <div class="form-field"><label>Demos realizados</label><input type="number" id="fDemos" value="${r.demos||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Valoraciones</label><input type="number" id="fVal" value="${r.valoraciones||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Cursos 24/7 / Membresías</label><input type="number" id="fCur" value="${r.cursos||''}" placeholder="0" min="0"></div>
-      <div class="form-field"><label>Siigo Fiscal</label><input type="number" id="fSf" value="${r.siigo_fiscal||''}" placeholder="0" min="0"></div>
-      <div class="form-field"><label>Suscripciones nuevas</label><input type="number" id="fSus" value="${r.suscripciones||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Siigo Fiscal (cierres)</label><input type="number" id="fSf" value="${r.siigo_fiscal||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Suscripciones / Cambio distribuidor</label><input type="number" id="fSus" value="${r.suscripciones||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Renovaciones Aspel</label><input type="number" id="fRen" value="${r.renovaciones||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Prospectos canalizados</label><input type="number" id="fPros" value="${r.prospectos_canalizados||''}" placeholder="0" min="0"></div>
     </div>
 
-    <!-- TALLERES EN VIVO -->
-    <div class="shead" style="margin-top:16px;">🎙 Talleres en vivo</div>
+    <!-- CURSOS EN VIVO -->
+    <div class="shead" style="margin-top:16px;">🎙 Cursos en Vivo</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Monto total vendido en cursos en vivo este día.</div>
     <div class="form-grid fg3" style="margin-top:0;">
       <div class="form-field">
-        <label>Talleres impartidos hoy</label>
-        <input type="number" id="fTalVivo" value="${r.talleres_vivo||''}" placeholder="0" min="0">
+        <label>Cursos en Vivo — venta del día ($)</label>
+        <div class="prefix"><input type="number" id="fTalVivo" value="${r.talleres_vivo||''}" placeholder="0.00" min="0" step="0.01"></div>
       </div>
     </div>
 
@@ -760,7 +849,7 @@ async function saveRegistro(fecha,existingId){
     siigo_fiscal:parseInt(document.getElementById('fSf').value)||0,
     suscripciones:parseInt(document.getElementById('fSus').value)||0,
     renovaciones:parseInt(document.getElementById('fRen')?document.getElementById('fRen').value:0)||0,
-    talleres_vivo:parseInt(document.getElementById('fTalVivo').value)||0,
+    talleres_vivo:parseFloat(document.getElementById('fTalVivo').value)||0,
     llamadas_seguimiento:parseInt(document.getElementById('fLlamSeg').value)||0,
     llamadas_prospeccion:parseInt(document.getElementById('fLlamPros').value)||0,
     neg_clientes_num:parseInt(document.getElementById('fNegCliNum').value)||0,
@@ -773,6 +862,192 @@ async function saveRegistro(fecha,existingId){
   btn.disabled=false;btn.textContent='💾 Guardar registro';
   if(error){msg.style.color='var(--red)';msg.textContent='Error al guardar: '+error.message;}
   else{msg.style.color='var(--green)';msg.textContent='✓ Registro guardado correctamente';}
+}
+
+// ── PROYECCIÓN DE VENTAS ──────────────────────────────────────────────────────
+const TIPOS_SERVICIO=['Póliza','Curso Empresarial','IT','Servicio','Otro'];
+const ESTATUS_PIPE=['Negociando','Ganado','Perdido','Pospuesto'];
+const PROB_OPTS=[10,25,50,70,90,100];
+
+async function renderProyeccion(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando proyección...</div>';
+  const {data:rows}=await sb.from('pipeline_vendedor')
+    .select('*').eq('usuario_id',currentUser.id)
+    .eq('anio',currentYear).eq('mes',currentMonth)
+    .order('fecha_prevista',{ascending:true});
+  const pipe=rows||[];
+  const totalMonto=pipe.reduce((s,r)=>s+(r.monto_total||0),0);
+  const totalSubtotal=pipe.reduce((s,r)=>s+(r.subtotal||0),0);
+
+  mc.innerHTML=`
+  <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+    <div>
+      <div style="font-size:16px;font-weight:700;color:var(--text);">Proyección de Ventas — ${getNombreMes(currentMonth)} ${currentYear}</div>
+      <div style="font-size:12px;color:var(--text3);margin-top:2px;">${pipe.length} negociaciones · Total: ${fmt(totalMonto)} · Subtotal: ${fmt(totalSubtotal)}</div>
+    </div>
+    <button onclick="agregarFilaPipe()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar</button>
+  </div>
+  <div style="overflow-x:auto;">
+  <table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead>
+      <tr style="background:var(--navy);color:#fff;">
+        <th style="padding:8px 10px;text-align:left;border-radius:var(--radsm) 0 0 0;white-space:nowrap;">Tipo</th>
+        <th style="padding:8px 10px;text-align:left;white-space:nowrap;">Servicio / Póliza</th>
+        <th style="padding:8px 10px;text-align:left;white-space:nowrap;">Cliente</th>
+        <th style="padding:8px 10px;text-align:right;white-space:nowrap;">Monto Total</th>
+        <th style="padding:8px 10px;text-align:right;white-space:nowrap;">Subtotal</th>
+        <th style="padding:8px 10px;text-align:center;white-space:nowrap;">Prob.</th>
+        <th style="padding:8px 10px;text-align:center;white-space:nowrap;">Fecha prev.</th>
+        <th style="padding:8px 10px;text-align:center;white-space:nowrap;">Estatus</th>
+        <th style="padding:8px 10px;text-align:left;white-space:nowrap;">Objeción / Nota</th>
+        <th style="padding:8px 10px;border-radius:0 var(--radsm) 0 0;"></th>
+      </tr>
+    </thead>
+    <tbody id="pipeBody">
+      ${pipe.map(r=>filaPipe(r)).join('')}
+      ${pipe.length===0?`<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--text3);">Sin negociaciones este mes — agrega una con el botón de arriba</td></tr>`:''}
+    </tbody>
+    <tfoot>
+      <tr style="background:var(--surface-2,#f4f6f8);font-weight:700;">
+        <td colspan="3" style="padding:8px 10px;color:var(--text);">TOTAL</td>
+        <td style="padding:8px 10px;text-align:right;color:var(--navy);">${fmt(totalMonto)}</td>
+        <td style="padding:8px 10px;text-align:right;color:var(--teal);">${fmt(totalSubtotal)}</td>
+        <td colspan="5"></td>
+      </tr>
+    </tfoot>
+  </table>
+  </div>`;
+}
+
+function filaPipe(r){
+  const probColor=r.probabilidad>=90?'#27AE60':r.probabilidad>=70?'#00A99D':r.probabilidad>=50?'#F5A623':'#E84040';
+  const estColor=r.estatus==='Ganado'?'#27AE60':r.estatus==='Perdido'?'#E84040':r.estatus==='Pospuesto'?'#888':'#F5A623';
+  return `<tr id="pr_${r.id}" style="border-bottom:1px solid var(--border);">
+    <td style="padding:7px 10px;">${r.tipo_servicio||'—'}</td>
+    <td style="padding:7px 10px;font-weight:500;">${r.producto||'—'}</td>
+    <td style="padding:7px 10px;">${r.cliente||'—'}</td>
+    <td style="padding:7px 10px;text-align:right;font-weight:600;color:var(--navy);">${fmt(r.monto_total||0)}</td>
+    <td style="padding:7px 10px;text-align:right;color:var(--teal);">${fmt(r.subtotal||0)}</td>
+    <td style="padding:7px 10px;text-align:center;"><span style="font-weight:700;color:${probColor};">${r.probabilidad||0}%</span></td>
+    <td style="padding:7px 10px;text-align:center;color:var(--text3);">${r.fecha_prevista||'—'}</td>
+    <td style="padding:7px 10px;text-align:center;"><span style="font-size:11px;font-weight:600;color:${estColor};">${r.estatus||'Negociando'}</span></td>
+    <td style="padding:7px 10px;color:var(--text3);font-size:11px;max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.objecion||''}</td>
+    <td style="padding:7px 10px;text-align:center;">
+      <button onclick="editarFilaPipe('${r.id}')" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:3px 8px;font-size:11px;cursor:pointer;color:var(--text2);">✏️</button>
+      <button onclick="eliminarFilaPipe('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);border-radius:var(--radsm);padding:3px 8px;font-size:11px;cursor:pointer;color:var(--red);margin-left:4px;">✕</button>
+    </td>
+  </tr>`;
+}
+
+function agregarFilaPipe(){
+  const hoy=new Date().toISOString().split('T')[0];
+  const modal=document.createElement('div');
+  modal.id='modalPipe';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  modal.innerHTML=modalPipeHTML(null,hoy);
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
+}
+
+async function editarFilaPipe(id){
+  const {data:r}=await sb.from('pipeline_vendedor').select('*').eq('id',id).single();
+  if(!r) return;
+  const modal=document.createElement('div');
+  modal.id='modalPipe';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  modal.innerHTML=modalPipeHTML(r,r.fecha_prevista||new Date().toISOString().split('T')[0]);
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
+}
+
+function modalPipeHTML(r,hoy){
+  const v=r||{};
+  return `<div style="background:var(--surface);border-radius:var(--rad);padding:24px;max-width:480px;width:100%;max-height:90vh;overflow-y:auto;">
+    <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:16px;">${r?'Editar':'Nueva'} negociación</div>
+    <input type="hidden" id="pipeId" value="${v.id||''}">
+    <div class="form-grid fg3" style="gap:10px;">
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>Tipo de servicio</label>
+        <select id="pTipo" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;">
+          ${TIPOS_SERVICIO.map(t=>`<option ${v.tipo_servicio===t?'selected':''}>${t}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>Servicio / Póliza</label>
+        <input type="text" id="pProducto" value="${v.producto||''}" placeholder="Ej: Póliza Infinito, Curso Empresarial...">
+      </div>
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>Cliente</label>
+        <input type="text" id="pCliente" value="${v.cliente||''}" placeholder="Nombre del cliente o empresa">
+      </div>
+      <div class="form-field">
+        <label>Monto Total ($)</label>
+        <div class="prefix"><input type="number" id="pMonto" value="${v.monto_total||''}" placeholder="0.00" step="0.01" min="0"></div>
+      </div>
+      <div class="form-field">
+        <label>Subtotal ($)</label>
+        <div class="prefix"><input type="number" id="pSubtotal" value="${v.subtotal||''}" placeholder="0.00" step="0.01" min="0"></div>
+      </div>
+      <div class="form-field">
+        <label>Probabilidad</label>
+        <select id="pProb" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;">
+          ${PROB_OPTS.map(p=>`<option value="${p}" ${(v.probabilidad||50)===p?'selected':''}>${p}%</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-field">
+        <label>Fecha prevista de cierre</label>
+        <input type="date" id="pFecha" value="${v.fecha_prevista||hoy}">
+      </div>
+      <div class="form-field">
+        <label>Estatus</label>
+        <select id="pEstatus" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;">
+          ${ESTATUS_PIPE.map(e=>`<option ${(v.estatus||'Negociando')===e?'selected':''}>${e}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>Objeción / Nota</label>
+        <input type="text" id="pObjecion" value="${v.objecion||''}" placeholder="No contesta, pagan el 15, etc.">
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px;">
+      <button onclick="guardarFilaPipe()" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
+      <button onclick="document.getElementById('modalPipe').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);">Cancelar</button>
+    </div>
+  </div>`;
+}
+
+async function guardarFilaPipe(){
+  const id=document.getElementById('pipeId').value;
+  const payload={
+    usuario_id:currentUser.id,
+    anio:currentYear, mes:currentMonth,
+    tipo_servicio:document.getElementById('pTipo').value,
+    producto:document.getElementById('pProducto').value,
+    cliente:document.getElementById('pCliente').value,
+    monto_total:parseFloat(document.getElementById('pMonto').value)||0,
+    subtotal:parseFloat(document.getElementById('pSubtotal').value)||0,
+    probabilidad:parseInt(document.getElementById('pProb').value)||50,
+    fecha_prevista:document.getElementById('pFecha').value,
+    estatus:document.getElementById('pEstatus').value,
+    objecion:document.getElementById('pObjecion').value,
+    updated_at:new Date().toISOString(),
+  };
+  let error;
+  if(id){
+    ({error}=await sb.from('pipeline_vendedor').update(payload).eq('id',id));
+  } else {
+    ({error}=await sb.from('pipeline_vendedor').insert(payload));
+  }
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalPipe')?.remove();
+  renderProyeccion();
+}
+
+async function eliminarFilaPipe(id){
+  if(!confirm('¿Eliminar esta negociación?')) return;
+  await sb.from('pipeline_vendedor').delete().eq('id',id);
+  renderProyeccion();
 }
 
 async function renderHistorico(){
@@ -823,7 +1098,7 @@ async function renderDirector(){renderDirectorResumen();}
 
 async function loadDirectorData(){
   const {data:kc}=await sb.from('kpi_config').select('*').eq('anio',currentYear).eq('mes',currentMonth).eq('activo',true).order('orden');
-  kpiConfig=(kc&&kc.length>0)?kc:DEFAULT_KPI_CONFIG;
+  kpiConfig=(kc&&kc.length>0)?kc:getDefaultKpiConfig(currentYear,currentMonth);
   const desde=`${currentYear}-${String(currentMonth).padStart(2,'0')}-01`;
   const lastDay=new Date(currentYear,currentMonth,0).getDate();
   const hasta=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
@@ -836,7 +1111,7 @@ async function loadDirectorData(){
 function getTotals(regs,userId){
   const tot={svc:0,aspel:0,it:0,cursos:0,sf:0,demos:0,val:0,cn:0,dip:0,sus:0};
   const myRegs=userId?regs.filter(r=>r.usuario_id===userId):regs;
-  for(const r of myRegs){tot.svc+=r.svc||0;tot.aspel+=r.aspel||0;tot.it+=r.it||0;tot.cursos+=r.cursos||0;tot.sf+=r.siigo_fiscal||0;tot.demos+=r.demos||0;tot.val+=r.valoraciones||0;tot.cn+=r.clientes_nuevos||0;tot.dip+=r.diplomados||0;tot.sus+=r.suscripciones||0;}
+  for(const r of myRegs){tot.svc+=r.svc||0;tot.aspel+=r.aspel||0;tot.it+=r.it||0;tot.cursos+=r.cursos||0;tot.sf+=r.siigo_fiscal||0;tot.demos+=r.demos||0;tot.val+=r.valoraciones||0;tot.cn+=r.clientes_nuevos||0;tot.dip+=r.diplomados||0;tot.sus+=r.suscripciones||0;tot.cur_vivo+=r.talleres_vivo||0;}
   return tot;
 }
 
@@ -958,7 +1233,7 @@ async function renderDirectorVendedores(){
     const projFin=tot.svc+avgDay*diasRest;
     const projComm=getComm(projFin,svcMeta,userProfile);
     const allK=kpiConfig.map(k=>{
-      const totMap={svc:tot.svc,aspel:tot.aspel,it:tot.it,cursos:tot.cursos,cur:tot.cursos,cur247:tot.cursos,cur_m:tot.cursos,sf:tot.sf,sf_m:tot.sf,siigo_fiscal:tot.sf,demos:tot.demos,demos_m:tot.demos,val:tot.val,val_m:tot.val,cn:tot.cn,cn_m:tot.cn,dip:tot.dip,dip_m:tot.dip,sus:tot.sus,renovaciones:tot.sus};
+      const totMap=buildTotMap(tot);
       const kv=totMap[k.kpi_key]||0,km=k[metaKey]||1,p=Math.min(kv/km,1),pc=pcol(p);
       const vf=k.tipo==='$'?fmt(kv):kv,mf=k.tipo==='$'?fmt(km):km;
       const tag=k.categoria==='principal'?'<span class="badge bt" style="font-size:9px;padding:1px 5px;">p</span>':k.categoria==='extra'?'<span class="badge bo" style="font-size:9px;padding:1px 5px;">e</span>':'';
@@ -988,8 +1263,224 @@ async function renderDirectorVendedores(){
           <div style="font-size:11px;color:var(--text3);">${diasRest} días restantes</div>
         </div>
       </div>
+      <div style="padding:10px 18px;border-top:1px solid var(--border);">
+        <button onclick="verRegistrosVendedor('${u.id}','${u.nombre.replace(/'/g,'\\'')}')"
+          style="width:100%;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+          📋 Ver registros y auditar
+        </button>
+      </div>
     </div>`;
   }).join('')}</div>`;
+}
+
+// ── AUDITORÍA Y EDICIÓN DE REGISTROS ─────────────────────────────────────────
+async function verRegistrosVendedor(userId, nombre){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando registros...</div>';
+  const desde=`${currentYear}-${String(currentMonth).padStart(2,'0')}-01`;
+  const lastDay=new Date(currentYear,currentMonth,0).getDate();
+  const hasta=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+  const {data:regs}=await sb.from('registros_diarios')
+    .select('*').eq('usuario_id',userId)
+    .gte('fecha',desde).lte('fecha',hasta)
+    .order('fecha',{ascending:true});
+  const rows=regs||[];
+  const auditados=rows.filter(r=>r.auditado).length;
+  const pendientes=rows.length-auditados;
+
+  mc.innerHTML=`
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+    <button onclick="renderDirectorVendedores()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:7px 14px;font-size:12px;cursor:pointer;color:var(--text2);font-family:'Inter',sans-serif;">← Volver</button>
+    <div>
+      <div style="font-size:16px;font-weight:700;color:var(--text);">Registros de ${nombre} — ${getNombreMes(currentMonth)} ${currentYear}</div>
+      <div style="font-size:12px;color:var(--text3);">${rows.length} días registrados · <span style="color:#27AE60;font-weight:600;">${auditados} auditados</span> · <span style="color:#F5A623;font-weight:600;">${pendientes} pendientes</span></div>
+    </div>
+    ${pendientes===0&&rows.length>0?'<span style="background:rgba(39,174,96,0.1);color:#27AE60;border:1px solid rgba(39,174,96,0.3);border-radius:20px;padding:4px 12px;font-size:12px;font-weight:600;">✅ Mes completamente auditado</span>':''}
+  </div>
+  <div style="overflow-x:auto;">
+  <table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead>
+      <tr style="background:var(--navy);color:#fff;font-size:11px;">
+        <th style="padding:8px 10px;text-align:left;">Fecha</th>
+        <th style="padding:8px 10px;text-align:right;">Servicios</th>
+        <th style="padding:8px 10px;text-align:right;">Aspel</th>
+        <th style="padding:8px 10px;text-align:right;">IT</th>
+        <th style="padding:8px 10px;text-align:center;">Demos</th>
+        <th style="padding:8px 10px;text-align:center;">Val.</th>
+        <th style="padding:8px 10px;text-align:center;">Clientes</th>
+        <th style="padding:8px 10px;text-align:center;">Siigo</th>
+        <th style="padding:8px 10px;text-align:center;">Sus.</th>
+        <th style="padding:8px 10px;text-align:right;">Cursos Vivo</th>
+        <th style="padding:8px 10px;text-align:center;">Auditoría</th>
+        <th style="padding:8px 10px;text-align:center;">Acciones</th>
+      </tr>
+    </thead>
+    <tbody id="auditBody">
+      ${rows.map(r=>filaAuditoria(r)).join('')}
+      ${rows.length===0?'<tr><td colspan="12" style="text-align:center;padding:24px;color:var(--text3);">Sin registros este mes</td></tr>':''}
+    </tbody>
+    <tfoot>
+      <tr style="background:var(--surface-2,#f4f6f8);font-weight:700;font-size:11px;">
+        <td style="padding:8px 10px;color:var(--text);">TOTAL</td>
+        <td style="padding:8px 10px;text-align:right;color:var(--teal);">${fmt(rows.reduce((s,r)=>s+(r.svc||0),0))}</td>
+        <td style="padding:8px 10px;text-align:right;">${fmt(rows.reduce((s,r)=>s+(r.aspel||0),0))}</td>
+        <td style="padding:8px 10px;text-align:right;">${fmt(rows.reduce((s,r)=>s+(r.it||0),0))}</td>
+        <td style="padding:8px 10px;text-align:center;">${rows.reduce((s,r)=>s+(r.demos||0),0)}</td>
+        <td style="padding:8px 10px;text-align:center;">${rows.reduce((s,r)=>s+(r.valoraciones||0),0)}</td>
+        <td style="padding:8px 10px;text-align:center;">${rows.reduce((s,r)=>s+(r.clientes_nuevos||0),0)}</td>
+        <td style="padding:8px 10px;text-align:center;">${rows.reduce((s,r)=>s+(r.siigo_fiscal||0),0)}</td>
+        <td style="padding:8px 10px;text-align:center;">${rows.reduce((s,r)=>s+(r.suscripciones||0),0)}</td>
+        <td style="padding:8px 10px;text-align:right;">${fmt(rows.reduce((s,r)=>s+(r.talleres_vivo||0),0))}</td>
+        <td colspan="2"></td>
+      </tr>
+    </tfoot>
+  </table>
+  </div>`;
+}
+
+function filaAuditoria(r){
+  const auditado=r.auditado;
+  const hoy=new Date().toISOString().split('T')[0];
+  const esHoy=r.fecha===hoy;
+  return `<tr id="arow_${r.id}" style="border-bottom:1px solid var(--border);background:${auditado?'rgba(39,174,96,0.04)':'transparent'};">
+    <td style="padding:7px 10px;font-weight:500;white-space:nowrap;">
+      ${r.fecha}${esHoy?'<span style="font-size:10px;color:var(--teal);margin-left:4px;">HOY</span>':''}
+      ${r.updated_at&&r.updated_at!==r.created_at?'<div style="font-size:9px;color:var(--text3);">✏️ editado</div>':''}
+    </td>
+    <td style="padding:7px 10px;text-align:right;color:${(r.svc||0)>0?'var(--teal)':'var(--text3)'};">${(r.svc||0)>0?fmt(r.svc):'—'}</td>
+    <td style="padding:7px 10px;text-align:right;">${(r.aspel||0)>0?fmt(r.aspel):'—'}</td>
+    <td style="padding:7px 10px;text-align:right;">${(r.it||0)>0?fmt(r.it):'—'}</td>
+    <td style="padding:7px 10px;text-align:center;">${r.demos||'—'}</td>
+    <td style="padding:7px 10px;text-align:center;">${r.valoraciones||'—'}</td>
+    <td style="padding:7px 10px;text-align:center;">${r.clientes_nuevos||'—'}</td>
+    <td style="padding:7px 10px;text-align:center;">${r.siigo_fiscal||'—'}</td>
+    <td style="padding:7px 10px;text-align:center;">${r.suscripciones||'—'}</td>
+    <td style="padding:7px 10px;text-align:right;">${(r.talleres_vivo||0)>0?fmt(r.talleres_vivo):'—'}</td>
+    <td style="padding:7px 10px;text-align:center;">
+      ${auditado
+        ?`<div style="font-size:10px;color:#27AE60;font-weight:600;">✅ Auditado</div>
+           <div style="font-size:9px;color:var(--text3);">${r.auditado_at?r.auditado_at.split('T')[0]:''}</div>`
+        :`<span style="font-size:10px;color:#F5A623;font-weight:600;">⏳ Pendiente</span>`}
+    </td>
+    <td style="padding:7px 10px;text-align:center;white-space:nowrap;">
+      <button onclick="editarRegistroDir('${r.id}','${r.usuario_id}')"
+        style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:3px 8px;font-size:11px;cursor:pointer;color:var(--text2);margin-right:4px;">✏️</button>
+      <button onclick="toggleAuditado('${r.id}',${auditado})"
+        style="background:${auditado?'rgba(39,174,96,0.1)':'var(--navy)'};color:${auditado?'#27AE60':'#fff'};border:1px solid ${auditado?'rgba(39,174,96,0.3)':'transparent'};border-radius:var(--radsm);padding:3px 10px;font-size:11px;cursor:pointer;font-weight:600;">
+        ${auditado?'✓ OK':'Auditar'}
+      </button>
+    </td>
+  </tr>`;
+}
+
+async function toggleAuditado(registroId, esAuditado){
+  const nuevo=!esAuditado;
+  const upd={auditado:nuevo, updated_at:new Date().toISOString()};
+  if(nuevo){upd.auditado_por=currentUser.id; upd.auditado_at=new Date().toISOString();}
+  else{upd.auditado_por=null; upd.auditado_at=null;}
+  const {error}=await sb.from('registros_diarios').update(upd).eq('id',registroId);
+  if(error){alert('Error: '+error.message);return;}
+  // Update row in DOM without full reload
+  const {data:r}=await sb.from('registros_diarios').select('*').eq('id',registroId).single();
+  if(r){
+    const row=document.getElementById('arow_'+registroId);
+    if(row) row.outerHTML=filaAuditoria(r);
+  }
+  // Update header counts
+  const allRows=document.querySelectorAll('[id^="arow_"]');
+  // Simple approach: refresh the view
+}
+
+async function editarRegistroDir(registroId, userId){
+  const {data:r}=await sb.from('registros_diarios').select('*').eq('id',registroId).single();
+  if(!r) return;
+  const modal=document.createElement('div');
+  modal.id='modalEditReg';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  modal.innerHTML=`
+  <div style="background:var(--surface);border-radius:var(--rad);padding:24px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div>
+        <div style="font-size:15px;font-weight:700;color:var(--text);">✏️ Editar registro</div>
+        <div style="font-size:12px;color:var(--text3);">${r.fecha}</div>
+      </div>
+      <button onclick="document.getElementById('modalEditReg').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);">✕</button>
+    </div>
+    <input type="hidden" id="erRegId" value="${r.id}">
+    <input type="hidden" id="erUserId" value="${userId}">
+    <div class="shead">Ventas</div>
+    <div class="form-grid fg3" style="margin-bottom:12px;">
+      <div class="form-field"><label>Servicios ($)</label><div class="prefix"><input type="number" id="erSvc" value="${r.svc||0}" step="0.01"></div></div>
+      <div class="form-field"><label>Aspel ($)</label><div class="prefix"><input type="number" id="erAspel" value="${r.aspel||0}" step="0.01"></div></div>
+      <div class="form-field"><label>IT ($)</label><div class="prefix"><input type="number" id="erIt" value="${r.it||0}" step="0.01"></div></div>
+      <div class="form-field"><label>Diplomados ($)</label><div class="prefix"><input type="number" id="erDip" value="${r.diplomados||0}" step="0.01"></div></div>
+      <div class="form-field"><label>Cursos en Vivo ($)</label><div class="prefix"><input type="number" id="erCurVivo" value="${r.talleres_vivo||0}" step="0.01"></div></div>
+    </div>
+    <div class="shead">Actividades</div>
+    <div class="form-grid" style="margin-bottom:12px;">
+      <div class="form-field"><label>Clientes nuevos</label><input type="number" id="erCn" value="${r.clientes_nuevos||0}"></div>
+      <div class="form-field"><label>Demos</label><input type="number" id="erDemos" value="${r.demos||0}"></div>
+      <div class="form-field"><label>Valoraciones</label><input type="number" id="erVal" value="${r.valoraciones||0}"></div>
+      <div class="form-field"><label>Siigo Fiscal</label><input type="number" id="erSf" value="${r.siigo_fiscal||0}"></div>
+      <div class="form-field"><label>Suscripciones</label><input type="number" id="erSus" value="${r.suscripciones||0}"></div>
+      <div class="form-field"><label>Renovaciones</label><input type="number" id="erRen" value="${r.renovaciones||0}"></div>
+      <div class="form-field"><label>Prospectos canalizados</label><input type="number" id="erPros" value="${r.prospectos_canalizados||0}"></div>
+      <div class="form-field"><label>Cotizaciones</label><input type="number" id="erCot" value="${r.cotizaciones||0}"></div>
+      <div class="form-field"><label>Monto cotizaciones ($)</label><div class="prefix"><input type="number" id="erCotM" value="${r.monto_cotizaciones||0}" step="0.01"></div></div>
+    </div>
+    <div class="shead">Negociaciones abiertas</div>
+    <div class="form-grid" style="margin-bottom:12px;">
+      <div class="form-field"><label>Clientes # negs.</label><input type="number" id="erNegCN" value="${r.neg_clientes_num||0}"></div>
+      <div class="form-field"><label>Clientes monto est.</label><div class="prefix"><input type="number" id="erNegCM" value="${r.neg_clientes_monto||0}" step="0.01"></div></div>
+      <div class="form-field"><label>Prospectos # negs.</label><input type="number" id="erNegPN" value="${r.neg_prospectos_num||0}"></div>
+      <div class="form-field"><label>Prospectos monto est.</label><div class="prefix"><input type="number" id="erNegPM" value="${r.neg_prospectos_monto||0}" step="0.01"></div></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px;">
+      <button onclick="guardarEdicionDir()" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💾 Guardar cambios</button>
+      <button onclick="document.getElementById('modalEditReg').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);">Cancelar</button>
+    </div>
+  </div>`;
+  document.getElementById('modalEditReg')?.remove();
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
+}
+
+async function guardarEdicionDir(){
+  const id=document.getElementById('erRegId').value;
+  const userId=document.getElementById('erUserId').value;
+  const payload={
+    svc:parseFloat(document.getElementById('erSvc').value)||0,
+    aspel:parseFloat(document.getElementById('erAspel').value)||0,
+    it:parseFloat(document.getElementById('erIt').value)||0,
+    diplomados:parseFloat(document.getElementById('erDip').value)||0,
+    talleres_vivo:parseFloat(document.getElementById('erCurVivo').value)||0,
+    clientes_nuevos:parseInt(document.getElementById('erCn').value)||0,
+    demos:parseInt(document.getElementById('erDemos').value)||0,
+    valoraciones:parseInt(document.getElementById('erVal').value)||0,
+    siigo_fiscal:parseInt(document.getElementById('erSf').value)||0,
+    suscripciones:parseInt(document.getElementById('erSus').value)||0,
+    renovaciones:parseInt(document.getElementById('erRen').value)||0,
+    prospectos_canalizados:parseInt(document.getElementById('erPros').value)||0,
+    cotizaciones:parseInt(document.getElementById('erCot').value)||0,
+    monto_cotizaciones:parseFloat(document.getElementById('erCotM').value)||0,
+    neg_clientes_num:parseInt(document.getElementById('erNegCN').value)||0,
+    neg_clientes_monto:parseFloat(document.getElementById('erNegCM').value)||0,
+    neg_prospectos_num:parseInt(document.getElementById('erNegPN').value)||0,
+    neg_prospectos_monto:parseFloat(document.getElementById('erNegPM').value)||0,
+    updated_at:new Date().toISOString(),
+    auditado:false, // reset audit on edit
+    auditado_por:null,
+    auditado_at:null,
+  };
+  const {error}=await sb.from('registros_diarios').update(payload).eq('id',id);
+  if(error){alert('Error al guardar: '+error.message);return;}
+  document.getElementById('modalEditReg')?.remove();
+  // Refresh the row
+  const {data:r}=await sb.from('registros_diarios').select('*').eq('id',id).single();
+  if(r){
+    const row=document.getElementById('arow_'+id);
+    if(row) row.outerHTML=filaAuditoria(r);
+  }
 }
 
 async function renderDirectorKpis(){
@@ -1000,7 +1491,7 @@ async function renderDirectorKpis(){
     const tag=k.categoria==='principal'?'<span class="badge bt" style="font-size:9px;">p</span>':k.categoria==='extra'?'<span class="badge bo" style="font-size:9px;">e</span>':'';
     const cols=users.map(u=>{
       const tot=getTotals(allRegistros,u.id);
-      const totMap={svc:tot.svc,aspel:tot.aspel,it:tot.it,cursos:tot.cursos,cur:tot.cursos,cur247:tot.cursos,cur_m:tot.cursos,sf:tot.sf,sf_m:tot.sf,siigo_fiscal:tot.sf,demos:tot.demos,demos_m:tot.demos,val:tot.val,val_m:tot.val,cn:tot.cn,cn_m:tot.cn,dip:tot.dip,dip_m:tot.dip,sus:tot.sus,renovaciones:tot.sus};
+      const totMap=buildTotMap(tot);
       const metaKey=u.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
       const kv=totMap[k.kpi_key]||0,km=k[metaKey]||1,p=kv/km;
       const vf=k.tipo==='$'?fmt(kv):kv,mf=k.tipo==='$'?fmt(km):km;
@@ -2004,15 +2495,35 @@ async function renderDirectorConfig(){
   const {data:kc}=await sb.from('kpi_config').select('*').eq('anio',currentYear).eq('mes',currentMonth).order('orden');
   const configs=kc||[];
   const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  // Use default KPIs if DB empty
+  const kpiBase=(configs.length>0)?configs:getDefaultKpiConfig(currentYear,currentMonth);
   mc.innerHTML=`
   <div style="max-width:700px;">
     <div class="insight">⚙️ <strong>Panel de configuración</strong> — ${meses[currentMonth]} ${currentYear} · Los cambios aplican en tiempo real para todos los vendedores.</div>
+    <!-- TABLA BONO KPIs -->
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:16px 20px;margin-bottom:20px;">
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px;">📊 Tabla % extra por alcance de KPIs</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Este porcentaje se suma (o resta) a la tasa de comisión base según el alcance ponderado de todos los KPIs secundarios y extras del mes.</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="background:var(--navy);color:#fff;">
+          <th style="padding:6px 12px;text-align:left;border-radius:6px 0 0 0;">Alcance KPIs</th>
+          <th style="padding:6px 12px;text-align:center;border-radius:0 6px 0 0;">% Extra sobre comisión</th>
+        </tr></thead>
+        <tbody>
+          ${BONO_KPI_TABLE.map((t,i)=>`<tr style="border-bottom:1px solid var(--border);background:${i%2===0?'transparent':'var(--surface-2,#f8f9fa)'};">
+            <td style="padding:6px 12px;">${t.min===0?'Menos de 80%':t.max===99?'120% o más':Math.round(t.min*100)+'% – '+Math.round(t.max*100)+'%'}</td>
+            <td style="padding:6px 12px;text-align:center;font-weight:700;color:${t.extra>0?'#27AE60':t.extra<0?'#E84040':'var(--text3)'};">${t.extra>0?'+':''}${(t.extra*100).toFixed(1)}%</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+      <div style="font-size:11px;color:var(--text3);margin-top:8px;">Esta tabla es fija y aplica para todos los meses.</div>
+    </div>
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);overflow:hidden;margin-bottom:20px;">
       <div class="card-head"><span class="card-title">KPIs activos — ${meses[currentMonth]} ${currentYear}</span>
-        <span style="font-size:11px;color:var(--text3);">${configs.length} KPIs configurados</span></div>
+        <span style="font-size:11px;color:var(--text3);">${kpiBase.length} KPIs configurados</span></div>
       <div style="padding:16px 20px;">
-        ${configs.length===0?`<p style="font-size:13px;color:var(--text3);text-align:center;padding:20px;">No hay KPIs configurados para este mes. Usa el formulario de abajo para agregar.</p>`:''}
-        ${configs.map(k=>`
+        ${kpiBase.length===0?`<p style="font-size:13px;color:var(--text3);text-align:center;padding:20px;">No hay KPIs configurados para este mes. Usa el formulario de abajo para agregar.</p>`:''}
+        ${kpiBase.map(k=>`
         <div style="display:grid;grid-template-columns:1fr 100px 100px 80px 60px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);font-size:12px;">
           <div><strong style="color:var(--text);">${k.kpi_nombre}</strong><br><span style="color:var(--text3);">${k.tipo==='$'?'Monto $':'Cantidad'} · ${k.categoria}</span></div>
           <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Meta Dulce/Mireya</label>
