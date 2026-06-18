@@ -1108,6 +1108,7 @@ function buildDirectorUI(){
   document.getElementById('tabsBar').innerHTML=`
     <div class="tab active" onclick="swD('resumen')">Resumen</div>
     <div class="tab" onclick="swD('vendedores')">Vendedores</div>
+    <div class="tab" onclick="swD('anual')">📅 Anual</div>
     <div class="tab" onclick="swD('kpis')">KPIs</div>
     <div class="tab" onclick="swD('liberaciones')">Liberaciones</div>
     <div class="tab" onclick="swD('crm')">📋 Prospectos</div>
@@ -1115,9 +1116,10 @@ function buildDirectorUI(){
   renderDirector();
 }
 function swD(id){
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['resumen','vendedores','kpis','liberaciones','crm','config'][i]===id));
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['resumen','vendedores','anual','kpis','liberaciones','crm','config'][i]===id));
   if(id==='resumen')renderDirectorResumen();
   else if(id==='vendedores')renderDirectorVendedores();
+  else if(id==='anual')renderDirectorAnual();
   else if(id==='kpis')renderDirectorKpis();
   else if(id==='liberaciones')renderDirectorLiberaciones();
   else if(id==='crm')renderDirectorCRM();
@@ -1630,6 +1632,171 @@ async function renderDirectorKpis(){
   </div>`;
 }
 
+async function renderDirectorAnual(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando año completo...</div>';
+  const {data:users}=await sb.from('usuarios').select('*').eq('activo',true).eq('rol','vendedor').order('nombre');
+  const vendedores=users||[];
+  if(!vendedores.length){mc.innerHTML='<div class="loading">No hay vendedores activos.</div>';return;}
+
+  // Cargar TODO el año de una sola vez por tabla (no 12 queries por mes)
+  const desde=`${currentYear}-01-01`, hasta=`${currentYear}-12-31`;
+  const {data:regsAnio}=await sb.from('registros_diarios').select('*').gte('fecha',desde).lte('fecha',hasta);
+  const {data:kpiAnio}=await sb.from('kpi_config').select('*').eq('anio',currentYear);
+  const {data:ajustesAnio}=await sb.from('ajustes_comision').select('*').eq('anio',currentYear);
+  const regs=regsAnio||[];
+
+  const MESES_N=['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const MESES_FULL=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+  // Procesar cada mes del año
+  const mesesData={};
+  for(let m=1;m<=12;m++){
+    const kpiMes=(kpiAnio||[]).filter(k=>k.mes===m);
+    const kpiCfgMes=kpiMes.length>0?kpiMes:getDefaultKpiConfig(currentYear,m);
+    const metaDeptoRow=kpiMes.find(k=>k.kpi_key==='meta_depto');
+    const metaDeptoMes=metaDeptoRow?metaDeptoRow.meta_dulce:160000;
+    const ajustesMes=(ajustesAnio||[]).filter(a=>a.mes===m);
+
+    let totalSvc=0,totalAspel=0,totalIt=0,totalSus=0,totalComm=0;
+    const porVendedor={};
+    vendedores.forEach(u=>{
+      const regsUsuarioMes=regs.filter(r=>r.usuario_id===u.id&&parseInt(r.fecha.slice(5,7))===m);
+      const svc=regsUsuarioMes.reduce((s,r)=>s+(r.svc||0),0);
+      const aspel=regsUsuarioMes.reduce((s,r)=>s+(r.aspel||0),0);
+      const it=regsUsuarioMes.reduce((s,r)=>s+(r.it||0),0);
+      const sus=regsUsuarioMes.reduce((s,r)=>s+(r.suscripciones||0),0);
+      totalSvc+=svc; totalAspel+=aspel; totalIt+=it; totalSus+=sus;
+      porVendedor[u.id]={svc,aspel,it,sus};
+    });
+    deptoAlcanzado=totalSvc>=metaDeptoMes; // global usado por getRate()
+    metaDepto=metaDeptoMes;
+    vendedores.forEach(u=>{
+      const svcKpi=kpiCfgMes.find(k=>k.kpi_key==='svc');
+      const metaKey=u.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
+      const svcMeta=svcKpi?svcKpi[metaKey]:80000;
+      const svcVendedor=porVendedor[u.id].svc;
+      const rAuto=getRate(svcVendedor,svcMeta,u);
+      const cAuto=svcVendedor*rAuto;
+      const ajusteU=ajustesMes.find(a=>a.usuario_id===u.id)||null;
+      const ajRes=aplicarAjusteComision(cAuto,rAuto,svcVendedor,ajusteU);
+      totalComm+=ajRes.comisionFinal;
+    });
+
+    mesesData[m]={
+      totalSvc,totalAspel,totalIt,totalSus,totalComm,
+      metaDepto:metaDeptoMes,deptoOk:totalSvc>=metaDeptoMes,
+      tieneAjuste:ajustesMes.length>0,
+      porVendedor
+    };
+  }
+
+  // Totales y resúmenes del año
+  const totalSvcAnio=Object.values(mesesData).reduce((s,d)=>s+d.totalSvc,0);
+  const totalCommAnio=Object.values(mesesData).reduce((s,d)=>s+d.totalComm,0);
+  const totalComplementarioAnio=Object.values(mesesData).reduce((s,d)=>s+d.totalAspel+d.totalIt+d.totalSus,0);
+  const mesesMetaOk=Object.values(mesesData).filter(d=>d.deptoOk&&d.totalSvc>0).length;
+  const mesesConAjuste=Object.values(mesesData).filter(d=>d.tieneAjuste).length;
+  const mesesConData=Object.values(mesesData).filter(d=>d.totalSvc>0).length;
+
+  // Datos para gráficas (12 meses, Dulce vs Manuel)
+  const dulceU=vendedores.find(u=>u.email.toLowerCase().includes('dulce'));
+  const manuelU=vendedores.find(u=>u.email.toLowerCase().includes('manuel'));
+  const svcDulce=[],svcManuel=[],commDulce=[],commManuel=[];
+  for(let m=1;m<=12;m++){
+    svcDulce.push(dulceU?Math.round(mesesData[m].porVendedor[dulceU.id]?.svc||0):0);
+    svcManuel.push(manuelU?Math.round(mesesData[m].porVendedor[manuelU.id]?.svc||0):0);
+  }
+  // Comisión individual por vendedor por mes (recalculando con ajuste, reutilizando lo ya hecho arriba sería más limpio,
+  // pero se necesita por separado para la gráfica de barras Dulce vs Manuel)
+  for(let m=1;m<=12;m++){
+    const kpiMes=(kpiAnio||[]).filter(k=>k.mes===m);
+    const kpiCfgMes=kpiMes.length>0?kpiMes:getDefaultKpiConfig(currentYear,m);
+    const ajustesMes=(ajustesAnio||[]).filter(a=>a.mes===m);
+    deptoAlcanzado=mesesData[m].deptoOk; metaDepto=mesesData[m].metaDepto;
+    [dulceU,manuelU].forEach((u,idx)=>{
+      if(!u){(idx===0?commDulce:commManuel).push(0);return;}
+      const svcKpi=kpiCfgMes.find(k=>k.kpi_key==='svc');
+      const metaKey=u.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
+      const svcMeta=svcKpi?svcKpi[metaKey]:80000;
+      const svcVendedor=mesesData[m].porVendedor[u.id]?.svc||0;
+      const rAuto=getRate(svcVendedor,svcMeta,u);
+      const cAuto=svcVendedor*rAuto;
+      const ajusteU=ajustesMes.find(a=>a.usuario_id===u.id)||null;
+      const ajRes=aplicarAjusteComision(cAuto,rAuto,svcVendedor,ajusteU);
+      (idx===0?commDulce:commManuel).push(Math.round(ajRes.comisionFinal));
+    });
+  }
+
+  // Tabla detalle mensual
+  let monthRows='';
+  for(let m=1;m<=12;m++){
+    const d=mesesData[m];
+    const tieneData=d.totalSvc>0;
+    const col=!tieneData?'var(--text3)':d.deptoOk?'#27AE60':'#E84040';
+    const esActual=m===new Date().getMonth()+1&&currentYear===new Date().getFullYear();
+    monthRows+=`<tr style="${esActual?'background:var(--teal-bg);':''}">`
+      +`<td style="font-weight:${esActual?'600':'400'};color:${esActual?'var(--teal)':'var(--text)'};">${MESES_FULL[m]}${esActual?' ●':''}</td>`
+      +`<td style="font-family:'JetBrains Mono',monospace;font-weight:500;color:${tieneData?col:'var(--text3)'};">${tieneData?fmt(d.totalSvc):'—'}</td>`
+      +`<td style="font-family:'JetBrains Mono',monospace;color:var(--text3);">${fmt(d.metaDepto)}</td>`
+      +`<td>${!tieneData?'<span style="color:var(--text3);">Sin datos</span>':d.deptoOk?'<span class="badge bg">✓ Cumplida</span>':'<span class="badge br">No cumplida</span>'}</td>`
+      +`<td style="font-family:'JetBrains Mono',monospace;color:var(--teal);font-weight:600;">${tieneData?fmt(d.totalComm):'—'}</td>`
+      +`<td style="font-family:'JetBrains Mono',monospace;color:var(--text2);">${tieneData?fmt(d.totalAspel+d.totalIt+d.totalSus):'—'}</td>`
+      +`<td style="text-align:center;">${d.tieneAjuste?'<span style="font-size:11px;background:rgba(245,166,35,0.15);color:#B8740A;padding:2px 8px;border-radius:10px;font-weight:600;">⭐ sí</span>':'<span style="color:var(--text3);font-size:11px;">—</span>'}</td>`
+      +`</tr>`;
+  }
+
+  mc.innerHTML=
+  '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px;">'
+  +'<div class="thc" style="background:var(--navy);border-color:transparent;">'
+  +'<div class="th-lbl" style="color:rgba(255,255,255,0.4);">Servicios '+currentYear+'</div>'
+  +'<div class="th-val" style="color:#fff;">'+fmtK(totalSvcAnio)+'</div>'
+  +'<div class="th-sub" style="color:rgba(255,255,255,0.4);">'+mesesConData+' meses con actividad</div></div>'
+  +'<div class="thc"><div class="th-lbl">Comisiones pagadas</div>'
+  +'<div class="th-val" style="color:#00A99D;">'+fmtK(totalCommAnio)+'</div>'
+  +'<div class="th-sub">equipo, año completo</div></div>'
+  +'<div class="thc"><div class="th-lbl">Aspel+IT+Suscripciones</div>'
+  +'<div class="th-val">'+fmtK(totalComplementarioAnio)+'</div>'
+  +'<div class="th-sub">acumulado del año</div></div>'
+  +'<div class="thc"><div class="th-lbl">Meta depto. cumplida</div>'
+  +'<div class="th-val" style="color:'+(mesesMetaOk>=10?'#27AE60':mesesMetaOk>=6?'#F5A623':'#E84040')+';">'+mesesMetaOk+'/12</div>'
+  +'<div class="th-sub">meses del año</div></div>'
+  +'<div class="thc"><div class="th-lbl">Ajustes manuales</div>'
+  +'<div class="th-val" style="color:'+(mesesConAjuste>0?'#F5A623':'var(--text3)')+';">'+mesesConAjuste+'</div>'
+  +'<div class="th-sub">meses con ajuste aplicado</div></div></div>'
+  +'<div class="chart-card" style="margin-bottom:18px;">'
+  +'<div class="chart-head"><span class="chart-title">Servicios mensuales — '+currentYear+'</span>'
+  +'<div class="cleg"><span><span class="lsq" style="background:#00A99D;"></span>Dulce</span><span><span class="lsq" style="background:#0D2240;"></span>Manuel</span></div></div>'
+  +'<div style="position:relative;height:200px;"><canvas id="anualDirSvcChart"></canvas></div></div>'
+  +'<div class="chart-card" style="margin-bottom:20px;">'
+  +'<div class="chart-head"><span class="chart-title">Comisiones mensuales — '+currentYear+'</span>'
+  +'<div class="cleg"><span><span class="lsq" style="background:#00A99D;"></span>Dulce</span><span><span class="lsq" style="background:#0D2240;"></span>Manuel</span></div></div>'
+  +'<div style="position:relative;height:200px;"><canvas id="anualDirCommChart"></canvas></div></div>'
+  +'<div class="shead">Detalle mensual — equipo completo</div>'
+  +'<div class="card"><table class="daily" style="font-size:12px;">'
+  +'<thead><tr><th>Mes</th><th>Servicios equipo</th><th>Meta depto.</th><th>Cumplimiento</th><th>Comisiones</th><th>Aspel+IT+Sus.</th><th>Ajuste</th></tr></thead>'
+  +'<tbody>'+monthRows+'</tbody></table></div>';
+
+  setTimeout(()=>{
+    const ctx1=document.getElementById('anualDirSvcChart');
+    if(ctx1){
+      new Chart(ctx1.getContext('2d'),{type:'bar',data:{labels:MESES_N.slice(1),datasets:[
+        {label:'Dulce',data:svcDulce,backgroundColor:'#00A99D',borderRadius:4,borderSkipped:false},
+        {label:'Manuel',data:svcManuel,backgroundColor:'#0D2240',borderRadius:4,borderSkipped:false},
+      ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.parsed.y)}}},
+        scales:{x:{ticks:{color:'#8BA0B8',font:{size:11}},grid:{display:false}},y:{ticks:{color:'#8BA0B8',font:{size:10},callback:v=>fmtK(v)},grid:{color:'rgba(13,34,64,0.05)'}}}}});
+    }
+    const ctx2=document.getElementById('anualDirCommChart');
+    if(ctx2){
+      new Chart(ctx2.getContext('2d'),{type:'bar',data:{labels:MESES_N.slice(1),datasets:[
+        {label:'Dulce',data:commDulce,backgroundColor:'#00A99D',borderRadius:4,borderSkipped:false},
+        {label:'Manuel',data:commManuel,backgroundColor:'#0D2240',borderRadius:4,borderSkipped:false},
+      ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.parsed.y)}}},
+        scales:{x:{ticks:{color:'#8BA0B8',font:{size:11}},grid:{display:false}},y:{ticks:{color:'#8BA0B8',font:{size:10},callback:v=>fmtK(v)},grid:{color:'rgba(13,34,64,0.05)'}}}}});
+    }
+  },100);
+}
+
 async function renderDirectorLiberaciones(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
@@ -1992,14 +2159,19 @@ async function renderProspectos(){
   for(const p of ps) porEstatus[p.estatus]=(porEstatus[p.estatus]||0)+1;
   const canalizados=porEstatus['Canalizado a ventas']||0;
   const MINIMO=15;
+  const eventosUnicos=[...new Set(ps.map(p=>p.evento).filter(Boolean))].sort();
 
   mc.innerHTML=`
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
     <div>
       <div style="font-size:18px;font-weight:600;color:var(--text);">Mis prospectos</div>
       <div style="font-size:12px;color:var(--text3);">${ps.length} asignados · ${canalizados} canalizados a ventas</div>
     </div>
-    <div style="display:flex;align-items:center;gap:8px;">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      <select id="filtroEvento" onchange="filtrarProspectos()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;color:var(--text);">
+        <option value="">Todos los eventos</option>
+        ${eventosUnicos.map(e=>`<option value="${e}">${e}</option>`).join('')}
+      </select>
       <select id="filtroEstatus" onchange="filtrarProspectos()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;color:var(--text);">
         <option value="">Todos los estatus</option>
         ${Object.keys(ESTATUS_COLORS).map(e=>`<option value="${e}">${e}</option>`).join('')}
@@ -2062,15 +2234,17 @@ function filaProspecto(p){
           style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">
           Ver
         </button>
-        ${p.estatus==='Canalizado a ventas'&&p.vtiger_url
+        ${p.vtiger_url
           ? `<a href="${p.vtiger_url}" target="_blank"
               style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;text-decoration:none;">
               VTiger ↗</a>`
-          : p.estatus==='Canalizado a ventas'
-          ? `<button onclick="agregarVtigerUrl('${p.id}')"
+          : `<button onclick="agregarVtigerUrl('${p.id}')"
               style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">
-              + VTiger</button>`
-          : ''}
+              + VTiger</button>`}
+        <button onclick="toggleRespondio('${p.id}')" title="¿Actualizado en Respond.io?"
+          style="background:${p.respondio_ok?'rgba(39,174,96,0.12)':'var(--surf2)'};color:${p.respondio_ok?'#27AE60':'var(--text3)'};border:1px solid ${p.respondio_ok?'rgba(39,174,96,0.3)':'var(--border)'};border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">
+          ${p.respondio_ok?'✓ Respond.io':'Respond.io'}
+        </button>
       </div>
     </td>
   </tr>`;
@@ -2078,12 +2252,14 @@ function filaProspecto(p){
 
 function filtrarProspectos(){
   const filtro=document.getElementById('filtroEstatus')?.value||'';
+  const filtroEv=document.getElementById('filtroEvento')?.value||'';
   const buscar=document.getElementById('buscarPros')?.value.toLowerCase()||'';
   const ps=window._prospectos||[];
   const filtrados=ps.filter(p=>{
     const matchEstatus=!filtro||p.estatus===filtro;
+    const matchEvento=!filtroEv||p.evento===filtroEv;
     const matchBuscar=!buscar||(p.nombre||'').toLowerCase().includes(buscar)||(p.telefono||'').includes(buscar);
-    return matchEstatus&&matchBuscar;
+    return matchEstatus&&matchEvento&&matchBuscar;
   });
   const tbody=document.getElementById('bodyProspectos');
   if(tbody) tbody.innerHTML=filtrados.map(p=>filaProspecto(p)).join('');
@@ -2123,7 +2299,25 @@ async function agregarVtigerUrl(id){
     if(p){p.vtiger_url=vtUrl.trim();}
     const row=document.getElementById('row_'+id);
     if(row&&p) row.outerHTML=filaProspecto(p);
+    if(document.getElementById('modalDetalle')) abrirDetalle(id);
   }
+}
+
+async function toggleRespondio(id){
+  const p=window._prospectos?.find(p=>p.id===id);
+  const nuevoValor=!(p?.respondio_ok);
+  const {error}=await sb.from('prospectos').update({respondio_ok:nuevoValor}).eq('id',id);
+  if(error){alert('Error al actualizar: '+error.message);return;}
+  if(p) p.respondio_ok=nuevoValor;
+  const row=document.getElementById('row_'+id);
+  if(row&&p) row.outerHTML=filaProspecto(p);
+}
+
+async function toggleRespondioModal(id,checked){
+  const {error}=await sb.from('prospectos').update({respondio_ok:checked}).eq('id',id);
+  if(error){alert('Error al actualizar: '+error.message);return;}
+  const p=window._prospectos?.find(p=>p.id===id);
+  if(p) p.respondio_ok=checked;
 }
 
 // ── MODAL PROSPECTO COMPLETO ──────────────────────────────────────────────────
@@ -2203,11 +2397,24 @@ async function abrirDetalle(id){
           <div style="color:var(--text3);margin-bottom:2px;">Origen</div>
           <div style="font-weight:500;">${p.origen||'Meta Ads'}</div>
         </div>
-        ${p.vtiger_url?`
+        ${p.segmento?`
         <div style="grid-column:1/-1;">
-          <div style="color:var(--text3);margin-bottom:2px;">Liga VTiger</div>
-          <a href="${p.vtiger_url}" target="_blank" style="font-size:11px;color:var(--teal);word-break:break-all;">${p.vtiger_url}</a>
+          <div style="color:var(--text3);margin-bottom:2px;">Segmento (respuesta de registro)</div>
+          <div style="font-weight:500;background:var(--teal-bg);color:var(--teal);display:inline-block;padding:3px 10px;border-radius:6px;font-size:11px;">${p.segmento}</div>
         </div>`:''}
+        <div style="grid-column:1/-1;">
+          <div style="color:var(--text3);margin-bottom:4px;">Liga VTiger</div>
+          ${p.vtiger_url
+            ?`<a href="${p.vtiger_url}" target="_blank" style="font-size:11px;color:var(--teal);word-break:break-all;">${p.vtiger_url}</a>
+              <button onclick="agregarVtigerUrl('${p.id}')" style="margin-left:8px;background:none;border:1px solid var(--border);border-radius:5px;padding:2px 8px;font-size:10px;cursor:pointer;color:var(--text2);font-family:'Inter',sans-serif;">Editar</button>`
+            :`<button onclick="agregarVtigerUrl('${p.id}')" style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar liga VTiger</button>`}
+        </div>
+        <div style="grid-column:1/-1;display:flex;align-items:center;gap:8px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--text2);">
+            <input type="checkbox" id="chkRespondio" ${p.respondio_ok?'checked':''} onchange="toggleRespondioModal('${p.id}',this.checked)" style="accent-color:var(--teal);width:14px;height:14px;">
+            Contacto actualizado en Respond.io
+          </label>
+        </div>
       </div>
 
       <!-- EVENTOS -->
