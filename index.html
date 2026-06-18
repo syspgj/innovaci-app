@@ -685,8 +685,10 @@ async function renderVendorMiMes(){
     {label:'Real',data:acumPad,borderColor:'#00A99D',backgroundColor:'rgba(0,169,157,0.08)',fill:true,borderWidth:2,pointRadius:2,tension:0.3,spanGaps:false},
     {label:'Ideal',data:idealArr,borderColor:'rgba(0,0,0,0.2)',borderDash:[5,4],borderWidth:1.5,pointRadius:0,fill:false},
   ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.parsed.y)}}},scales:{x:{ticks:{color:'#8BA0B8',font:{size:10},maxTicksLimit:11},grid:{display:false}},y:{ticks:{color:'#8BA0B8',font:{size:10},callback:v=>fmtK(v)},grid:{color:'rgba(13,34,64,0.05)'}}}}});
-  // Main KPIs
-  const mainK=kpiConfig.filter(k=>k.categoria==='principal');
+  // Main KPIs — excluir filas con sufijo _m (configuración histórica de Mireya) si el
+  // vendedor actual no es Mireya, para que Dulce/Manuel no vean sus tarjetas mezcladas.
+  const esMireyaActual=isMireya(userProfile);
+  const mainK=kpiConfig.filter(k=>k.categoria==='principal'&&(esMireyaActual?/_m$/.test(k.kpi_key):!/_m$/.test(k.kpi_key)));
   const totMap=buildTotMap(tot);
   document.getElementById('mainKpis').innerHTML=mainK.map(k=>{
     const v=totMap[k.kpi_key]||0,m=metas[k.kpi_key]?.m||1,p=Math.min(v/m,1),c=pcol(p),pp=Math.round(p*100);
@@ -698,8 +700,8 @@ async function renderVendorMiMes(){
       <div class="kc-foot">${pbadge(p)}<span style="font-weight:600;font-size:11px;color:${c};">${pp}%</span></div>
     </div>`;
   }).join('');
-  // Sec KPIs
-  const secK=kpiConfig.filter(k=>k.categoria!=='principal');
+  // Sec KPIs — mismo filtro: excluir filas _m de Mireya si el vendedor actual no es ella
+  const secK=kpiConfig.filter(k=>k.categoria!=='principal'&&(esMireyaActual?/_m$/.test(k.kpi_key):!/_m$/.test(k.kpi_key)));
   const icons={demos:'🎯',val:'📋',cursos:'🎓',sf:'💼',cn:'👤',it:'💻',sus:'🔄',dip:'🏛️'};
   document.getElementById('secKpis').innerHTML=secK.map(k=>{
     const v=totMap[k.kpi_key]||0,m=metas[k.kpi_key]?.m||1,p=v/m,c=pcol(Math.min(p,1));
@@ -1132,6 +1134,12 @@ async function renderDirectorResumen(){
   if(!users.length){mc.innerHTML='<div class="loading">No hay vendedores registrados aún.</div>';return;}
   const mo=MO[currentMonth]||{dias:22,trans:10,cerrado:false};
   const vendedoresRes=users.filter(u=>u.rol==='vendedor');
+  // Set global dept status PRIMERO — getRate() depende de deptoAlcanzado, debe calcularse
+  // con los datos del mes actual antes de evaluar la comisión de cada vendedor.
+  const metaDeptoRow=kpiConfig.find(k=>k.kpi_key==='meta_depto');
+  metaDepto=metaDeptoRow?metaDeptoRow.meta_dulce:160000;
+  const totalSvcPreliminar=vendedoresRes.reduce((s,u)=>s+getTotals(allRegistros,u.id).svc,0);
+  deptoAlcanzado=totalSvcPreliminar>=metaDepto;
   const vData=vendedoresRes.map(u=>{
     const tot=getTotals(allRegistros,u.id);
     const svcM=kpiConfig.find(k=>k.kpi_key==='svc');
@@ -1146,10 +1154,6 @@ async function renderDirectorResumen(){
   const totalAspel=vData.reduce((s,v)=>s+v.tot.aspel,0);
   const metaSvc=vData.reduce((s,v)=>s+v.svcMeta,0);
   const metaAspel=vData.reduce((s,v)=>s+v.aspelMeta,0);
-  // Set global dept status
-  const metaDeptoRow=kpiConfig.find(k=>k.kpi_key==='meta_depto');
-  metaDepto=metaDeptoRow?metaDeptoRow.meta_dulce:160000;
-  deptoAlcanzado=totalSvc>=metaDepto;
   const totalComm=vData.reduce((s,v)=>s+v.comm,0);
   const hoy=new Date();
   const esEsteMes=hoy.getMonth()+1===currentMonth&&hoy.getFullYear()===currentYear;
@@ -1179,11 +1183,14 @@ async function renderDirectorResumen(){
     const cc=v.rate>=0.10?'#27AE60':v.rate>=0.09?'#00A99D':v.rate>0?'#F5A623':'#E84040';
     const ini=v.u.nombre.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase();
     const col=v.u.email.toLowerCase().includes('dulce')?'#00A99D':'#0D2240';
-    const mainK=kpiConfig.filter(k=>k.categoria==='principal').slice(0,3);
     const metaKey=v.u.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
+    // Tarjetas director: siempre Servicios, Aspel, Suscripciones/Renovaciones (fijo, sin depender de orden/categoria dinámicos como meta_depto)
+    const KEYS_TARJETA=['svc','aspel','sus'];
     const totMap={svc:v.tot.svc,aspel:v.tot.aspel,it:v.tot.it,sus:v.tot.sus};
+    const mainK=KEYS_TARJETA.map(key=>kpiConfig.find(k=>k.kpi_key===key)).filter(Boolean);
     const bars=mainK.map(k=>{const kv=totMap[k.kpi_key]||0,km=k[metaKey]||1,p=Math.min(kv/km,1),c=pcol(p);
-      return `<div class="vbr"><span class="vbrn">${k.kpi_nombre}</span><div class="vbo"><div class="vbf" style="width:${Math.round(p*100)}%;background:${c};"></div></div><span class="vbp" style="color:${c};">${Math.round(p*100)}%</span></div>`;}).join('');
+      const lbl=k.kpi_key==='sus'?'Suscripciones / Renovaciones':k.kpi_nombre;
+      return `<div class="vbr"><span class="vbrn">${lbl}</span><div class="vbo"><div class="vbf" style="width:${Math.round(p*100)}%;background:${c};"></div></div><span class="vbp" style="color:${c};">${Math.round(p*100)}%</span></div>`;}).join('');
     const secK=kpiConfig.filter(k=>k.categoria==='secundario').slice(0,3);
     const totMap2={demos:v.tot.demos,val:v.tot.val,cn:v.tot.cn};
     const pills=secK.map(k=>{const kv=totMap2[k.kpi_key]||0,km=k[metaKey]||1,ok=kv>=km;
@@ -1228,6 +1235,12 @@ async function renderDirectorVendedores(){
   const users=await loadDirectorData();
   const vendedores=users.filter(u=>u.rol==='vendedor');
   const telemarketing=users.filter(u=>u.rol==='telemarketing');
+  // Recalcular deptoAlcanzado para el mes actual — getRate() depende de esto y no debe
+  // quedarse con el valor de un render anterior (mismo fix aplicado en renderDirectorResumen)
+  const metaDeptoRowV=kpiConfig.find(k=>k.kpi_key==='meta_depto');
+  metaDepto=metaDeptoRowV?metaDeptoRowV.meta_dulce:160000;
+  const totalSvcPreliminarV=vendedores.reduce((s,u)=>s+getTotals(allRegistros,u.id).svc,0);
+  deptoAlcanzado=totalSvcPreliminarV>=metaDepto;
   const diasHab=getDiasHabiles(currentYear,currentMonth);
   const hoy=new Date();
   const esEsteMes=hoy.getMonth()+1===currentMonth&&hoy.getFullYear()===currentYear;
@@ -1247,7 +1260,7 @@ async function renderDirectorVendedores(){
     const avgDay=diasTrans>0?tot.svc/diasTrans:0;
     const projFin=tot.svc+avgDay*diasRest;
     const projComm=getComm(projFin,svcMeta,userProfile);
-    const allK=kpiConfig.map(k=>{
+    const allK=kpiConfig.filter(k=>!/_m$/.test(k.kpi_key)).map(k=>{
       const totMap=buildTotMap(tot);
       const kv=totMap[k.kpi_key]||0,km=k[metaKey]||1,p=Math.min(kv/km,1),pc=pcol(p);
       const vf=k.tipo==='$'?fmt(kv):kv,mf=k.tipo==='$'?fmt(km):km;
@@ -1551,7 +1564,7 @@ async function renderDirectorKpis(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
   const users=await loadDirectorData();
-  const rows=kpiConfig.map(k=>{
+  const rows=kpiConfig.filter(k=>!/_m$/.test(k.kpi_key)).map(k=>{
     const tag=k.categoria==='principal'?'<span class="badge bt" style="font-size:9px;">p</span>':k.categoria==='extra'?'<span class="badge bo" style="font-size:9px;">e</span>':'';
     const cols=users.map(u=>{
       const tot=getTotals(allRegistros,u.id);
