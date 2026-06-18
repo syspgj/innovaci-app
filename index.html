@@ -1197,6 +1197,16 @@ async function renderDirectorResumen(){
   const diasTrans=esEsteMes?getDiasTranscurridos(currentYear,currentMonth):diasHab;
   const diasRest=Math.max(diasHab-diasTrans,0);
   const cerrado=!esEsteMes||diasRest===0;
+  // Prospectos canalizados por vendedor este mes (aproximado por updated_at, ya que no hay fecha de canalización dedicada)
+  const {data:prospectosCanalizadosTodos}=await sb.from('prospectos').select('vendedor_asignado,updated_at').not('vendedor_asignado','is',null);
+  const canalizadosPorVendedorMes={};
+  (prospectosCanalizadosTodos||[]).forEach(p=>{
+    if(!p.updated_at) return;
+    const d=new Date(p.updated_at);
+    if(d.getMonth()+1===currentMonth&&d.getFullYear()===currentYear){
+      canalizadosPorVendedorMes[p.vendedor_asignado]=(canalizadosPorVendedorMes[p.vendedor_asignado]||0)+1;
+    }
+  });
   mc.innerHTML=`
   <div class="alert" style="background:${cerrado?'var(--green-bg)':'var(--gold-bg)'};border-color:${cerrado?'rgba(39,174,96,0.25)':'var(--gold-b)'};">
     ${cerrado?`✅ <strong>${getNombreMes(currentMonth)} ${currentYear}</strong> — Mes cerrado · Datos definitivos`:`⚠️ <strong>${getNombreMes(currentMonth)} ${currentYear} en curso</strong> · ${diasTrans} de ${diasHab} días hábiles · ${diasRest} días restantes`}
@@ -1215,6 +1225,15 @@ async function renderDirectorResumen(){
     {lbl:'Mejor servicio',val:vData.sort((a,b)=>b.tot.svc-a.tot.svc)[0]?.u.nombre.split(' ')[0]||'—',sub:fmt(vData[0]?.tot.svc||0)},
     {lbl:'Días restantes',val:diasRest,sub:`de ${diasHab} días hábiles`},
   ].map(c=>`<div class="thc"><div class="th-lbl">${c.lbl}</div><div class="th-val">${c.val}</div><div class="th-sub">${c.sub}</div></div>`).join('')}</div>
+  ${vendedoresRes.length>0?`
+  <div class="card" style="padding:14px 18px;margin-bottom:18px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <div style="font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;">📥 Prospectos canalizados este mes</div>
+      <div style="display:flex;gap:18px;">
+        ${vendedoresRes.map(u=>`<div style="text-align:right;"><span style="font-size:11px;color:var(--text3);">${u.nombre.split(' ')[0]}</span> <b style="font-size:14px;color:var(--teal);font-family:'JetBrains Mono',monospace;">${canalizadosPorVendedorMes[u.id]||0}</b></div>`).join('')}
+      </div>
+    </div>
+  </div>`:''}
   <div class="vgrid">${vData.map(v=>{
     const cc=v.rate>=0.10?'#27AE60':v.rate>=0.09?'#00A99D':v.rate>0?'#F5A623':'#E84040';
     const ini=v.u.nombre.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase();
@@ -2673,11 +2692,31 @@ async function renderDirectorCRM(){
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
   const {data:users}=await sb.from('usuarios').select('*').eq('rol','telemarketing');
   const {data:prospectos}=await sb.from('prospectos').select('*,usuarios(nombre)').order('created_at',{ascending:false});
+  const {data:vendedoresB2B}=await sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre');
   const ps=prospectos||[];
   const total=ps.length;
   const canalizados=ps.filter(p=>p.estatus==='Canalizado a ventas').length;
   const nuevos=ps.filter(p=>p.estatus==='Nuevo').length;
   const interesados=ps.filter(p=>p.estatus==='Interesado').length;
+
+  // Desglose de canalizados por vendedor B2B — mes actual y acumulado del año (aproximado por updated_at)
+  const hoyD=new Date();
+  const mesActual=hoyD.getMonth()+1, anioActual=hoyD.getFullYear();
+  const canalizadosConVendedor=ps.filter(p=>p.vendedor_asignado);
+  const desglosePorVendedor=(vendedoresB2B||[]).map(v=>{
+    const deEsteVendedor=canalizadosConVendedor.filter(p=>p.vendedor_asignado===v.id);
+    const esteMes=deEsteVendedor.filter(p=>{
+      if(!p.updated_at) return false;
+      const d=new Date(p.updated_at);
+      return d.getMonth()+1===mesActual&&d.getFullYear()===anioActual;
+    }).length;
+    const esteAnio=deEsteVendedor.filter(p=>{
+      if(!p.updated_at) return false;
+      return new Date(p.updated_at).getFullYear()===anioActual;
+    }).length;
+    return {nombre:v.nombre,esteMes,esteAnio,total:deEsteVendedor.length};
+  });
+  const sinVendedorAsignado=canalizadosConVendedor.length<canalizados?canalizados-canalizadosConVendedor.length:0;
 
   mc.innerHTML=`
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
@@ -2702,6 +2741,20 @@ async function renderDirectorCRM(){
       <div class="th-lbl">${s.n}</div>
       <div class="th-val" style="color:${s.col};">${s.v}</div>
     </div>`).join('')}
+  </div>
+
+  <!-- DESGLOSE POR VENDEDOR B2B -->
+  <div class="card" style="padding:16px 18px;margin-bottom:18px;">
+    <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px;">📥 Canalizados por vendedor B2B</div>
+    <div style="display:grid;grid-template-columns:repeat(${desglosePorVendedor.length||1},1fr);gap:14px;">
+      ${desglosePorVendedor.map(d=>`
+        <div style="border-left:3px solid var(--teal);padding-left:12px;">
+          <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px;">${d.nombre}</div>
+          <div style="font-size:20px;font-weight:700;color:var(--teal);font-family:'JetBrains Mono',monospace;">${d.esteMes}</div>
+          <div style="font-size:11px;color:var(--text3);">este mes · ${d.esteAnio} en ${anioActual} · ${d.total} histórico</div>
+        </div>`).join('')}
+    </div>
+    ${sinVendedorAsignado>0?`<div style="margin-top:12px;font-size:11px;color:var(--gold);">⚠ ${sinVendedorAsignado} prospecto(s) canalizados sin vendedor asignado (canalizados antes de este sistema)</div>`:''}
   </div>
 
   <!-- FILTROS -->
