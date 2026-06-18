@@ -2738,7 +2738,7 @@ async function cargarAjustesUI(){
   if(!vendedoresSel) return;
   const {data:users}=await sb.from('usuarios').select('*').eq('activo',true).eq('rol','vendedor').order('nombre');
   vendedoresSel.innerHTML=(users||[]).map(u=>`<option value="${u.id}">${u.nombre}</option>`).join('');
-  const {data:ajustes}=await sb.from('ajustes_comision').select('*,usuarios(nombre)')
+  const {data:ajustes}=await sb.from('ajustes_comision').select('*')
     .eq('anio',currentYear).eq('mes',currentMonth);
   const cont=document.getElementById('ajustesExistentes');
   if(!cont) return;
@@ -2746,15 +2746,17 @@ async function cargarAjustesUI(){
     cont.innerHTML=`<p style="font-size:12px;color:var(--text3);font-style:italic;">Sin ajustes manuales este mes.</p>`;
     return;
   }
-  cont.innerHTML=ajustes.map(a=>`
+  cont.innerHTML=ajustes.map(a=>{
+    const usuarioAjuste=(users||[]).find(u=>u.id===a.usuario_id);
+    return `
     <div style="display:flex;justify-content:space-between;align-items:center;background:rgba(245,166,35,0.08);border:1px solid rgba(245,166,35,0.25);border-radius:var(--radsm);padding:10px 14px;margin-bottom:8px;">
       <div>
-        <strong style="font-size:13px;color:var(--text);">${a.usuarios?.nombre||'—'}</strong>
+        <strong style="font-size:13px;color:var(--text);">${usuarioAjuste?.nombre||'—'}</strong>
         <span style="font-size:12px;color:var(--text2);margin-left:8px;">${a.tipo_ajuste==='porcentaje'?(a.valor>0?'+':'')+a.valor+'% adicional':'Comisión fija '+fmt(a.valor)}</span>
         ${a.motivo?`<div style="font-size:11px;color:var(--text3);margin-top:2px;">${a.motivo}</div>`:''}
       </div>
       <button onclick="eliminarAjuste('${a.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);border-radius:6px;padding:4px 10px;font-size:11px;color:var(--red);cursor:pointer;font-family:'Inter',sans-serif;">Quitar</button>
-    </div>`).join('');
+    </div>`;}).join('');
 }
 
 async function saveAjusteComision(){
