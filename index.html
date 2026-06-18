@@ -2361,7 +2361,7 @@ async function abrirDetalle(id){
     <div style="padding:20px 22px 16px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:2;">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
         <div>
-          <div style="font-size:16px;font-weight:700;color:var(--text);">${p.nombre}</div>
+          <div id="modalNombreHeader" style="font-size:16px;font-weight:700;color:var(--text);">${p.nombre}</div>
           <div style="font-size:11px;color:var(--text3);margin-top:2px;">
             ${idx+1} de ${ps.length} &nbsp;·&nbsp;
             <span style="color:${ESTATUS_COLORS[p.estatus]||'#888'};font-weight:600;">${p.estatus}</span>
@@ -2382,16 +2382,24 @@ async function abrirDetalle(id){
       <!-- DATOS -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12px;">
         <div>
+          <div style="color:var(--text3);margin-bottom:2px;">Nombre</div>
+          <input type="text" id="editNombre" value="${(p.nombre||'').replace(/"/g,'&quot;')}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">
+        </div>
+        <div>
           <div style="color:var(--text3);margin-bottom:2px;">Teléfono</div>
-          <div style="font-weight:600;font-family:'JetBrains Mono',monospace;">${p.telefono||'—'}</div>
+          <input type="text" id="editTelefono" value="${(p.telefono||'').replace(/"/g,'&quot;')}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace;">
         </div>
         <div>
           <div style="color:var(--text3);margin-bottom:2px;">Email</div>
-          <div style="font-weight:500;word-break:break-all;">${p.email||'—'}</div>
+          <input type="text" id="editEmail" value="${(p.email||'').replace(/"/g,'&quot;')}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
         </div>
         <div>
           <div style="color:var(--text3);margin-bottom:2px;">Empresa</div>
-          <div style="font-weight:500;">${p.empresa||'—'}</div>
+          <input type="text" id="editEmpresa" value="${(p.empresa||'').replace(/"/g,'&quot;')}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
+        </div>
+        <div style="grid-column:1/-1;">
+          <button onclick="guardarDatosProspecto('${p.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💾 Guardar datos</button>
+          <span id="datosMsg" style="font-size:11px;margin-left:8px;"></span>
         </div>
         <div>
           <div style="color:var(--text3);margin-bottom:2px;">Origen</div>
@@ -2542,6 +2550,26 @@ async function registrarLlamada(prospecto_id){
   document.querySelectorAll('input[name="resLlamada"]').forEach(r=>r.checked=false);
   const nt=document.getElementById('notasLlamada');
   if(nt) nt.value='';
+}
+
+async function guardarDatosProspecto(id){
+  const nombre=document.getElementById('editNombre')?.value.trim();
+  const telefono=document.getElementById('editTelefono')?.value.trim();
+  const email=document.getElementById('editEmail')?.value.trim();
+  const empresa=document.getElementById('editEmpresa')?.value.trim();
+  const msg=document.getElementById('datosMsg');
+  if(!nombre){if(msg){msg.style.color='var(--red)';msg.textContent='El nombre no puede quedar vacío';}return;}
+  const upd={nombre,telefono,email,empresa,updated_at:new Date().toISOString()};
+  const {error}=await sb.from('prospectos').update(upd).eq('id',id);
+  if(error){if(msg){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}return;}
+  const p=window._prospectos?.find(p=>p.id===id);
+  if(p) Object.assign(p,upd);
+  if(msg){msg.style.color='var(--green)';msg.textContent='✓ Guardado';}
+  // Actualizar nombre visible en el header del modal y en la fila de tabla
+  const headerNombre=document.getElementById('modalNombreHeader');
+  if(headerNombre) headerNombre.textContent=nombre;
+  const row=document.getElementById('row_'+id);
+  if(row&&p) row.outerHTML=filaProspecto(p);
 }
 
 async function guardarProspecto(id){
