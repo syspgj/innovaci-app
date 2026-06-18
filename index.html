@@ -1104,14 +1104,24 @@ async function loadDirectorData(){
   const hasta=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
   const {data:regs}=await sb.from('registros_diarios').select('*,usuarios(nombre,email)').gte('fecha',desde).lte('fecha',hasta).order('fecha');
   allRegistros=regs||[];
-  const {data:users}=await sb.from('usuarios').select('*').eq('rol','vendedor').eq('activo',true);
+  const {data:users}=await sb.from('usuarios').select('*').eq('activo',true).neq('rol','director').order('nombre');
   return users||[];
 }
 
 function getTotals(regs,userId){
-  const tot={svc:0,aspel:0,it:0,cursos:0,sf:0,demos:0,val:0,cn:0,dip:0,sus:0};
+  const tot={svc:0,aspel:0,it:0,cursos:0,sf:0,demos:0,val:0,cn:0,dip:0,sus:0,cur_vivo:0,
+    llamadas:0,prospectos:0,confirmaciones:0,seguimientos:0,crm:0,cur_tele:0,siigo_tele:0,renovaciones_tele:0};
   const myRegs=userId?regs.filter(r=>r.usuario_id===userId):regs;
-  for(const r of myRegs){tot.svc+=r.svc||0;tot.aspel+=r.aspel||0;tot.it+=r.it||0;tot.cursos+=r.cursos||0;tot.sf+=r.siigo_fiscal||0;tot.demos+=r.demos||0;tot.val+=r.valoraciones||0;tot.cn+=r.clientes_nuevos||0;tot.dip+=r.diplomados||0;tot.sus+=r.suscripciones||0;tot.cur_vivo+=r.talleres_vivo||0;}
+  for(const r of myRegs){
+    tot.svc+=r.svc||0; tot.aspel+=r.aspel||0; tot.it+=r.it||0;
+    tot.cursos+=r.cursos||0; tot.sf+=r.siigo_fiscal||0; tot.demos+=r.demos||0;
+    tot.val+=r.valoraciones||0; tot.cn+=r.clientes_nuevos||0; tot.dip+=r.diplomados||0;
+    tot.sus+=r.suscripciones||0; tot.cur_vivo+=r.talleres_vivo||0;
+    tot.llamadas+=r.llamadas_efectivas||0; tot.prospectos+=r.prospectos_canalizados||0;
+    tot.confirmaciones+=r.confirmaciones_evento||0; tot.seguimientos+=r.seguimientos_post||0;
+    tot.crm+=r.crm_actualizaciones||0; tot.cur_tele+=r.venta_cursos_tele||0;
+    tot.siigo_tele+=r.siigo_activaciones||0; tot.renovaciones_tele+=r.renovaciones||0;
+  }
   return tot;
 }
 
@@ -1215,12 +1225,16 @@ async function renderDirectorVendedores(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
   const users=await loadDirectorData();
+  const vendedores=users.filter(u=>u.rol==='vendedor');
+  const telemarketing=users.filter(u=>u.rol==='telemarketing');
   const diasHab=getDiasHabiles(currentYear,currentMonth);
   const hoy=new Date();
   const esEsteMes=hoy.getMonth()+1===currentMonth&&hoy.getFullYear()===currentYear;
   const diasTrans=esEsteMes?getDiasTranscurridos(currentYear,currentMonth):diasHab;
   const diasRest=Math.max(diasHab-diasTrans,0);
-  mc.innerHTML=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">${users.map(u=>{
+  mc.innerHTML=`
+  <div class="shead">Vendedores B2B</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;">${vendedores.map(u=>{
     const tot=getTotals(allRegistros,u.id);
     const metaKey=u.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
     const svcM=kpiConfig.find(k=>k.kpi_key==='svc');
@@ -1270,10 +1284,59 @@ async function renderDirectorVendedores(){
         </button>
       </div>
     </div>`;
-  }).join('')}</div>`;
+  }).join('')}</div>
+  ${(()=>{
+    if(!telemarketing||telemarketing.length===0) return '';
+    const rows=telemarketing.map(u=>{
+      const tot=getTotals(allRegistros,u.id);
+      const col='#5B4FCF';
+      const ini=u.nombre.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase();
+      const kpiTele=[
+        {n:'Llamadas efectivas',v:tot.llamadas,m:300},
+        {n:'Prospectos canalizados',v:tot.prospectos,m:40},
+        {n:'Confirmaciones',v:tot.confirmaciones,m:60},
+        {n:'Seguimientos',v:tot.seguimientos,m:100},
+      ];
+      const bonoPros=tot.prospectos>=15?tot.prospectos*50:0;
+      const kpiRows=kpiTele.map(k=>{
+        const p=Math.min(k.v/(k.m||1),1);
+        const pc=pcol(p);
+        const pct=Math.round(p*100);
+        return '<div style="padding:7px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">'
+          +'<span style="flex:1;font-size:12px;color:var(--text2);">'+k.n+'</span>'
+          +'<span style="font-weight:600;font-size:12px;color:'+pc+';">'+k.v+'</span>'
+          +'<span style="font-size:10px;color:var(--text3);">/'+k.m+'</span>'
+          +'<div style="width:50px;height:4px;background:var(--bg);border-radius:2px;overflow:hidden;">'
+          +'<div style="height:100%;width:'+pct+'%;background:'+pc+';border-radius:2px;"></div></div>'
+          +'<span style="font-size:11px;font-weight:600;color:'+pc+';min-width:28px;text-align:right;">'+pct+'%</span>'
+          +'</div>';
+      }).join('');
+      const uid=u.id;
+      const unm=u.nombre;
+      return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);overflow:hidden;">'
+        +'<div style="background:'+col+';padding:14px 18px;display:flex;align-items:center;justify-content:space-between;">'
+        +'<div style="display:flex;align-items:center;gap:10px;">'
+        +'<div style="width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,0.2);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#fff;">'+ini+'</div>'
+        +'<div><div style="font-size:14px;font-weight:600;color:#fff;">'+unm+'</div>'
+        +'<div style="font-size:11px;color:rgba(255,255,255,0.6);">Telemarketing</div></div>'
+        +'</div>'
+        +'<div style="text-align:right;">'
+        +'<div style="font-size:18px;font-weight:700;color:#fff;">'+(tot.prospectos>=15?'$'+bonoPros.toLocaleString('es-MX'):'Sin bono')+'</div>'
+        +'<div style="font-size:11px;color:rgba(255,255,255,0.55);">'+tot.prospectos+' prospectos</div>'
+        +'</div></div>'
+        +'<div style="padding:12px 18px 0;">'+kpiRows+'</div>'
+        +'<div style="padding:10px 18px;border-top:1px solid var(--border);margin-top:8px;">'
+        +'<button style="width:100%;background:'+col+';color:#fff;border:none;border-radius:var(--radsm);padding:8px;font-size:12px;font-weight:600;cursor:pointer;" '
+        +'onclick="verRegistrosVendedor(this.dataset.uid,this.dataset.unm)" data-uid="'+uid+'" data-unm="'+unm+'">'
+        +'📋 Ver registros y auditar</button>'
+        +'</div></div>';
+    }).join('');
+    return '<div class="shead" style="margin-top:8px;">Telemarketing</div>'
+      +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;">'+rows+'</div>';
+  })()}
+  `;
 }
 
-// ── AUDITORÍA Y EDICIÓN DE REGISTROS ─────────────────────────────────────────
 async function verRegistrosVendedor(userId, nombre){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando registros...</div>';
@@ -2524,15 +2587,19 @@ async function renderDirectorConfig(){
       <div style="padding:16px 20px;">
         ${kpiBase.length===0?`<p style="font-size:13px;color:var(--text3);text-align:center;padding:20px;">No hay KPIs configurados para este mes. Usa el formulario de abajo para agregar.</p>`:''}
         ${kpiBase.map(k=>`
-        <div style="display:grid;grid-template-columns:1fr 100px 100px 80px 60px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);font-size:12px;">
+        <div style="display:grid;grid-template-columns:1fr ${k.kpi_key==='meta_depto'?'200px':'100px 100px'} 80px 60px;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border);font-size:12px;">
           <div><strong style="color:var(--text);">${k.kpi_nombre}</strong><br><span style="color:var(--text3);">${k.tipo==='$'?'Monto $':'Cantidad'} · ${k.categoria}</span></div>
-          <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Meta Dulce/Mireya</label>
-            <input type="number" value="${k.meta_dulce}" id="md_${k.id}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;"></div>
-          <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Meta Manuel</label>
-            <input type="number" value="${k.meta_manuel}" id="mm_${k.id}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;"></div>
+          ${k.kpi_key==='meta_depto'
+            ?`<div style="grid-column:span 1"><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Meta departamental total</label>
+              <input type="number" value="${k.meta_dulce}" id="md_${k.id}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;">
+              <input type="hidden" id="mm_${k.id}" value="${k.meta_dulce}"></div>`
+            :`<div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Meta Dulce</label>
+              <input type="number" value="${k.meta_dulce}" id="md_${k.id}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;"></div>
+            <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Meta Manuel</label>
+              <input type="number" value="${k.meta_manuel}" id="mm_${k.id}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'JetBrains Mono',monospace;"></div>`}
           <div style="text-align:center;"><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Peso %</label>
             <input type="number" value="${k.peso}" id="pw_${k.id}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:center;"></div>
-          <div style="text-align:center;"><button onclick="saveKpi('${k.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button></div>
+          <div style="text-align:center;"><button onclick="saveKpi('${k.id||'new_'+k.kpi_key}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button></div>
         </div>`).join('')}
       </div>
     </div>
@@ -2570,7 +2637,7 @@ async function renderDirectorConfig(){
         <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Categoría</label>
           <select id="nCat" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
             <option value="principal">Principal</option><option value="secundario">Secundario</option><option value="extra">Extra</option></select></div>
-        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Meta Dulce/Mireya</label>
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Meta Dulce</label>
           <input type="number" id="nMetaD" placeholder="0" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'JetBrains Mono',monospace;"></div>
         <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Meta Manuel</label>
           <input type="number" id="nMetaM" placeholder="0" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'JetBrains Mono',monospace;"></div>
@@ -2582,9 +2649,18 @@ async function renderDirectorConfig(){
 }
 
 async function saveKpi(id){
-  const md=parseFloat(document.getElementById('md_'+id).value)||0;
-  const mm=parseFloat(document.getElementById('mm_'+id).value)||0;
-  const pw=parseInt(document.getElementById('pw_'+id).value)||0;
+  const elMd=document.getElementById('md_'+id);
+  const elMm=document.getElementById('mm_'+id);
+  const elPw=document.getElementById('pw_'+id);
+  if(!elMd||!elPw){alert('No se encontraron los campos');return;}
+  const md=parseFloat(elMd.value)||0;
+  const mm=parseFloat(elMm?.value||elMd.value)||0;
+  const pw=parseInt(elPw.value)||0;
+  // If id starts with 'new_' it's a default config item not yet in DB — insert it
+  if(id.startsWith('new_')){
+    alert('Este KPI viene de la configuración por defecto. Para editarlo, primero usa "Agregar KPI" y créalo para este mes.');
+    return;
+  }
   const {error}=await sb.from('kpi_config').update({meta_dulce:md,meta_manuel:mm,peso:pw,updated_at:new Date().toISOString()}).eq('id',id);
   if(!error){
     const btn=document.querySelector(`button[onclick="saveKpi('${id}')"]`);
