@@ -2974,6 +2974,7 @@ async function renderDirectorCampanas(){
               ${c.activa
                 ?`<button onclick="toggleCampanaActiva('${c.id}',false)" style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:5px;padding:5px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Desactivar</button>`
                 :`<button onclick="toggleCampanaActiva('${c.id}',true)" style="background:rgba(39,174,96,0.1);color:#27AE60;border:1px solid rgba(39,174,96,0.3);border-radius:5px;padding:5px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Activar</button>`}
+              <button onclick="eliminarCampana('${c.id}','${(c.nombre||'').replace(/'/g,"\\'")}')" style="background:none;color:var(--red);border:1px solid rgba(232,64,64,0.3);border-radius:5px;padding:5px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Eliminar</button>
             </td>
           </tr>`).join('')}
       </tbody>
@@ -3020,6 +3021,13 @@ async function crearCampana(){
   abrirCampana(data.id);
 }
 
+async function eliminarCampana(id,nombre){
+  if(!confirm(`¿Eliminar la campaña "${nombre}"?\n\nEsto borrará también el registro de qué prospectos estaban en ella (no afecta a los prospectos en sí, solo la asignación a esta campaña). Esta acción no se puede deshacer.`)) return;
+  const {error}=await sb.from('campanas').delete().eq('id',id);
+  if(error){alert('Error al eliminar: '+error.message);return;}
+  renderDirectorCampanas();
+}
+
 async function guardarCampana(campanaId){
   const nombre=document.getElementById('editCampNombre')?.value.trim();
   const inicio=document.getElementById('editCampInicio')?.value||null;
@@ -3040,7 +3048,7 @@ async function toggleCampanaActiva(id,activar){
     const {error:errOff}=await sb.from('campanas').update({activa:false}).neq('id',id);
     if(errOff){alert('Error al desactivar otras campañas: '+errOff.message);return;}
   }
-  const {error}=await sb.from('campanas').update({activa,updated_at:new Date().toISOString()}).eq('id',id);
+  const {error}=await sb.from('campanas').update({activa:activar,updated_at:new Date().toISOString()}).eq('id',id);
   if(error){alert('Error al cambiar el estado de la campaña: '+error.message);return;}
   // Si estamos dentro del detalle de esta campaña, refrescar ahí; si no, refrescar la lista
   if(document.getElementById('editCampNombre')) abrirCampana(id);
@@ -3086,6 +3094,7 @@ async function abrirCampana(campanaId){
     ${campana.activa
       ?`<button onclick="toggleCampanaActiva('${campanaId}',false)" style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;margin-left:6px;">Desactivar campaña</button>`
       :`<button onclick="toggleCampanaActiva('${campanaId}',true)" style="background:rgba(39,174,96,0.1);color:#27AE60;border:1px solid rgba(39,174,96,0.3);border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;margin-left:6px;">Activar campaña</button>`}
+    <button onclick="eliminarCampana('${campanaId}','${(campana.nombre||'').replace(/'/g,"\\'")}')" style="background:none;color:var(--red);border:1px solid rgba(232,64,64,0.3);border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;margin-left:6px;">Eliminar campaña</button>
     <span id="campEditMsg" style="font-size:11px;margin-left:8px;"></span>
   </div>
 
