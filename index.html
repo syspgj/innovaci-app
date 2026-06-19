@@ -2435,14 +2435,16 @@ async function abrirDetalle(id){
   const p=ps[idx];
 
   // Fetch historial en paralelo
-  const [evRes, llRes, vendRes, campRelRes]=await Promise.all([
+  const [evRes, llRes, vendRes, campRelRes, allUsersRes]=await Promise.all([
     sb.from('prospecto_eventos').select('*').eq('prospecto_id',id).order('fecha_registro',{ascending:true}),
-    sb.from('prospecto_llamadas').select('*,usuarios(nombre)').eq('prospecto_id',id).order('fecha',{ascending:false}),
+    sb.from('prospecto_llamadas').select('*').eq('prospecto_id',id).order('fecha',{ascending:false}),
     sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre'),
-    sb.from('campana_prospectos').select('campana_id,fecha_agregado').eq('prospecto_id',id).order('fecha_agregado',{ascending:false})
+    sb.from('campana_prospectos').select('campana_id,fecha_agregado').eq('prospecto_id',id).order('fecha_agregado',{ascending:false}),
+    sb.from('usuarios').select('id,nombre')
   ]);
   const eventos=evRes.data||[];
-  const llamadas=llRes.data||[];
+  const todosUsuarios=allUsersRes.data||[];
+  const llamadas=(llRes.data||[]).map(l=>({...l,usuarios:{nombre:todosUsuarios.find(u=>u.id===l.usuario_id)?.nombre||'—'}}));
   const vendedoresB2B=vendRes.data||[];
   const campanaRelaciones=campRelRes.data||[];
   let historialCampanas=[];
@@ -2711,7 +2713,9 @@ async function registrarLlamada(prospecto_id){
     if(errVenta){alert('La llamada se guardó, pero hubo un error al registrar la venta del día: '+errVenta.message);}
   }
   // Refresh call history in modal
-  const {data:llamadas}=await sb.from('prospecto_llamadas').select('*,usuarios(nombre)').eq('prospecto_id',prospecto_id).order('fecha',{ascending:false});
+  const {data:llamadasRaw}=await sb.from('prospecto_llamadas').select('*').eq('prospecto_id',prospecto_id).order('fecha',{ascending:false});
+  const {data:todosUsuariosRefresh}=await sb.from('usuarios').select('id,nombre');
+  const llamadas=(llamadasRaw||[]).map(l=>({...l,usuarios:{nombre:(todosUsuariosRefresh||[]).find(u=>u.id===l.usuario_id)?.nombre||'—'}}));
   const hist=document.getElementById('histLlamadas');
   if(hist){
     const ls=llamadas||[];
