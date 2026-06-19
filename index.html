@@ -3020,13 +3020,31 @@ async function crearCampana(){
   abrirCampana(data.id);
 }
 
+async function guardarCampana(campanaId){
+  const nombre=document.getElementById('editCampNombre')?.value.trim();
+  const inicio=document.getElementById('editCampInicio')?.value||null;
+  const fin=document.getElementById('editCampFin')?.value||null;
+  const desc=document.getElementById('editCampDesc')?.value.trim()||null;
+  const msg=document.getElementById('campEditMsg');
+  if(!nombre){if(msg){msg.style.color='var(--red)';msg.textContent='El nombre no puede quedar vacío';}return;}
+  const {error}=await sb.from('campanas').update({
+    nombre,fecha_inicio:inicio,fecha_fin:fin,descripcion:desc,updated_at:new Date().toISOString()
+  }).eq('id',campanaId);
+  if(error){if(msg){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}return;}
+  if(msg){msg.style.color='var(--green)';msg.textContent='✓ Guardado';}
+}
+
 async function toggleCampanaActiva(id,activar){
   if(activar){
     // Solo una campaña activa a la vez: desactivar todas las demás primero
-    await sb.from('campanas').update({activa:false}).neq('id',id);
+    const {error:errOff}=await sb.from('campanas').update({activa:false}).neq('id',id);
+    if(errOff){alert('Error al desactivar otras campañas: '+errOff.message);return;}
   }
-  await sb.from('campanas').update({activa,updated_at:new Date().toISOString()}).eq('id',id);
-  renderDirectorCampanas();
+  const {error}=await sb.from('campanas').update({activa,updated_at:new Date().toISOString()}).eq('id',id);
+  if(error){alert('Error al cambiar el estado de la campaña: '+error.message);return;}
+  // Si estamos dentro del detalle de esta campaña, refrescar ahí; si no, refrescar la lista
+  if(document.getElementById('editCampNombre')) abrirCampana(id);
+  else renderDirectorCampanas();
 }
 
 async function abrirCampana(campanaId){
@@ -3045,8 +3063,30 @@ async function abrirCampana(campanaId){
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
     <button onclick="swD('campanas')" style="background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;margin-bottom:8px;">← Volver a campañas</button>
-    <div style="font-size:18px;font-weight:600;color:var(--text);">${campana.nombre}</div>
-    <div style="font-size:12px;color:var(--text3);">${idsEnCampana.size} prospectos en esta campaña ${campana.activa?'· <span style="color:#27AE60;font-weight:600;">● Activa</span>':''}</div>
+    <div style="font-size:12px;color:var(--text3);">${idsEnCampana.size} prospectos en esta campaña ${campana.activa?'· <span style="color:#27AE60;font-weight:600;">● Activa</span>':'· <span style="color:var(--text3);">Inactiva</span>'}</div>
+  </div>
+
+  <div class="card" style="padding:16px;margin-bottom:16px;">
+    <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:10px;">Datos de la campaña</div>
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Nombre</label>
+        <input type="text" id="editCampNombre" value="${(campana.nombre||'').replace(/"/g,'&quot;')}"
+          style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;"></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha inicio</label>
+        <input type="date" id="editCampInicio" value="${campana.fecha_inicio||''}"
+          style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;"></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha fin</label>
+        <input type="date" id="editCampFin" value="${campana.fecha_fin||''}"
+          style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;"></div>
+    </div>
+    <div style="margin-bottom:12px;"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Descripción</label>
+      <input type="text" id="editCampDesc" value="${(campana.descripcion||'').replace(/"/g,'&quot;')}"
+        style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;"></div>
+    <button onclick="guardarCampana('${campanaId}')" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💾 Guardar cambios</button>
+    ${campana.activa
+      ?`<button onclick="toggleCampanaActiva('${campanaId}',false)" style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;margin-left:6px;">Desactivar campaña</button>`
+      :`<button onclick="toggleCampanaActiva('${campanaId}',true)" style="background:rgba(39,174,96,0.1);color:#27AE60;border:1px solid rgba(39,174,96,0.3);border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;margin-left:6px;">Activar campaña</button>`}
+    <span id="campEditMsg" style="font-size:11px;margin-left:8px;"></span>
   </div>
 
   <div class="card" style="padding:16px;margin-bottom:16px;">
@@ -3112,7 +3152,12 @@ async function agregarPorEvento(campanaId){
   const filas=ids.map(id=>({campana_id:campanaId,prospecto_id:id}));
   const {error}=await sb.from('campana_prospectos').upsert(filas,{onConflict:'campana_id,prospecto_id',ignoreDuplicates:true});
   if(error){alert('Error al agregar: '+error.message);return;}
-  abrirCampana(campanaId);
+  await abrirCampana(campanaId);
+  const msgEl=document.createElement('div');
+  msgEl.textContent=`✓ ${ids.length} prospecto(s) agregado(s) a la campaña`;
+  msgEl.style.cssText='position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#27AE60;color:#fff;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.15);';
+  document.body.appendChild(msgEl);
+  setTimeout(()=>msgEl.remove(),3000);
 }
 
 async function renderSubirProspectos(){
