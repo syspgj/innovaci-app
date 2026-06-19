@@ -2119,6 +2119,15 @@ async function renderTeleRegistro(){
   const today=new Date().toISOString().split('T')[0];
   const {data:existing}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).eq('fecha',today).maybeSingle();
   const r=existing||{};
+
+  // Llamadas efectivas de hoy — cuenta automática desde prospecto_llamadas
+  const {data:llamadasHoy}=await sb.from('prospecto_llamadas').select('id').eq('usuario_id',currentUser.id).eq('fecha',today);
+  const llamadasAuto=(llamadasHoy||[]).length;
+
+  // Prospectos canalizados a ventas hoy — cuenta automática desde prospectos (aproximado por updated_at, mismo criterio que el dashboard)
+  const {data:misProspectos}=await sb.from('prospectos').select('vendedor_asignado,updated_at').eq('asignado_a',currentUser.id).not('vendedor_asignado','is',null);
+  const canalizadosAuto=(misProspectos||[]).filter(p=>p.updated_at&&p.updated_at.slice(0,10)===today).length;
+
   document.getElementById('mainContent').innerHTML=`
   <div class="reg-form">
     <div class="form-title">📞 Registro del día — <span style="color:var(--teal);">${today}</span>
@@ -2126,14 +2135,17 @@ async function renderTeleRegistro(){
     </div>
     <div class="shead">Telemarketing</div>
     <div class="form-grid fg3">
-      <div class="form-field"><label>Llamadas efectivas</label><input type="number" id="fLlam" value="${r.llamadas_efectivas||''}" placeholder="0" min="0"></div>
-      <div class="form-field"><label>Prospectos canalizados a ventas</label><input type="number" id="fPros" value="${r.prospectos_canalizados||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Llamadas efectivas <span style="color:var(--teal);font-weight:400;">(automático)</span></label>
+        <input type="number" id="fLlam" value="${llamadasAuto}" disabled style="background:var(--teal-bg);color:var(--teal);font-weight:600;cursor:not-allowed;"></div>
+      <div class="form-field"><label>Prospectos canalizados a ventas <span style="color:var(--teal);font-weight:400;">(automático)</span></label>
+        <input type="number" id="fPros" value="${canalizadosAuto}" disabled style="background:var(--teal-bg);color:var(--teal);font-weight:600;cursor:not-allowed;"></div>
       <div class="form-field"><label>Confirmaciones a evento</label><input type="number" id="fConf" value="${r.confirmaciones_evento||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Seguimientos post-evento</label><input type="number" id="fSeg" value="${r.seguimientos_post||''}" placeholder="0" min="0"></div>
     </div>
     <div class="shead">Ventas directas</div>
     <div class="form-grid fg3">
-      <div class="form-field"><label>Venta Cursos 24/7 / Membresías ($)</label><div class="prefix"><input type="number" id="fCurTele" value="${r.venta_cursos_tele||''}" placeholder="0.00" min="0" step="0.01"></div></div>
+      <div class="form-field"><label>Venta Cursos 24/7 / Membresías ($) <span style="color:var(--teal);font-weight:400;">(automático)</span></label>
+        <div class="prefix"><input type="number" id="fCurTele" value="${r.venta_cursos_tele||''}" disabled style="background:var(--teal-bg);color:var(--teal);font-weight:600;cursor:not-allowed;"></div></div>
       <div class="form-field"><label>Siigo Fiscal cerrados</label><input type="number" id="fSiigo" value="${r.siigo_activaciones||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Renovaciones Aspel</label><input type="number" id="fRen" value="${r.renovaciones||''}" placeholder="0" min="0"></div>
     </div>
@@ -2141,25 +2153,28 @@ async function renderTeleRegistro(){
     <div class="form-grid">
       <div class="form-field"><label>Actualización cuentas CRM</label><input type="number" id="fCrm" value="${r.crm_actualizaciones||''}" placeholder="0" min="0"></div>
     </div>
+    <div style="font-size:11px;color:var(--text3);margin:-6px 0 14px 2px;">Los campos marcados como "automático" se calculan a partir de tu actividad en Mis prospectos y no se pueden editar aquí.</div>
     <div class="form-actions">
-      <button class="btn-save" id="btnSave" onclick="saveTeleRegistro('${today}')">💾 Guardar registro</button>
+      <button class="btn-save" id="btnSave" onclick="saveTeleRegistro('${today}',${llamadasAuto},${canalizadosAuto})">💾 Guardar registro</button>
     </div>
     <div class="save-msg" id="saveMsg"></div>
   </div>`;
 }
 
-async function saveTeleRegistro(fecha){
+async function saveTeleRegistro(fecha,llamadasAuto,canalizadosAuto){
   const btn=document.getElementById('btnSave');
   const msg=document.getElementById('saveMsg');
   btn.disabled=true;btn.textContent='Guardando...';
+  // Venta de cursos automática: se mantiene el valor ya existente (alimentado por "Compró el taller 24/7"), no se sobreescribe desde aquí
+  const {data:existingVenta}=await sb.from('registros_diarios').select('venta_cursos_tele').eq('usuario_id',currentUser.id).eq('fecha',fecha).maybeSingle();
   const payload={
     usuario_id:currentUser.id,fecha,
-    llamadas_efectivas:parseInt(document.getElementById('fLlam').value)||0,
-    prospectos_canalizados:parseInt(document.getElementById('fPros').value)||0,
+    llamadas_efectivas:llamadasAuto,
+    prospectos_canalizados:canalizadosAuto,
     confirmaciones_evento:parseInt(document.getElementById('fConf').value)||0,
     siigo_activaciones:parseInt(document.getElementById('fSiigo').value)||0,
     seguimientos_post:parseInt(document.getElementById('fSeg').value)||0,
-    venta_cursos_tele:parseFloat(document.getElementById('fCurTele')?document.getElementById('fCurTele').value:0)||0,
+    venta_cursos_tele:existingVenta?.venta_cursos_tele||0,
     renovaciones:parseInt(document.getElementById('fRen')?document.getElementById('fRen').value:0)||0,
     crm_actualizaciones:parseInt(document.getElementById('fCrm')?document.getElementById('fCrm').value:0)||0,
     updated_at:new Date().toISOString(),
