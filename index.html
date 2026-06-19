@@ -1125,19 +1125,21 @@ function buildDirectorUI(){
     <div class="tab" onclick="swD('kpis')">KPIs</div>
     <div class="tab" onclick="swD('liberaciones')">Liberaciones</div>
     <div class="tab" onclick="swD('crm')">📋 Prospectos</div>
+    <div class="tab" onclick="swD('campanas')">🎯 Campañas</div>
     <div class="tab" onclick="swD('config')" style="color:#F5A623;">⚙ Configuración</div>`;
   renderDirector();
 }
 let currentDirTab='resumen';
 function swD(id){
   currentDirTab=id;
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['resumen','vendedores','anual','kpis','liberaciones','crm','config'][i]===id));
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['resumen','vendedores','anual','kpis','liberaciones','crm','campanas','config'][i]===id));
   if(id==='resumen')renderDirectorResumen();
   else if(id==='vendedores')renderDirectorVendedores();
   else if(id==='anual')renderDirectorAnual();
   else if(id==='kpis')renderDirectorKpis();
   else if(id==='liberaciones')renderDirectorLiberaciones();
   else if(id==='crm')renderDirectorCRM();
+  else if(id==='campanas')renderDirectorCampanas();
   else if(id==='config')renderDirectorConfig();
 }
 async function renderDirector(){
@@ -1147,6 +1149,7 @@ async function renderDirector(){
   else if(currentDirTab==='kpis')renderDirectorKpis();
   else if(currentDirTab==='liberaciones')renderDirectorLiberaciones();
   else if(currentDirTab==='crm')renderDirectorCRM();
+  else if(currentDirTab==='campanas')renderDirectorCampanas();
   else if(currentDirTab==='config')renderDirectorConfig();
   else renderDirectorResumen();
 }
@@ -2201,8 +2204,34 @@ const ESTATUS_COLORS = {
 async function renderProspectos(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando prospectos...</div>';
+
+  // Buscar campaña activa — solo una a la vez para todo el equipo
+  const {data:campanaActiva}=await sb.from('campanas').select('*').eq('activa',true).maybeSingle();
+  if(!campanaActiva){
+    mc.innerHTML=`
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;text-align:center;">
+      <div style="font-size:40px;margin-bottom:12px;">🎯</div>
+      <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:6px;">No hay campaña activa</div>
+      <div style="font-size:13px;color:var(--text3);max-width:340px;">Espera a que el director active una campaña para empezar a ver tus prospectos asignados aquí.</div>
+    </div>`;
+    return;
+  }
+
+  // Prospectos de la campaña activa asignados a este usuario
+  const {data:relCampana}=await sb.from('campana_prospectos').select('prospecto_id').eq('campana_id',campanaActiva.id);
+  const idsCampana=(relCampana||[]).map(r=>r.prospecto_id);
+  if(!idsCampana.length){
+    mc.innerHTML=`
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;text-align:center;">
+      <div style="font-size:40px;margin-bottom:12px;">🎯</div>
+      <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:4px;">${campanaActiva.nombre}</div>
+      <div style="font-size:13px;color:var(--text3);max-width:340px;">Esta campaña está activa pero todavía no tiene prospectos asignados.</div>
+    </div>`;
+    return;
+  }
   const {data:prospectos}=await sb.from('prospectos').select('*')
     .eq('asignado_a',currentUser.id)
+    .in('id',idsCampana)
     .order('created_at',{ascending:false});
   const ps=prospectos||[];
   const porEstatus={};
@@ -2212,6 +2241,9 @@ async function renderProspectos(){
   const eventosUnicos=[...new Set(ps.map(p=>p.evento).filter(Boolean))].sort();
 
   mc.innerHTML=`
+  <div style="background:var(--teal-bg);border:1px solid rgba(0,169,157,0.25);border-radius:var(--radsm);padding:8px 14px;margin-bottom:14px;font-size:12px;color:var(--teal);font-weight:600;">
+    🎯 Campaña activa: ${campanaActiva.nombre}
+  </div>
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
     <div>
       <div style="font-size:18px;font-weight:600;color:var(--text);">Mis prospectos</div>
@@ -2378,6 +2410,18 @@ async function toggleRespondioModal(id,checked){
   if(p) p.respondio_ok=checked;
 }
 
+async function toggleNoContactar(id,checked){
+  if(checked&&!confirm('¿Confirmas que este prospecto NO debe volver a ser contactado? No podrá agregarse a campañas futuras.')){
+    const chk=document.getElementById('chkNoContactar');
+    if(chk) chk.checked=false;
+    return;
+  }
+  const {error}=await sb.from('prospectos').update({no_contactar:checked}).eq('id',id);
+  if(error){alert('Error al actualizar: '+error.message);return;}
+  const p=window._prospectos?.find(p=>p.id===id);
+  if(p) p.no_contactar=checked;
+}
+
 // ── MODAL PROSPECTO COMPLETO ──────────────────────────────────────────────────
 const RESULTADOS_LLAMADA=[
   'No contestó','Buzón','Interesado','No le interesa','Registrado al taller','Volver a llamar',
@@ -2391,14 +2435,25 @@ async function abrirDetalle(id){
   const p=ps[idx];
 
   // Fetch historial en paralelo
-  const [evRes, llRes, vendRes]=await Promise.all([
+  const [evRes, llRes, vendRes, campRelRes]=await Promise.all([
     sb.from('prospecto_eventos').select('*').eq('prospecto_id',id).order('fecha_registro',{ascending:true}),
     sb.from('prospecto_llamadas').select('*,usuarios(nombre)').eq('prospecto_id',id).order('fecha',{ascending:false}),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre')
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre'),
+    sb.from('campana_prospectos').select('campana_id,fecha_agregado').eq('prospecto_id',id).order('fecha_agregado',{ascending:false})
   ]);
   const eventos=evRes.data||[];
   const llamadas=llRes.data||[];
   const vendedoresB2B=vendRes.data||[];
+  const campanaRelaciones=campRelRes.data||[];
+  let historialCampanas=[];
+  if(campanaRelaciones.length){
+    const idsCamp=campanaRelaciones.map(r=>r.campana_id);
+    const {data:campanasInfo}=await sb.from('campanas').select('id,nombre').in('id',idsCamp);
+    historialCampanas=campanaRelaciones.map(r=>({
+      nombre:(campanasInfo||[]).find(c=>c.id===r.campana_id)?.nombre||'Campaña eliminada',
+      fecha:r.fecha_agregado
+    }));
+  }
 
   // Nav arrows
   const hasPrev=idx>0, hasNext=idx<ps.length-1;
@@ -2485,6 +2540,12 @@ async function abrirDetalle(id){
             Contacto actualizado en Respond.io
           </label>
         </div>
+        <div style="grid-column:1/-1;display:flex;align-items:center;gap:8px;background:${p.no_contactar?'rgba(232,64,64,0.06)':'transparent'};padding:${p.no_contactar?'8px 10px':'0'};border-radius:6px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:${p.no_contactar?'var(--red)':'var(--text2)'};font-weight:${p.no_contactar?'600':'400'};">
+            <input type="checkbox" id="chkNoContactar" ${p.no_contactar?'checked':''} onchange="toggleNoContactar('${p.id}',this.checked)" style="accent-color:var(--red);width:14px;height:14px;">
+            ⛔ No volver a contactar
+          </label>
+        </div>
       </div>
 
       <!-- EVENTOS -->
@@ -2498,6 +2559,20 @@ async function abrirDetalle(id){
             <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);margin-bottom:5px;font-size:12px;">
               <div style="font-weight:500;color:var(--text);">${ev.evento}</div>
               <div style="color:var(--text3);white-space:nowrap;margin-left:8px;">${ev.fecha_registro||'—'}</div>
+            </div>`).join('')}
+      </div>
+
+      <!-- HISTORIAL DE CAMPAÑAS -->
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">
+          🎯 Historial de campañas (${historialCampanas.length})
+        </div>
+        ${historialCampanas.length===0
+          ? `<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin campañas registradas</div>`
+          : historialCampanas.map(c=>`
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:var(--teal-bg);border-radius:var(--radsm);margin-bottom:5px;font-size:12px;">
+              <div style="font-weight:500;color:var(--teal);">${c.nombre}</div>
+              <div style="color:var(--text3);white-space:nowrap;margin-left:8px;">${c.fecha?c.fecha.slice(0,10):'—'}</div>
             </div>`).join('')}
       </div>
 
@@ -2856,6 +2931,188 @@ function dirFiltrar(){
       <td style="font-size:11px;color:var(--text3);">${p.created_at?p.created_at.slice(5,10):'—'}</td>
     </tr>`;
   }).join('');
+}
+
+// ─── CAMPAÑAS ───────────────────────────────────────────────────────────────
+async function renderDirectorCampanas(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando campañas...</div>';
+  const {data:campanas}=await sb.from('campanas').select('*').order('created_at',{ascending:false});
+  const cs=campanas||[];
+  // Contar prospectos por campaña en una sola consulta
+  const {data:todasRelaciones}=await sb.from('campana_prospectos').select('campana_id');
+  const conteoPorCampana={};
+  (todasRelaciones||[]).forEach(r=>{conteoPorCampana[r.campana_id]=(conteoPorCampana[r.campana_id]||0)+1;});
+
+  mc.innerHTML=`
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+    <div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);">Campañas de telemarketing</div>
+      <div style="font-size:12px;color:var(--text3);">Solo una campaña puede estar activa a la vez. Joshua solo ve los prospectos de la campaña activa.</div>
+    </div>
+    <button onclick="mostrarFormCampana()"
+      style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+      ➕ Nueva campaña
+    </button>
+  </div>
+
+  <div id="formCampanaCont"></div>
+
+  <div class="card">
+    <table class="daily" style="font-size:12px;">
+      <thead><tr><th>Nombre</th><th>Periodo</th><th>Prospectos</th><th>Estado</th><th>Acciones</th></tr></thead>
+      <tbody>
+        ${cs.length===0?`<tr><td colspan="5" style="text-align:center;color:var(--text3);padding:20px;">Sin campañas creadas todavía</td></tr>`:''}
+        ${cs.map(c=>`
+          <tr>
+            <td style="font-weight:600;">${c.nombre}</td>
+            <td style="font-size:11px;color:var(--text3);">${c.fecha_inicio?fechaLegible(c.fecha_inicio):'—'} ${c.fecha_fin?'al '+fechaLegible(c.fecha_fin):''}</td>
+            <td style="font-family:'JetBrains Mono',monospace;">${conteoPorCampana[c.id]||0}</td>
+            <td>${c.activa?`<span style="background:rgba(39,174,96,0.12);color:#27AE60;padding:3px 10px;border-radius:10px;font-size:11px;font-weight:600;">● Activa</span>`:`<span style="color:var(--text3);font-size:11px;">Inactiva</span>`}</td>
+            <td style="display:flex;gap:6px;">
+              <button onclick="abrirCampana('${c.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:5px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Gestionar</button>
+              ${c.activa
+                ?`<button onclick="toggleCampanaActiva('${c.id}',false)" style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:5px;padding:5px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Desactivar</button>`
+                :`<button onclick="toggleCampanaActiva('${c.id}',true)" style="background:rgba(39,174,96,0.1);color:#27AE60;border:1px solid rgba(39,174,96,0.3);border-radius:5px;padding:5px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Activar</button>`}
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function mostrarFormCampana(){
+  const cont=document.getElementById('formCampanaCont');
+  if(!cont) return;
+  cont.innerHTML=`
+  <div class="card" style="padding:18px;margin-bottom:16px;background:var(--surface);">
+    <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px;">Nueva campaña</div>
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Nombre de la campaña</label>
+        <input type="text" id="nuevaCampNombre" placeholder="Ej: Seguimiento taller 24/7 — semana 22 jun"
+          style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;"></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha inicio</label>
+        <input type="date" id="nuevaCampInicio" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;"></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha fin (opcional)</label>
+        <input type="date" id="nuevaCampFin" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;"></div>
+    </div>
+    <div style="margin-bottom:12px;"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Descripción (opcional)</label>
+      <input type="text" id="nuevaCampDesc" placeholder="Qué se va a promocionar / objetivo de la campaña"
+        style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;"></div>
+    <button onclick="crearCampana()" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Crear campaña</button>
+    <button onclick="document.getElementById('formCampanaCont').innerHTML=''" style="background:none;color:var(--text3);border:1px solid var(--border);border-radius:var(--radsm);padding:8px 16px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;margin-left:6px;">Cancelar</button>
+    <span id="campMsg" style="font-size:11px;margin-left:8px;"></span>
+  </div>`;
+}
+
+async function crearCampana(){
+  const nombre=document.getElementById('nuevaCampNombre')?.value.trim();
+  const inicio=document.getElementById('nuevaCampInicio')?.value||null;
+  const fin=document.getElementById('nuevaCampFin')?.value||null;
+  const desc=document.getElementById('nuevaCampDesc')?.value.trim()||null;
+  const msg=document.getElementById('campMsg');
+  if(!nombre){msg.style.color='var(--red)';msg.textContent='El nombre es obligatorio';return;}
+  const {data,error}=await sb.from('campanas').insert({
+    nombre,fecha_inicio:inicio,fecha_fin:fin,descripcion:desc,activa:false,creado_por:currentUser.id
+  }).select().single();
+  if(error){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;return;}
+  document.getElementById('formCampanaCont').innerHTML='';
+  abrirCampana(data.id);
+}
+
+async function toggleCampanaActiva(id,activar){
+  if(activar){
+    // Solo una campaña activa a la vez: desactivar todas las demás primero
+    await sb.from('campanas').update({activa:false}).neq('id',id);
+  }
+  await sb.from('campanas').update({activa,updated_at:new Date().toISOString()}).eq('id',id);
+  renderDirectorCampanas();
+}
+
+async function abrirCampana(campanaId){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando campaña...</div>';
+  const {data:campana}=await sb.from('campanas').select('*').eq('id',campanaId).single();
+  const {data:relaciones}=await sb.from('campana_prospectos').select('prospecto_id').eq('campana_id',campanaId);
+  const idsEnCampana=new Set((relaciones||[]).map(r=>r.prospecto_id));
+  const {data:todosProspectos}=await sb.from('prospectos').select('id,nombre,telefono,evento,estatus,no_contactar').order('nombre');
+  const ps=todosProspectos||[];
+  const eventosUnicos=[...new Set(ps.map(p=>p.evento).filter(Boolean))].sort();
+  window._campanaProspectosAll=ps;
+  window._idsEnCampanaActual=idsEnCampana;
+  window._campanaIdActual=campanaId;
+
+  mc.innerHTML=`
+  <div style="margin-bottom:16px;">
+    <button onclick="swD('campanas')" style="background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;margin-bottom:8px;">← Volver a campañas</button>
+    <div style="font-size:18px;font-weight:600;color:var(--text);">${campana.nombre}</div>
+    <div style="font-size:12px;color:var(--text3);">${idsEnCampana.size} prospectos en esta campaña ${campana.activa?'· <span style="color:#27AE60;font-weight:600;">● Activa</span>':''}</div>
+  </div>
+
+  <div class="card" style="padding:16px;margin-bottom:16px;">
+    <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:10px;">Agregar prospectos por evento</div>
+    <div style="display:flex;gap:8px;">
+      <select id="campSelEvento" style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+        <option value="">Selecciona un evento...</option>
+        ${eventosUnicos.map(e=>`<option value="${e}">${e}</option>`).join('')}
+      </select>
+      <button onclick="agregarPorEvento('${campanaId}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Agregar todos del evento</button>
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin-top:6px;">Se excluyen automáticamente los marcados como "No contactar"</div>
+  </div>
+
+  <div class="card">
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;">
+      <span style="font-size:12px;font-weight:600;color:var(--text);">Selección manual de prospectos</span>
+      <input type="text" id="campBuscarProsp" placeholder="Buscar..." oninput="filtrarListaCampana()" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;width:180px;">
+    </div>
+    <div id="listaProspectosCampana" style="max-height:420px;overflow-y:auto;">
+      ${renderListaProspectosCampana(ps,idsEnCampana,campanaId)}
+    </div>
+  </div>`;
+}
+
+function renderListaProspectosCampana(ps,idsEnCampana,campanaId){
+  if(!ps.length) return `<div style="padding:20px;text-align:center;color:var(--text3);font-size:12px;">Sin prospectos</div>`;
+  return ps.map(p=>`
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 16px;border-bottom:1px solid var(--border);font-size:12px;${p.no_contactar?'opacity:0.5;':''}">
+      <input type="checkbox" ${idsEnCampana.has(p.id)?'checked':''} ${p.no_contactar?'disabled':''}
+        onchange="toggleProspectoEnCampana('${campanaId}','${p.id}',this.checked)" style="accent-color:var(--teal);width:15px;height:15px;">
+      <div style="flex:1;">
+        <div style="font-weight:500;">${p.nombre} ${p.no_contactar?'<span style="color:var(--red);font-size:10px;">⛔ No contactar</span>':''}</div>
+        <div style="font-size:10px;color:var(--text3);">${p.telefono||'—'} · ${p.evento||'—'} · ${p.estatus}</div>
+      </div>
+    </div>`).join('');
+}
+
+function filtrarListaCampana(){
+  const bus=document.getElementById('campBuscarProsp')?.value.toLowerCase()||'';
+  const ps=(window._campanaProspectosAll||[]).filter(p=>!bus||(p.nombre||'').toLowerCase().includes(bus)||(p.telefono||'').includes(bus));
+  const idsEnCampana=window._idsEnCampanaActual||new Set();
+  const contEl=document.getElementById('listaProspectosCampana');
+  if(contEl) contEl.innerHTML=renderListaProspectosCampana(ps,idsEnCampana,window._campanaIdActual);
+}
+
+async function toggleProspectoEnCampana(campanaId,prospectoId,marcado){
+  if(marcado){
+    await sb.from('campana_prospectos').insert({campana_id:campanaId,prospecto_id:prospectoId});
+    window._idsEnCampanaActual?.add(prospectoId);
+  }else{
+    await sb.from('campana_prospectos').delete().eq('campana_id',campanaId).eq('prospecto_id',prospectoId);
+    window._idsEnCampanaActual?.delete(prospectoId);
+  }
+}
+
+async function agregarPorEvento(campanaId){
+  const evento=document.getElementById('campSelEvento')?.value;
+  if(!evento){alert('Selecciona un evento primero');return;}
+  const {data:prospectosDelEvento}=await sb.from('prospectos').select('id').eq('evento',evento).eq('no_contactar',false);
+  const ids=(prospectosDelEvento||[]).map(p=>p.id);
+  if(!ids.length){alert('No hay prospectos contactables de ese evento');return;}
+  const filas=ids.map(id=>({campana_id:campanaId,prospecto_id:id}));
+  const {error}=await sb.from('campana_prospectos').upsert(filas,{onConflict:'campana_id,prospecto_id',ignoreDuplicates:true});
+  if(error){alert('Error al agregar: '+error.message);return;}
+  abrirCampana(campanaId);
 }
 
 async function renderSubirProspectos(){
