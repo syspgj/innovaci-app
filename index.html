@@ -1096,12 +1096,15 @@ async function renderHistorico(){
   document.getElementById('mainContent').innerHTML='<div class="loading"><div class="spinner"></div> Cargando histórico...</div>';
   const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).order('fecha',{ascending:false}).limit(60);
   const rows=regs||[];
+  window._historicoRows=rows;
   document.getElementById('mainContent').innerHTML=`
   <div class="card">
     <div class="card-head"><span class="card-title">Todos los registros</span><span class="badge bt">${rows.length} días</span></div>
+    <div style="font-size:11px;color:var(--text3);padding:8px 16px 0;">Haz clic en cualquier fila para ver el detalle completo del día.</div>
     <table class="daily">
-      <thead><tr><th>Fecha</th><th>Servicios</th><th>Aspel</th><th>IT</th><th>Cursos</th><th>Demos</th><th>Clientes</th><th>Val.</th></tr></thead>
-      <tbody>${rows.map(r=>`<tr>
+      <thead><tr><th></th><th>Fecha</th><th>Servicios</th><th>Aspel</th><th>IT</th><th>Cursos</th><th>Demos</th><th>Clientes</th><th>Val.</th></tr></thead>
+      <tbody>${rows.map((r,idx)=>`<tr onclick="toggleHistDetalle(${idx})" style="cursor:pointer;" id="histRow_${idx}">
+        <td style="width:18px;color:var(--text3);font-size:10px;" id="histArrow_${idx}">▸</td>
         <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${r.fecha}</td>
         <td style="font-family:'JetBrains Mono',monospace;font-weight:500;color:${(r.svc||0)>0?'#00A99D':'var(--text3)'};">${(r.svc||0)>0?fmt(r.svc):'—'}</td>
         <td style="font-family:'JetBrains Mono',monospace;">${(r.aspel||0)>0?fmt(r.aspel):'—'}</td>
@@ -1109,9 +1112,66 @@ async function renderHistorico(){
         <td>${(r.cursos||0)||'—'}</td><td>${(r.demos||0)||'—'}</td>
         <td>${(r.clientes_nuevos||0)>0?`<span class="badge bt">+${r.clientes_nuevos}</span>`:'—'}</td>
         <td>${(r.valoraciones||0)||'—'}</td>
-      </tr>`).join('')||'<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text3);">Sin registros aún</td></tr>'}</tbody>
+      </tr>
+      <tr id="histDetalle_${idx}" style="display:none;"><td colspan="9" style="padding:0;background:var(--surface-2,#f8f9fa);">
+        ${renderHistDetalleContenido(r)}
+      </td></tr>`).join('')||'<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--text3);">Sin registros aún</td></tr>'}</tbody>
     </table>
   </div>`;
+}
+
+function renderHistDetalleContenido(r){
+  const campo=(label,val,esMoneda)=>{
+    const tieneValor=(val||0)>0;
+    return `<div>
+      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.04em;">${label}</div>
+      <div style="font-size:13px;font-weight:600;color:${tieneValor?'var(--text)':'var(--text3)'};font-family:'JetBrains Mono',monospace;">
+        ${tieneValor?(esMoneda?fmt(val):val):'—'}
+      </div>
+    </div>`;
+  };
+  return `
+  <div style="padding:16px 24px;display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">
+    <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:-6px;">Ventas</div>
+    ${campo('Servicios',r.svc,true)}
+    ${campo('Aspel',r.aspel,true)}
+    ${campo('IT',r.it,true)}
+    ${campo('Diplomados',r.diplomados,true)}
+    ${campo('Monto cotizaciones',r.monto_cotizaciones,true)}
+    ${campo('# Cotizaciones',r.cotizaciones,false)}
+
+    <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin:6px 0 -6px;">Actividades</div>
+    ${campo('Clientes nuevos',r.clientes_nuevos,false)}
+    ${campo('Demos realizados',r.demos,false)}
+    ${campo('Valoraciones',r.valoraciones,false)}
+    ${campo('Cursos 24/7 / Membresías',r.cursos,false)}
+    ${campo('Siigo Fiscal (cierres)',r.siigo_fiscal,false)}
+    ${campo('Suscripciones',r.suscripciones,false)}
+    ${campo('Renovaciones Aspel',r.renovaciones,false)}
+    ${campo('Prospectos canalizados',r.prospectos_canalizados,false)}
+
+    <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin:6px 0 -6px;">Cursos en vivo</div>
+    ${campo('Venta del día',r.talleres_vivo,true)}
+
+    <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin:6px 0 -6px;">Llamadas (informativo)</div>
+    ${campo('Seguimiento cartera',r.llamadas_seguimiento,false)}
+    ${campo('Prospección',r.llamadas_prospeccion,false)}
+
+    <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin:6px 0 -6px;">Negociaciones abiertas</div>
+    ${campo('Con clientes — # negs.',r.neg_clientes_num,false)}
+    ${campo('Con clientes — monto est.',r.neg_clientes_monto,true)}
+    ${campo('Con prospectos — # negs.',r.neg_prospectos_num,false)}
+    ${campo('Con prospectos — monto est.',r.neg_prospectos_monto,true)}
+  </div>`;
+}
+
+function toggleHistDetalle(idx){
+  const det=document.getElementById('histDetalle_'+idx);
+  const arrow=document.getElementById('histArrow_'+idx);
+  if(!det) return;
+  const abierto=det.style.display!=='none';
+  det.style.display=abierto?'none':'table-row';
+  if(arrow) arrow.textContent=abierto?'▸':'▾';
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2192,18 +2252,60 @@ async function renderTeleHistorico(){
   document.getElementById('mainContent').innerHTML=`
   <div class="card">
     <div class="card-head"><span class="card-title">Histórico de actividad</span><span class="badge bt">${rs.length} días</span></div>
+    <div style="font-size:11px;color:var(--text3);padding:8px 16px 0;">Haz clic en cualquier fila para ver el detalle completo del día.</div>
     <table class="daily">
-      <thead><tr><th>Fecha</th><th>Llamadas</th><th>Prospectos</th><th>Confirmaciones</th><th>Siigo</th><th>Seguimientos</th></tr></thead>
-      <tbody>${rs.map(r=>`<tr>
+      <thead><tr><th></th><th>Fecha</th><th>Llamadas</th><th>Prospectos</th><th>Confirmaciones</th><th>Siigo</th><th>Seguimientos</th></tr></thead>
+      <tbody>${rs.map((r,idx)=>`<tr onclick="toggleTeleHistDetalle(${idx})" style="cursor:pointer;">
+        <td style="width:18px;color:var(--text3);font-size:10px;" id="teleHistArrow_${idx}">▸</td>
         <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${r.fecha}</td>
         <td style="text-align:center;">${r.llamadas_efectivas||0}</td>
         <td style="text-align:center;font-weight:600;color:${(r.prospectos_canalizados||0)>0?'#00A99D':'var(--text3)'};">${r.prospectos_canalizados||0}</td>
         <td style="text-align:center;">${r.confirmaciones_evento||0}</td>
         <td style="text-align:center;">${r.siigo_activaciones||0}</td>
         <td style="text-align:center;">${r.seguimientos_post||0}</td>
-      </tr>`).join('')||'<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text3);">Sin registros</td></tr>'}</tbody>
+      </tr>
+      <tr id="teleHistDetalle_${idx}" style="display:none;"><td colspan="7" style="padding:0;background:var(--surface-2,#f8f9fa);">
+        ${renderTeleHistDetalleContenido(r)}
+      </td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text3);">Sin registros</td></tr>'}</tbody>
     </table>
   </div>`;
+}
+
+function renderTeleHistDetalleContenido(r){
+  const campo=(label,val,esMoneda)=>{
+    const tieneValor=(val||0)>0;
+    return `<div>
+      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.04em;">${label}</div>
+      <div style="font-size:13px;font-weight:600;color:${tieneValor?'var(--text)':'var(--text3)'};font-family:'JetBrains Mono',monospace;">
+        ${tieneValor?(esMoneda?fmt(val):val):'—'}
+      </div>
+    </div>`;
+  };
+  return `
+  <div style="padding:16px 24px;display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">
+    <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:-6px;">Telemarketing</div>
+    ${campo('Llamadas efectivas',r.llamadas_efectivas,false)}
+    ${campo('Prospectos canalizados',r.prospectos_canalizados,false)}
+    ${campo('Confirmaciones a evento',r.confirmaciones_evento,false)}
+    ${campo('Seguimientos post-evento',r.seguimientos_post,false)}
+
+    <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin:6px 0 -6px;">Ventas directas</div>
+    ${campo('Venta Cursos 24/7',r.venta_cursos_tele,true)}
+    ${campo('Siigo Fiscal cerrados',r.siigo_activaciones,false)}
+    ${campo('Renovaciones Aspel',r.renovaciones,false)}
+
+    <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin:6px 0 -6px;">Gestión de cuentas</div>
+    ${campo('Actualización cuentas CRM',r.crm_actualizaciones,false)}
+  </div>`;
+}
+
+function toggleTeleHistDetalle(idx){
+  const det=document.getElementById('teleHistDetalle_'+idx);
+  const arrow=document.getElementById('teleHistArrow_'+idx);
+  if(!det) return;
+  const abierto=det.style.display!=='none';
+  det.style.display=abierto?'none':'table-row';
+  if(arrow) arrow.textContent=abierto?'▸':'▾';
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
