@@ -496,6 +496,7 @@ function buildVendorUI(){
   _t.innerHTML='';
   const _tabs=[{l:'Mi mes',v:'miMes',a:true}];
   if(esVendedor)_tabs.push({l:'Mi año',v:'anual',a:false});
+  if(esVendedor)_tabs.push({l:'💼 Cartera',v:'cartera',a:false});
   _tabs.push({l:'Registrar día',v:'registro',a:false},{l:'Proyección',v:'proyeccion',a:false},{l:'Histórico',v:'historico',a:false});
   _tabs.forEach(t=>{
     const d=document.createElement('div');
@@ -511,10 +512,11 @@ let currentVendTab='miMes';
 function swV(id){
   currentVendTab=id;
   const esVendedor=userProfile.email.includes('dulce')||userProfile.email.includes('manuel');
-  const tabs=esVendedor?['miMes','anual','registro','historico']:['miMes','registro','historico'];
+  const tabs=esVendedor?['miMes','anual','cartera','registro','historico']:['miMes','registro','historico'];
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',tabs[i]===id));
   if(id==='miMes')renderVendorMiMes();
   else if(id==='anual')renderVendorAnual();
+  else if(id==='cartera')renderCarteraVendedor();
   else if(id==='registro')renderRegistroForm();
   else if(id==='proyeccion')renderProyeccion();
   else renderHistorico();
@@ -523,6 +525,7 @@ function swV(id){
 async function renderVendor(){
   if(currentVendTab==='miMes')renderVendorMiMes();
   else if(currentVendTab==='anual')renderVendorAnual();
+  else if(currentVendTab==='cartera')renderCarteraVendedor();
   else if(currentVendTab==='registro')renderRegistroForm();
   else if(currentVendTab==='proyeccion')renderProyeccion();
   else if(currentVendTab==='historico')renderHistorico();
@@ -1090,6 +1093,253 @@ async function eliminarFilaPipe(id){
   if(!confirm('¿Eliminar esta negociación?')) return;
   await sb.from('pipeline_vendedor').delete().eq('id',id);
   renderProyeccion();
+}
+
+// ── CARTERA DE CUENTAS ──────────────────────────────────────────────────────
+let currentCarteraSub='disponibles';
+async function renderCarteraVendedor(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando cartera...</div>';
+  const {data:todas}=await sb.from('cuentas_cartera').select('*').order('monto',{ascending:false});
+  window._carteraTodas=todas||[];
+
+  mc.innerHTML=`
+  <div style="margin-bottom:16px;">
+    <div style="font-size:18px;font-weight:600;color:var(--text);">Cartera de cuentas</div>
+    <div style="font-size:12px;color:var(--text3);">Cuentas en suscripción Aspel/Siigo. Reclama las tuyas y dales seguimiento a sus renovaciones.</div>
+  </div>
+  <div style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;">
+    <button onclick="swCartera('disponibles')" id="carteraSub_disponibles" class="cartera-subtab">Disponibles</button>
+    <button onclick="swCartera('mia')" id="carteraSub_mia" class="cartera-subtab">Mi cartera</button>
+    <button onclick="swCartera('vencen')" id="carteraSub_vencen" class="cartera-subtab">Vencen este mes</button>
+    <button onclick="swCartera('resueltas')" id="carteraSub_resueltas" class="cartera-subtab">Resueltas este mes</button>
+    <button onclick="abrirAltaCuenta()" style="margin-left:auto;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Dar de alta cuenta nueva</button>
+  </div>
+  <div id="carteraContenido"></div>`;
+
+  // Estilos de las sub-tabs (inyectados una vez)
+  if(!document.getElementById('carteraSubStyles')){
+    const style=document.createElement('style');
+    style.id='carteraSubStyles';
+    style.textContent=`.cartera-subtab{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;color:var(--text2);}
+      .cartera-subtab.active{background:var(--navy);color:#fff;border-color:var(--navy);}`;
+    document.head.appendChild(style);
+  }
+  swCartera(currentCarteraSub);
+}
+
+function swCartera(sub){
+  currentCarteraSub=sub;
+  ['disponibles','mia','vencen','resueltas'].forEach(s=>{
+    const btn=document.getElementById('carteraSub_'+s);
+    if(btn) btn.classList.toggle('active',s===sub);
+  });
+  const todas=window._carteraTodas||[];
+  const hoy=new Date();
+  const inicioMes=`${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}-01`;
+  const finMes=new Date(hoy.getFullYear(),hoy.getMonth()+1,0).toISOString().split('T')[0];
+
+  let filtradas=[];
+  if(sub==='disponibles') filtradas=todas.filter(c=>c.estado==='sin_reclamar');
+  else if(sub==='mia') filtradas=todas.filter(c=>c.vendedor_asignado===currentUser.id&&['reclamada','en_revision'].includes(c.estado));
+  else if(sub==='vencen') filtradas=todas.filter(c=>c.vendedor_asignado===currentUser.id&&['reclamada','en_revision'].includes(c.estado)&&c.fecha_proxima_renovacion&&c.fecha_proxima_renovacion>=inicioMes&&c.fecha_proxima_renovacion<=finMes);
+  else if(sub==='resueltas') filtradas=todas.filter(c=>c.vendedor_asignado===currentUser.id&&['renovada','no_renovada'].includes(c.estado)&&c.fecha_marcado&&c.fecha_marcado>=inicioMes&&c.fecha_marcado<=finMes);
+
+  const cont=document.getElementById('carteraContenido');
+  if(!cont) return;
+  if(!filtradas.length){
+    cont.innerHTML=`<div style="text-align:center;padding:50px 20px;color:var(--text3);font-size:13px;">
+      ${sub==='disponibles'?'No hay cuentas disponibles para reclamar en este momento.'
+        :sub==='mia'?'Aún no has reclamado ninguna cuenta. Ve a "Disponibles" para empezar.'
+        :sub==='vencen'?'No tienes cuentas que venzan este mes.'
+        :'No has marcado seguimiento a ninguna cuenta este mes.'}
+    </div>`;
+    return;
+  }
+
+  cont.innerHTML=`<div class="card"><table class="daily" style="font-size:12px;">
+    <thead><tr>
+      <th>Razón social</th><th>RFC</th><th>Producto</th><th>Periodicidad</th><th>Monto</th>
+      <th>Próx. renovación</th>${sub!=='disponibles'?'<th>Link CRM</th>':''}
+      ${sub==='resueltas'?'<th>Resultado</th>':''}<th>Acciones</th>
+    </tr></thead>
+    <tbody>${filtradas.map(c=>filaCartera(c,sub)).join('')}</tbody>
+  </table></div>`;
+}
+
+function filaCartera(c,sub){
+  const venceProximo=c.fecha_proxima_renovacion&&new Date(c.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
+  return `<tr>
+    <td style="font-weight:500;">${c.razon_social||'—'}</td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">${c.rfc||'—'}</td>
+    <td style="font-size:11px;">${c.producto||'—'}</td>
+    <td style="font-size:11px;text-transform:capitalize;">${c.periodicidad||'—'}</td>
+    <td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--teal);">${c.monto?fmt(c.monto):'—'}</td>
+    <td style="font-size:11px;color:${venceProximo?'var(--red)':'var(--text3)'};font-weight:${venceProximo?'600':'400'};">${c.fecha_proxima_renovacion||'—'}</td>
+    ${sub!=='disponibles'?`<td>${c.link_crm?`<a href="${c.link_crm}" target="_blank" style="font-size:11px;color:var(--teal);">Ver ↗</a>`:`<button onclick="editarLinkCrm('${c.id}')" style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Link</button>`}</td>`:''}
+    ${sub==='resueltas'?`<td>${c.estado==='renovada'?'<span style="color:#27AE60;font-weight:600;font-size:11px;">✓ Renovó</span>':'<span style="color:var(--red);font-weight:600;font-size:11px;">✗ No renovó</span>'}</td>`:''}
+    <td>
+      ${sub==='disponibles'?`<button onclick="reclamarCuenta('${c.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Reclamar</button>`:''}
+      ${(sub==='mia'||sub==='vencen')?`<button onclick="abrirMarcarSeguimiento('${c.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Marcar seguimiento</button>`:''}
+      ${sub==='resueltas'?`<span style="font-size:10px;color:var(--text3);">${c.fecha_marcado||''}</span>`:''}
+    </td>
+  </tr>`;
+}
+
+async function reclamarCuenta(id){
+  if(!confirm('¿Reclamar esta cuenta? A partir de ahora será tu responsabilidad darle seguimiento a su renovación.')) return;
+  const {error}=await sb.from('cuentas_cartera').update({
+    vendedor_asignado:currentUser.id,estado:'reclamada',updated_at:new Date().toISOString()
+  }).eq('id',id);
+  if(error){alert('Error al reclamar: '+error.message);return;}
+  renderCarteraVendedor();
+}
+
+async function editarLinkCrm(id){
+  const link=prompt('Pega el URL del cliente en el CRM (Bitrix):');
+  if(!link||!link.trim()) return;
+  const {error}=await sb.from('cuentas_cartera').update({link_crm:link.trim(),updated_at:new Date().toISOString()}).eq('id',id);
+  if(error){alert('Error: '+error.message);return;}
+  const c=(window._carteraTodas||[]).find(c=>c.id===id);
+  if(c) c.link_crm=link.trim();
+  swCartera(currentCarteraSub);
+}
+
+function abrirMarcarSeguimiento(id){
+  const c=(window._carteraTodas||[]).find(c=>c.id===id);
+  if(!c) return;
+  const modal=document.createElement('div');
+  modal.id='modalSeguimiento';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;';
+  modal.innerHTML=`
+  <div style="background:#fff;border-radius:12px;padding:24px;max-width:420px;width:100%;max-height:90vh;overflow-y:auto;">
+    <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px;">Marcar seguimiento</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">${c.razon_social} · ${c.producto}</div>
+    <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px;">¿Renovó?</div>
+    <div style="display:flex;gap:16px;margin-bottom:14px;">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+        <input type="radio" name="renovoRadio" value="si" onchange="onRenovoChange()" style="accent-color:#27AE60;"> Sí
+      </label>
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;">
+        <input type="radio" name="renovoRadio" value="no" onchange="onRenovoChange()" style="accent-color:var(--red);"> No
+      </label>
+    </div>
+    <div id="camposRenovoSi" style="display:none;margin-bottom:14px;">
+      <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha de renovación</label>
+      <input type="date" id="fechaRenovacionInput" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-bottom:10px;">
+      <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Nota (opcional)</label>
+      <textarea id="notaRenovoInput" rows="2" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;resize:vertical;"></textarea>
+    </div>
+    <div id="camposRenovoNo" style="display:none;margin-bottom:14px;">
+      <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Motivo (obligatorio)</label>
+      <textarea id="motivoNoRenovoInput" rows="3" placeholder="¿Por qué no renovó? ¿La marca se la quitó, el cliente canceló, etc.?" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;resize:vertical;"></textarea>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button onclick="guardarSeguimiento('${id}')" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
+      <button onclick="document.getElementById('modalSeguimiento').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;font-family:'Inter',sans-serif;">Cancelar</button>
+    </div>
+    <div id="segMsg" style="font-size:11px;color:var(--red);margin-top:8px;"></div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+function onRenovoChange(){
+  const valor=document.querySelector('input[name="renovoRadio"]:checked')?.value;
+  document.getElementById('camposRenovoSi').style.display=valor==='si'?'block':'none';
+  document.getElementById('camposRenovoNo').style.display=valor==='no'?'block':'none';
+}
+
+async function guardarSeguimiento(id){
+  const valor=document.querySelector('input[name="renovoRadio"]:checked')?.value;
+  const msg=document.getElementById('segMsg');
+  if(!valor){msg.textContent='Selecciona si renovó o no';return;}
+  let upd={fecha_marcado:new Date().toISOString().split('T')[0],updated_at:new Date().toISOString()};
+  if(valor==='si'){
+    const fecha=document.getElementById('fechaRenovacionInput').value;
+    if(!fecha){msg.textContent='Indica la fecha de renovación';return;}
+    upd.estado='renovada';
+    upd.fecha_ultima_renovacion=fecha;
+    upd.nota_vendedor=document.getElementById('notaRenovoInput').value.trim()||null;
+  }else{
+    const motivo=document.getElementById('motivoNoRenovoInput').value.trim();
+    if(!motivo){msg.textContent='El motivo es obligatorio cuando no renovó';return;}
+    upd.estado='no_renovada';
+    upd.motivo_no_renovacion=motivo;
+  }
+  const {error}=await sb.from('cuentas_cartera').update(upd).eq('id',id);
+  if(error){msg.textContent='Error: '+error.message;return;}
+  document.getElementById('modalSeguimiento').remove();
+  renderCarteraVendedor();
+}
+
+function abrirAltaCuenta(){
+  const modal=document.createElement('div');
+  modal.id='modalAltaCuenta';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;';
+  modal.innerHTML=`
+  <div style="background:#fff;border-radius:12px;padding:24px;max-width:440px;width:100%;max-height:90vh;overflow-y:auto;">
+    <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:16px;">Dar de alta cuenta nueva</div>
+    <div style="display:grid;gap:10px;">
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Razón social</label>
+        <input type="text" id="altaRazonSocial" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">RFC</label>
+        <input type="text" id="altaRfc" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Número de serie</label>
+        <input type="text" id="altaNumserie" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Producto</label>
+        <input type="text" id="altaProducto" placeholder="Ej: COI Suscrip" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Periodicidad</label>
+          <select id="altaPeriodicidad" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+            <option value="mensual">Mensual</option><option value="semestral">Semestral</option><option value="anual">Anual</option>
+          </select></div>
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Monto</label>
+          <input type="number" id="altaMonto" min="0" step="0.01" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+      </div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha última renovación</label>
+        <input type="date" id="altaFechaUltima" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px;">
+      <button onclick="guardarAltaCuenta()" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Dar de alta</button>
+      <button onclick="document.getElementById('modalAltaCuenta').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;font-family:'Inter',sans-serif;">Cancelar</button>
+    </div>
+    <div id="altaMsg" style="font-size:11px;color:var(--red);margin-top:8px;"></div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+async function guardarAltaCuenta(){
+  const razon=document.getElementById('altaRazonSocial').value.trim();
+  const msg=document.getElementById('altaMsg');
+  if(!razon){msg.textContent='La razón social es obligatoria';return;}
+  const fechaUltima=document.getElementById('altaFechaUltima').value||null;
+  const periodicidad=document.getElementById('altaPeriodicidad').value;
+  // Calcular fecha próxima renovación según periodicidad, si se dio fecha última
+  let fechaProxima=null;
+  if(fechaUltima){
+    const d=new Date(fechaUltima+'T00:00:00');
+    if(periodicidad==='mensual') d.setMonth(d.getMonth()+1);
+    else if(periodicidad==='semestral') d.setMonth(d.getMonth()+6);
+    else d.setFullYear(d.getFullYear()+1);
+    fechaProxima=d.toISOString().split('T')[0];
+  }
+  const payload={
+    razon_social:razon,
+    rfc:document.getElementById('altaRfc').value.trim()||null,
+    numserie:document.getElementById('altaNumserie').value.trim()||null,
+    producto:document.getElementById('altaProducto').value.trim()||null,
+    periodicidad,
+    monto:parseFloat(document.getElementById('altaMonto').value)||null,
+    fecha_ultima_renovacion:fechaUltima,
+    fecha_proxima_renovacion:fechaProxima,
+    vendedor_asignado:currentUser.id,
+    estado:'reclamada',
+    origen:'alta_vendedor',
+  };
+  const {error}=await sb.from('cuentas_cartera').insert(payload);
+  if(error){msg.textContent='Error: '+error.message;return;}
+  document.getElementById('modalAltaCuenta').remove();
+  renderCarteraVendedor();
 }
 
 async function renderHistorico(){
