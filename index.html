@@ -1240,13 +1240,18 @@ function swCartera(sub){
 
 function filaCartera(c,sub){
   const venceProximo=c.fecha_proxima_renovacion&&new Date(c.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
+  const puedeEditarFecha=sub!=='disponibles';
   return `<tr>
     <td style="font-weight:500;">${c.razon_social||'—'}</td>
     <td style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">${c.rfc||'—'}</td>
     <td style="font-size:11px;">${c.producto||'—'}</td>
     <td style="font-size:11px;text-transform:capitalize;">${c.periodicidad||'—'}</td>
     <td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--teal);">${c.monto?fmt(c.monto):'—'}</td>
-    <td style="font-size:11px;color:${venceProximo?'var(--red)':'var(--text3)'};font-weight:${venceProximo?'600':'400'};">${c.fecha_proxima_renovacion||'—'}</td>
+    <td style="font-size:11px;color:${venceProximo?'var(--red)':'var(--text3)'};font-weight:${venceProximo?'600':'400'};">
+      ${puedeEditarFecha
+        ?`<span onclick="editarFechaRenovacion('${c.id}')" style="cursor:pointer;border-bottom:1px dashed var(--text3);" title="Clic para editar">${c.fecha_proxima_renovacion||'Sin fecha — clic para agregar'}</span>`
+        :(c.fecha_proxima_renovacion||'—')}
+    </td>
     ${sub!=='disponibles'?`<td>${c.link_crm?`<a href="${c.link_crm}" target="_blank" style="font-size:11px;color:var(--teal);">Ver ↗</a>`:`<button onclick="editarLinkCrm('${c.id}')" style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Link</button>`}</td>`:''}
     ${sub==='resueltas'?`<td>${c.estado==='renovada'?'<span style="color:#27AE60;font-weight:600;font-size:11px;">✓ Renovó</span>':'<span style="color:var(--red);font-weight:600;font-size:11px;">✗ No renovó</span>'}</td>`:''}
     <td>
@@ -1255,6 +1260,43 @@ function filaCartera(c,sub){
       ${sub==='resueltas'?`<span style="font-size:10px;color:var(--text3);">${c.fecha_marcado||''}</span>`:''}
     </td>
   </tr>`;
+}
+
+async function editarFechaRenovacion(id){
+  const c=(window._carteraTodas||[]).find(c=>c.id===id);
+  if(!c) return;
+  const modal=document.createElement('div');
+  modal.id='modalFechaRenovacion';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;';
+  modal.innerHTML=`
+  <div style="background:#fff;border-radius:12px;padding:24px;max-width:380px;width:100%;">
+    <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px;">Editar fechas de renovación</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">${c.razon_social}</div>
+    <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha última renovación</label>
+    <input type="date" id="editFechaUltimaInput" value="${c.fecha_ultima_renovacion||''}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-bottom:12px;">
+    <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha próxima renovación</label>
+    <input type="date" id="editFechaProximaInput" value="${c.fecha_proxima_renovacion||''}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-bottom:14px;">
+    <div style="display:flex;gap:8px;">
+      <button onclick="guardarFechaRenovacion('${id}')" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
+      <button onclick="document.getElementById('modalFechaRenovacion').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;font-family:'Inter',sans-serif;">Cancelar</button>
+    </div>
+    <div id="fechaRenovMsg" style="font-size:11px;color:var(--red);margin-top:8px;"></div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+async function guardarFechaRenovacion(id){
+  const fechaUltima=document.getElementById('editFechaUltimaInput').value||null;
+  const fechaProxima=document.getElementById('editFechaProximaInput').value||null;
+  const msg=document.getElementById('fechaRenovMsg');
+  const {error}=await sb.from('cuentas_cartera').update({
+    fecha_ultima_renovacion:fechaUltima,fecha_proxima_renovacion:fechaProxima,updated_at:new Date().toISOString()
+  }).eq('id',id);
+  if(error){msg.textContent='Error: '+error.message;return;}
+  document.getElementById('modalFechaRenovacion').remove();
+  const c=(window._carteraTodas||[]).find(c=>c.id===id);
+  if(c){c.fecha_ultima_renovacion=fechaUltima;c.fecha_proxima_renovacion=fechaProxima;}
+  swCartera(currentCarteraSub);
 }
 
 async function reclamarCuenta(id){
