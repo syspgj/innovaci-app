@@ -1097,23 +1097,41 @@ async function eliminarFilaPipe(id){
 
 // ── CARTERA DE CUENTAS ──────────────────────────────────────────────────────
 let currentCarteraSub='disponibles';
+let carteraSortCol=null, carteraSortDir=1;
+let carteraFiltroTexto='', carteraFiltroProducto='', carteraFiltroPeriodicidad='';
+
 async function renderCarteraVendedor(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando cartera...</div>';
   const {data:todas}=await sb.from('cuentas_cartera').select('*').order('monto',{ascending:false});
   window._carteraTodas=todas||[];
 
+  const productos=[...new Set((todas||[]).map(c=>c.producto).filter(Boolean))].sort();
+
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
     <div style="font-size:18px;font-weight:600;color:var(--text);">Cartera de cuentas</div>
     <div style="font-size:12px;color:var(--text3);">Cuentas en suscripción Aspel/Siigo. Reclama las tuyas y dales seguimiento a sus renovaciones.</div>
   </div>
-  <div style="display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;">
+  <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;">
     <button onclick="swCartera('disponibles')" id="carteraSub_disponibles" class="cartera-subtab">Disponibles</button>
     <button onclick="swCartera('mia')" id="carteraSub_mia" class="cartera-subtab">Mi cartera</button>
     <button onclick="swCartera('vencen')" id="carteraSub_vencen" class="cartera-subtab">Vencen este mes</button>
     <button onclick="swCartera('resueltas')" id="carteraSub_resueltas" class="cartera-subtab">Resueltas este mes</button>
     <button onclick="abrirAltaCuenta()" style="margin-left:auto;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Dar de alta cuenta nueva</button>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
+    <input type="text" id="carteraFiltroTextoInput" placeholder="Buscar por razón social o RFC..." value="${carteraFiltroTexto}" oninput="onCarteraFiltroChange()" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+    <select id="carteraFiltroProductoInput" onchange="onCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+      <option value="">Todos los productos</option>
+      ${productos.map(p=>`<option value="${p}" ${carteraFiltroProducto===p?'selected':''}>${p}</option>`).join('')}
+    </select>
+    <select id="carteraFiltroPeriodicidadInput" onchange="onCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+      <option value="">Toda periodicidad</option>
+      <option value="mensual" ${carteraFiltroPeriodicidad==='mensual'?'selected':''}>Mensual</option>
+      <option value="semestral" ${carteraFiltroPeriodicidad==='semestral'?'selected':''}>Semestral</option>
+      <option value="anual" ${carteraFiltroPeriodicidad==='anual'?'selected':''}>Anual</option>
+    </select>
   </div>
   <div id="carteraContenido"></div>`;
 
@@ -1122,10 +1140,59 @@ async function renderCarteraVendedor(){
     const style=document.createElement('style');
     style.id='carteraSubStyles';
     style.textContent=`.cartera-subtab{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;color:var(--text2);}
-      .cartera-subtab.active{background:var(--navy);color:#fff;border-color:var(--navy);}`;
+      .cartera-subtab.active{background:var(--navy);color:#fff;border-color:var(--navy);}
+      .cartera-th-sort{cursor:pointer;user-select:none;white-space:nowrap;}
+      .cartera-th-sort:hover{color:var(--teal);}`;
     document.head.appendChild(style);
   }
   swCartera(currentCarteraSub);
+}
+
+function onCarteraFiltroChange(){
+  carteraFiltroTexto=document.getElementById('carteraFiltroTextoInput')?.value||'';
+  carteraFiltroProducto=document.getElementById('carteraFiltroProductoInput')?.value||'';
+  carteraFiltroPeriodicidad=document.getElementById('carteraFiltroPeriodicidadInput')?.value||'';
+  swCartera(currentCarteraSub);
+}
+
+function aplicarFiltrosCartera(lista){
+  let r=lista;
+  if(carteraFiltroTexto.trim()){
+    const q=carteraFiltroTexto.trim().toLowerCase();
+    r=r.filter(c=>(c.razon_social||'').toLowerCase().includes(q)||(c.rfc||'').toLowerCase().includes(q));
+  }
+  if(carteraFiltroProducto) r=r.filter(c=>c.producto===carteraFiltroProducto);
+  if(carteraFiltroPeriodicidad) r=r.filter(c=>c.periodicidad===carteraFiltroPeriodicidad);
+  return r;
+}
+
+function ordenarCartera(lista,colDefault){
+  const col=carteraSortCol||colDefault;
+  const dir=carteraSortDir;
+  return [...lista].sort((a,b)=>{
+    let va=a[col],vb=b[col];
+    if(va==null&&vb==null) return 0;
+    if(va==null) return 1;
+    if(vb==null) return -1;
+    if(typeof va==='string') va=va.toLowerCase();
+    if(typeof vb==='string') vb=vb.toLowerCase();
+    if(va<vb) return -1*dir;
+    if(va>vb) return 1*dir;
+    return 0;
+  });
+}
+
+function thSort(label,col,callbackRefresh){
+  const activo=carteraSortCol===col;
+  const flecha=activo?(carteraSortDir===1?' ▲':' ▼'):'';
+  return `<th class="cartera-th-sort" onclick="setCarteraSort('${col}','${callbackRefresh}')">${label}${flecha}</th>`;
+}
+
+function setCarteraSort(col,callbackRefresh){
+  if(carteraSortCol===col) carteraSortDir*=-1;
+  else{carteraSortCol=col;carteraSortDir=1;}
+  if(callbackRefresh==='vendedor') swCartera(currentCarteraSub);
+  else if(callbackRefresh==='director') renderDirCarteraContenido();
 }
 
 function swCartera(sub){
@@ -1145,11 +1212,15 @@ function swCartera(sub){
   else if(sub==='vencen') filtradas=todas.filter(c=>c.vendedor_asignado===currentUser.id&&['reclamada','en_revision'].includes(c.estado)&&c.fecha_proxima_renovacion&&c.fecha_proxima_renovacion>=inicioMes&&c.fecha_proxima_renovacion<=finMes);
   else if(sub==='resueltas') filtradas=todas.filter(c=>c.vendedor_asignado===currentUser.id&&['renovada','no_renovada'].includes(c.estado)&&c.fecha_marcado&&c.fecha_marcado>=inicioMes&&c.fecha_marcado<=finMes);
 
+  filtradas=aplicarFiltrosCartera(filtradas);
+  filtradas=ordenarCartera(filtradas,'razon_social');
+
   const cont=document.getElementById('carteraContenido');
   if(!cont) return;
   if(!filtradas.length){
     cont.innerHTML=`<div style="text-align:center;padding:50px 20px;color:var(--text3);font-size:13px;">
-      ${sub==='disponibles'?'No hay cuentas disponibles para reclamar en este momento.'
+      ${todas.length&&(carteraFiltroTexto||carteraFiltroProducto||carteraFiltroPeriodicidad)?'Ningún resultado coincide con los filtros aplicados.'
+        :sub==='disponibles'?'No hay cuentas disponibles para reclamar en este momento.'
         :sub==='mia'?'Aún no has reclamado ninguna cuenta. Ve a "Disponibles" para empezar.'
         :sub==='vencen'?'No tienes cuentas que venzan este mes.'
         :'No has marcado seguimiento a ninguna cuenta este mes.'}
@@ -1159,8 +1230,8 @@ function swCartera(sub){
 
   cont.innerHTML=`<div class="card"><table class="daily" style="font-size:12px;">
     <thead><tr>
-      <th>Razón social</th><th>RFC</th><th>Producto</th><th>Periodicidad</th><th>Monto</th>
-      <th>Próx. renovación</th>${sub!=='disponibles'?'<th>Link CRM</th>':''}
+      ${thSort('Razón social','razon_social','vendedor')}${thSort('RFC','rfc','vendedor')}${thSort('Producto','producto','vendedor')}${thSort('Periodicidad','periodicidad','vendedor')}<th>Monto</th>
+      ${thSort('Próx. renovación','fecha_proxima_renovacion','vendedor')}${sub!=='disponibles'?'<th>Link CRM</th>':''}
       ${sub==='resueltas'?'<th>Resultado</th>':''}<th>Acciones</th>
     </tr></thead>
     <tbody>${filtradas.map(c=>filaCartera(c,sub)).join('')}</tbody>
@@ -1342,6 +1413,129 @@ async function guardarAltaCuenta(){
   renderCarteraVendedor();
 }
 
+// ── CARTERA DE CUENTAS — VISTA DIRECTOR (auditoría) ─────────────────────────
+let dirCarteraVendedorFiltro='';
+async function renderDirectorCartera(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando cartera...</div>';
+  const [{data:todas},{data:vendedores}]=await Promise.all([
+    sb.from('cuentas_cartera').select('*').order('monto',{ascending:false}),
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre')
+  ]);
+  window._carteraTodas=todas||[];
+  window._carteraVendedores=vendedores||[];
+
+  const productos=[...new Set((todas||[]).map(c=>c.producto).filter(Boolean))].sort();
+  const totalCuentas=(todas||[]).length;
+  const sinReclamar=(todas||[]).filter(c=>c.estado==='sin_reclamar').length;
+  const reclamadas=(todas||[]).filter(c=>['reclamada','en_revision'].includes(c.estado)).length;
+  const noRenovadas=(todas||[]).filter(c=>c.estado==='no_renovada').length;
+
+  mc.innerHTML=`
+  <div style="margin-bottom:16px;">
+    <div style="font-size:18px;font-weight:600;color:var(--text);">Cartera de cuentas — Auditoría</div>
+    <div style="font-size:12px;color:var(--text3);">Vista completa de las 243 cuentas, por vendedor. Útil para comparar contra el PDF de comisiones del mes.</div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
+    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Total cuentas</div><div style="font-size:20px;font-weight:700;color:var(--text);">${totalCuentas}</div></div>
+    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Sin reclamar</div><div style="font-size:20px;font-weight:700;color:var(--gold);">${sinReclamar}</div></div>
+    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Reclamadas (activas)</div><div style="font-size:20px;font-weight:700;color:var(--teal);">${reclamadas}</div></div>
+    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">No renovadas (posible robo)</div><div style="font-size:20px;font-weight:700;color:var(--red);">${noRenovadas}</div></div>
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
+    <input type="text" id="dirCarteraFiltroTextoInput" placeholder="Buscar por razón social o RFC..." value="${carteraFiltroTexto}" oninput="onDirCarteraFiltroChange()" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+    <select id="dirCarteraFiltroVendedorInput" onchange="onDirCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+      <option value="">Todos los vendedores</option>
+      <option value="__sin_asignar__" ${dirCarteraVendedorFiltro==='__sin_asignar__'?'selected':''}>Sin asignar</option>
+      ${(vendedores||[]).map(v=>`<option value="${v.id}" ${dirCarteraVendedorFiltro===v.id?'selected':''}>${v.nombre}</option>`).join('')}
+    </select>
+    <select id="dirCarteraFiltroProductoInput" onchange="onDirCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+      <option value="">Todos los productos</option>
+      ${productos.map(p=>`<option value="${p}" ${carteraFiltroProducto===p?'selected':''}>${p}</option>`).join('')}
+    </select>
+    <select id="dirCarteraFiltroPeriodicidadInput" onchange="onDirCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+      <option value="">Toda periodicidad</option>
+      <option value="mensual" ${carteraFiltroPeriodicidad==='mensual'?'selected':''}>Mensual</option>
+      <option value="semestral" ${carteraFiltroPeriodicidad==='semestral'?'selected':''}>Semestral</option>
+      <option value="anual" ${carteraFiltroPeriodicidad==='anual'?'selected':''}>Anual</option>
+    </select>
+    <select id="dirCarteraFiltroEstadoInput" onchange="onDirCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+      <option value="">Todo estado</option>
+      <option value="sin_reclamar">Sin reclamar</option>
+      <option value="reclamada">Reclamada</option>
+      <option value="en_revision">En revisión</option>
+      <option value="renovada">Renovada</option>
+      <option value="no_renovada">No renovada</option>
+    </select>
+  </div>
+  <div id="dirCarteraContenido"></div>`;
+
+  if(!document.getElementById('carteraSubStyles')){
+    const style=document.createElement('style');
+    style.id='carteraSubStyles';
+    style.textContent=`.cartera-th-sort{cursor:pointer;user-select:none;white-space:nowrap;}
+      .cartera-th-sort:hover{color:var(--teal);}`;
+    document.head.appendChild(style);
+  }
+  renderDirCarteraContenido();
+}
+
+function onDirCarteraFiltroChange(){
+  carteraFiltroTexto=document.getElementById('dirCarteraFiltroTextoInput')?.value||'';
+  dirCarteraVendedorFiltro=document.getElementById('dirCarteraFiltroVendedorInput')?.value||'';
+  carteraFiltroProducto=document.getElementById('dirCarteraFiltroProductoInput')?.value||'';
+  carteraFiltroPeriodicidad=document.getElementById('dirCarteraFiltroPeriodicidadInput')?.value||'';
+  window._dirCarteraEstadoFiltro=document.getElementById('dirCarteraFiltroEstadoInput')?.value||'';
+  renderDirCarteraContenido();
+}
+
+function renderDirCarteraContenido(){
+  const todas=window._carteraTodas||[];
+  const vendedores=window._carteraVendedores||[];
+  let filtradas=todas;
+  if(dirCarteraVendedorFiltro==='__sin_asignar__') filtradas=filtradas.filter(c=>!c.vendedor_asignado);
+  else if(dirCarteraVendedorFiltro) filtradas=filtradas.filter(c=>c.vendedor_asignado===dirCarteraVendedorFiltro);
+  if(window._dirCarteraEstadoFiltro) filtradas=filtradas.filter(c=>c.estado===window._dirCarteraEstadoFiltro);
+  filtradas=aplicarFiltrosCartera(filtradas);
+  filtradas=ordenarCartera(filtradas,'razon_social');
+
+  const cont=document.getElementById('dirCarteraContenido');
+  if(!cont) return;
+  if(!filtradas.length){
+    cont.innerHTML=`<div style="text-align:center;padding:50px 20px;color:var(--text3);font-size:13px;">Ningún resultado coincide con los filtros aplicados.</div>`;
+    return;
+  }
+
+  cont.innerHTML=`<div class="card"><table class="daily" style="font-size:12px;">
+    <thead><tr>
+      ${thSort('Razón social','razon_social','director')}${thSort('RFC','rfc','director')}${thSort('Producto','producto','director')}${thSort('Periodicidad','periodicidad','director')}<th>Monto</th>
+      ${thSort('Próx. renovación','fecha_proxima_renovacion','director')}<th>Vendedor asignado</th><th>Estado</th>
+    </tr></thead>
+    <tbody>${filtradas.map(c=>filaCarteraDirector(c,vendedores)).join('')}</tbody>
+  </table></div>`;
+}
+
+function filaCarteraDirector(c,vendedores){
+  const vendedor=vendedores.find(v=>v.id===c.vendedor_asignado);
+  const estadoChip={
+    sin_reclamar:'<span style="color:var(--text3);">Sin reclamar</span>',
+    reclamada:'<span style="color:var(--teal);font-weight:600;">Reclamada</span>',
+    en_revision:'<span style="color:var(--gold);font-weight:600;">En revisión</span>',
+    renovada:'<span style="color:#27AE60;font-weight:600;">✓ Renovada</span>',
+    no_renovada:'<span style="color:var(--red);font-weight:600;">✗ No renovada</span>',
+  }[c.estado]||c.estado;
+  return `<tr>
+    <td style="font-weight:500;">${c.razon_social||'—'}</td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">${c.rfc||'—'}</td>
+    <td style="font-size:11px;">${c.producto||'—'}</td>
+    <td style="font-size:11px;text-transform:capitalize;">${c.periodicidad||'—'}</td>
+    <td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--teal);">${c.monto?fmt(c.monto):'—'}</td>
+    <td style="font-size:11px;color:var(--text3);">${c.fecha_proxima_renovacion||'—'}</td>
+    <td style="font-size:11px;">${vendedor?vendedor.nombre:'<span style="color:var(--text3);">— Sin asignar</span>'}</td>
+    <td style="font-size:11px;">${estadoChip}</td>
+  </tr>`;
+}
+
 async function renderHistorico(){
   document.getElementById('mainContent').innerHTML='<div class="loading"><div class="spinner"></div> Cargando histórico...</div>';
   const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).order('fecha',{ascending:false}).limit(60);
@@ -1436,13 +1630,14 @@ function buildDirectorUI(){
     <div class="tab" onclick="swD('liberaciones')">Liberaciones</div>
     <div class="tab" onclick="swD('crm')">📋 Prospectos</div>
     <div class="tab" onclick="swD('campanas')">🎯 Campañas</div>
+    <div class="tab" onclick="swD('cartera')">💼 Cartera</div>
     <div class="tab" onclick="swD('config')" style="color:#F5A623;">⚙ Configuración</div>`;
   renderDirector();
 }
 let currentDirTab='resumen';
 function swD(id){
   currentDirTab=id;
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['resumen','vendedores','anual','kpis','liberaciones','crm','campanas','config'][i]===id));
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['resumen','vendedores','anual','kpis','liberaciones','crm','campanas','cartera','config'][i]===id));
   if(id==='resumen')renderDirectorResumen();
   else if(id==='vendedores')renderDirectorVendedores();
   else if(id==='anual')renderDirectorAnual();
@@ -1450,6 +1645,7 @@ function swD(id){
   else if(id==='liberaciones')renderDirectorLiberaciones();
   else if(id==='crm')renderDirectorCRM();
   else if(id==='campanas')renderDirectorCampanas();
+  else if(id==='cartera')renderDirectorCartera();
   else if(id==='config')renderDirectorConfig();
 }
 async function renderDirector(){
@@ -1460,6 +1656,7 @@ async function renderDirector(){
   else if(currentDirTab==='liberaciones')renderDirectorLiberaciones();
   else if(currentDirTab==='crm')renderDirectorCRM();
   else if(currentDirTab==='campanas')renderDirectorCampanas();
+  else if(currentDirTab==='cartera')renderDirectorCartera();
   else if(currentDirTab==='config')renderDirectorConfig();
   else renderDirectorResumen();
 }
