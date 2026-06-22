@@ -1108,9 +1108,12 @@ let carteraFiltroTexto='', carteraFiltroProducto='', carteraFiltroPeriodicidad='
 async function renderCarteraVendedor(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando cartera...</div>';
-  const {data:todas}=await sb.from('cuentas_cartera').select('*').order('monto',{ascending:false});
+  const [{data:todas},{data:vendedores}]=await Promise.all([
+    sb.from('cuentas_cartera').select('*').order('monto',{ascending:false}),
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre')
+  ]);
   window._carteraTodas=todas||[];
-
+  window._carteraVendedores=vendedores||[];
   const productos=[...new Set((todas||[]).map(c=>c.producto).filter(Boolean))].sort();
 
   mc.innerHTML=`
@@ -1126,7 +1129,7 @@ async function renderCarteraVendedor(){
     <button onclick="abrirAltaCuenta()" style="margin-left:auto;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Dar de alta cuenta nueva</button>
   </div>
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
-    <input type="text" id="carteraFiltroTextoInput" placeholder="Buscar por razón social o RFC..." value="${carteraFiltroTexto}" oninput="onCarteraFiltroChange()" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+    <input type="text" id="carteraFiltroTextoInput" placeholder="Buscar por serie, razón social o RFC..." value="${carteraFiltroTexto}" oninput="onCarteraFiltroChange()" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
     <select id="carteraFiltroProductoInput" onchange="onCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
       <option value="">Todos los productos</option>
       ${productos.map(p=>`<option value="${p}" ${carteraFiltroProducto===p?'selected':''}>${p}</option>`).join('')}
@@ -1164,7 +1167,7 @@ function aplicarFiltrosCartera(lista){
   let r=lista;
   if(carteraFiltroTexto.trim()){
     const q=carteraFiltroTexto.trim().toLowerCase();
-    r=r.filter(c=>(c.razon_social||'').toLowerCase().includes(q)||(c.rfc||'').toLowerCase().includes(q));
+    r=r.filter(c=>(c.razon_social||'').toLowerCase().includes(q)||(c.rfc||'').toLowerCase().includes(q)||(c.numserie||'').toLowerCase().includes(q));
   }
   if(carteraFiltroProducto) r=r.filter(c=>c.producto===carteraFiltroProducto);
   if(carteraFiltroPeriodicidad) r=r.filter(c=>c.periodicidad===carteraFiltroPeriodicidad);
@@ -1233,10 +1236,11 @@ function swCartera(sub){
     return;
   }
 
-  cont.innerHTML=`<div class="card"><table class="daily" style="font-size:12px;">
+  cont.innerHTML=`<div class="card" style="overflow-x:auto;"><table class="daily" style="font-size:12px;min-width:1100px;">
     <thead><tr>
-      ${thSort('Razón social','razon_social','vendedor')}${thSort('RFC','rfc','vendedor')}${thSort('Producto','producto','vendedor')}${thSort('Periodicidad','periodicidad','vendedor')}<th>Monto</th>
-      ${thSort('Próx. renovación','fecha_proxima_renovacion','vendedor')}${sub!=='disponibles'?'<th>Link CRM</th>':''}
+      ${thSort('Núm. serie','numserie','vendedor')}${thSort('Razón social','razon_social','vendedor')}${thSort('RFC','rfc','vendedor')}${thSort('Producto','producto','vendedor')}${thSort('Periodicidad','periodicidad','vendedor')}<th>Monto</th>
+      ${thSort('Últ. renovación','fecha_ultima_renovacion','vendedor')}${thSort('Próx. renovación','fecha_proxima_renovacion','vendedor')}<th>Vendedor</th><th>Escritorio svc.</th>
+      ${sub!=='disponibles'?'<th>Link CRM</th>':''}
       ${sub==='resueltas'?'<th>Resultado</th>':''}<th>Acciones</th>
     </tr></thead>
     <tbody>${filtradas.map(c=>filaCartera(c,sub)).join('')}</tbody>
@@ -1245,21 +1249,37 @@ function swCartera(sub){
 
 function filaCartera(c,sub){
   const venceProximo=c.fecha_proxima_renovacion&&new Date(c.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
-  const puedeEditarFecha=sub!=='disponibles';
+  const editable=sub!=='disponibles';
+  const editBtn=(campo)=>editable?`onclick="editarDatosCuenta('${c.id}')" style="cursor:pointer;border-bottom:1px dashed var(--text3);" title="Clic para editar"`:` style="cursor:default;"`;
+  const vendedores=window._carteraVendedores||[];
+  const vendedor=vendedores.find(v=>v.id===c.vendedor_asignado);
   return `<tr>
-    <td style="font-weight:500;">${puedeEditarFecha?`<span onclick="editarFechaRenovacion('${c.id}')" style="cursor:pointer;border-bottom:1px dashed var(--text3);" title="Clic para editar">${c.razon_social||'Sin razón social — clic para agregar'}</span>`:(c.razon_social||'—')}</td>
-    <td style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">${puedeEditarFecha?`<span onclick="editarFechaRenovacion('${c.id}')" style="cursor:pointer;border-bottom:1px dashed var(--text3);" title="Clic para editar">${c.rfc||'Sin RFC'}</span>`:(c.rfc||'—')}</td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;color:var(--navy);">${c.numserie||'—'}</td>
+    <td style="font-weight:500;max-width:200px;white-space:normal;word-break:break-word;">
+      <span ${editBtn()}>${c.razon_social||'<span style="color:var(--text3);font-style:italic;">Sin razón social</span>'}</span>
+    </td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">
+      <span ${editBtn()}>${c.rfc||'<span style="color:var(--text3);font-style:italic;">Sin RFC</span>'}</span>
+    </td>
     <td style="font-size:11px;">${c.producto||'—'}</td>
     <td style="font-size:11px;text-transform:capitalize;">${c.periodicidad||'—'}</td>
     <td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--teal);">${c.monto?fmt(c.monto):'—'}</td>
+    <td style="font-size:11px;color:var(--text3);">
+      <span ${editBtn()}>${c.fecha_ultima_renovacion||'<span style="color:var(--text3);font-style:italic;">—</span>'}</span>
+    </td>
     <td style="font-size:11px;color:${venceProximo?'var(--red)':'var(--text3)'};font-weight:${venceProximo?'600':'400'};">
-      ${puedeEditarFecha
-        ?`<span onclick="editarFechaRenovacion('${c.id}')" style="cursor:pointer;border-bottom:1px dashed var(--text3);" title="Clic para editar">${c.fecha_proxima_renovacion||'Sin fecha — clic para agregar'}</span>`
-        :(c.fecha_proxima_renovacion||'—')}
+      <span ${editBtn()}>${c.fecha_proxima_renovacion||'<span style="color:var(--text3);font-style:italic;">Sin fecha</span>'}</span>
+    </td>
+    <td style="font-size:11px;">${vendedor?vendedor.nombre:'<span style="color:var(--text3);">—</span>'}</td>
+    <td style="font-size:11px;">
+      ${c.escritorio_servicios
+        ?`<span style="font-family:'JetBrains Mono',monospace;font-size:10px;">${c.escritorio_servicios}</span>
+           ${editable?`<button onclick="editarEscritorioServicios('${c.id}')" style="background:none;border:none;cursor:pointer;color:var(--teal);font-size:10px;padding:0 4px;" title="Editar">✎</button>`:''}`
+        :`${editable?`<button onclick="editarEscritorioServicios('${c.id}')" style="background:var(--teal-bg,rgba(0,169,157,0.08));color:var(--teal);border:1px solid rgba(0,169,157,0.3);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar</button>`:'—'}`}
     </td>
     ${sub!=='disponibles'?`<td>${c.link_crm?`<a href="${c.link_crm}" target="_blank" style="font-size:11px;color:var(--teal);">Ver ↗</a>`:`<button onclick="editarLinkCrm('${c.id}')" style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Link</button>`}</td>`:''}
     ${sub==='resueltas'?`<td>${c.estado==='renovada'?'<span style="color:#27AE60;font-weight:600;font-size:11px;">✓ Renovó</span>':'<span style="color:var(--red);font-weight:600;font-size:11px;">✗ No renovó</span>'}</td>`:''}
-    <td>
+    <td style="white-space:nowrap;">
       ${sub==='disponibles'?`<button onclick="reclamarCuenta('${c.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Reclamar</button>`:''}
       ${(sub==='mia'||sub==='vencen')?`<button onclick="abrirMarcarSeguimiento('${c.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Marcar seguimiento</button>`:''}
       ${sub==='resueltas'?`<span style="font-size:10px;color:var(--text3);">${c.fecha_marcado||''}</span>`:''}
@@ -1267,31 +1287,69 @@ function filaCartera(c,sub){
   </tr>`;
 }
 
-async function editarFechaRenovacion(id){
+async function editarDatosCuenta(id){
   const c=(window._carteraTodas||[]).find(c=>c.id===id);
   if(!c) return;
   const modal=document.createElement('div');
   modal.id='modalFechaRenovacion';
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;';
   modal.innerHTML=`
-  <div style="background:#fff;border-radius:12px;padding:24px;max-width:380px;width:100%;">
+  <div style="background:#fff;border-radius:12px;padding:24px;max-width:400px;width:100%;">
     <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px;">Editar datos de la cuenta</div>
-    <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">Serie: ${c.numserie||'—'}</div>
-    <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Razón social</label>
-    <input type="text" id="editRazonSocialInput" value="${(c.razon_social||'').replace(/"/g,'&quot;')}" placeholder="Sin razón social registrada" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-bottom:12px;">
-    <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">RFC</label>
-    <input type="text" id="editRfcInput" value="${(c.rfc||'').replace(/"/g,'&quot;')}" placeholder="Sin RFC registrado" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-bottom:12px;text-transform:uppercase;">
-    <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha última renovación</label>
-    <input type="date" id="editFechaUltimaInput" value="${c.fecha_ultima_renovacion||''}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-bottom:12px;">
-    <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha próxima renovación</label>
-    <input type="date" id="editFechaProximaInput" value="${c.fecha_proxima_renovacion||''}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-bottom:14px;">
-    <div style="display:flex;gap:8px;">
+    <div style="font-size:12px;color:var(--teal);font-family:'JetBrains Mono',monospace;margin-bottom:16px;">${c.numserie||'Sin serie'}</div>
+    <div style="display:grid;gap:10px;">
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Razón social</label>
+        <input type="text" id="editRazonSocialInput" value="${(c.razon_social||'').replace(/"/g,'&quot;')}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">RFC</label>
+        <input type="text" id="editRfcInput" value="${(c.rfc||'').replace(/"/g,'&quot;')}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;text-transform:uppercase;"></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha última renovación</label>
+        <input type="date" id="editFechaUltimaInput" value="${c.fecha_ultima_renovacion||''}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha próxima renovación</label>
+        <input type="date" id="editFechaProximaInput" value="${c.fecha_proxima_renovacion||''}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px;">
       <button onclick="guardarFechaRenovacion('${id}')" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
       <button onclick="document.getElementById('modalFechaRenovacion').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;font-family:'Inter',sans-serif;">Cancelar</button>
     </div>
     <div id="fechaRenovMsg" style="font-size:11px;color:var(--red);margin-top:8px;"></div>
   </div>`;
   document.body.appendChild(modal);
+}
+// Alias para compatibilidad con referencias existentes
+const editarFechaRenovacion=editarDatosCuenta;
+
+async function editarEscritorioServicios(id){
+  const c=(window._carteraTodas||[]).find(c=>c.id===id);
+  if(!c) return;
+  const modal=document.createElement('div');
+  modal.id='modalEscritorioSvc';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;';
+  modal.innerHTML=`
+  <div style="background:#fff;border-radius:12px;padding:24px;max-width:380px;width:100%;">
+    <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px;">Escritorio de servicios</div>
+    <div style="font-size:12px;color:var(--teal);font-family:'JetBrains Mono',monospace;margin-bottom:4px;">${c.numserie||'Sin serie'}</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">${c.razon_social||''}</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Captura el usuario y contraseña para acceder al escritorio de servicios de este cliente en el portal de Aspel/Siigo.</div>
+    <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Usuario / Contraseña (texto libre)</label>
+    <textarea id="escritorioSvcInput" rows="3" placeholder="Ej: usuario: cliente@empresa.com | pass: ABC123" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;resize:vertical;">${c.escritorio_servicios||''}</textarea>
+    <div style="display:flex;gap:8px;margin-top:14px;">
+      <button onclick="guardarEscritorioServicios('${id}')" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
+      <button onclick="document.getElementById('modalEscritorioSvc').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;font-family:'Inter',sans-serif;">Cancelar</button>
+    </div>
+    <div id="escritorioSvcMsg" style="font-size:11px;color:var(--red);margin-top:8px;"></div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+async function guardarEscritorioServicios(id){
+  const val=document.getElementById('escritorioSvcInput').value.trim()||null;
+  const msg=document.getElementById('escritorioSvcMsg');
+  const {error}=await sb.from('cuentas_cartera').update({escritorio_servicios:val,updated_at:new Date().toISOString()}).eq('id',id);
+  if(error){msg.textContent='Error: '+error.message;return;}
+  document.getElementById('modalEscritorioSvc').remove();
+  const c=(window._carteraTodas||[]).find(c=>c.id===id);
+  if(c) c.escritorio_servicios=val;
+  swCartera(currentCarteraSub);
 }
 
 async function guardarFechaRenovacion(id){
