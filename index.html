@@ -330,6 +330,7 @@ function aplicarAjusteComision(comisionBase, tasaBase, ventas, ajuste){
   return {comisionFinal:ventas*tasaAjustada, tasaFinal:tasaAjustada, tieneAjuste:true, motivo:ajuste.motivo};
 }
 function fmt(n){return '$'+Math.round(n).toLocaleString('es-MX');}
+function fmtFecha(iso){if(!iso)return null;const[y,m,d]=iso.split('-');return`${d}/${m}/${y}`;}
 function fmtK(n){return n>=1000?'$'+(n/1000).toFixed(0)+'K':'$'+Math.round(n);}
 function pcol(p){return p>=1?'#27AE60':p>=0.8?'#F5A623':'#E84040';}
 function pbadge(p){const pct=Math.round(p*100),cls=p>=1?'bg':p>=0.8?'bo':'br',i=p>=1?'✓':p>=0.8?'→':'↓';return `<span class="badge ${cls}">${i} ${pct}%</span>`;}
@@ -1236,10 +1237,11 @@ function swCartera(sub){
     return;
   }
 
-  cont.innerHTML=`<div class="card" style="overflow-x:auto;"><table class="daily" style="font-size:12px;min-width:1100px;">
+  cont.innerHTML=`<div class="card" style="overflow-x:auto;"><table class="daily" style="font-size:12px;min-width:1000px;">
     <thead><tr>
       ${thSort('Núm. serie','numserie','vendedor')}${thSort('Razón social','razon_social','vendedor')}${thSort('RFC','rfc','vendedor')}${thSort('Producto','producto','vendedor')}${thSort('Periodicidad','periodicidad','vendedor')}<th>Monto</th>
-      ${thSort('Últ. renovación','fecha_ultima_renovacion','vendedor')}${thSort('Próx. renovación','fecha_proxima_renovacion','vendedor')}<th>Vendedor</th><th>Escritorio svc.</th>
+      ${thSort('Últ. renovación','fecha_ultima_renovacion','vendedor')}${thSort('Próx. renovación','fecha_proxima_renovacion','vendedor')}
+      ${sub==='disponibles'?'<th>Vendedor</th>':''}<th>Escritorio svc.</th>
       ${sub!=='disponibles'?'<th>Link CRM</th>':''}
       ${sub==='resueltas'?'<th>Resultado</th>':''}
       <th style="position:sticky;right:0;background:#fff;box-shadow:-2px 0 4px rgba(0,0,0,0.06);">Acciones</th>
@@ -1251,12 +1253,16 @@ function swCartera(sub){
 function filaCartera(c,sub){
   const venceProximo=c.fecha_proxima_renovacion&&new Date(c.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
   const editable=sub!=='disponibles';
-  const editBtn=(campo)=>editable?`onclick="editarDatosCuenta('${c.id}')" style="cursor:pointer;border-bottom:1px dashed var(--text3);" title="Clic para editar"`:` style="cursor:default;"`;
+  const editBtn=()=>editable?`onclick="editarDatosCuenta('${c.id}')" style="cursor:pointer;border-bottom:1px dashed var(--text3);" title="Clic para editar"`:` style="cursor:default;"`;
   const vendedores=window._carteraVendedores||[];
   const vendedor=vendedores.find(v=>v.id===c.vendedor_asignado);
+  // En sub-pestañas propias (mia/vencen/resueltas) el vendedor es siempre el usuario actual, no se muestra
+  const mostrarVendedor=sub==='disponibles';
+  const fu=fmtFecha(c.fecha_ultima_renovacion);
+  const fp=fmtFecha(c.fecha_proxima_renovacion);
   return `<tr>
     <td style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;color:var(--navy);">${c.numserie||'—'}</td>
-    <td style="font-weight:500;max-width:200px;white-space:normal;word-break:break-word;">
+    <td style="font-weight:500;max-width:180px;white-space:normal;word-break:break-word;">
       <span ${editBtn()}>${c.razon_social||'<span style="color:var(--text3);font-style:italic;">Sin razón social</span>'}</span>
     </td>
     <td style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">
@@ -1266,24 +1272,24 @@ function filaCartera(c,sub){
     <td style="font-size:11px;text-transform:capitalize;">${c.periodicidad||'—'}</td>
     <td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--teal);">${c.monto?fmt(c.monto):'—'}</td>
     <td style="font-size:11px;color:var(--text3);">
-      <span ${editBtn()}>${c.fecha_ultima_renovacion||'<span style="color:var(--text3);font-style:italic;">—</span>'}</span>
+      <span ${editBtn()}>${fu||'<span style="color:var(--text3);font-style:italic;">—</span>'}</span>
     </td>
     <td style="font-size:11px;color:${venceProximo?'var(--red)':'var(--text3)'};font-weight:${venceProximo?'600':'400'};">
-      <span ${editBtn()}>${c.fecha_proxima_renovacion||'<span style="color:var(--text3);font-style:italic;">Sin fecha</span>'}</span>
+      <span ${editBtn()}>${fp||'<span style="color:var(--text3);font-style:italic;">Sin fecha</span>'}</span>
     </td>
-    <td style="font-size:11px;">${vendedor?vendedor.nombre:'<span style="color:var(--text3);">—</span>'}</td>
-    <td style="font-size:11px;">
+    ${mostrarVendedor?`<td style="font-size:11px;">${vendedor?vendedor.nombre:'<span style="color:var(--text3);">—</span>'}</td>`:''}
+    <td style="font-size:11px;max-width:120px;white-space:normal;word-break:break-all;">
       ${c.escritorio_servicios
         ?`<span style="font-family:'JetBrains Mono',monospace;font-size:10px;">${c.escritorio_servicios}</span>
-           ${editable?`<button onclick="editarEscritorioServicios('${c.id}')" style="background:none;border:none;cursor:pointer;color:var(--teal);font-size:10px;padding:0 4px;" title="Editar">✎</button>`:''}`
-        :`${editable?`<button onclick="editarEscritorioServicios('${c.id}')" style="background:var(--teal-bg,rgba(0,169,157,0.08));color:var(--teal);border:1px solid rgba(0,169,157,0.3);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar</button>`:'—'}`}
+           ${editable?`<button onclick="editarDatosCuenta('${c.id}')" style="background:none;border:none;cursor:pointer;color:var(--teal);font-size:10px;padding:0 4px;" title="Editar">✎</button>`:''}`
+        :`${editable?`<button onclick="editarDatosCuenta('${c.id}')" style="background:var(--teal-bg,rgba(0,169,157,0.08));color:var(--teal);border:1px solid rgba(0,169,157,0.3);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar</button>`:'—'}`}
     </td>
     ${sub!=='disponibles'?`<td>${c.link_crm?`<a href="${c.link_crm}" target="_blank" style="font-size:11px;color:var(--teal);">Ver ↗</a>`:`<button onclick="editarLinkCrm('${c.id}')" style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Link</button>`}</td>`:''}
     ${sub==='resueltas'?`<td>${c.estado==='renovada'?'<span style="color:#27AE60;font-weight:600;font-size:11px;">✓ Renovó</span>':'<span style="color:var(--red);font-weight:600;font-size:11px;">✗ No renovó</span>'}</td>`:''}
     <td style="white-space:nowrap;position:sticky;right:0;background:#fff;box-shadow:-2px 0 4px rgba(0,0,0,0.06);">
       ${sub==='disponibles'?`<button onclick="reclamarCuenta('${c.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Reclamar</button>`:''}
       ${(sub==='mia'||sub==='vencen')?`<button onclick="abrirMarcarSeguimiento('${c.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Marcar seguimiento</button>`:''}
-      ${sub==='resueltas'?`<span style="font-size:10px;color:var(--text3);">${c.fecha_marcado||''}</span>`:''}
+      ${sub==='resueltas'?`<span style="font-size:10px;color:var(--text3);">${c.fecha_marcado?fmtFecha(c.fecha_marcado):''}</span>`:''}
     </td>
   </tr>`;
 }
@@ -1293,9 +1299,9 @@ async function editarDatosCuenta(id){
   if(!c) return;
   const modal=document.createElement('div');
   modal.id='modalFechaRenovacion';
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;overflow-y:auto;';
   modal.innerHTML=`
-  <div style="background:#fff;border-radius:12px;padding:24px;max-width:400px;width:100%;">
+  <div style="background:#fff;border-radius:12px;padding:24px;max-width:420px;width:100%;margin:auto;">
     <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px;">Editar datos de la cuenta</div>
     <div style="font-size:12px;color:var(--teal);font-family:'JetBrains Mono',monospace;margin-bottom:16px;">${c.numserie||'Sin serie'}</div>
     <div style="display:grid;gap:10px;">
@@ -1307,6 +1313,8 @@ async function editarDatosCuenta(id){
         <input type="date" id="editFechaUltimaInput" value="${c.fecha_ultima_renovacion||''}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
       <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha próxima renovación</label>
         <input type="date" id="editFechaProximaInput" value="${c.fecha_proxima_renovacion||''}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Escritorio de servicios <span style="color:var(--text3);font-weight:400;">(usuario/contraseña del portal)</span></label>
+        <textarea id="editEscritorioInput" rows="2" placeholder="Ej: usuario@empresa.com | pass: ABC123" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;resize:vertical;">${c.escritorio_servicios||''}</textarea></div>
     </div>
     <div style="display:flex;gap:8px;margin-top:16px;">
       <button onclick="guardarFechaRenovacion('${id}')" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
@@ -1358,15 +1366,17 @@ async function guardarFechaRenovacion(id){
   const rfc=document.getElementById('editRfcInput').value.trim().toUpperCase()||null;
   const fechaUltima=document.getElementById('editFechaUltimaInput').value||null;
   const fechaProxima=document.getElementById('editFechaProximaInput').value||null;
+  const escritorio=document.getElementById('editEscritorioInput')?.value.trim()||null;
   const msg=document.getElementById('fechaRenovMsg');
-  if(!razonSocial){msg.textContent='La razón social no puede quedar vacía';return;}
   const {error}=await sb.from('cuentas_cartera').update({
-    razon_social:razonSocial,rfc,fecha_ultima_renovacion:fechaUltima,fecha_proxima_renovacion:fechaProxima,updated_at:new Date().toISOString()
+    razon_social:razonSocial,rfc,fecha_ultima_renovacion:fechaUltima,
+    fecha_proxima_renovacion:fechaProxima,escritorio_servicios:escritorio,
+    updated_at:new Date().toISOString()
   }).eq('id',id);
   if(error){msg.textContent='Error: '+error.message;return;}
   document.getElementById('modalFechaRenovacion').remove();
   const c=(window._carteraTodas||[]).find(c=>c.id===id);
-  if(c){c.razon_social=razonSocial;c.rfc=rfc;c.fecha_ultima_renovacion=fechaUltima;c.fecha_proxima_renovacion=fechaProxima;}
+  if(c){c.razon_social=razonSocial;c.rfc=rfc;c.fecha_ultima_renovacion=fechaUltima;c.fecha_proxima_renovacion=fechaProxima;c.escritorio_servicios=escritorio;}
   swCartera(currentCarteraSub);
 }
 
