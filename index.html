@@ -406,7 +406,7 @@ function buildTotMap(tot){
     val:tot.val,val_m:tot.val,
     cn:tot.cn,cn_m:tot.cn,
     dip:tot.dip,dip_m:tot.dip,
-    sus:tot.sus,suscripciones:tot.sus,renovaciones:tot.sus,
+    sus:tot.sus,suscripciones:tot.sus,renovaciones:tot.ren!=null?tot.ren:tot.sus,
     cur_vivo:tot.cur_vivo,
   };
 }
@@ -553,9 +553,17 @@ async function renderVendorMiMes(){
   const hasta=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
   const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).gte('fecha',desde).lte('fecha',hasta).order('fecha');
   registros=regs||[];
+  // Suscripciones/Cambio Distribuidor y Renovaciones Aspel — calculados automáticamente
+  // desde Cartera de Cuentas (ya no se capturan a mano en "Registrar día")
+  const [{data:altasMes},{data:renovMes}]=await Promise.all([
+    sb.from('cuentas_cartera').select('id').eq('vendedor_asignado',currentUser.id).eq('origen','alta_vendedor').gte('created_at',desde).lte('created_at',hasta+'T23:59:59'),
+    sb.from('cuentas_cartera').select('id').eq('vendedor_asignado',currentUser.id).eq('estado','renovada').gte('fecha_marcado',desde).lte('fecha_marcado',hasta)
+  ]);
+  const susAuto=(altasMes||[]).length;
+  const renovAuto=(renovMes||[]).length;
   // Calcular totales
-  const tot={svc:0,aspel:0,it:0,cursos:0,sf:0,demos:0,val:0,cn:0,dip:0,sus:0,cur_vivo:0};
-  for(const r of registros){tot.svc+=r.svc||0;tot.aspel+=r.aspel||0;tot.it+=r.it||0;tot.cursos+=r.cursos||0;tot.sf+=r.siigo_fiscal||0;tot.demos+=r.demos||0;tot.val+=r.valoraciones||0;tot.cn+=r.clientes_nuevos||0;tot.dip+=r.diplomados||0;tot.sus+=r.suscripciones||0;tot.cur_vivo+=r.talleres_vivo||0;}
+  const tot={svc:0,aspel:0,it:0,cursos:0,sf:0,demos:0,val:0,cn:0,dip:0,sus:susAuto,ren:renovAuto,cur_vivo:0};
+  for(const r of registros){tot.svc+=r.svc||0;tot.aspel+=r.aspel||0;tot.it+=r.it||0;tot.cursos+=r.cursos||0;tot.sf+=r.siigo_fiscal||0;tot.demos+=r.demos||0;tot.val+=r.valoraciones||0;tot.cn+=r.clientes_nuevos||0;tot.dip+=r.diplomados||0;tot.cur_vivo+=r.talleres_vivo||0;}
   // Metas del vendedor — Mireya usa meta_dulce (ahí vive su meta histórica: svc_m=2000,
   // aspel_m=5000, cur_m=20000, confirmado en kpi_config), no meta_manuel por descarte.
   const metaKey=isMireya(userProfile)||userProfile.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
@@ -817,10 +825,9 @@ async function renderRegistroForm(){
       <div class="form-field"><label>Valoraciones</label><input type="number" id="fVal" value="${r.valoraciones||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Cursos 24/7 / Membresías</label><input type="number" id="fCur" value="${r.cursos||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Siigo Fiscal (cierres)</label><input type="number" id="fSf" value="${r.siigo_fiscal||''}" placeholder="0" min="0"></div>
-      <div class="form-field"><label>Suscripciones / Cambio distribuidor</label><input type="number" id="fSus" value="${r.suscripciones||''}" placeholder="0" min="0"></div>
-      <div class="form-field"><label>Renovaciones Aspel</label><input type="number" id="fRen" value="${r.renovaciones||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Prospectos canalizados</label><input type="number" id="fPros" value="${r.prospectos_canalizados||''}" placeholder="0" min="0"></div>
     </div>
+    <div style="font-size:11px;color:var(--text3);margin:6px 0 0 2px;">"Suscripciones / Cambio distribuidor" y "Renovaciones Aspel" ya no se capturan aquí — se calculan automáticamente desde Cartera de Cuentas (altas y renovaciones marcadas este mes).</div>
 
     <!-- CURSOS EN VIVO -->
     <div class="shead" style="margin-top:16px;">🎙 Cursos en Vivo</div>
@@ -892,8 +899,6 @@ async function saveRegistro(fecha,existingId){
     valoraciones:parseInt(document.getElementById('fVal').value)||0,
     cursos:parseInt(document.getElementById('fCur').value)||0,
     siigo_fiscal:parseInt(document.getElementById('fSf').value)||0,
-    suscripciones:parseInt(document.getElementById('fSus').value)||0,
-    renovaciones:parseInt(document.getElementById('fRen')?document.getElementById('fRen').value:0)||0,
     talleres_vivo:parseFloat(document.getElementById('fTalVivo').value)||0,
     llamadas_seguimiento:parseInt(document.getElementById('fLlamSeg').value)||0,
     llamadas_prospeccion:parseInt(document.getElementById('fLlamPros').value)||0,
@@ -1242,8 +1247,8 @@ function filaCartera(c,sub){
   const venceProximo=c.fecha_proxima_renovacion&&new Date(c.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
   const puedeEditarFecha=sub!=='disponibles';
   return `<tr>
-    <td style="font-weight:500;">${c.razon_social||'—'}</td>
-    <td style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">${c.rfc||'—'}</td>
+    <td style="font-weight:500;">${puedeEditarFecha?`<span onclick="editarFechaRenovacion('${c.id}')" style="cursor:pointer;border-bottom:1px dashed var(--text3);" title="Clic para editar">${c.razon_social||'Sin razón social — clic para agregar'}</span>`:(c.razon_social||'—')}</td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">${puedeEditarFecha?`<span onclick="editarFechaRenovacion('${c.id}')" style="cursor:pointer;border-bottom:1px dashed var(--text3);" title="Clic para editar">${c.rfc||'Sin RFC'}</span>`:(c.rfc||'—')}</td>
     <td style="font-size:11px;">${c.producto||'—'}</td>
     <td style="font-size:11px;text-transform:capitalize;">${c.periodicidad||'—'}</td>
     <td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--teal);">${c.monto?fmt(c.monto):'—'}</td>
@@ -1270,8 +1275,12 @@ async function editarFechaRenovacion(id){
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;';
   modal.innerHTML=`
   <div style="background:#fff;border-radius:12px;padding:24px;max-width:380px;width:100%;">
-    <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px;">Editar fechas de renovación</div>
-    <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">${c.razon_social}</div>
+    <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px;">Editar datos de la cuenta</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">Serie: ${c.numserie||'—'}</div>
+    <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Razón social</label>
+    <input type="text" id="editRazonSocialInput" value="${(c.razon_social||'').replace(/"/g,'&quot;')}" placeholder="Sin razón social registrada" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-bottom:12px;">
+    <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">RFC</label>
+    <input type="text" id="editRfcInput" value="${(c.rfc||'').replace(/"/g,'&quot;')}" placeholder="Sin RFC registrado" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-bottom:12px;text-transform:uppercase;">
     <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha última renovación</label>
     <input type="date" id="editFechaUltimaInput" value="${c.fecha_ultima_renovacion||''}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-bottom:12px;">
     <label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha próxima renovación</label>
@@ -1286,16 +1295,19 @@ async function editarFechaRenovacion(id){
 }
 
 async function guardarFechaRenovacion(id){
+  const razonSocial=document.getElementById('editRazonSocialInput').value.trim()||null;
+  const rfc=document.getElementById('editRfcInput').value.trim().toUpperCase()||null;
   const fechaUltima=document.getElementById('editFechaUltimaInput').value||null;
   const fechaProxima=document.getElementById('editFechaProximaInput').value||null;
   const msg=document.getElementById('fechaRenovMsg');
+  if(!razonSocial){msg.textContent='La razón social no puede quedar vacía';return;}
   const {error}=await sb.from('cuentas_cartera').update({
-    fecha_ultima_renovacion:fechaUltima,fecha_proxima_renovacion:fechaProxima,updated_at:new Date().toISOString()
+    razon_social:razonSocial,rfc,fecha_ultima_renovacion:fechaUltima,fecha_proxima_renovacion:fechaProxima,updated_at:new Date().toISOString()
   }).eq('id',id);
   if(error){msg.textContent='Error: '+error.message;return;}
   document.getElementById('modalFechaRenovacion').remove();
   const c=(window._carteraTodas||[]).find(c=>c.id===id);
-  if(c){c.fecha_ultima_renovacion=fechaUltima;c.fecha_proxima_renovacion=fechaProxima;}
+  if(c){c.razon_social=razonSocial;c.rfc=rfc;c.fecha_ultima_renovacion=fechaUltima;c.fecha_proxima_renovacion=fechaProxima;}
   swCartera(currentCarteraSub);
 }
 
@@ -2137,8 +2149,8 @@ async function editarRegistroDir(registroId, userId){
       <div class="form-field"><label>Demos</label><input type="number" id="erDemos" value="${r.demos||0}"></div>
       <div class="form-field"><label>Valoraciones</label><input type="number" id="erVal" value="${r.valoraciones||0}"></div>
       <div class="form-field"><label>Siigo Fiscal</label><input type="number" id="erSf" value="${r.siigo_fiscal||0}"></div>
-      <div class="form-field"><label>Suscripciones</label><input type="number" id="erSus" value="${r.suscripciones||0}"></div>
-      <div class="form-field"><label>Renovaciones</label><input type="number" id="erRen" value="${r.renovaciones||0}"></div>
+      <div class="form-field"><label>Suscripciones <span style="color:var(--text3);font-weight:400;">(legado)</span></label><input type="number" id="erSus" value="${r.suscripciones||0}"></div>
+      <div class="form-field"><label>Renovaciones <span style="color:var(--text3);font-weight:400;">(legado)</span></label><input type="number" id="erRen" value="${r.renovaciones||0}"></div>
       <div class="form-field"><label>Prospectos canalizados</label><input type="number" id="erPros" value="${r.prospectos_canalizados||0}"></div>
       <div class="form-field"><label>Cotizaciones</label><input type="number" id="erCot" value="${r.cotizaciones||0}"></div>
       <div class="form-field"><label>Monto cotizaciones ($)</label><div class="prefix"><input type="number" id="erCotM" value="${r.monto_cotizaciones||0}" step="0.01"></div></div>
@@ -2202,11 +2214,25 @@ async function renderDirectorKpis(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
   const users=await loadDirectorData();
+  // Suscripciones/Cambio Distrib. y Renovaciones Aspel — automáticas desde Cartera de Cuentas
+  const desdeMes=`${currentYear}-${String(currentMonth).padStart(2,'0')}-01`;
+  const lastDayMes=new Date(currentYear,currentMonth,0).getDate();
+  const hastaMes=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(lastDayMes).padStart(2,'0')}`;
+  const [{data:altasCartera},{data:renovCartera}]=await Promise.all([
+    sb.from('cuentas_cartera').select('vendedor_asignado').eq('origen','alta_vendedor').gte('created_at',desdeMes).lte('created_at',hastaMes+'T23:59:59'),
+    sb.from('cuentas_cartera').select('vendedor_asignado').eq('estado','renovada').gte('fecha_marcado',desdeMes).lte('fecha_marcado',hastaMes)
+  ]);
+  const susPorVendedor={},renPorVendedor={};
+  (altasCartera||[]).forEach(c=>{if(c.vendedor_asignado)susPorVendedor[c.vendedor_asignado]=(susPorVendedor[c.vendedor_asignado]||0)+1;});
+  (renovCartera||[]).forEach(c=>{if(c.vendedor_asignado)renPorVendedor[c.vendedor_asignado]=(renPorVendedor[c.vendedor_asignado]||0)+1;});
+
   const rows=kpiConfig.filter(k=>!/_m$/.test(k.kpi_key)).map(k=>{
     const tag=k.categoria==='principal'?'<span class="badge bt" style="font-size:9px;">p</span>':k.categoria==='extra'?'<span class="badge bo" style="font-size:9px;">e</span>':'';
     const cols=users.map(u=>{
       const tot=getTotals(allRegistros,u.id);
       const totMap=buildTotMap(tot);
+      totMap.suscripciones=susPorVendedor[u.id]||0;
+      totMap.renovaciones=renPorVendedor[u.id]||0;
       const metaKey=u.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
       const kv=totMap[k.kpi_key]||0,km=k[metaKey]||1,p=kv/km;
       const vf=k.tipo==='$'?fmt(kv):kv,mf=k.tipo==='$'?fmt(km):km;
@@ -3409,9 +3435,12 @@ async function renderDirectorCRM(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
   const {data:users}=await sb.from('usuarios').select('*').eq('rol','telemarketing');
-  const {data:prospectos}=await sb.from('prospectos').select('*,usuarios(nombre)').order('created_at',{ascending:false});
-  const {data:vendedoresB2B}=await sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre');
-  const ps=prospectos||[];
+  const [{data:prospectosRaw},{data:todosUsuarios},{data:vendedoresB2B}]=await Promise.all([
+    sb.from('prospectos').select('*').order('created_at',{ascending:false}),
+    sb.from('usuarios').select('id,nombre'),
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre')
+  ]);
+  const ps=(prospectosRaw||[]).map(p=>({...p,usuarios:{nombre:(todosUsuarios||[]).find(u=>u.id===p.asignado_a)?.nombre||'—'}}));
   const total=ps.length;
   const canalizados=ps.filter(p=>p.estatus==='Canalizado a ventas').length;
   const nuevos=ps.filter(p=>p.estatus==='Nuevo').length;
