@@ -2891,7 +2891,7 @@ async function renderTeleClientes(){
     return;
   }
   const {data:cuentas}=await sb.from('cuentas_cartera')
-    .select('*').in('id',ids).order('razon_social');
+    .select('id,numserie,razon_social,rfc,producto,periodicidad,telefono,telefono2,email,tipo_cliente,escritorio_servicios').in('id',ids).order('razon_social');
   window._teleCuentasCamp=cuentas||[];
 
   // Cargar llamadas ya registradas para estas cuentas en esta campaña
@@ -2945,8 +2945,7 @@ function filtrarTeleClientes(){
 }
 
 async function abrirDetalleCuenta(cuentaId, campanaId){
-  const c=(window._teleCuentasCamp||[]).find(c=>c.id===cuentaId);
-  if(!c) return;
+  const c=(window._teleCuentasCamp||[]).find(c=>c.id===cuentaId);  if(!c) return;
   // Cargar historial de llamadas de esta cuenta en esta campaña
   const {data:histRaw}=await sb.from('llamadas_cartera')
     .select('*').eq('cuenta_id',cuentaId).eq('campana_id',campanaId).order('created_at',{ascending:false});
@@ -2958,23 +2957,40 @@ async function abrirDetalleCuenta(cuentaId, campanaId){
   <div style="background:#fff;border-radius:12px;max-width:480px;width:100%;margin:auto;overflow:hidden;">
     <div style="padding:20px 22px 14px;border-bottom:1px solid var(--border);">
       <div style="font-size:16px;font-weight:700;color:var(--text);">${c.razon_social||'Sin nombre'}</div>
-      <div style="font-size:12px;color:var(--text3);margin-top:3px;">${c.producto||''} · ${c.periodicidad||''} · RFC: ${c.rfc||'—'}</div>
-      ${c.telefono?`<div style="margin-top:6px;"><a href="tel:${c.telefono}" style="color:var(--teal);font-weight:600;font-size:14px;">📞 ${c.telefono}</a>${c.telefono2?` &nbsp; <span style="color:var(--text3);font-size:12px;">${c.telefono2}</span>`:''}</div>`:''}
-      ${c.escritorio_servicios?`<div style="font-size:11px;color:var(--text3);margin-top:4px;font-family:'JetBrains Mono',monospace;">🔑 ${c.escritorio_servicios}</div>`:''}
+      <div style="font-size:11px;color:var(--teal);font-family:'JetBrains Mono',monospace;margin-top:2px;">${c.producto||''} · ${c.periodicidad||''}</div>
+      <div style="margin-top:10px;display:grid;gap:5px;">
+        ${c.rfc?`<div style="font-size:11px;color:var(--text3);">RFC: <span style="color:var(--text);font-family:'JetBrains Mono',monospace;">${c.rfc}</span></div>`:''}
+        ${c.tipo_cliente?`<div style="font-size:11px;color:var(--text3);">Tipo: <span style="color:var(--text);">${c.tipo_cliente}</span></div>`:''}
+        ${c.email?`<div style="font-size:11px;color:var(--text3);">Correo: <a href="mailto:${c.email}" style="color:var(--teal);">${c.email}</a></div>`:''}
+        ${c.telefono?`<div style="font-size:12px;font-weight:600;margin-top:4px;"><a href="tel:${c.telefono}" style="color:var(--navy);text-decoration:none;">📞 ${c.telefono}</a></div>`:''}
+        ${c.telefono2?`<div style="font-size:11px;color:var(--text3);"><a href="tel:${c.telefono2}" style="color:var(--text3);">📞 ${c.telefono2}</a></div>`:''}
+        ${c.escritorio_servicios?`<div style="font-size:11px;color:var(--text3);margin-top:4px;font-family:'JetBrains Mono',monospace;">🔑 ${c.escritorio_servicios}</div>`:''}
+      </div>
     </div>
     <div style="padding:16px 22px;max-height:60vh;overflow-y:auto;">
       <!-- REGISTRAR LLAMADA -->
       <div style="background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);padding:14px;margin-bottom:16px;">
         <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">📞 Registrar llamada</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;">
           ${['No contestó','Buzón','Interesado','No le interesa','Volver a llamar','Registrado al taller','Canalizado a ventas'].map(r=>`
-            <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:4px 6px;border-radius:4px;background:#fff;border:1px solid var(--border);">
               <input type="radio" name="resCuenta" value="${r}" style="accent-color:var(--teal);">
               ${r}
             </label>`).join('')}
         </div>
         <textarea id="notasCuentaLlamada" placeholder="Nota de la llamada..." rows="2"
           style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;resize:vertical;box-sizing:border-box;margin-bottom:8px;"></textarea>
+        <!-- INTERÉS ADICIONAL -->
+        <div style="background:#fff;border:1px solid var(--border);border-radius:var(--radsm);padding:10px;margin-bottom:8px;">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;font-weight:600;">
+            <input type="checkbox" id="interesAdicionalCheck" onchange="toggleInteresAdicional()" style="accent-color:var(--teal);width:14px;height:14px;">
+            ¿Mostró interés en algún servicio o producto adicional?
+          </label>
+          <div id="interesAdicionalBloque" style="display:none;margin-top:8px;">
+            <input type="text" id="interesAdicionalTexto" placeholder="Ej: Interesado en póliza SAE, quiere cotización..." style="width:100%;padding:7px 10px;border:1px solid var(--teal);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
+            <div style="font-size:10px;color:var(--teal);margin-top:4px;">✓ Se registrará que el vendedor fue notificado</div>
+          </div>
+        </div>
         <button onclick="registrarLlamadaCuenta('${cuentaId}','${campanaId}')"
           style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 20px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
           Guardar llamada
@@ -3000,15 +3016,32 @@ async function abrirDetalleCuenta(cuentaId, campanaId){
   document.body.appendChild(modal);
 }
 
+function toggleInteresAdicional(){
+  const check=document.getElementById('interesAdicionalCheck');
+  const bloque=document.getElementById('interesAdicionalBloque');
+  if(bloque) bloque.style.display=check?.checked?'block':'none';
+}
+
 async function registrarLlamadaCuenta(cuentaId, campanaId){
   const resultado=document.querySelector('input[name="resCuenta"]:checked')?.value;
   if(!resultado){alert('Selecciona el resultado de la llamada');return;}
   const notaOpcional=['No contestó','Buzón'];
-  const nota=document.getElementById('notasCuentaLlamada')?.value.trim()||'';
+  let nota=document.getElementById('notasCuentaLlamada')?.value.trim()||'';
   if(!notaOpcional.includes(resultado)&&!nota){
     alert('Para "'+resultado+'" es obligatorio escribir una nota.');
     document.getElementById('notasCuentaLlamada')?.focus();
     return;
+  }
+  // Agregar nota de interés adicional si aplica
+  const interesCheck=document.getElementById('interesAdicionalCheck')?.checked;
+  const interesTexto=document.getElementById('interesAdicionalTexto')?.value.trim()||'';
+  if(interesCheck){
+    if(!interesTexto){
+      alert('Especifica en qué servicio o producto mostró interés.');
+      document.getElementById('interesAdicionalTexto')?.focus();
+      return;
+    }
+    nota=(nota?nota+'\n':'')+'[Interés adicional] '+interesTexto+' — Vendedor notificado.';
   }
   const ahora=new Date();
   const {error}=await sb.from('llamadas_cartera').insert({
@@ -3023,6 +3056,8 @@ async function registrarLlamadaCuenta(cuentaId, campanaId){
   document.querySelectorAll('input[name="resCuenta"]').forEach(r=>r.checked=false);
   const nt=document.getElementById('notasCuentaLlamada');
   if(nt) nt.value='';
+  const cb=document.getElementById('interesAdicionalCheck');
+  if(cb){cb.checked=false;toggleInteresAdicional();}
 }
 
 async function guardarYCerrarCuenta(cuentaId, campanaId){
