@@ -1154,48 +1154,282 @@ let carteraFiltroTexto='', carteraFiltroProducto='', carteraFiltroPeriodicidad='
 async function renderCarteraVendedor(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando cartera...</div>';
-  const [{data:todas},{data:vendedores}]=await Promise.all([
-    sb.from('cuentas_cartera').select('*,cuenta_padre:cuenta_padre_id(id,razon_social)').order('razon_social'),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre')
+  const [{data:clientes},{data:suscripciones},{data:vendedores}]=await Promise.all([
+    sb.from('clientes_cartera').select('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)').order('razon_social'),
+    sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
+    sb.from('usuarios').select('id,nombre').order('nombre')
   ]);
-  window._carteraTodas=todas||[];
+  window._cartClientes=clientes||[];
+  window._cartSuscripciones=suscripciones||[];
   window._carteraVendedores=vendedores||[];
-  const productos=[...new Set((todas||[]).map(c=>c.producto).filter(Boolean))].sort();
+  // Adjuntar suscripciones a cada cliente
+  window._cartClientes.forEach(cl=>{
+    cl._suscripciones=(suscripciones||[]).filter(s=>s.cliente_id===cl.id);
+  });
+  const productos=[...new Set((suscripciones||[]).map(s=>s.producto).filter(Boolean))].sort();
 
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
     <div style="font-size:18px;font-weight:600;color:var(--text);">Cartera de cuentas</div>
-    <div style="font-size:12px;color:var(--text3);">Cuentas en suscripción Aspel/Siigo. Reclama las tuyas y dales seguimiento a sus renovaciones.</div>
+    <div style="font-size:12px;color:var(--text3);">Clientes con suscripción Aspel/Siigo. Da clic en un cliente para ver su ficha completa.</div>
   </div>
   <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;">
-    <button onclick="swCartera('disponibles')" id="carteraSub_disponibles" class="cartera-subtab">Disponibles</button>
+    <button onclick="swCartera('todos')" id="carteraSub_todos" class="cartera-subtab">Todos los clientes</button>
     <button onclick="swCartera('mia')" id="carteraSub_mia" class="cartera-subtab">Mi cartera</button>
     <button onclick="swCartera('vencen')" id="carteraSub_vencen" class="cartera-subtab">Vencen este mes</button>
     <button onclick="swCartera('resueltas')" id="carteraSub_resueltas" class="cartera-subtab">Resueltas este mes</button>
-    <button onclick="abrirAltaCuenta()" style="margin-left:auto;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Dar de alta cuenta nueva</button>
+    <button onclick="abrirAltaCliente()" style="margin-left:auto;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nuevo cliente</button>
   </div>
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
-    <input type="text" id="carteraFiltroTextoInput" placeholder="Buscar por serie, razón social o RFC..." value="${carteraFiltroTexto}" oninput="onCarteraFiltroChange()" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+    <input type="text" id="carteraFiltroTextoInput" placeholder="Buscar por nombre, RFC, número de cliente..." value="${carteraFiltroTexto}" oninput="onCarteraFiltroChange()" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
     <select id="carteraFiltroProductoInput" onchange="onCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
       <option value="">Todos los productos</option>
       ${productos.map(p=>`<option value="${p}" ${carteraFiltroProducto===p?'selected':''}>${p}</option>`).join('')}
     </select>
-    <select id="carteraFiltroPeriodicidadInput" onchange="onCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
-      <option value="">Toda periodicidad</option>
-      <option value="mensual" ${carteraFiltroPeriodicidad==='mensual'?'selected':''}>Mensual</option>
-      <option value="semestral" ${carteraFiltroPeriodicidad==='semestral'?'selected':''}>Semestral</option>
-      <option value="anual" ${carteraFiltroPeriodicidad==='anual'?'selected':''}>Anual</option>
-    </select>
   </div>
   <div id="carteraContenido"></div>`;
 
-  swCartera(currentCarteraSub);
+  currentCarteraSub='todos';
+  swCartera('todos');
+}
+
+function swCartera(sub){
+  currentCarteraSub=sub;
+  ['todos','mia','vencen','resueltas'].forEach(s=>{
+    const btn=document.getElementById('carteraSub_'+s);
+    if(btn) btn.classList.toggle('active',s===sub);
+  });
+  const clientes=window._cartClientes||[];
+  const hoy=new Date();
+  const inicioMes=`${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}-01`;
+  const finMes=new Date(hoy.getFullYear(),hoy.getMonth()+1,0).toISOString().split('T')[0];
+  const q=(carteraFiltroTexto||'').toLowerCase();
+  const prod=carteraFiltroProducto||'';
+
+  let filtrados=clientes.filter(cl=>{
+    // Filtro de texto
+    const matchQ=!q||(cl.razon_social||'').toLowerCase().includes(q)||(cl.rfc||'').toLowerCase().includes(q)||(cl.num_cliente||'').toLowerCase().includes(q);
+    // Filtro de producto (al menos una suscripción con ese producto)
+    const matchProd=!prod||(cl._suscripciones||[]).some(s=>s.producto===prod);
+    if(!matchQ||!matchProd) return false;
+    // Filtro por sub-pestaña
+    if(sub==='todos') return true;
+    if(sub==='mia') return cl.vendedor_asignado===currentUser.id;
+    if(sub==='vencen') return cl.vendedor_asignado===currentUser.id&&(cl._suscripciones||[]).some(s=>s.fecha_proxima_renovacion>=inicioMes&&s.fecha_proxima_renovacion<=finMes);
+    if(sub==='resueltas') return cl.vendedor_asignado===currentUser.id&&(cl._suscripciones||[]).some(s=>['renovada','no_renovada'].includes(s.estado)&&s.fecha_marcado>=inicioMes);
+    return true;
+  });
+
+  // Agrupar: principales primero, subcuentas debajo de su padre
+  const principales=filtrados.filter(c=>!c.cliente_padre_id);
+  const subcuentas=filtrados.filter(c=>!!c.cliente_padre_id);
+  const agrupados=[];
+  for(const p of principales){
+    agrupados.push(p);
+    subcuentas.filter(s=>s.cliente_padre_id===p.id).forEach(s=>agrupados.push(s));
+  }
+  // Subcuentas huérfanas
+  const enAgrupados=new Set(agrupados.map(c=>c.id));
+  subcuentas.filter(s=>!enAgrupados.has(s.id)).forEach(s=>agrupados.push(s));
+
+  const cont=document.getElementById('carteraContenido');
+  if(!cont) return;
+  if(!agrupados.length){
+    cont.innerHTML=`<div style="text-align:center;padding:50px 20px;color:var(--text3);font-size:13px;">
+      ${q||prod?'Ningún cliente coincide con los filtros aplicados.':sub==='mia'?'Aún no tienes clientes asignados.':sub==='vencen'?'No hay renovaciones este mes.':'No hay clientes en la cartera aún.'}
+    </div>`;
+    return;
+  }
+  cont.innerHTML=`<div style="display:grid;gap:8px;">${agrupados.map(cl=>fichaClienteCartera(cl,sub)).join('')}</div>`;
+}
+
+function fichaClienteCartera(cl,sub){
+  const vendedores=window._carteraVendedores||[];
+  const vendedor=vendedores.find(v=>v.id===cl.vendedor_asignado);
+  const suscripciones=cl._suscripciones||[];
+  const esSubcuenta=!!cl.cliente_padre_id;
+  const hoy=new Date();
+  const venceProximo=suscripciones.some(s=>s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000));
+
+  return `<div class="card" style="padding:0;overflow:hidden;${esSubcuenta?'margin-left:24px;border-left:3px solid var(--teal);':venceProximo?'border-left:3px solid var(--red);':''}">
+    <div style="padding:14px 16px;cursor:pointer;display:flex;align-items:flex-start;gap:12px;" onclick="toggleFichaCliente('${cl.id}')">
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          ${esSubcuenta?`<span style="font-size:10px;color:var(--teal);">↳ subcuenta</span>`:''}
+          <span style="font-size:11px;color:var(--text3);font-family:'JetBrains Mono',monospace;">${cl.num_cliente||'—'}</span>
+          <span style="font-size:14px;font-weight:600;color:var(--text);">${cl.razon_social||'Sin nombre'}</span>
+          ${cl.rfc?`<span style="font-size:10px;color:var(--text3);">${cl.rfc}</span>`:''}
+        </div>
+        <div style="margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          ${(cl.sistemas_aspel||[]).map(s=>`<span style="background:rgba(0,169,157,0.1);color:var(--teal);border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;">${s}</span>`).join('')}
+          ${vendedor?`<span style="font-size:11px;color:var(--text3);">· ${vendedor.nombre}</span>`:''}
+          ${cl.telefono?`<span style="font-size:11px;color:var(--text3);">· <a href="tel:${cl.telefono}" onclick="event.stopPropagation()" style="color:var(--navy);">${cl.telefono}</a></span>`:''}
+        </div>
+        ${suscripciones.length?`<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">
+          ${suscripciones.map(s=>{
+            const vence=s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
+            return `<span style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid ${vence?'var(--red)':'var(--border)'};color:${vence?'var(--red)':'var(--text3)'};">
+              ${s.producto||'?'} ${s.monto?'$'+Math.round(s.monto).toLocaleString('es-MX'):''} ${s.fecha_proxima_renovacion?'· '+fmtFecha(s.fecha_proxima_renovacion):''}
+            </span>`;
+          }).join('')}
+        </div>`:'<div style="font-size:11px;color:var(--text3);margin-top:4px;font-style:italic;">Sin suscripciones registradas</div>'}
+      </div>
+      <div style="flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
+        <span style="font-size:12px;color:var(--text3);" id="fichaArrow_${cl.id}">▸</span>
+        <button onclick="event.stopPropagation();abrirFichaClienteModal('${cl.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Ver ficha</button>
+      </div>
+    </div>
+    <div id="fichaDetalle_${cl.id}" style="display:none;border-top:1px solid var(--border);padding:12px 16px;background:var(--surface-2,#f8f9fa);">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;margin-bottom:10px;">
+        ${cl.contacto_principal?`<div><span style="color:var(--text3);">Contacto:</span> <strong>${cl.contacto_principal}</strong></div>`:''}
+        ${cl.email?`<div><span style="color:var(--text3);">Email:</span> <a href="mailto:${cl.email}" style="color:var(--teal);">${cl.email}</a></div>`:''}
+        ${cl.tipo_cliente?`<div><span style="color:var(--text3);">Tipo:</span> ${cl.tipo_cliente}</div>`:''}
+        ${cl.telefono2?`<div><span style="color:var(--text3);">Tel. 2:</span> ${cl.telefono2}</div>`:''}
+        ${cl.escritorio_servicios?`<div style="grid-column:1/-1;"><span style="color:var(--text3);">Escritorio:</span> <span style="font-family:'JetBrains Mono',monospace;font-size:11px;">${cl.escritorio_servicios}</span></div>`:''}
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button onclick="abrirFichaClienteModal('${cl.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:5px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">✏️ Editar ficha completa</button>
+        ${suscripciones.filter(s=>['reclamada','en_revision'].includes(s.estado)).map(s=>`
+          <button onclick="abrirMarcarSeguimientoSusc('${s.id}')" style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:5px;padding:5px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📅 Marcar seguimiento (${s.producto})</button>`).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
+function toggleFichaCliente(id){
+  const det=document.getElementById('fichaDetalle_'+id);
+  const arrow=document.getElementById('fichaArrow_'+id);
+  if(!det) return;
+  const abierto=det.style.display!=='none';
+  det.style.display=abierto?'none':'block';
+  if(arrow) arrow.textContent=abierto?'▸':'▾';
+}
+
+async function abrirFichaClienteModal(clienteId){
+  const cl=(window._cartClientes||[]).find(c=>c.id===clienteId);
+  if(!cl) return;
+  const vendedores=window._carteraVendedores||[];
+  const modal=document.createElement('div');
+  modal.id='modalFichaCliente';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;overflow-y:auto;';
+  const suscripciones=cl._suscripciones||[];
+  modal.innerHTML=`
+  <div style="background:#fff;border-radius:12px;max-width:560px;width:100%;margin:auto;overflow:hidden;">
+    <div style="padding:20px 24px 14px;border-bottom:1px solid var(--border);background:var(--navy);">
+      <div style="font-size:11px;color:rgba(255,255,255,0.6);font-family:'JetBrains Mono',monospace;">${cl.num_cliente||'Sin número'}</div>
+      <div style="font-size:18px;font-weight:700;color:#fff;margin-top:2px;">${cl.razon_social||'Sin nombre'}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.7);margin-top:2px;">${cl.rfc||'Sin RFC'} · ${cl.tipo_cliente||''}</div>
+    </div>
+    <div style="padding:20px 24px;max-height:70vh;overflow-y:auto;">
+      <!-- DATOS DEL CLIENTE -->
+      <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">Datos del cliente</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Razón social</label>
+          <input id="fcRazon" type="text" value="${(cl.razon_social||'').replace(/"/g,'&quot;')}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">RFC</label>
+          <input id="fcRfc" type="text" value="${cl.rfc||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;text-transform:uppercase;"></div>
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Contacto principal</label>
+          <input id="fcContacto" type="text" value="${cl.contacto_principal||''}" placeholder="Nombre del contacto" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Correo</label>
+          <input id="fcEmail" type="email" value="${cl.email||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Teléfono principal</label>
+          <input id="fcTel1" type="text" value="${cl.telefono||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Teléfono secundario</label>
+          <input id="fcTel2" type="text" value="${cl.telefono2||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+        <div style="grid-column:1/-1;"><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Escritorio de servicios</label>
+          <input id="fcEscritorio" type="text" value="${cl.escritorio_servicios||''}" placeholder="usuario | contraseña" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;font-family:'JetBrains Mono',monospace;"></div>
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Vendedor asignado</label>
+          <select id="fcVendedor" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+            <option value="">Sin asignar</option>
+            ${vendedores.map(v=>`<option value="${v.id}" ${v.id===cl.vendedor_asignado?'selected':''}>${v.nombre}</option>`).join('')}
+          </select></div>
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Cuenta principal (si es subcuenta)</label>
+          <input id="fcPadreSearch" type="text" placeholder="Buscar cuenta principal..." oninput="buscarClientePadre(this.value,'${clienteId}')"
+            value="${cl.cliente_padre?cl.cliente_padre.razon_social:''}"
+            style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+          <input type="hidden" id="fcPadreId" value="${cl.cliente_padre_id||''}">
+          <div id="fcPadreSugs" style="display:none;border:1px solid var(--border);border-radius:var(--radsm);background:#fff;max-height:120px;overflow-y:auto;position:relative;z-index:10;"></div>
+          ${cl.cliente_padre_id?`<span style="font-size:10px;color:var(--red);cursor:pointer;" onclick="document.getElementById('fcPadreId').value='';document.getElementById('fcPadreSearch').value=''">✕ Quitar</span>`:''}
+        </div>
+      </div>
+      <!-- SUSCRIPCIONES -->
+      <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">Suscripciones (${suscripciones.length})</div>
+      ${suscripciones.length?`<div style="display:grid;gap:6px;margin-bottom:16px;">
+        ${suscripciones.map(s=>{
+          const vence=s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
+          return `<div style="border:1px solid ${vence?'var(--red)':'var(--border)'};border-radius:var(--radsm);padding:10px 12px;display:flex;gap:12px;align-items:center;">
+            <div style="flex:1;">
+              <span style="font-size:11px;font-weight:600;font-family:'JetBrains Mono',monospace;color:var(--navy);">${s.numserie||'—'}</span>
+              <span style="font-size:11px;color:var(--text3);margin-left:8px;">${s.producto||''} · ${s.periodicidad||''}</span>
+              ${s.monto?`<span style="font-size:11px;font-weight:600;color:var(--teal);margin-left:8px;">$${Math.round(s.monto).toLocaleString('es-MX')}</span>`:''}
+            </div>
+            <div style="font-size:10px;color:${vence?'var(--red)':'var(--text3)'};text-align:right;">
+              ${s.fecha_ultima_renovacion?`Última: ${fmtFecha(s.fecha_ultima_renovacion)}<br>`:''}
+              ${s.fecha_proxima_renovacion?`Próxima: <strong>${fmtFecha(s.fecha_proxima_renovacion)}</strong>`:'Sin fecha'}
+            </div>
+            <span style="font-size:10px;padding:2px 8px;border-radius:4px;background:${s.estado==='renovada'?'rgba(39,174,96,0.1)':s.estado==='no_renovada'?'rgba(231,76,60,0.1)':'rgba(0,0,0,0.05)'};color:${s.estado==='renovada'?'#27AE60':s.estado==='no_renovada'?'var(--red)':'var(--text3)'};">${s.estado||'—'}</span>
+          </div>`;
+        }).join('')}
+      </div>`:`<div style="font-size:12px;color:var(--text3);font-style:italic;margin-bottom:16px;">Sin suscripciones registradas. Las series se agregan automáticamente al cargar reportes de comisiones.</div>`}
+      <div id="fichaClienteMsg" style="font-size:11px;color:var(--red);"></div>
+    </div>
+    <div style="padding:14px 24px;border-top:1px solid var(--border);display:flex;gap:8px;">
+      <button onclick="guardarFichaCliente('${clienteId}')" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar cambios</button>
+      <button onclick="document.getElementById('modalFichaCliente').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;font-family:'Inter',sans-serif;">Cancelar</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+function buscarClientePadre(q, excluyeId){
+  const sugs=document.getElementById('fcPadreSugs');
+  if(!q||q.length<2){sugs.style.display='none';return;}
+  const todos=window._cartClientes||[];
+  const res=todos.filter(c=>c.id!==excluyeId&&!c.cliente_padre_id&&(c.razon_social||'').toLowerCase().includes(q.toLowerCase())).slice(0,6);
+  if(!res.length){sugs.style.display='none';return;}
+  sugs.style.display='block';
+  sugs.innerHTML=res.map(c=>`
+    <div onclick="document.getElementById('fcPadreId').value='${c.id}';document.getElementById('fcPadreSearch').value='${(c.razon_social||'').replace(/'/g,"\\'")}';document.getElementById('fcPadreSugs').style.display='none';"
+      style="padding:7px 12px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--border);"
+      onmouseover="this.style.background='var(--surface-2,#f8f9fa)'" onmouseout="this.style.background='#fff'">
+      <span style="font-weight:500;">${c.razon_social}</span>
+      <span style="color:var(--text3);font-size:10px;margin-left:6px;">${c.num_cliente||''}</span>
+    </div>`).join('');
+}
+
+async function guardarFichaCliente(id){
+  const msg=document.getElementById('fichaClienteMsg');
+  const payload={
+    razon_social:document.getElementById('fcRazon')?.value.trim()||null,
+    rfc:document.getElementById('fcRfc')?.value.trim().toUpperCase()||null,
+    contacto_principal:document.getElementById('fcContacto')?.value.trim()||null,
+    email:document.getElementById('fcEmail')?.value.trim()||null,
+    telefono:document.getElementById('fcTel1')?.value.trim()||null,
+    telefono2:document.getElementById('fcTel2')?.value.trim()||null,
+    escritorio_servicios:document.getElementById('fcEscritorio')?.value.trim()||null,
+    vendedor_asignado:document.getElementById('fcVendedor')?.value||null,
+    cliente_padre_id:document.getElementById('fcPadreId')?.value||null,
+    updated_at:new Date().toISOString()
+  };
+  // Si se vincula a padre, heredar datos de contacto
+  if(payload.cliente_padre_id){
+    const padre=(window._cartClientes||[]).find(p=>p.id===payload.cliente_padre_id);
+    if(padre){
+      if(!payload.telefono&&padre.telefono) payload.telefono=padre.telefono;
+      if(!payload.telefono2&&padre.telefono2) payload.telefono2=padre.telefono2;
+      if(!payload.email&&padre.email) payload.email=padre.email;
+      if(!payload.vendedor_asignado&&padre.vendedor_asignado) payload.vendedor_asignado=padre.vendedor_asignado;
+    }
+  }
+  const {error}=await sb.from('clientes_cartera').update(payload).eq('id',id);
+  if(error){msg.textContent='Error: '+error.message;return;}
+  document.getElementById('modalFichaCliente').remove();
+  renderCarteraVendedor();
 }
 
 function onCarteraFiltroChange(){
   carteraFiltroTexto=document.getElementById('carteraFiltroTextoInput')?.value||'';
   carteraFiltroProducto=document.getElementById('carteraFiltroProductoInput')?.value||'';
-  carteraFiltroPeriodicidad=document.getElementById('carteraFiltroPeriodicidadInput')?.value||'';
   swCartera(currentCarteraSub);
 }
 
