@@ -4366,7 +4366,7 @@ async function renderVendorAnual(){
   // Load all months of current year
   const desde=`${currentYear}-01-01`;
   const hasta=`${currentYear}-12-31`;
-  const {data:regs}=await sb.from('registros_diarios').select('fecha,svc,aspel,it,diplomados')
+  const {data:regs}=await sb.from('registros_diarios').select('fecha,svc,aspel,it,diplomados,monto_cotizaciones,cotizaciones')
     .eq('usuario_id',currentUser.id).gte('fecha',desde).lte('fecha',hasta).order('fecha');
 
   // Load kpi_config for all months — necesitamos svc (meta) y meta_depto (para calcular tasa real, igual que el director)
@@ -4380,13 +4380,14 @@ async function renderVendorAnual(){
 
   // Aggregate by month
   const mesesData={};
-  for(let m=1;m<=12;m++) mesesData[m]={svc:0,aspel:0,it:0,dip:0,meta:metasPorMes[m]||80000,dias:0};
+  for(let m=1;m<=12;m++) mesesData[m]={svc:0,aspel:0,it:0,dip:0,cotizaciones:0,meta:metasPorMes[m]||80000,dias:0};
   for(const r of regs||[]){
     const m=parseInt(r.fecha.slice(5,7));
     mesesData[m].svc+=r.svc||0;
     mesesData[m].aspel+=r.aspel||0;
     mesesData[m].it+=r.it||0;
     mesesData[m].dip+=r.diplomados||0;
+    mesesData[m].cotizaciones+=r.monto_cotizaciones||0;
     mesesData[m].dias++;
   }
 
@@ -4414,6 +4415,18 @@ async function renderVendorAnual(){
   const totalComisionAnio=Object.values(comisionPorMes).reduce((s,c)=>s+c,0);
   const chartComm=[];
   for(let m=1;m<=12;m++) chartComm.push(Math.round(comisionPorMes[m]||0));
+
+  // ── MÉTRICAS DE RENDIMIENTO ──────────────────────────────────────────────
+  const totalSvcAnioTemp=Object.values(mesesData).reduce((s,md)=>s+md.svc,0);
+  const diasConSvcAnio=(regs||[]).filter(r=>(r.svc||0)>0).length;
+  const ticketPromedioAnio=diasConSvcAnio>0?totalSvcAnioTemp/diasConSvcAnio:0;
+  const totalCotizacionesAnio=Object.values(mesesData).reduce((s,md)=>s+md.cotizaciones,0);
+  const tasaConversionAnio=totalCotizacionesAnio>0?totalSvcAnioTemp/totalCotizacionesAnio:null;
+  const mesActualNum=new Date().getMonth()+1;
+  const dataMesActual=mesesData[mesActualNum]||{svc:0,cotizaciones:0,dias:0};
+  const diasConSvcMes=(regs||[]).filter(r=>(r.svc||0)>0&&parseInt(r.fecha.slice(5,7))===mesActualNum).length;
+  const ticketPromedioMes=diasConSvcMes>0?dataMesActual.svc/diasConSvcMes:0;
+  const tasaConversionMes=dataMesActual.cotizaciones>0?dataMesActual.svc/dataMesActual.cotizaciones:null;
 
   const MESES_N=['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
   const MESES_FULL=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -4514,6 +4527,38 @@ async function renderVendorAnual(){
   +'<div class="thc"><div class="th-lbl">Aspel + IT acum.</div>'
   +'<div class="th-val">'+fmtK(totalAspel)+'</div>'
   +'<div class="th-sub">ventas complementarias</div></div></div>'
+  // ── MÉTRICAS DE RENDIMIENTO ──────────────────────────────────────────────
+  +'<div class="shead">Métricas de rendimiento</div>'
+  +'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">'
+  // Ticket promedio del año
+  +`<div class="card" style="padding:16px;">
+      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Ticket promedio ${currentYear}</div>
+      <div style="font-size:22px;font-weight:700;color:var(--teal);font-family:'JetBrains Mono',monospace;">${ticketPromedioAnio>0?fmt(ticketPromedioAnio):'—'}</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">por día con ventas · ${diasConSvcAnio} días</div>
+    </div>`
+  // Tasa de conversión del año
+  +`<div class="card" style="padding:16px;">
+      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Conversión ${currentYear}</div>
+      <div style="font-size:22px;font-weight:700;color:${tasaConversionAnio!==null?(tasaConversionAnio>=0.5?'#27AE60':tasaConversionAnio>=0.3?'#F5A623':'#E84040'):'var(--text3)'};font-family:'JetBrains Mono',monospace;">
+        ${tasaConversionAnio!==null?Math.round(tasaConversionAnio*100)+'%':'—'}
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">de ${totalCotizacionesAnio>0?fmt(totalCotizacionesAnio):'—'} cotizado se cerró</div>
+    </div>`
+  // Ticket promedio del mes actual
+  +`<div class="card" style="padding:16px;border-left:3px solid var(--teal);">
+      <div style="font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Ticket promedio ${MESES_N[mesActualNum]}</div>
+      <div style="font-size:22px;font-weight:700;color:var(--navy);font-family:'JetBrains Mono',monospace;">${ticketPromedioMes>0?fmt(ticketPromedioMes):'—'}</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">por día con ventas · ${diasConSvcMes} días</div>
+    </div>`
+  // Tasa de conversión del mes actual
+  +`<div class="card" style="padding:16px;border-left:3px solid var(--teal);">
+      <div style="font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Conversión ${MESES_N[mesActualNum]}</div>
+      <div style="font-size:22px;font-weight:700;color:${tasaConversionMes!==null?(tasaConversionMes>=0.5?'#27AE60':tasaConversionMes>=0.3?'#F5A623':'#E84040'):'var(--text3)'};font-family:'JetBrains Mono',monospace;">
+        ${tasaConversionMes!==null?Math.round(tasaConversionMes*100)+'%':'—'}
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">de ${dataMesActual.cotizaciones>0?fmt(dataMesActual.cotizaciones):'—'} cotizado se cerró</div>
+    </div>`
+  +'</div>'
   // COMISIONES RECIBIDAS
   +'<div class="shead">Comisiones recibidas '+currentYear+'</div>'
   +'<div class="chart-card" style="margin-bottom:20px;">'
