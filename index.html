@@ -3147,7 +3147,7 @@ async function abrirDetalle(id){
   // Fetch historial en paralelo
   const [evRes, llRes, vendRes, campRelRes, allUsersRes]=await Promise.all([
     sb.from('prospecto_eventos').select('*').eq('prospecto_id',id).order('fecha_registro',{ascending:true}),
-    sb.from('prospecto_llamadas').select('*').eq('prospecto_id',id).order('fecha',{ascending:false}),
+    sb.from('prospecto_llamadas').select('*').eq('prospecto_id',id).order('created_at',{ascending:false}),
     sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre'),
     sb.from('campana_prospectos').select('campana_id,fecha_agregado').eq('prospecto_id',id).order('fecha_agregado',{ascending:false}),
     sb.from('usuarios').select('id,nombre')
@@ -3326,19 +3326,7 @@ async function abrirDetalle(id){
           🗂 Historial de llamadas (${llamadas.length})
         </div>
         <div id="histLlamadas">
-          ${llamadas.length===0
-            ? `<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin llamadas registradas</div>`
-            : llamadas.map(l=>{
-                const res=l.resultado||'';
-                const col=res==='Interesado'?'#27AE60':res==='No le interesa'||res==='Buzón'?'#E74C3C':res==='Volver a llamar'?'#F5A623':'#888';
-                return `<div style="border-left:3px solid ${col};padding:8px 12px;margin-bottom:7px;background:var(--surface);border-radius:0 var(--radsm) var(--radsm) 0;font-size:12px;">
-                  <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
-                    <span style="font-weight:600;color:${col};">${res}</span>
-                    <span style="color:var(--text3);">${l.fecha||'—'}</span>
-                  </div>
-                  ${l.notas?`<div style="color:var(--text);font-size:11px;">${l.notas}</div>`:''}
-                </div>`;
-              }).join('')}
+          ${renderLlamadasHtml(llamadas)}
         </div>
       </div>
 
@@ -3368,12 +3356,16 @@ async function abrirDetalle(id){
           </button>
         </div>`
       :`<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;gap:8px;position:sticky;bottom:0;background:var(--surface);">
-          <button onclick="guardarProspecto('${p.id}')"
+          <button onclick="guardarYCerrar('${p.id}')"
             style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
-            Guardar
+            Guardar y cerrar
+          </button>
+          <button onclick="guardarYSiguiente('${p.id}')"
+            style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+            Guardar y siguiente →
           </button>
           <a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}" target="_blank"
-            style="background:#25D366;color:#fff;border:none;border-radius:var(--radsm);padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;white-space:nowrap;">
+            style="background:#25D366;color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;white-space:nowrap;">
             WhatsApp
           </a>
         </div>`}
@@ -3393,9 +3385,45 @@ function onResultadoLlamadaChange(){
   if(campoMonto) campoMonto.style.display=valor==='Compró el taller 24/7'?'block':'none';
 }
 
+function renderLlamadasHtml(llamadas){
+  if(!llamadas||!llamadas.length)
+    return `<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin llamadas registradas</div>`;
+  return llamadas.map(l=>{
+    const res=l.resultado||'';
+    const col=res==='Interesado'?'#27AE60':res==='No le interesa'?'#E74C3C':res==='Buzón'?'#E74C3C':res==='Volver a llamar'?'#F5A623':res==='Canalizado a ventas'?'var(--teal)':res==='Compró el taller 24/7'?'var(--teal)':'#888';
+    // Mostrar fecha y hora si está disponible
+    let fechaHora='—';
+    if(l.created_at){
+      const d=new Date(l.created_at);
+      const fecha=`${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}/${d.getFullYear()}`;
+      const hora=`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+      fechaHora=`${fecha} ${hora}`;
+    } else if(l.fecha){
+      const[y,m,dd]=l.fecha.split('-');
+      fechaHora=`${dd}/${m}/${y}`;
+    }
+    const asesor=l.usuarios?.nombre;
+    return `<div style="border-left:3px solid ${col};padding:8px 12px;margin-bottom:7px;background:var(--surface);border-radius:0 var(--radsm) var(--radsm) 0;font-size:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3px;">
+        <span style="font-weight:600;color:${col};">${res}</span>
+        <span style="color:var(--text3);font-size:10px;text-align:right;">${fechaHora}${asesor&&asesor!=='—'?`<br><span style="color:var(--text3);">${asesor}</span>`:''}</span>
+      </div>
+      ${l.notas?`<div style="color:var(--text);font-size:11px;">${l.notas}</div>`:''}
+    </div>`;
+  }).join('');
+}
+
 async function registrarLlamada(prospecto_id){
   const resultado=document.querySelector('input[name="resLlamada"]:checked')?.value;
   if(!resultado){alert('Selecciona el resultado de la llamada');return;}
+  // Nota obligatoria para todo excepto "No contestó" y "Buzón"
+  const notaOpcional=['No contestó','Buzón'];
+  const notas=document.getElementById('notasLlamada')?.value.trim()||'';
+  if(!notaOpcional.includes(resultado)&&!notas){
+    alert('Para el resultado "'+resultado+'" es obligatorio escribir una nota antes de guardar.');
+    document.getElementById('notasLlamada')?.focus();
+    return;
+  }
   let vendedorId=null, montoCompra=null;
   if(resultado==='Canalizado a ventas'){
     vendedorId=document.getElementById('vendedorCanaliza')?.value;
@@ -3405,15 +3433,15 @@ async function registrarLlamada(prospecto_id){
     montoCompra=parseFloat(document.getElementById('montoCompra24_7')?.value);
     if(!montoCompra||montoCompra<=0){alert('Ingresa el monto de la venta');return;}
   }
-  const notas=document.getElementById('notasLlamada')?.value||'';
-  const hoy=new Date().toISOString().split('T')[0];
+  const ahora=new Date();
+  const hoy=ahora.toISOString().split('T')[0];
   const {error}=await sb.from('prospecto_llamadas').insert({
     prospecto_id, usuario_id:currentUser.id,
-    fecha:hoy, resultado, notas
+    fecha:hoy, resultado, notas, created_at:ahora.toISOString()
   });
   if(error){alert('Error al guardar: '+error.message);return;}
   // Update fecha_contacto in prospectos
-  const updProspecto={fecha_contacto:hoy,updated_at:new Date().toISOString()};
+  const updProspecto={fecha_contacto:hoy,updated_at:ahora.toISOString()};
   if(resultado==='Canalizado a ventas'){
     updProspecto.estatus='Canalizado a ventas';
     updProspecto.vendedor_asignado=vendedorId;
@@ -3424,40 +3452,26 @@ async function registrarLlamada(prospecto_id){
   await sb.from('prospectos').update(updProspecto).eq('id',prospecto_id);
   const p=window._prospectos?.find(p=>p.id===prospecto_id);
   if(p) Object.assign(p,updProspecto);
-  // Si compró, sumar el monto a la venta de cursos del día (registros_diarios.venta_cursos_tele)
+  // Si compró, sumar el monto a la venta de cursos del día
   if(resultado==='Compró el taller 24/7'){
     const {data:regHoy}=await sb.from('registros_diarios').select('venta_cursos_tele').eq('usuario_id',currentUser.id).eq('fecha',hoy).maybeSingle();
     const nuevoTotal=(regHoy?.venta_cursos_tele||0)+montoCompra;
     const {error:errVenta}=await sb.from('registros_diarios').upsert({
-      usuario_id:currentUser.id,fecha:hoy,venta_cursos_tele:nuevoTotal,updated_at:new Date().toISOString()
+      usuario_id:currentUser.id,fecha:hoy,venta_cursos_tele:nuevoTotal,updated_at:ahora.toISOString()
     },{onConflict:'usuario_id,fecha'});
     if(errVenta){alert('La llamada se guardó, pero hubo un error al registrar la venta del día: '+errVenta.message);}
   }
-  // Refresh call history in modal
-  const {data:llamadasRaw}=await sb.from('prospecto_llamadas').select('*').eq('prospecto_id',prospecto_id).order('fecha',{ascending:false});
+  // Refresh historial
+  const {data:llamadasRaw}=await sb.from('prospecto_llamadas').select('*').eq('prospecto_id',prospecto_id).order('created_at',{ascending:false});
   const {data:todosUsuariosRefresh}=await sb.from('usuarios').select('id,nombre');
   const llamadas=(llamadasRaw||[]).map(l=>({...l,usuarios:{nombre:(todosUsuariosRefresh||[]).find(u=>u.id===l.usuario_id)?.nombre||'—'}}));
   const hist=document.getElementById('histLlamadas');
-  if(hist){
-    const ls=llamadas||[];
-    hist.innerHTML=ls.length===0
-      ? `<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin llamadas registradas</div>`
-      : ls.map(l=>{
-          const res=l.resultado||'';
-          const col=res==='Interesado'?'#27AE60':res==='No le interesa'||res==='Buzón'?'#E74C3C':res==='Volver a llamar'?'#F5A623':'#888';
-          return `<div style="border-left:3px solid ${col};padding:8px 12px;margin-bottom:7px;background:var(--surface);border-radius:0 var(--radsm) var(--radsm) 0;font-size:12px;">
-            <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
-              <span style="font-weight:600;color:${col};">${res}</span>
-              <span style="color:var(--text3);">${l.fecha||'—'}</span>
-            </div>
-            ${l.notas?`<div style="color:var(--text);font-size:11px;">${l.notas}</div>`:''}
-          </div>`;
-        }).join('');
-  }
+  if(hist) hist.innerHTML=renderLlamadasHtml(llamadas);
   // Reset form
   document.querySelectorAll('input[name="resLlamada"]').forEach(r=>r.checked=false);
   const nt=document.getElementById('notasLlamada');
   if(nt) nt.value='';
+  onResultadoLlamadaChange();
 }
 
 async function guardarDatosProspecto(id){
@@ -3478,6 +3492,26 @@ async function guardarDatosProspecto(id){
   if(headerNombre) headerNombre.textContent=nombre;
   const row=document.getElementById('row_'+id);
   if(row&&p) row.outerHTML=filaProspecto(p);
+}
+
+async function guardarYCerrar(id){
+  await guardarProspecto(id);
+  document.getElementById('modalDetalle')?.remove();
+}
+
+async function guardarYSiguiente(id){
+  await guardarProspecto(id);
+  // Encontrar el siguiente prospecto en la lista
+  const ps=window._prospectos||[];
+  const idx=ps.findIndex(p=>p.id===id);
+  const siguiente=ps[idx+1];
+  if(siguiente){
+    document.getElementById('modalDetalle')?.remove();
+    await abrirDetalle(siguiente.id);
+  } else {
+    document.getElementById('modalDetalle')?.remove();
+    alert('Este era el último prospecto de la lista.');
+  }
 }
 
 async function guardarProspecto(id){
