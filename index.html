@@ -3129,6 +3129,15 @@ const RESULTADOS_LLAMADA=[
   'Canalizado a ventas','Compró el taller 24/7'
 ];
 
+async function abrirDetalleDir(id){
+  // Asegurar que _prospectos tenga los datos del director
+  if(!window._prospectos||!window._prospectos.find(p=>p.id===id)){
+    window._prospectos=window._dirProspectos||[];
+  }
+  window._modalModoDirector=true; // flag para ocultar sección de registrar llamada
+  await abrirDetalle(id);
+}
+
 async function abrirDetalle(id){
   const ps=window._prospectos||[];
   const idx=ps.findIndex(p=>p.id===id);
@@ -3190,7 +3199,7 @@ async function abrirDetalle(id){
         <div style="display:flex;gap:6px;align-items:center;">
           ${navBtn('prev',!hasPrev)}
           ${navBtn('next',!hasNext)}
-          <button onclick="document.getElementById('modalDetalle').remove()"
+          <button onclick="document.getElementById('modalDetalle').remove();window._modalModoDirector=false;"
             style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);padding:0 4px;line-height:1;">✕</button>
         </div>
       </div>
@@ -3279,8 +3288,8 @@ async function abrirDetalle(id){
             </div>`).join('')}
       </div>
 
-      <!-- NUEVA LLAMADA -->
-      <div style="background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);padding:14px;">
+      <!-- NUEVA LLAMADA — solo visible para telemarketing/vendedores, no para director -->
+      ${window._modalModoDirector ? '' : `<div style="background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);padding:14px;">
         <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">
           📞 Registrar llamada
         </div>
@@ -3309,7 +3318,7 @@ async function abrirDetalle(id){
           style="margin-top:8px;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
           Guardar llamada
         </button>
-      </div>
+      </div>`}
 
       <!-- HISTORIAL LLAMADAS -->
       <div>
@@ -3334,29 +3343,40 @@ async function abrirDetalle(id){
       </div>
 
       <!-- NOTAS + ESTATUS -->
-      <div>
-        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">
-          ✏️ Notas y estatus
-        </div>
-        <select id="estatusModal" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;margin-bottom:8px;color:${ESTATUS_COLORS[p.estatus]||'#888'};font-weight:600;">
-          ${Object.keys(ESTATUS_COLORS).map(e=>`<option value="${e}" ${e===p.estatus?'selected':''}>${e}</option>`).join('')}
-        </select>
-        <textarea id="notasModal" placeholder="Notas generales del prospecto..." rows="3"
-          style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;resize:vertical;box-sizing:border-box;">${p.notas||''}</textarea>
-      </div>
+      ${window._modalModoDirector
+        ?`<div style="background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);padding:14px;">
+            <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">Notas</div>
+            <div style="font-size:12px;color:var(--text);">${p.notas||'<span style="font-style:italic;color:var(--text3);">Sin notas</span>'}</div>
+            <div style="margin-top:8px;font-size:11px;color:var(--text3);">Estatus: <span style="font-weight:600;color:${ESTATUS_COLORS[p.estatus]||'#888'};">${p.estatus}</span></div>
+          </div>`
+        :`<div>
+            <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">✏️ Notas y estatus</div>
+            <select id="estatusModal" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;margin-bottom:8px;color:${ESTATUS_COLORS[p.estatus]||'#888'};font-weight:600;">
+              ${Object.keys(ESTATUS_COLORS).map(e=>`<option value="${e}" ${e===p.estatus?'selected':''}>${e}</option>`).join('')}
+            </select>
+            <textarea id="notasModal" placeholder="Notas generales del prospecto..." rows="3"
+              style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;resize:vertical;box-sizing:border-box;">${p.notas||''}</textarea>
+          </div>`}
     </div>
 
     <!-- FOOTER -->
-    <div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;gap:8px;position:sticky;bottom:0;background:var(--surface);">
-      <button onclick="guardarProspecto('${p.id}')"
-        style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
-        Guardar
-      </button>
-      <a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}" target="_blank"
-        style="background:#25D366;color:#fff;border:none;border-radius:var(--radsm);padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;white-space:nowrap;">
-        WhatsApp
-      </a>
-    </div>
+    ${window._modalModoDirector
+      ?`<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;gap:8px;position:sticky;bottom:0;background:var(--surface);">
+          <button onclick="document.getElementById('modalDetalle').remove();window._modalModoDirector=false;"
+            style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+            Cerrar
+          </button>
+        </div>`
+      :`<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;gap:8px;position:sticky;bottom:0;background:var(--surface);">
+          <button onclick="guardarProspecto('${p.id}')"
+            style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+            Guardar
+          </button>
+          <a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}" target="_blank"
+            style="background:#25D366;color:#fff;border:none;border-radius:var(--radsm);padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;white-space:nowrap;">
+            WhatsApp
+          </a>
+        </div>`}
   </div>`;
 
   // Remove existing modal if open
@@ -3598,7 +3618,9 @@ async function renderDirectorCRM(){
         ${ps.map(p=>{
           const col=ESTATUS_COLORS[p.estatus]||'#888';
           return `<tr>
-            <td style="font-weight:500;">${p.nombre}</td>
+            <td style="font-weight:500;">
+              <span onclick="abrirDetalleDir('${p.id}')" style="cursor:pointer;color:var(--navy);border-bottom:1px solid rgba(13,34,64,0.2);" title="Ver detalle">${p.nombre}</span>
+            </td>
             <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
             <td style="font-size:11px;color:var(--text3);">${p.evento||'—'}</td>
             <td style="font-size:11px;">${p.usuarios?.nombre||'—'}</td>
@@ -3611,6 +3633,7 @@ async function renderDirectorCRM(){
     </table>
   </div>`;
   window._dirProspectos=ps;
+  window._prospectos=ps; // también en _prospectos para que abrirDetalle funcione
   window._dirUsers=users||[];
 }
 
@@ -3630,7 +3653,9 @@ function dirFiltrar(){
   tbody.innerHTML=f.map(p=>{
     const col=ESTATUS_COLORS[p.estatus]||'#888';
     return `<tr>
-      <td style="font-weight:500;">${p.nombre}</td>
+      <td style="font-weight:500;">
+        <span onclick="abrirDetalleDir('${p.id}')" style="cursor:pointer;color:var(--navy);border-bottom:1px solid rgba(13,34,64,0.2);" title="Ver detalle">${p.nombre}</span>
+      </td>
       <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
       <td style="font-size:11px;color:var(--text3);">${p.evento||'—'}</td>
       <td style="font-size:11px;">${p.usuarios?.nombre||'—'}</td>
