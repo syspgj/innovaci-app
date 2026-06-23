@@ -57,6 +57,10 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
 /* ── TABS ── */
 .tabs{display:flex;border-bottom:1px solid var(--border);background:var(--surface);padding:0 24px;overflow-x:auto;}
 .tab{padding:12px 16px;font-size:13px;font-weight:500;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;}
+.cartera-subtab{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;color:var(--text2);}
+.cartera-subtab.active{background:var(--navy);color:#fff;border-color:var(--navy);}
+.cartera-th-sort{cursor:pointer;user-select:none;white-space:nowrap;}
+.cartera-th-sort:hover{color:var(--teal);}
 .tab.active{color:var(--teal);border-bottom-color:var(--teal);}
 
 /* ── MAIN ── */
@@ -1185,16 +1189,6 @@ async function renderCarteraVendedor(){
   </div>
   <div id="carteraContenido"></div>`;
 
-  // Estilos de las sub-tabs (inyectados una vez)
-  if(!document.getElementById('carteraSubStyles')){
-    const style=document.createElement('style');
-    style.id='carteraSubStyles';
-    style.textContent=`.cartera-subtab{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;color:var(--text2);}
-      .cartera-subtab.active{background:var(--navy);color:#fff;border-color:var(--navy);}
-      .cartera-th-sort{cursor:pointer;user-select:none;white-space:nowrap;}
-      .cartera-th-sort:hover{color:var(--teal);}`;
-    document.head.appendChild(style);
-  }
   swCartera(currentCarteraSub);
 }
 
@@ -1600,22 +1594,57 @@ async function renderDirectorCartera(){
   const noRenovadas=(todas||[]).filter(c=>c.estado==='no_renovada').length;
 
   mc.innerHTML=`
-  <div style="margin-bottom:16px;">
-    <div style="font-size:18px;font-weight:600;color:var(--text);">Cartera de cuentas — Auditoría</div>
-    <div style="font-size:12px;color:var(--text3);">Vista completa de las 243 cuentas, por vendedor. Útil para comparar contra el PDF de comisiones del mes.</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
+    <div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);">Cartera de cuentas</div>
+      <div style="font-size:12px;color:var(--text3);">Auditoría y campañas de llamadas a clientes activos.</div>
+    </div>
+    <div style="display:flex;gap:6px;">
+      <button onclick="swDirCartera('auditoria')" id="dirCarteraTab_auditoria" class="cartera-subtab active">📊 Auditoría</button>
+      <button onclick="swDirCartera('campanas')" id="dirCarteraTab_campanas" class="cartera-subtab">📞 Campañas de cartera</button>
+    </div>
   </div>
+  <div id="dirCarteraContenidoMain"></div>`;
+
+  swDirCartera('auditoria');
+}
+
+let _dirCarteraSubActual='auditoria';
+function swDirCartera(sub){
+  _dirCarteraSubActual=sub;
+  ['auditoria','campanas'].forEach(s=>{
+    const btn=document.getElementById('dirCarteraTab_'+s);
+    if(btn) btn.classList.toggle('active',s===sub);
+  });
+  const mc=document.getElementById('dirCarteraContenidoMain');
+  if(!mc) return;
+  if(sub==='auditoria') renderDirCarteraAuditoria();
+  else renderDirCarteraCampanas();
+}
+
+function renderDirCarteraAuditoria(){
+  const mc=document.getElementById('dirCarteraContenidoMain');
+  if(!mc) return;
+  const todas=window._carteraTodas||[];
+  const vendedores=window._carteraVendedores||[];
+  const productos=[...new Set(todas.map(c=>c.producto).filter(Boolean))].sort();
+  const totalCuentas=todas.length;
+  const sinReclamar=todas.filter(c=>c.estado==='sin_reclamar').length;
+  const reclamadas=todas.filter(c=>['reclamada','en_revision'].includes(c.estado)).length;
+  const noRenovadas=todas.filter(c=>c.estado==='no_renovada').length;
+  mc.innerHTML=`
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
     <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Total cuentas</div><div style="font-size:20px;font-weight:700;color:var(--text);">${totalCuentas}</div></div>
     <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Sin reclamar</div><div style="font-size:20px;font-weight:700;color:var(--gold);">${sinReclamar}</div></div>
     <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Reclamadas (activas)</div><div style="font-size:20px;font-weight:700;color:var(--teal);">${reclamadas}</div></div>
-    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">No renovadas (posible robo)</div><div style="font-size:20px;font-weight:700;color:var(--red);">${noRenovadas}</div></div>
+    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">No renovadas</div><div style="font-size:20px;font-weight:700;color:var(--red);">${noRenovadas}</div></div>
   </div>
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
     <input type="text" id="dirCarteraFiltroTextoInput" placeholder="Buscar por razón social o RFC..." value="${carteraFiltroTexto}" oninput="onDirCarteraFiltroChange()" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
     <select id="dirCarteraFiltroVendedorInput" onchange="onDirCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
       <option value="">Todos los vendedores</option>
       <option value="__sin_asignar__" ${dirCarteraVendedorFiltro==='__sin_asignar__'?'selected':''}>Sin asignar</option>
-      ${(vendedores||[]).map(v=>`<option value="${v.id}" ${dirCarteraVendedorFiltro===v.id?'selected':''}>${v.nombre}</option>`).join('')}
+      ${vendedores.map(v=>`<option value="${v.id}" ${dirCarteraVendedorFiltro===v.id?'selected':''}>${v.nombre}</option>`).join('')}
     </select>
     <select id="dirCarteraFiltroProductoInput" onchange="onDirCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
       <option value="">Todos los productos</option>
@@ -1623,9 +1652,9 @@ async function renderDirectorCartera(){
     </select>
     <select id="dirCarteraFiltroPeriodicidadInput" onchange="onDirCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
       <option value="">Toda periodicidad</option>
-      <option value="mensual" ${carteraFiltroPeriodicidad==='mensual'?'selected':''}>Mensual</option>
-      <option value="semestral" ${carteraFiltroPeriodicidad==='semestral'?'selected':''}>Semestral</option>
-      <option value="anual" ${carteraFiltroPeriodicidad==='anual'?'selected':''}>Anual</option>
+      <option value="mensual">Mensual</option>
+      <option value="semestral">Semestral</option>
+      <option value="anual">Anual</option>
     </select>
     <select id="dirCarteraFiltroEstadoInput" onchange="onDirCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
       <option value="">Todo estado</option>
@@ -1637,15 +1666,189 @@ async function renderDirectorCartera(){
     </select>
   </div>
   <div id="dirCarteraContenido"></div>`;
-
-  if(!document.getElementById('carteraSubStyles')){
-    const style=document.createElement('style');
-    style.id='carteraSubStyles';
-    style.textContent=`.cartera-th-sort{cursor:pointer;user-select:none;white-space:nowrap;}
-      .cartera-th-sort:hover{color:var(--teal);}`;
-    document.head.appendChild(style);
-  }
   renderDirCarteraContenido();
+}
+
+async function renderDirCarteraCampanas(){
+  const mc=document.getElementById('dirCarteraContenidoMain');
+  if(!mc) return;
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
+  // Cargar campañas de cartera (tabla nueva: campanas_cartera)
+  const [{data:campanas},{data:teleUsers}]=await Promise.all([
+    sb.from('campanas_cartera').select('*').order('created_at',{ascending:false}),
+    sb.from('usuarios').select('id,nombre').eq('rol','telemarketing').order('nombre')
+  ]);
+  const camp=campanas||[];
+  mc.innerHTML=`
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+    <div>
+      <div style="font-size:15px;font-weight:600;color:var(--text);">Campañas de llamadas a clientes</div>
+      <div style="font-size:12px;color:var(--text3);">Asigna a Joshua una lista de cuentas activas para contactar — separado de los prospectos de masterclass.</div>
+    </div>
+    <button onclick="abrirNuevaCampanaCartera()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Nueva campaña</button>
+  </div>
+  ${camp.length===0?`<div style="text-align:center;padding:50px;color:var(--text3);">No hay campañas de cartera creadas aún. Crea una para asignarle cuentas a Joshua.</div>`
+  :`<div style="display:grid;gap:12px;">${camp.map(c=>{
+    const asignado=teleUsers.find(u=>u.id===c.asignado_a);
+    const activa=c.activa;
+    return `<div class="card" style="padding:16px;border-left:4px solid ${activa?'var(--teal)':'var(--border)'};">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+        <div style="flex:1;">
+          <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:4px;">${c.nombre}</div>
+          <div style="font-size:11px;color:var(--text3);">${c.descripcion||''}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:4px;">
+            ${asignado?`Asignada a: <strong>${asignado.nombre}</strong> · `:''}
+            ${c.total_cuentas||0} cuentas · 
+            <span style="color:${activa?'#27AE60':'var(--text3)'};">${activa?'● Activa':'Inactiva'}</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+          <button onclick="gestionarCampanaCartera('${c.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Gestionar</button>
+          ${activa
+            ?`<button onclick="toggleCampanaCartera('${c.id}',false)" style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:5px;padding:5px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Desactivar</button>`
+            :`<button onclick="toggleCampanaCartera('${c.id}',true)" style="background:rgba(39,174,96,0.1);color:#27AE60;border:1px solid rgba(39,174,96,0.3);border-radius:5px;padding:5px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Activar</button>`}
+        </div>
+      </div>
+    </div>`;
+  }).join('')}</div>`}`;
+}
+
+function abrirNuevaCampanaCartera(){
+  const teleUsers=window._carteraVendedores||[];
+  // Cargar usuarios de telemarketing
+  sb.from('usuarios').select('id,nombre').eq('rol','telemarketing').then(({data:tele})=>{
+    const modal=document.createElement('div');
+    modal.id='modalNuevaCampCartera';
+    modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;';
+    modal.innerHTML=`
+    <div style="background:#fff;border-radius:12px;padding:24px;max-width:440px;width:100%;">
+      <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:16px;">Nueva campaña de cartera</div>
+      <div style="display:grid;gap:10px;">
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Nombre de la campaña</label>
+          <input type="text" id="ncNombre" placeholder="Ej: Taller Hojas Fiscales COI - Julio 2026" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Descripción / objetivo</label>
+          <input type="text" id="ncDesc" placeholder="Ej: Invitar a clientes COI al taller del 2 de julio" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Asignar a</label>
+          <select id="ncAsignado" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+            <option value="">Selecciona un asesor de telemarketing...</option>
+            ${(tele||[]).map(u=>`<option value="${u.id}">${u.nombre}</option>`).join('')}
+          </select></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha inicio</label>
+            <input type="date" id="ncInicio" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+          <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha fin</label>
+            <input type="date" id="ncFin" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:16px;">
+        <button onclick="guardarNuevaCampanaCartera()" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Crear campaña</button>
+        <button onclick="document.getElementById('modalNuevaCampCartera').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;font-family:'Inter',sans-serif;">Cancelar</button>
+      </div>
+      <div id="ncMsg" style="font-size:11px;color:var(--red);margin-top:8px;"></div>
+    </div>`;
+    document.body.appendChild(modal);
+  });
+}
+
+async function guardarNuevaCampanaCartera(){
+  const nombre=document.getElementById('ncNombre')?.value.trim();
+  const msg=document.getElementById('ncMsg');
+  if(!nombre){msg.textContent='El nombre es obligatorio';return;}
+  const asignado=document.getElementById('ncAsignado')?.value||null;
+  if(!asignado){msg.textContent='Selecciona a quién asignar la campaña';return;}
+  const payload={
+    nombre,descripcion:document.getElementById('ncDesc')?.value.trim()||null,
+    asignado_a:asignado,activa:false,total_cuentas:0,
+    fecha_inicio:document.getElementById('ncInicio')?.value||null,
+    fecha_fin:document.getElementById('ncFin')?.value||null,
+    created_at:new Date().toISOString()
+  };
+  const {error}=await sb.from('campanas_cartera').insert(payload);
+  if(error){msg.textContent='Error: '+error.message;return;}
+  document.getElementById('modalNuevaCampCartera').remove();
+  renderDirCarteraCampanas();
+}
+
+async function toggleCampanaCartera(id,activar){
+  const {error}=await sb.from('campanas_cartera').update({activa:activar,updated_at:new Date().toISOString()}).eq('id',id);
+  if(error){alert('Error: '+error.message);return;}
+  renderDirCarteraCampanas();
+}
+
+async function gestionarCampanaCartera(campanaId){
+  const mc=document.getElementById('dirCarteraContenidoMain');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
+  const [{data:camp},{data:cuentasEnCamp},{data:todasCuentas}]=await Promise.all([
+    sb.from('campanas_cartera').select('*').eq('id',campanaId).maybeSingle(),
+    sb.from('campana_cartera_cuentas').select('cuenta_id').eq('campana_id',campanaId),
+    sb.from('cuentas_cartera').select('id,numserie,razon_social,rfc,producto,telefono,tipo_cliente').order('razon_social')
+  ]);
+  if(!camp){mc.innerHTML='<div style="padding:20px;color:var(--red);">Campaña no encontrada</div>';return;}
+  const idsEnCamp=new Set((cuentasEnCamp||[]).map(r=>r.cuenta_id));
+  const productos=[...new Set(todasCuentas.map(c=>c.producto).filter(Boolean))].sort();
+
+  mc.innerHTML=`
+  <button onclick="renderDirCarteraCampanas()" style="background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;margin-bottom:12px;">← Volver a campañas</button>
+  <div class="card" style="padding:16px;margin-bottom:16px;">
+    <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px;">${camp.nombre}</div>
+    <div style="font-size:12px;color:var(--text3);">${idsEnCamp.size} cuentas seleccionadas · ${camp.activa?'<span style="color:#27AE60;">● Activa</span>':'Inactiva'}</div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+      <select id="campCartFiltProd" onchange="filtrarListaCampCartera('${campanaId}')" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">
+        <option value="">Todos los productos</option>
+        ${productos.map(p=>`<option value="${p}">${p}</option>`).join('')}
+      </select>
+      <input type="text" id="campCartBuscar" placeholder="Buscar..." oninput="filtrarListaCampCartera('${campanaId}')" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;width:180px;">
+      <button onclick="guardarSeleccionCampCartera('${campanaId}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;margin-left:auto;">💾 Guardar selección</button>
+    </div>
+  </div>
+  <div class="card" style="max-height:500px;overflow-y:auto;">
+    <div id="listaCampCartera">
+      ${(todasCuentas||[]).map(c=>`
+        <label style="display:flex;align-items:center;gap:10px;padding:8px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;" class="camp-cart-fila">
+          <input type="checkbox" data-id="${c.id}" ${idsEnCamp.has(c.id)?'checked':''} style="accent-color:var(--teal);">
+          <span style="flex:1;">
+            <span style="font-weight:500;">${c.razon_social||'Sin nombre'}</span>
+            <span style="color:var(--text3);margin-left:6px;font-size:10px;">${c.rfc||''}</span>
+          </span>
+          <span style="font-size:10px;color:var(--teal);">${c.producto||''}</span>
+          ${c.telefono?`<span style="font-size:10px;color:var(--text3);">${c.telefono}</span>`:''}
+        </label>`).join('')}
+    </div>
+  </div>`;
+  window._campCartCuentasTodas=todasCuentas||[];
+}
+
+function filtrarListaCampCartera(campanaId){
+  const prod=document.getElementById('campCartFiltProd')?.value||'';
+  const q=(document.getElementById('campCartBuscar')?.value||'').toLowerCase();
+  const filas=document.querySelectorAll('.camp-cart-fila');
+  const todas=window._campCartCuentasTodas||[];
+  filas.forEach((fila,i)=>{
+    const c=todas[i];
+    if(!c) return;
+    const matchProd=!prod||c.producto===prod;
+    const matchQ=!q||(c.razon_social||'').toLowerCase().includes(q)||(c.rfc||'').toLowerCase().includes(q);
+    fila.style.display=(matchProd&&matchQ)?'':'none';
+  });
+}
+
+async function guardarSeleccionCampCartera(campanaId){
+  const checks=document.querySelectorAll('#listaCampCartera input[type="checkbox"]');
+  const seleccionadas=[...checks].filter(c=>c.checked).map(c=>c.dataset.id);
+  // Borrar las que ya no están y agregar las nuevas
+  const {error:delErr}=await sb.from('campana_cartera_cuentas').delete().eq('campana_id',campanaId);
+  if(delErr){alert('Error: '+delErr.message);return;}
+  if(seleccionadas.length){
+    const filas=seleccionadas.map(id=>({campana_id:campanaId,cuenta_id:id}));
+    const {error}=await sb.from('campana_cartera_cuentas').insert(filas);
+    if(error){alert('Error al guardar: '+error.message);return;}
+  }
+  await sb.from('campanas_cartera').update({total_cuentas:seleccionadas.length,updated_at:new Date().toISOString()}).eq('id',campanaId);
+  const msgEl=document.createElement('div');
+  msgEl.textContent=`✓ ${seleccionadas.length} cuentas guardadas en la campaña`;
+  msgEl.style.cssText='position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#27AE60;color:#fff;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;z-index:9999;';
+  document.body.appendChild(msgEl);
+  setTimeout(()=>msgEl.remove(),3000);
 }
 
 function onDirCarteraFiltroChange(){
@@ -1704,32 +1907,70 @@ function filaCarteraDirector(c,vendedores){
   </tr>`;
 }
 
+let histSortCol='fecha', histSortDir=-1, histFiltroMes='';
 async function renderHistorico(){
   document.getElementById('mainContent').innerHTML='<div class="loading"><div class="spinner"></div> Cargando histórico...</div>';
-  const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).order('fecha',{ascending:false}).limit(60);
-  const rows=regs||[];
-  window._historicoRows=rows;
-  document.getElementById('mainContent').innerHTML=`
+  const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).order('fecha',{ascending:false});
+  window._historicoRows=regs||[];
+  renderHistoricoTabla();
+}
+
+function renderHistoricoTabla(){
+  const mc=document.getElementById('mainContent');
+  if(!mc) return;
+  let rows=window._historicoRows||[];
+  // Filtro por mes
+  if(histFiltroMes) rows=rows.filter(r=>r.fecha&&r.fecha.slice(0,7)===histFiltroMes);
+  // Ordenamiento
+  const dir=histSortDir;
+  rows=[...rows].sort((a,b)=>{
+    let va=a[histSortCol]||'', vb=b[histSortCol]||'';
+    if(typeof va==='string') va=va.toLowerCase();
+    if(typeof vb==='string') vb=vb.toLowerCase();
+    return va<vb?-dir:va>vb?dir:0;
+  });
+  const flecha=(col)=>histSortCol===col?(histSortDir===1?' ▲':' ▼'):'';
+  const th=(label,col)=>`<th onclick="histSort('${col}')" style="cursor:pointer;user-select:none;" title="Ordenar por ${label}">${label}${flecha(col)}</th>`;
+  // Meses únicos para el filtro
+  const mesesUnicos=[...new Set((window._historicoRows||[]).map(r=>r.fecha?r.fecha.slice(0,7):null).filter(Boolean))].sort().reverse();
+  mc.innerHTML=`
   <div class="card">
-    <div class="card-head"><span class="card-title">Todos los registros</span><span class="badge bt">${rows.length} días</span></div>
-    <div style="font-size:11px;color:var(--text3);padding:8px 16px 0;">Haz clic en cualquier fila para ver el detalle completo del día.</div>
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <div><span class="card-title">Todos los registros</span><span class="badge bt" style="margin-left:8px;">${rows.length} días</span></div>
+      <select onchange="histFiltroMes=this.value;renderHistoricoTabla()" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+        <option value="">Todos los meses</option>
+        ${mesesUnicos.map(m=>`<option value="${m}" ${histFiltroMes===m?'selected':''}>${m}</option>`).join('')}
+      </select>
+    </div>
+    <div style="font-size:11px;color:var(--text3);padding:8px 16px 0;">Clic en encabezado para ordenar · Clic en fila para ver detalle completo.</div>
     <table class="daily">
-      <thead><tr><th></th><th>Fecha</th><th>Servicios</th><th>Aspel</th><th>IT</th><th>Cursos</th><th>Demos</th><th>Clientes</th><th>Val.</th></tr></thead>
+      <thead><tr>
+        <th></th>
+        ${th('Fecha','fecha')}${th('Servicios','svc')}${th('Aspel','aspel')}${th('IT','it')}
+        ${th('Cotiz.','cotizaciones')}${th('Cursos','cursos')}${th('Demos','demos')}${th('Clientes','clientes_nuevos')}${th('Val.','valoraciones')}
+      </tr></thead>
       <tbody>${rows.map((r,idx)=>`<tr onclick="toggleHistDetalle(${idx})" style="cursor:pointer;" id="histRow_${idx}">
         <td style="width:18px;color:var(--text3);font-size:10px;" id="histArrow_${idx}">▸</td>
-        <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${r.fecha}</td>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${fmtFecha(r.fecha)||r.fecha}</td>
         <td style="font-family:'JetBrains Mono',monospace;font-weight:500;color:${(r.svc||0)>0?'#00A99D':'var(--text3)'};">${(r.svc||0)>0?fmt(r.svc):'—'}</td>
         <td style="font-family:'JetBrains Mono',monospace;">${(r.aspel||0)>0?fmt(r.aspel):'—'}</td>
         <td style="font-family:'JetBrains Mono',monospace;">${(r.it||0)>0?fmt(r.it):'—'}</td>
+        <td style="text-align:center;color:${(r.cotizaciones||0)>0?'var(--text)':'var(--text3)'};">${(r.cotizaciones||0)||'—'}</td>
         <td>${(r.cursos||0)||'—'}</td><td>${(r.demos||0)||'—'}</td>
         <td>${(r.clientes_nuevos||0)>0?`<span class="badge bt">+${r.clientes_nuevos}</span>`:'—'}</td>
         <td>${(r.valoraciones||0)||'—'}</td>
       </tr>
-      <tr id="histDetalle_${idx}" style="display:none;"><td colspan="9" style="padding:0;background:var(--surface-2,#f8f9fa);">
+      <tr id="histDetalle_${idx}" style="display:none;"><td colspan="10" style="padding:0;background:var(--surface-2,#f8f9fa);">
         ${renderHistDetalleContenido(r)}
-      </td></tr>`).join('')||'<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--text3);">Sin registros aún</td></tr>'}</tbody>
+      </td></tr>`).join('')||'<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text3);">Sin registros</td></tr>'}</tbody>
     </table>
   </div>`;
+}
+
+function histSort(col){
+  if(histSortCol===col) histSortDir*=-1;
+  else{histSortCol=col;histSortDir=1;}
+  renderHistoricoTabla();
 }
 
 function renderHistDetalleContenido(r){
