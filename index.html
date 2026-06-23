@@ -2837,6 +2837,7 @@ function buildTeleUI(){
   document.getElementById('tabsBar').innerHTML=`
     <div class="tab active" onclick="swT('miMes')">Mi actividad</div>
     <div class="tab" onclick="swT('prospectos')">Mis prospectos</div>
+    <div class="tab" onclick="swT('clientes')">📋 Clientes</div>
     <div class="tab" onclick="swT('registro')">Registrar día</div>
     <div class="tab" onclick="swT('historico')">Histórico</div>`;
   mostrarBotonesReporte();
@@ -2844,19 +2845,192 @@ function buildTeleUI(){
 }
 function swT(id){
   currentTeleTab=id;
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['miMes','prospectos','registro','historico'][i]===id));
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['miMes','prospectos','clientes','registro','historico'][i]===id));
   if(id==='miMes')renderTele();
   else if(id==='prospectos')renderProspectos();
+  else if(id==='clientes')renderTeleClientes();
   else if(id==='registro')renderTeleRegistro();
   else renderTeleHistorico();
 }
 async function renderTeleActual(){
   if(currentTeleTab==='miMes')renderTele();
   else if(currentTeleTab==='prospectos')renderProspectos();
+  else if(currentTeleTab==='clientes')renderTeleClientes();
   else if(currentTeleTab==='registro')renderTeleRegistro();
   else if(currentTeleTab==='historico')renderTeleHistorico();
   else renderTele();
 }
+async function renderTeleClientes(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
+  // Buscar campaña de cartera activa asignada a este usuario
+  const {data:campActiva}=await sb.from('campanas_cartera')
+    .select('*').eq('asignado_a',currentUser.id).eq('activa',true).maybeSingle();
+  if(!campActiva){
+    mc.innerHTML=`<div style="text-align:center;padding:60px 20px;">
+      <div style="font-size:32px;margin-bottom:12px;">📋</div>
+      <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:8px;">Sin campaña activa</div>
+      <div style="font-size:13px;color:var(--text3);">El director aún no ha activado ninguna campaña de clientes para ti. Cuando haya una disponible aparecerá aquí.</div>
+    </div>`;
+    return;
+  }
+  // Cargar cuentas de la campaña
+  const {data:cuentasRel}=await sb.from('campana_cartera_cuentas')
+    .select('cuenta_id').eq('campana_id',campActiva.id);
+  const ids=(cuentasRel||[]).map(r=>r.cuenta_id);
+  if(!ids.length){
+    mc.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--text3);">La campaña no tiene cuentas asignadas aún.</div>`;
+    return;
+  }
+  const {data:cuentas}=await sb.from('cuentas_cartera')
+    .select('*').in('id',ids).order('razon_social');
+  window._teleCuentasCamp=cuentas||[];
+
+  // Cargar llamadas ya registradas para estas cuentas en esta campaña
+  const {data:llamadasExist}=await sb.from('llamadas_cartera')
+    .select('cuenta_id,resultado').eq('campana_id',campActiva.id).eq('usuario_id',currentUser.id);
+  const llamadasMap={};
+  (llamadasExist||[]).forEach(l=>{ if(!llamadasMap[l.cuenta_id]) llamadasMap[l.cuenta_id]=l.resultado; });
+
+  const total=ids.length;
+  const contactadas=Object.keys(llamadasMap).length;
+
+  mc.innerHTML=`
+  <div style="margin-bottom:16px;">
+    <div style="font-size:16px;font-weight:700;color:var(--text);">${campActiva.nombre}</div>
+    <div style="font-size:12px;color:var(--text3);margin-top:2px;">${campActiva.descripcion||''}</div>
+    <div style="margin-top:8px;display:flex;gap:12px;font-size:12px;">
+      <span style="color:var(--teal);font-weight:600;">${contactadas}/${total} contactadas</span>
+      <span style="color:var(--text3);">${total-contactadas} pendientes</span>
+    </div>
+    <div style="height:6px;background:var(--border);border-radius:3px;margin-top:8px;overflow:hidden;">
+      <div style="height:100%;width:${Math.round(contactadas/total*100)}%;background:var(--teal);border-radius:3px;"></div>
+    </div>
+  </div>
+  <input type="text" id="teleClienteBuscar" placeholder="Buscar cliente..." oninput="filtrarTeleClientes()" style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-bottom:12px;">
+  <div id="listaTeleClientes">
+    ${(cuentas||[]).map((c,idx)=>{
+      const resultado=llamadasMap[c.id];
+      const colRes=resultado==='Interesado'?'#27AE60':resultado==='No le interesa'?'var(--red)':resultado?'var(--text3)':null;
+      return `<div class="card" style="padding:14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;cursor:pointer;" onclick="abrirDetalleCuenta('${c.id}','${campActiva.id}')" data-razon="${(c.razon_social||'').toLowerCase()}">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:600;font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${c.razon_social||'Sin nombre'}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px;">${c.producto||''} · ${c.telefono?`<a href="tel:${c.telefono}" onclick="event.stopPropagation()" style="color:var(--teal);">${c.telefono}</a>`:'Sin teléfono'}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;">
+          ${resultado
+            ?`<span style="font-size:11px;font-weight:600;color:${colRes};">${resultado}</span>`
+            :`<span style="font-size:11px;color:var(--text3);font-style:italic;">Pendiente</span>`}
+          <div style="font-size:10px;color:var(--text3);margin-top:2px;">Ver detalle →</div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+  window._teleCampActiva=campActiva;
+}
+
+function filtrarTeleClientes(){
+  const q=(document.getElementById('teleClienteBuscar')?.value||'').toLowerCase();
+  document.querySelectorAll('#listaTeleClientes .card').forEach(el=>{
+    el.style.display=el.dataset.razon?.includes(q)?'':'none';
+  });
+}
+
+async function abrirDetalleCuenta(cuentaId, campanaId){
+  const c=(window._teleCuentasCamp||[]).find(c=>c.id===cuentaId);
+  if(!c) return;
+  // Cargar historial de llamadas de esta cuenta en esta campaña
+  const {data:histRaw}=await sb.from('llamadas_cartera')
+    .select('*').eq('cuenta_id',cuentaId).eq('campana_id',campanaId).order('created_at',{ascending:false});
+  const hist=histRaw||[];
+  const modal=document.createElement('div');
+  modal.id='modalDetalleCuenta';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;overflow-y:auto;';
+  modal.innerHTML=`
+  <div style="background:#fff;border-radius:12px;max-width:480px;width:100%;margin:auto;overflow:hidden;">
+    <div style="padding:20px 22px 14px;border-bottom:1px solid var(--border);">
+      <div style="font-size:16px;font-weight:700;color:var(--text);">${c.razon_social||'Sin nombre'}</div>
+      <div style="font-size:12px;color:var(--text3);margin-top:3px;">${c.producto||''} · ${c.periodicidad||''} · RFC: ${c.rfc||'—'}</div>
+      ${c.telefono?`<div style="margin-top:6px;"><a href="tel:${c.telefono}" style="color:var(--teal);font-weight:600;font-size:14px;">📞 ${c.telefono}</a>${c.telefono2?` &nbsp; <span style="color:var(--text3);font-size:12px;">${c.telefono2}</span>`:''}</div>`:''}
+      ${c.escritorio_servicios?`<div style="font-size:11px;color:var(--text3);margin-top:4px;font-family:'JetBrains Mono',monospace;">🔑 ${c.escritorio_servicios}</div>`:''}
+    </div>
+    <div style="padding:16px 22px;max-height:60vh;overflow-y:auto;">
+      <!-- REGISTRAR LLAMADA -->
+      <div style="background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);padding:14px;margin-bottom:16px;">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">📞 Registrar llamada</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+          ${['No contestó','Buzón','Interesado','No le interesa','Volver a llamar','Registrado al taller','Canalizado a ventas'].map(r=>`
+            <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;">
+              <input type="radio" name="resCuenta" value="${r}" style="accent-color:var(--teal);">
+              ${r}
+            </label>`).join('')}
+        </div>
+        <textarea id="notasCuentaLlamada" placeholder="Nota de la llamada..." rows="2"
+          style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;resize:vertical;box-sizing:border-box;margin-bottom:8px;"></textarea>
+        <button onclick="registrarLlamadaCuenta('${cuentaId}','${campanaId}')"
+          style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 20px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+          Guardar llamada
+        </button>
+      </div>
+      <!-- HISTORIAL -->
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">🗂 Historial (${hist.length})</div>
+        <div id="histCuentaLlamadas">${renderLlamadasHtml(hist)}</div>
+      </div>
+    </div>
+    <div style="padding:12px 22px;border-top:1px solid var(--border);display:flex;gap:8px;">
+      <button onclick="guardarYCerrarCuenta('${cuentaId}','${campanaId}')"
+        style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+        Guardar y cerrar
+      </button>
+      <button onclick="guardarYSiguienteCuenta('${cuentaId}','${campanaId}')"
+        style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+        Guardar y siguiente →
+      </button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+async function registrarLlamadaCuenta(cuentaId, campanaId){
+  const resultado=document.querySelector('input[name="resCuenta"]:checked')?.value;
+  if(!resultado){alert('Selecciona el resultado de la llamada');return;}
+  const notaOpcional=['No contestó','Buzón'];
+  const nota=document.getElementById('notasCuentaLlamada')?.value.trim()||'';
+  if(!notaOpcional.includes(resultado)&&!nota){
+    alert('Para "'+resultado+'" es obligatorio escribir una nota.');
+    document.getElementById('notasCuentaLlamada')?.focus();
+    return;
+  }
+  const ahora=new Date();
+  const {error}=await sb.from('llamadas_cartera').insert({
+    cuenta_id:cuentaId, campana_id:campanaId, usuario_id:currentUser.id,
+    resultado, notas:nota, created_at:ahora.toISOString()
+  });
+  if(error){alert('Error: '+error.message);return;}
+  // Refrescar historial en el modal
+  const {data:histRaw}=await sb.from('llamadas_cartera')
+    .select('*').eq('cuenta_id',cuentaId).eq('campana_id',campanaId).order('created_at',{ascending:false});
+  document.getElementById('histCuentaLlamadas').innerHTML=renderLlamadasHtml(histRaw||[]);
+  document.querySelectorAll('input[name="resCuenta"]').forEach(r=>r.checked=false);
+  const nt=document.getElementById('notasCuentaLlamada');
+  if(nt) nt.value='';
+}
+
+async function guardarYCerrarCuenta(cuentaId, campanaId){
+  document.getElementById('modalDetalleCuenta')?.remove();
+  await renderTeleClientes();
+}
+
+async function guardarYSiguienteCuenta(cuentaId, campanaId){
+  document.getElementById('modalDetalleCuenta')?.remove();
+  const lista=window._teleCuentasCamp||[];
+  const idx=lista.findIndex(c=>c.id===cuentaId);
+  const siguiente=lista[idx+1];
+  if(siguiente) await abrirDetalleCuenta(siguiente.id, campanaId);
+  else{alert('Era la última cuenta de la campaña.');await renderTeleClientes();}
+}
+
 async function renderTele(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
