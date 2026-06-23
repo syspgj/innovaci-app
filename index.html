@@ -1778,13 +1778,15 @@ async function toggleCampanaCartera(id,activar){
 async function gestionarCampanaCartera(campanaId){
   const mc=document.getElementById('dirCarteraContenidoMain');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
-  const [{data:camp},{data:cuentasEnCamp},{data:todasCuentas}]=await Promise.all([
+  const [{data:camp},{data:cuentasEnCamp},{data:todasCuentasRaw}]=await Promise.all([
     sb.from('campanas_cartera').select('*').eq('id',campanaId).maybeSingle(),
     sb.from('campana_cartera_cuentas').select('cuenta_id').eq('campana_id',campanaId),
     sb.from('cuentas_cartera').select('id,numserie,razon_social,rfc,producto,telefono,tipo_cliente').order('razon_social')
   ]);
   if(!camp){mc.innerHTML='<div style="padding:20px;color:var(--red);">Campaña no encontrada</div>';return;}
-  const idsEnCamp=new Set((cuentasEnCamp||[]).map(r=>r.cuenta_id));
+  // Deduplicar por id
+  const vistos=new Set();
+  const todasCuentas=(todasCuentasRaw||[]).filter(c=>{if(vistos.has(c.id))return false;vistos.add(c.id);return true;});  const idsEnCamp=new Set((cuentasEnCamp||[]).map(r=>r.cuenta_id));
   const productos=[...new Set(todasCuentas.map(c=>c.producto).filter(Boolean))].sort();
 
   mc.innerHTML=`
@@ -1792,43 +1794,49 @@ async function gestionarCampanaCartera(campanaId){
   <div class="card" style="padding:16px;margin-bottom:16px;">
     <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px;">${camp.nombre}</div>
     <div style="font-size:12px;color:var(--text3);">${idsEnCamp.size} cuentas seleccionadas · ${camp.activa?'<span style="color:#27AE60;">● Activa</span>':'Inactiva'}</div>
-    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <select id="campCartFiltProd" onchange="filtrarListaCampCartera('${campanaId}')" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">
         <option value="">Todos los productos</option>
         ${productos.map(p=>`<option value="${p}">${p}</option>`).join('')}
       </select>
       <input type="text" id="campCartBuscar" placeholder="Buscar..." oninput="filtrarListaCampCartera('${campanaId}')" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;width:180px;">
+      <button onclick="seleccionarTodosCampCartera(true)" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:5px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✓ Seleccionar todos</button>
+      <button onclick="seleccionarTodosCampCartera(false)" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:5px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✗ Quitar todos</button>
       <button onclick="guardarSeleccionCampCartera('${campanaId}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;margin-left:auto;">💾 Guardar selección</button>
     </div>
   </div>
-  <div class="card" style="max-height:500px;overflow-y:auto;">
+  <div class="card" style="padding:0;max-height:520px;overflow-y:auto;">
     <div id="listaCampCartera">
       ${(todasCuentas||[]).map(c=>`
-        <label style="display:flex;align-items:center;gap:10px;padding:8px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;" class="camp-cart-fila">
-          <input type="checkbox" data-id="${c.id}" ${idsEnCamp.has(c.id)?'checked':''} style="accent-color:var(--teal);">
-          <span style="flex:1;">
-            <span style="font-weight:500;">${c.razon_social||'Sin nombre'}</span>
-            <span style="color:var(--text3);margin-left:6px;font-size:10px;">${c.rfc||''}</span>
-          </span>
-          <span style="font-size:10px;color:var(--teal);">${c.producto||''}</span>
-          ${c.telefono?`<span style="font-size:10px;color:var(--text3);">${c.telefono}</span>`:''}
+        <label style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;background:#fff;" class="camp-cart-fila" data-prod="${c.producto||''}" data-razon="${(c.razon_social||'').toLowerCase()}">
+          <input type="checkbox" data-id="${c.id}" ${idsEnCamp.has(c.id)?'checked':''} style="accent-color:var(--teal);flex-shrink:0;">
+          <span style="flex:1;font-weight:500;color:var(--text);">${c.razon_social||'Sin nombre'}</span>
+          <span style="font-size:10px;color:var(--text3);white-space:nowrap;">${c.rfc||''}</span>
+          <span style="font-size:10px;color:var(--teal);white-space:nowrap;">${c.producto||''}</span>
+          ${c.telefono?`<span style="font-size:10px;color:var(--text3);white-space:nowrap;">${c.telefono}</span>`:''}
         </label>`).join('')}
     </div>
   </div>`;
   window._campCartCuentasTodas=todasCuentas||[];
 }
 
-function filtrarListaCampCartera(campanaId){
+function filtrarListaCampCartera(){
   const prod=document.getElementById('campCartFiltProd')?.value||'';
   const q=(document.getElementById('campCartBuscar')?.value||'').toLowerCase();
-  const filas=document.querySelectorAll('.camp-cart-fila');
-  const todas=window._campCartCuentasTodas||[];
-  filas.forEach((fila,i)=>{
-    const c=todas[i];
-    if(!c) return;
-    const matchProd=!prod||c.producto===prod;
-    const matchQ=!q||(c.razon_social||'').toLowerCase().includes(q)||(c.rfc||'').toLowerCase().includes(q);
-    fila.style.display=(matchProd&&matchQ)?'':'none';
+  document.querySelectorAll('#listaCampCartera .camp-cart-fila').forEach(fila=>{
+    const matchProd=!prod||fila.dataset.prod===prod;
+    const matchQ=!q||fila.dataset.razon?.includes(q);
+    fila.style.display=(matchProd&&matchQ)?'flex':'none';
+  });
+}
+
+function seleccionarTodosCampCartera(marcar){
+  // Solo los visibles (no ocultos por el filtro)
+  document.querySelectorAll('#listaCampCartera .camp-cart-fila').forEach(fila=>{
+    if(fila.style.display!=='none'){
+      const cb=fila.querySelector('input[type="checkbox"]');
+      if(cb) cb.checked=marcar;
+    }
   });
 }
 
