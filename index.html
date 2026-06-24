@@ -2170,53 +2170,6 @@ function onDirCarteraFiltroChange(){
   renderDirCarteraContenido();
 }
 
-function renderDirCarteraContenido(){
-  const todas=window._carteraTodas||[];
-  const vendedores=window._carteraVendedores||[];
-  let filtradas=todas;
-  if(dirCarteraVendedorFiltro==='__sin_asignar__') filtradas=filtradas.filter(c=>!c.vendedor_asignado);
-  else if(dirCarteraVendedorFiltro) filtradas=filtradas.filter(c=>c.vendedor_asignado===dirCarteraVendedorFiltro);
-  if(window._dirCarteraEstadoFiltro) filtradas=filtradas.filter(c=>c.estado===window._dirCarteraEstadoFiltro);
-  filtradas=aplicarFiltrosCartera(filtradas);
-  filtradas=ordenarCartera(filtradas,'razon_social');
-
-  const cont=document.getElementById('dirCarteraContenido');
-  if(!cont) return;
-  if(!filtradas.length){
-    cont.innerHTML=`<div style="text-align:center;padding:50px 20px;color:var(--text3);font-size:13px;">Ningún resultado coincide con los filtros aplicados.</div>`;
-    return;
-  }
-
-  cont.innerHTML=`<div class="card"><table class="daily" style="font-size:12px;">
-    <thead><tr>
-      ${thSort('Razón social','razon_social','director')}${thSort('RFC','rfc','director')}${thSort('Producto','producto','director')}${thSort('Periodicidad','periodicidad','director')}<th>Monto</th>
-      ${thSort('Próx. renovación','fecha_proxima_renovacion','director')}<th>Vendedor asignado</th><th>Estado</th>
-    </tr></thead>
-    <tbody>${filtradas.map(c=>filaCarteraDirector(c,vendedores)).join('')}</tbody>
-  </table></div>`;
-}
-
-function filaCarteraDirector(c,vendedores){
-  const vendedor=vendedores.find(v=>v.id===c.vendedor_asignado);
-  const estadoChip={
-    sin_reclamar:'<span style="color:var(--text3);">Sin reclamar</span>',
-    reclamada:'<span style="color:var(--teal);font-weight:600;">Reclamada</span>',
-    en_revision:'<span style="color:var(--gold);font-weight:600;">En revisión</span>',
-    renovada:'<span style="color:#27AE60;font-weight:600;">✓ Renovada</span>',
-    no_renovada:'<span style="color:var(--red);font-weight:600;">✗ No renovada</span>',
-  }[c.estado]||c.estado;
-  return `<tr>
-    <td style="font-weight:500;">${c.razon_social||'—'}</td>
-    <td style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">${c.rfc||'—'}</td>
-    <td style="font-size:11px;">${c.producto||'—'}</td>
-    <td style="font-size:11px;text-transform:capitalize;">${c.periodicidad||'—'}</td>
-    <td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--teal);">${c.monto?fmt(c.monto):'—'}</td>
-    <td style="font-size:11px;color:var(--text3);">${c.fecha_proxima_renovacion||'—'}</td>
-    <td style="font-size:11px;">${vendedor?vendedor.nombre:'<span style="color:var(--text3);">— Sin asignar</span>'}</td>
-    <td style="font-size:11px;">${estadoChip}</td>
-  </tr>`;
-}
-
 let histSortCol='fecha', histSortDir=-1, histFiltroMes='';
 async function renderHistorico(){
   document.getElementById('mainContent').innerHTML='<div class="loading"><div class="spinner"></div> Cargando histórico...</div>';
@@ -3173,39 +3126,44 @@ async function renderTeleActual(){
 async function renderTeleClientes(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
-  // Buscar campaña de cartera activa asignada a este usuario
   const {data:campActiva}=await sb.from('campanas_cartera')
     .select('*').eq('asignado_a',currentUser.id).eq('activa',true).maybeSingle();
   if(!campActiva){
     mc.innerHTML=`<div style="text-align:center;padding:60px 20px;">
       <div style="font-size:32px;margin-bottom:12px;">📋</div>
       <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:8px;">Sin campaña activa</div>
-      <div style="font-size:13px;color:var(--text3);">El director aún no ha activado ninguna campaña de clientes para ti. Cuando haya una disponible aparecerá aquí.</div>
+      <div style="font-size:13px;color:var(--text3);">El director aún no ha activado ninguna campaña de clientes para ti.</div>
     </div>`;
     return;
   }
-  // Cargar cuentas de la campaña
-  const {data:cuentasRel}=await sb.from('campana_cartera_clientes')
+  const {data:clientesRel}=await sb.from('campana_cartera_clientes')
     .select('cliente_id').eq('campana_id',campActiva.id);
-  const ids=(cuentasRel||[]).map(r=>r.cliente_id);
+  const ids=(clientesRel||[]).map(r=>r.cliente_id);
   if(!ids.length){
-    mc.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--text3);">La campaña no tiene cuentas asignadas aún.</div>`;
+    mc.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--text3);">La campaña no tiene clientes asignados aún.</div>`;
     return;
   }
-  const [{data:cuentas},{data:vendedoresList}]=await Promise.all([
-    sb.from('cuentas_cartera')
-      .select('id,numserie,razon_social,rfc,producto,periodicidad,telefono,telefono2,email,tipo_cliente,escritorio_servicios,contacto_principal,sistemas_aspel,vendedor_asignado').in('id',ids).order('razon_social'),
+  // Cargar clientes + sus suscripciones + vendedores
+  const [{data:clientes},{data:suscripciones},{data:vendedoresList}]=await Promise.all([
+    sb.from('clientes_cartera').select('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)').in('id',ids).order('razon_social'),
+    sb.from('suscripciones_cartera').select('*').in('cliente_id',ids),
     sb.from('usuarios').select('id,nombre')
   ]);
-  window._teleVendedores=vendedoresList||[];
-  window._teleCuentasCamp=cuentas||[];
+  // Adjuntar suscripciones a cada cliente
+  const clientesList=(clientes||[]).map(cl=>({
+    ...cl,
+    _suscripciones:(suscripciones||[]).filter(s=>s.cliente_id===cl.id)
+  }));
+  window._cartClientes=clientesList;
+  window._cartSuscripciones=suscripciones||[];
+  window._carteraVendedores=vendedoresList||[];
+  window._teleCampActiva=campActiva;
 
-  // Cargar llamadas ya registradas para estas cuentas en esta campaña
+  // Cargar llamadas ya hechas en esta campaña
   const {data:llamadasExist}=await sb.from('llamadas_cartera')
-    .select('cuenta_id,resultado').eq('campana_id',campActiva.id).eq('usuario_id',currentUser.id);
+    .select('cliente_id,resultado').eq('campana_id',campActiva.id).eq('usuario_id',currentUser.id);
   const llamadasMap={};
-  (llamadasExist||[]).forEach(l=>{ if(!llamadasMap[l.cuenta_id]) llamadasMap[l.cuenta_id]=l.resultado; });
-
+  (llamadasExist||[]).forEach(l=>{ if(!llamadasMap[l.cliente_id]) llamadasMap[l.cliente_id]=l.resultado; });
   const total=ids.length;
   const contactadas=Object.keys(llamadasMap).length;
 
@@ -3214,40 +3172,188 @@ async function renderTeleClientes(){
     <div style="font-size:16px;font-weight:700;color:var(--text);">${campActiva.nombre}</div>
     <div style="font-size:12px;color:var(--text3);margin-top:2px;">${campActiva.descripcion||''}</div>
     <div style="margin-top:8px;display:flex;gap:12px;font-size:12px;">
-      <span style="color:var(--teal);font-weight:600;">${contactadas}/${total} contactadas</span>
+      <span style="color:var(--teal);font-weight:600;">${contactadas}/${total} contactados</span>
       <span style="color:var(--text3);">${total-contactadas} pendientes</span>
     </div>
     <div style="height:6px;background:var(--border);border-radius:3px;margin-top:8px;overflow:hidden;">
-      <div style="height:100%;width:${Math.round(contactadas/total*100)}%;background:var(--teal);border-radius:3px;"></div>
+      <div style="height:100%;width:${total>0?Math.round(contactadas/total*100):0}%;background:var(--teal);border-radius:3px;"></div>
     </div>
   </div>
-  <input type="text" id="teleClienteBuscar" placeholder="Buscar cliente..." oninput="filtrarTeleClientes()" style="width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-bottom:12px;">
-  <div id="listaTeleClientes">
-    ${(cuentas||[]).map((c,idx)=>{
-      const resultado=llamadasMap[c.id];
+  <div style="position:relative;margin-bottom:12px;">
+    <input type="text" id="teleClienteBuscar" placeholder="Buscar cliente..." oninput="filtrarTeleClientes()" style="width:100%;padding:9px 36px 9px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+  </div>
+  <div id="listaTeleClientes" style="display:grid;gap:8px;">
+    ${clientesList.map(cl=>{
+      const resultado=llamadasMap[cl.id];
+      const vend=(vendedoresList||[]).find(v=>v.id===cl.vendedor_asignado);
+      const suscs=cl._suscripciones||[];
+      const venceProximo=suscs.some(s=>s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000));
       const colRes=resultado==='Interesado'?'#27AE60':resultado==='No le interesa'?'var(--red)':resultado?'var(--text3)':null;
-      return `<div class="card" style="padding:14px;margin-bottom:8px;display:flex;align-items:center;gap:12px;cursor:pointer;" onclick="abrirDetalleCuenta('${c.id}','${campActiva.id}')" data-razon="${(c.razon_social||'').toLowerCase()}">
-        <div style="flex:1;min-width:0;">
-          <div style="font-weight:600;font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${c.razon_social||'Sin nombre'}</div>
-          <div style="font-size:11px;color:var(--text3);margin-top:2px;">${c.producto||''} · ${c.telefono?`<a href="tel:${c.telefono}" onclick="event.stopPropagation()" style="color:var(--teal);">${c.telefono}</a>`:'Sin teléfono'}</div>
-        </div>
-        <div style="text-align:right;flex-shrink:0;">
-          ${resultado
-            ?`<span style="font-size:11px;font-weight:600;color:${colRes};">${resultado}</span>`
-            :`<span style="font-size:11px;color:var(--text3);font-style:italic;">Pendiente</span>`}
-          <div style="font-size:10px;color:var(--text3);margin-top:2px;">Ver detalle →</div>
+      return `<div class="card" style="padding:14px;cursor:pointer;${venceProximo?'border-left:3px solid var(--red);':''}" onclick="abrirDetalleCuentaTele('${cl.id}','${campActiva.id}')" data-razon="${(cl.razon_social||'').toLowerCase()}">
+        <div style="display:flex;align-items:flex-start;gap:12px;">
+          <div style="flex:1;min-width:0;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="font-size:11px;color:var(--text3);font-family:'JetBrains Mono',monospace;">${cl.num_cliente||''}</span>
+              <span style="font-weight:600;font-size:13px;color:var(--text);">${cl.razon_social||'Sin nombre'}</span>
+            </div>
+            <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+              ${(cl.sistemas_aspel||[]).map(s=>`<span style="background:rgba(0,169,157,0.1);color:var(--teal);border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;">${s}</span>`).join('')}
+              ${cl.telefono?`<a href="tel:${cl.telefono}" onclick="event.stopPropagation()" style="font-size:11px;color:var(--navy);">📞 ${cl.telefono}</a>`:''}
+            </div>
+            ${suscs.length?`<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">
+              ${suscs.map(s=>{
+                const v2=s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
+                return `<span style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid ${v2?'var(--red)':'var(--border)'};color:${v2?'var(--red)':'var(--text3)'};">${s.producto||'?'} ${s.fecha_proxima_renovacion?'· '+fmtFecha(s.fecha_proxima_renovacion):''}</span>`;
+              }).join('')}
+            </div>`:''}
+          </div>
+          <div style="text-align:right;flex-shrink:0;">
+            ${resultado
+              ?`<span style="font-size:11px;font-weight:600;color:${colRes};">${resultado}</span>`
+              :`<span style="font-size:11px;color:var(--text3);font-style:italic;">Pendiente</span>`}
+            <div style="font-size:10px;color:var(--text3);margin-top:2px;">Ver detalle →</div>
+          </div>
         </div>
       </div>`;
     }).join('')}
   </div>`;
-  window._teleCampActiva=campActiva;
 }
 
 function filtrarTeleClientes(){
   const q=(document.getElementById('teleClienteBuscar')?.value||'').toLowerCase();
   document.querySelectorAll('#listaTeleClientes .card').forEach(el=>{
-    el.style.display=el.dataset.razon?.includes(q)?'':'none';
+    el.style.display=!q||el.dataset.razon?.includes(q)?'':'none';
   });
+}
+
+// Alias para el nuevo flujo — abre el modal de llamada al cliente desde telemarketing
+async function abrirDetalleCuentaTele(clienteId, campanaId){
+  const c=(window._cartClientes||[]).find(c=>c.id===clienteId);
+  if(!c) return;
+  const vendedor=(window._carteraVendedores||[]).find(v=>v.id===c.vendedor_asignado);
+  const {data:histRaw}=await sb.from('llamadas_cartera')
+    .select('*').eq('cliente_id',clienteId).eq('campana_id',campanaId).order('created_at',{ascending:false});
+  const hist=histRaw||[];
+  const suscs=c._suscripciones||[];
+  const modal=document.createElement('div');
+  modal.id='modalDetalleCuenta';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;overflow-y:auto;';
+  modal.innerHTML=`
+  <div style="background:#fff;border-radius:12px;max-width:500px;width:100%;margin:auto;overflow:hidden;">
+    <div style="padding:18px 22px 12px;border-bottom:1px solid var(--border);background:var(--navy);">
+      <div style="font-size:10px;color:rgba(255,255,255,0.6);font-family:'JetBrains Mono',monospace;">${c.num_cliente||''}</div>
+      <div style="font-size:16px;font-weight:700;color:#fff;margin-top:2px;">${c.razon_social||'Sin nombre'}</div>
+      <div style="font-size:11px;color:rgba(255,255,255,0.7);margin-top:2px;">${c.rfc||''} · ${c.tipo_cliente||''}</div>
+      ${(c.sistemas_aspel||[]).length?`<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">${(c.sistemas_aspel||[]).map(s=>`<span style="background:rgba(255,255,255,0.15);color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:600;">${s}</span>`).join('')}</div>`:''}
+    </div>
+    <div style="padding:14px 22px;max-height:65vh;overflow-y:auto;">
+      <div style="display:grid;gap:4px;margin-bottom:12px;font-size:12px;">
+        ${c.contacto_principal?`<div>👤 <strong>${c.contacto_principal}</strong></div>`:''}
+        ${c.email?`<div>✉ <a href="mailto:${c.email}" style="color:var(--teal);">${c.email}</a></div>`:''}
+        ${c.telefono?`<div>📞 <a href="tel:${c.telefono}" style="color:var(--navy);font-weight:600;">${c.telefono}</a>${c.telefono2?` &nbsp; <span style="color:var(--text3);">${c.telefono2}</span>`:''}</div>`:''}
+        ${c.escritorio_servicios?`<div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">🔑 ${c.escritorio_servicios}</div>`:''}
+        ${vendedor?`<div style="font-size:11px;color:var(--text3);">Vendedor: <strong>${vendedor.nombre}</strong></div>`:''}
+      </div>
+      ${suscs.length?`<div style="margin-bottom:12px;">
+        <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Suscripciones</div>
+        <div style="display:grid;gap:4px;">
+          ${suscs.map(s=>{const v=s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
+            return `<div style="border:1px solid ${v?'var(--red)':'var(--border)'};border-radius:6px;padding:7px 10px;font-size:11px;display:flex;gap:8px;align-items:center;">
+              <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--navy);">${s.numserie||'—'}</span>
+              <span style="color:var(--text3);">${s.producto||''}</span>
+              ${s.monto?`<span style="color:var(--teal);font-weight:600;">$${Math.round(s.monto).toLocaleString('es-MX')}</span>`:''}
+              <span style="margin-left:auto;color:${v?'var(--red)':'var(--text3)'};">${s.fecha_proxima_renovacion?fmtFecha(s.fecha_proxima_renovacion):'Sin fecha'}</span>
+            </div>`;}).join('')}
+        </div>
+      </div>`:''}
+      <!-- REGISTRAR LLAMADA -->
+      <div style="background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);padding:14px;margin-bottom:12px;">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">📞 Registrar llamada</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;">
+          ${['No contestó','Buzón','Interesado','No le interesa','Volver a llamar','Registrado al taller','Canalizado a ventas'].map(r=>`
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:4px 6px;border-radius:4px;background:#fff;border:1px solid var(--border);">
+              <input type="radio" name="resCuenta" value="${r}" style="accent-color:var(--teal);">${r}
+            </label>`).join('')}
+        </div>
+        <textarea id="notasCuentaLlamada" placeholder="Nota de la llamada..." rows="2"
+          style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;resize:vertical;box-sizing:border-box;margin-bottom:8px;"></textarea>
+        <div style="background:#fff;border:1px solid var(--border);border-radius:var(--radsm);padding:10px;margin-bottom:8px;">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;font-weight:600;">
+            <input type="checkbox" id="interesAdicionalCheck" onchange="toggleInteresAdicional()" style="accent-color:var(--teal);width:14px;height:14px;">
+            ¿Mostró interés en algún servicio o producto adicional?
+          </label>
+          <div id="interesAdicionalBloque" style="display:none;margin-top:8px;">
+            <input type="text" id="interesAdicionalTexto" placeholder="Ej: Interesado en póliza SAE..." style="width:100%;padding:7px 10px;border:1px solid var(--teal);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
+            <div style="font-size:10px;color:var(--teal);margin-top:4px;">✓ Se registrará que el vendedor fue notificado</div>
+          </div>
+        </div>
+        <button onclick="registrarLlamadaCuentaTele('${clienteId}','${campanaId}')"
+          style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 20px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+          Guardar llamada
+        </button>
+      </div>
+      <!-- HISTORIAL -->
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">🗂 Historial (${hist.length})</div>
+        <div id="histCuentaLlamadas">${renderLlamadasHtml(hist)}</div>
+      </div>
+    </div>
+    <div style="padding:12px 22px;border-top:1px solid var(--border);display:flex;gap:8px;">
+      <button onclick="guardarYCerrarCuentaTele('${clienteId}','${campanaId}')"
+        style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+        Guardar y cerrar
+      </button>
+      <button onclick="guardarYSiguienteCuentaTele('${clienteId}','${campanaId}')"
+        style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+        Guardar y siguiente →
+      </button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+async function registrarLlamadaCuentaTele(clienteId, campanaId){
+  const resultado=document.querySelector('input[name="resCuenta"]:checked')?.value;
+  if(!resultado){alert('Selecciona el resultado de la llamada');return;}
+  const notaOpcional=['No contestó','Buzón'];
+  let nota=document.getElementById('notasCuentaLlamada')?.value.trim()||'';
+  if(!notaOpcional.includes(resultado)&&!nota){
+    alert('Para "'+resultado+'" es obligatorio escribir una nota.');
+    document.getElementById('notasCuentaLlamada')?.focus();
+    return;
+  }
+  const interesCheck=document.getElementById('interesAdicionalCheck')?.checked;
+  const interesTexto=document.getElementById('interesAdicionalTexto')?.value.trim()||'';
+  if(interesCheck){
+    if(!interesTexto){alert('Especifica en qué mostró interés.');document.getElementById('interesAdicionalTexto')?.focus();return;}
+    nota=(nota?nota+'\n':'')+'[Interés adicional] '+interesTexto+' — Vendedor notificado.';
+  }
+  const ahora=new Date();
+  const {error}=await sb.from('llamadas_cartera').insert({
+    cliente_id:clienteId, campana_id:campanaId, usuario_id:currentUser.id,
+    resultado, notas:nota, created_at:ahora.toISOString()
+  });
+  if(error){alert('Error: '+error.message);return;}
+  const {data:histRaw}=await sb.from('llamadas_cartera')
+    .select('*').eq('cliente_id',clienteId).eq('campana_id',campanaId).order('created_at',{ascending:false});
+  document.getElementById('histCuentaLlamadas').innerHTML=renderLlamadasHtml(histRaw||[]);
+  document.querySelectorAll('input[name="resCuenta"]').forEach(r=>r.checked=false);
+  const nt=document.getElementById('notasCuentaLlamada');if(nt)nt.value='';
+  const cb=document.getElementById('interesAdicionalCheck');if(cb){cb.checked=false;toggleInteresAdicional();}
+}
+
+async function guardarYCerrarCuentaTele(clienteId,campanaId){
+  document.getElementById('modalDetalleCuenta')?.remove();
+  await renderTeleClientes();
+}
+
+async function guardarYSiguienteCuentaTele(clienteId,campanaId){
+  document.getElementById('modalDetalleCuenta')?.remove();
+  const lista=window._cartClientes||[];
+  const idx=lista.findIndex(c=>c.id===clienteId);
+  const siguiente=lista[idx+1];
+  if(siguiente) await abrirDetalleCuentaTele(siguiente.id,campanaId);
+  else{alert('Era el último cliente de la campaña.');await renderTeleClientes();}
 }
 
 async function abrirDetalleCuenta(cuentaId, campanaId){
