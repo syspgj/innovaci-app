@@ -561,8 +561,8 @@ async function renderVendorMiMes(){
   // Suscripciones/Cambio Distribuidor y Renovaciones Aspel — calculados automáticamente
   // desde Cartera de Cuentas (ya no se capturan a mano en "Registrar día")
   const [{data:altasMes},{data:renovMes}]=await Promise.all([
-    sb.from('cuentas_cartera').select('id').eq('vendedor_asignado',currentUser.id).eq('origen','alta_vendedor').gte('created_at',desde).lte('created_at',hasta+'T23:59:59'),
-    sb.from('cuentas_cartera').select('id').eq('vendedor_asignado',currentUser.id).eq('estado','renovada').gte('fecha_marcado',desde).lte('fecha_marcado',hasta)
+    sb.from('suscripciones_cartera').select('id,cliente_id,clientes_cartera!inner(vendedor_asignado)').eq('clientes_cartera.vendedor_asignado',currentUser.id).eq('origen','alta_vendedor').gte('created_at',desde).lte('created_at',hasta+'T23:59:59'),
+    sb.from('suscripciones_cartera').select('id,cliente_id,clientes_cartera!inner(vendedor_asignado)').eq('clientes_cartera.vendedor_asignado',currentUser.id).eq('estado','renovada').gte('fecha_marcado',desde).lte('fecha_marcado',hasta)
   ]);
   const susAuto=(altasMes||[]).length;
   const renovAuto=(renovMes||[]).length;
@@ -1473,161 +1473,10 @@ function setCarteraSort(col,callbackRefresh){
   else if(callbackRefresh==='director') renderDirCarteraContenido();
 }
 
-function swCartera(sub){
-  currentCarteraSub=sub;
-  ['disponibles','mia','vencen','resueltas'].forEach(s=>{
-    const btn=document.getElementById('carteraSub_'+s);
-    if(btn) btn.classList.toggle('active',s===sub);
-  });
-  const todas=window._carteraTodas||[];
-  const hoy=new Date();
-  const inicioMes=`${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}-01`;
-  const finMes=new Date(hoy.getFullYear(),hoy.getMonth()+1,0).toISOString().split('T')[0];
-
-  let filtradas=[];
-  if(sub==='disponibles') filtradas=todas.filter(c=>c.estado==='sin_reclamar');
-  else if(sub==='mia') filtradas=todas.filter(c=>c.vendedor_asignado===currentUser.id&&['reclamada','en_revision'].includes(c.estado));
-  else if(sub==='vencen') filtradas=todas.filter(c=>c.vendedor_asignado===currentUser.id&&['reclamada','en_revision'].includes(c.estado)&&c.fecha_proxima_renovacion&&c.fecha_proxima_renovacion>=inicioMes&&c.fecha_proxima_renovacion<=finMes);
-  else if(sub==='resueltas') filtradas=todas.filter(c=>c.vendedor_asignado===currentUser.id&&['renovada','no_renovada'].includes(c.estado)&&c.fecha_marcado&&c.fecha_marcado>=inicioMes&&c.fecha_marcado<=finMes);
-
-  filtradas=aplicarFiltrosCartera(filtradas);
-  filtradas=ordenarCartera(filtradas,'razon_social');
-
-  // Agrupar: primero cuentas principales, luego sus subcuentas indentadas
-  const agrupar=(lista)=>{
-    const principales=lista.filter(c=>!c.cuenta_padre_id);
-    const subcuentas=lista.filter(c=>!!c.cuenta_padre_id);
-    const resultado=[];
-    for(const p of principales){
-      resultado.push({...p,_esPrincipal:true});
-      const hijas=subcuentas.filter(s=>s.cuenta_padre_id===p.id);
-      for(const h of hijas) resultado.push({...h,_esSubcuenta:true});
-    }
-    // Subcuentas huérfanas (cuya principal no está en el filtro actual) van al final
-    const idsEnResultado=new Set(resultado.map(r=>r.id));
-    for(const s of subcuentas) if(!idsEnResultado.has(s.id)) resultado.push({...s,_esSubcuenta:true});
-    return resultado;
-  };
-
-  const agrupadas=agrupar(filtradas);
-  const cont=document.getElementById('carteraContenido');
-  if(!cont) return;
-  if(!filtradas.length){
-    cont.innerHTML=`<div style="text-align:center;padding:50px 20px;color:var(--text3);font-size:13px;">
-      ${todas.length&&(carteraFiltroTexto||carteraFiltroProducto||carteraFiltroPeriodicidad)?'Ningún resultado coincide con los filtros aplicados.'
-        :sub==='disponibles'?'No hay cuentas disponibles para reclamar en este momento.'
-        :sub==='mia'?'Aún no has reclamado ninguna cuenta. Ve a "Disponibles" para empezar.'
-        :sub==='vencen'?'No tienes cuentas que venzan este mes.'
-        :'No has marcado seguimiento a ninguna cuenta este mes.'}
-    </div>`;
-    return;
-  }
-
-  cont.innerHTML=`<div class="card" style="overflow-x:auto;"><table class="daily" style="font-size:12px;min-width:1200px;">
-    <thead><tr>
-      ${thSort('Núm. serie','numserie','vendedor')}${thSort('Razón social','razon_social','vendedor')}${thSort('RFC','rfc','vendedor')}<th>Tipo</th>${thSort('Producto','producto','vendedor')}${thSort('Periodicidad','periodicidad','vendedor')}<th>Monto</th>
-      ${thSort('Últ. renovación','fecha_ultima_renovacion','vendedor')}${thSort('Próx. renovación','fecha_proxima_renovacion','vendedor')}
-      <th>Teléfono</th><th>Sistemas</th>
-      ${sub==='disponibles'?'<th>Vendedor</th>':''}<th>Escritorio svc.</th>
-      ${sub!=='disponibles'?'<th>Link CRM</th>':''}
-      ${sub==='resueltas'?'<th>Resultado</th>':''}
-      <th style="position:sticky;right:0;background:#fff;box-shadow:-2px 0 4px rgba(0,0,0,0.06);">Acciones</th>
-    </tr></thead>
-    <tbody>${agrupadas.map(c=>filaCartera(c,sub)).join('')}</tbody>
-  </table></div>`;
+// editarDatosCuenta → redirige a la ficha completa del cliente
+function editarDatosCuenta(id){
+  abrirFichaClienteModal(id);
 }
-
-function filaCartera(c,sub){
-  const venceProximo=c.fecha_proxima_renovacion&&new Date(c.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
-  const editable=sub!=='disponibles';
-  const editBtn=()=>editable?`onclick="editarDatosCuenta('${c.id}')" style="cursor:pointer;border-bottom:1px dashed var(--text3);" title="Clic para editar"`:` style="cursor:default;"`;
-  const vendedores=window._carteraVendedores||[];
-  const vendedor=vendedores.find(v=>v.id===c.vendedor_asignado);
-  const mostrarVendedor=sub==='disponibles';
-  const fu=fmtFecha(c.fecha_ultima_renovacion);
-  const fp=fmtFecha(c.fecha_proxima_renovacion);
-  const esSubcuenta=!!c._esSubcuenta;
-  const esPrincipal=!!c._esPrincipal&&(window._carteraTodas||[]).some(x=>x.cuenta_padre_id===c.id);
-  const rowBg=esSubcuenta?'background:rgba(0,169,157,0.03);':'';
-  return `<tr style="${rowBg}">
-    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;color:var(--navy);">${c.numserie||'—'}</td>
-    <td style="font-weight:500;max-width:180px;white-space:normal;word-break:break-word;">
-      ${esSubcuenta?`<span style="color:var(--teal);margin-right:4px;font-size:10px;">↳</span>`:''}
-      ${esPrincipal?`<span style="font-size:9px;background:var(--navy);color:#fff;border-radius:3px;padding:1px 5px;margin-right:4px;vertical-align:middle;">GRUPO</span>`:''}
-      <span ${editBtn()}>${c.razon_social||'<span style="color:var(--text3);font-style:italic;">Sin razón social</span>'}</span>
-      ${esSubcuenta&&c.cuenta_padre?`<div style="font-size:9px;color:var(--text3);margin-top:1px;">Subcuenta de: ${c.cuenta_padre.razon_social}</div>`:''}
-    </td>
-    <td style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">
-      <span ${editBtn()}>${c.rfc||'<span style="color:var(--text3);font-style:italic;">Sin RFC</span>'}</span>
-    </td>
-    <td style="font-size:10px;color:var(--text3);">${c.tipo_cliente?`<span style="background:rgba(13,34,64,0.06);border-radius:4px;padding:2px 6px;">${c.tipo_cliente.replace('Cliente ','')}</span>`:'—'}</td>
-    <td style="font-size:11px;">${c.producto||'—'}</td>
-    <td style="font-size:11px;text-transform:capitalize;">${c.periodicidad||'—'}</td>
-    <td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--teal);">${c.monto?fmt(c.monto):'—'}</td>
-    <td style="font-size:11px;color:var(--text3);">
-      <span ${editBtn()}>${fu||'<span style="color:var(--text3);font-style:italic;">—</span>'}</span>
-    </td>
-    <td style="font-size:11px;color:${venceProximo?'var(--red)':'var(--text3)'};font-weight:${venceProximo?'600':'400'};">
-      <span ${editBtn()}>${fp||'<span style="color:var(--text3);font-style:italic;">Sin fecha</span>'}</span>
-    </td>
-    <td style="font-size:11px;white-space:nowrap;">${c.telefono?`<a href="tel:${c.telefono}" style="color:var(--navy);text-decoration:none;">${c.telefono}</a>${c.telefono2?`<br><span style="color:var(--text3);font-size:10px;">${c.telefono2}</span>`:''}`:'—'}</td>
-    <td style="font-size:10px;max-width:120px;">${(c.sistemas_aspel&&c.sistemas_aspel.length)?c.sistemas_aspel.map(s=>`<span style="display:inline-block;background:rgba(0,169,157,0.1);color:var(--teal);border-radius:4px;padding:1px 5px;margin:1px;font-size:9px;font-weight:600;">${s}</span>`).join(''):'—'}</td>
-    ${mostrarVendedor?`<td style="font-size:11px;">${vendedor?vendedor.nombre:'<span style="color:var(--text3);">—</span>'}</td>`:''}
-    <td style="font-size:11px;max-width:120px;white-space:normal;word-break:break-all;">
-      ${c.escritorio_servicios
-        ?`<span style="font-family:'JetBrains Mono',monospace;font-size:10px;">${c.escritorio_servicios}</span>
-           ${editable?`<button onclick="editarDatosCuenta('${c.id}')" style="background:none;border:none;cursor:pointer;color:var(--teal);font-size:10px;padding:0 4px;" title="Editar">✎</button>`:''}`
-        :`${editable?`<button onclick="editarDatosCuenta('${c.id}')" style="background:var(--teal-bg,rgba(0,169,157,0.08));color:var(--teal);border:1px solid rgba(0,169,157,0.3);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar</button>`:'—'}`}
-    </td>
-    ${sub!=='disponibles'?`<td>${c.link_crm?`<a href="${c.link_crm}" target="_blank" style="font-size:11px;color:var(--teal);">Ver ↗</a>`:`<button onclick="editarLinkCrm('${c.id}')" style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Link</button>`}</td>`:''}
-    ${sub==='resueltas'?`<td>${c.estado==='renovada'?'<span style="color:#27AE60;font-weight:600;font-size:11px;">✓ Renovó</span>':'<span style="color:var(--red);font-weight:600;font-size:11px;">✗ No renovó</span>'}</td>`:''}
-    <td style="white-space:nowrap;position:sticky;right:0;background:#fff;box-shadow:-2px 0 4px rgba(0,0,0,0.06);">
-      ${sub==='disponibles'?`<button onclick="reclamarCuenta('${c.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Reclamar</button>`:''}
-      ${(sub==='mia'||sub==='vencen')?`<button onclick="abrirMarcarSeguimiento('${c.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Marcar seguimiento</button>`:''}
-      ${sub==='resueltas'?`<span style="font-size:10px;color:var(--text3);">${c.fecha_marcado?fmtFecha(c.fecha_marcado):''}</span>`:''}
-    </td>
-  </tr>`;
-}
-
-async function editarDatosCuenta(id){
-  const c=(window._carteraTodas||[]).find(c=>c.id===id);
-  if(!c) return;
-  const modal=document.createElement('div');
-  modal.id='modalFechaRenovacion';
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;overflow-y:auto;';
-  modal.innerHTML=`
-  <div style="background:#fff;border-radius:12px;padding:24px;max-width:420px;width:100%;margin:auto;">
-    <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:4px;">Editar datos de la cuenta</div>
-    <div style="font-size:12px;color:var(--teal);font-family:'JetBrains Mono',monospace;margin-bottom:16px;">${c.numserie||'Sin serie'}</div>
-    <div style="display:grid;gap:10px;">
-      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Razón social</label>
-        <input type="text" id="editRazonSocialInput" value="${(c.razon_social||'').replace(/"/g,'&quot;')}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
-      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">RFC</label>
-        <input type="text" id="editRfcInput" value="${(c.rfc||'').replace(/"/g,'&quot;')}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;text-transform:uppercase;"></div>
-      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha última renovación</label>
-        <input type="date" id="editFechaUltimaInput" value="${c.fecha_ultima_renovacion||''}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
-      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Fecha próxima renovación</label>
-        <input type="date" id="editFechaProximaInput" value="${c.fecha_proxima_renovacion||''}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
-      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Escritorio de servicios <span style="color:var(--text3);font-weight:400;">(usuario/contraseña del portal)</span></label>
-        <textarea id="editEscritorioInput" rows="2" placeholder="Ej: usuario@empresa.com | pass: ABC123" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;resize:vertical;">${c.escritorio_servicios||''}</textarea></div>
-      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Cuenta principal <span style="color:var(--text3);font-weight:400;">(dejar vacío si esta ES la cuenta principal)</span></label>
-        <input type="text" id="editCuentaPadreSearch" placeholder="Buscar por razón social..." oninput="buscarCuentaPadre(this.value)" autocomplete="off"
-          value="${c.cuenta_padre?c.cuenta_padre.razon_social:''}"
-          style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
-        <input type="hidden" id="editCuentaPadreId" value="${c.cuenta_padre_id||''}">
-        <div id="cuentaPadreSugerencias" style="display:none;border:1px solid var(--border);border-radius:var(--radsm);background:#fff;max-height:150px;overflow-y:auto;margin-top:2px;z-index:100;position:relative;"></div>
-        ${c.cuenta_padre_id?`<div style="font-size:10px;color:var(--text3);margin-top:3px;">Vinculada a: <strong>${c.cuenta_padre?.razon_social||'cuenta principal'}</strong> · <span onclick="desvincularCuentaPadre()" style="color:var(--red);cursor:pointer;">✕ Desvincular</span></div>`:''}
-      </div>
-    </div>
-    <div style="display:flex;gap:8px;margin-top:16px;">
-      <button onclick="guardarFechaRenovacion('${id}')" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
-      <button onclick="document.getElementById('modalFechaRenovacion').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;font-family:'Inter',sans-serif;">Cancelar</button>
-    </div>
-    <div id="fechaRenovMsg" style="font-size:11px;color:var(--red);margin-top:8px;"></div>
-  </div>`;
-  document.body.appendChild(modal);
-}
-// Alias para compatibilidad con referencias existentes
 const editarFechaRenovacion=editarDatosCuenta;
 
 async function editarEscritorioServicios(id){
@@ -1656,10 +1505,10 @@ async function editarEscritorioServicios(id){
 async function guardarEscritorioServicios(id){
   const val=document.getElementById('escritorioSvcInput').value.trim()||null;
   const msg=document.getElementById('escritorioSvcMsg');
-  const {error}=await sb.from('cuentas_cartera').update({escritorio_servicios:val,updated_at:new Date().toISOString()}).eq('id',id);
+  const {error}=await sb.from('clientes_cartera').update({escritorio_servicios:val,updated_at:new Date().toISOString()}).eq('id',id);
   if(error){msg.textContent='Error: '+error.message;return;}
   document.getElementById('modalEscritorioSvc').remove();
-  const c=(window._carteraTodas||[]).find(c=>c.id===id);
+  const c=(window._cartClientes||[]).find(c=>c.id===id);
   if(c) c.escritorio_servicios=val;
   swCartera(currentCarteraSub);
 }
@@ -1809,7 +1658,7 @@ async function guardarSeguimiento(id){
     upd.estado='no_renovada';
     upd.motivo_no_renovacion=motivo;
   }
-  const {error}=await sb.from('cuentas_cartera').update(upd).eq('id',id);
+  const {error}=await sb.from('suscripciones_cartera').update(upd).eq('id',id);
   if(error){msg.textContent='Error: '+error.message;return;}
   document.getElementById('modalSeguimiento').remove();
   renderCarteraVendedor();
@@ -1879,7 +1728,26 @@ async function guardarAltaCuenta(){
     estado:'reclamada',
     origen:'alta_vendedor',
   };
-  const {error}=await sb.from('cuentas_cartera').insert(payload);
+  // Insertar primero el cliente, luego la suscripción
+  const {data:nuevoCliente,error:errCliente}=await sb.from('clientes_cartera').insert({
+    razon_social:razon,
+    rfc:payload.rfc,
+    vendedor_asignado:currentUser.id,
+    origen:'alta_vendedor',
+    num_cliente:'ALT-'+Date.now()
+  }).select().single();
+  if(errCliente){msg.textContent='Error al crear cliente: '+errCliente.message;return;}
+  const {error}=await sb.from('suscripciones_cartera').insert({
+    cliente_id:nuevoCliente.id,
+    numserie:payload.numserie,
+    producto:payload.producto,
+    periodicidad:payload.periodicidad,
+    monto:payload.monto,
+    fecha_ultima_renovacion:payload.fecha_ultima_renovacion,
+    fecha_proxima_renovacion:payload.fecha_proxima_renovacion,
+    estado:'reclamada',
+    origen:'alta_vendedor'
+  });
   if(error){msg.textContent='Error: '+error.message;return;}
   document.getElementById('modalAltaCuenta').remove();
   renderCarteraVendedor();
@@ -1890,17 +1758,23 @@ let dirCarteraVendedorFiltro='';
 async function renderDirectorCartera(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando cartera...</div>';
-  const [{data:todas},{data:vendedores}]=await Promise.all([
-    sb.from('cuentas_cartera').select('*,cuenta_padre:cuenta_padre_id(id,razon_social)').order('razon_social'),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre')
+  const [{data:clientes},{data:suscripciones},{data:vendedores}]=await Promise.all([
+    sb.from('clientes_cartera').select('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)').order('razon_social'),
+    sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
+    sb.from('usuarios').select('id,nombre').order('nombre')
   ]);
-  window._carteraTodas=todas||[];
+  window._cartClientes=clientes||[];
+  window._cartSuscripciones=suscripciones||[];
   window._carteraVendedores=vendedores||[];
-  const productos=[...new Set((todas||[]).map(c=>c.producto).filter(Boolean))].sort();
-  const totalCuentas=(todas||[]).length;
-  const sinReclamar=(todas||[]).filter(c=>c.estado==='sin_reclamar').length;
-  const reclamadas=(todas||[]).filter(c=>['reclamada','en_revision'].includes(c.estado)).length;
-  const noRenovadas=(todas||[]).filter(c=>c.estado==='no_renovada').length;
+  window._carteraTodas=clientes||[]; // compatibilidad
+  (clientes||[]).forEach(cl=>{
+    cl._suscripciones=(suscripciones||[]).filter(s=>s.cliente_id===cl.id);
+  });
+  const productos=[...new Set((suscripciones||[]).map(s=>s.producto).filter(Boolean))].sort();
+  const totalCuentas=(clientes||[]).length;
+  const sinReclamar=(suscripciones||[]).filter(c=>c.estado==='sin_reclamar').length;
+  const reclamadas=(suscripciones||[]).filter(c=>['reclamada','en_revision'].includes(c.estado)).length;
+  const noRenovadas=(suscripciones||[]).filter(c=>c.estado==='no_renovada').length;
 
   mc.innerHTML=`
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
@@ -2089,26 +1963,26 @@ async function gestionarCampanaCartera(campanaId){
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
   const [{data:camp},{data:cuentasEnCamp},{data:todasCuentasRaw}]=await Promise.all([
     sb.from('campanas_cartera').select('*').eq('id',campanaId).maybeSingle(),
-    sb.from('campana_cartera_cuentas').select('cuenta_id').eq('campana_id',campanaId),
-    sb.from('cuentas_cartera').select('id,numserie,razon_social,rfc,producto,telefono,tipo_cliente').order('razon_social')
+    sb.from('campana_cartera_clientes').select('cliente_id').eq('campana_id',campanaId),
+    sb.from('clientes_cartera').select('id,num_cliente,razon_social,rfc,sistemas_aspel,telefono,tipo_cliente').order('razon_social')
   ]);
   if(!camp){mc.innerHTML='<div style="padding:20px;color:var(--red);">Campaña no encontrada</div>';return;}
-  // Deduplicar por id
   const vistos=new Set();
-  const todasCuentas=(todasCuentasRaw||[]).filter(c=>{if(vistos.has(c.id))return false;vistos.add(c.id);return true;});  const idsEnCamp=new Set((cuentasEnCamp||[]).map(r=>r.cuenta_id));
-  const productos=[...new Set(todasCuentas.map(c=>c.producto).filter(Boolean))].sort();
+  const todasCuentas=(todasCuentasRaw||[]).filter(c=>{if(vistos.has(c.id))return false;vistos.add(c.id);return true;});
+  const idsEnCamp=new Set((cuentasEnCamp||[]).map(r=>r.cliente_id));
+  const productos=[...new Set(todasCuentas.flatMap(c=>c.sistemas_aspel||[]).filter(Boolean))].sort();
 
   mc.innerHTML=`
   <button onclick="renderDirCarteraCampanas()" style="background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;margin-bottom:12px;">← Volver a campañas</button>
   <div class="card" style="padding:16px;margin-bottom:16px;">
     <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px;">${camp.nombre}</div>
-    <div style="font-size:12px;color:var(--text3);">${idsEnCamp.size} cuentas seleccionadas · ${camp.activa?'<span style="color:#27AE60;">● Activa</span>':'Inactiva'}</div>
+    <div style="font-size:12px;color:var(--text3);">${idsEnCamp.size} clientes seleccionados · ${camp.activa?'<span style="color:#27AE60;">● Activa</span>':'Inactiva'}</div>
     <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-      <select id="campCartFiltProd" onchange="filtrarListaCampCartera('${campanaId}')" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">
-        <option value="">Todos los productos</option>
+      <select id="campCartFiltProd" onchange="filtrarListaCampCartera()" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">
+        <option value="">Todos los sistemas</option>
         ${productos.map(p=>`<option value="${p}">${p}</option>`).join('')}
       </select>
-      <input type="text" id="campCartBuscar" placeholder="Buscar..." oninput="filtrarListaCampCartera('${campanaId}')" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;width:180px;">
+      <input type="text" id="campCartBuscar" placeholder="Buscar..." oninput="filtrarListaCampCartera()" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;width:180px;">
       <button onclick="seleccionarTodosCampCartera(true)" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:5px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✓ Seleccionar todos</button>
       <button onclick="seleccionarTodosCampCartera(false)" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:5px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✗ Quitar todos</button>
       <button onclick="guardarSeleccionCampCartera('${campanaId}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;margin-left:auto;">💾 Guardar selección</button>
@@ -2117,11 +1991,12 @@ async function gestionarCampanaCartera(campanaId){
   <div class="card" style="padding:0;max-height:520px;overflow-y:auto;">
     <div id="listaCampCartera">
       ${(todasCuentas||[]).map(c=>`
-        <label style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;background:#fff;" class="camp-cart-fila" data-prod="${c.producto||''}" data-razon="${(c.razon_social||'').toLowerCase()}">
+        <label style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;background:#fff;" class="camp-cart-fila" data-prod="${(c.sistemas_aspel||[]).join(',')}" data-razon="${(c.razon_social||'').toLowerCase()}">
           <input type="checkbox" data-id="${c.id}" ${idsEnCamp.has(c.id)?'checked':''} style="accent-color:var(--teal);flex-shrink:0;">
+          <span style="font-size:10px;color:var(--text3);white-space:nowrap;font-family:'JetBrains Mono',monospace;">${c.num_cliente||''}</span>
           <span style="flex:1;font-weight:500;color:var(--text);">${c.razon_social||'Sin nombre'}</span>
           <span style="font-size:10px;color:var(--text3);white-space:nowrap;">${c.rfc||''}</span>
-          <span style="font-size:10px;color:var(--teal);white-space:nowrap;">${c.producto||''}</span>
+          ${(c.sistemas_aspel||[]).map(s=>`<span style="font-size:9px;background:rgba(0,169,157,0.1);color:var(--teal);border-radius:3px;padding:1px 5px;">${s}</span>`).join('')}
           ${c.telefono?`<span style="font-size:10px;color:var(--text3);white-space:nowrap;">${c.telefono}</span>`:''}
         </label>`).join('')}
     </div>
@@ -2133,14 +2008,13 @@ function filtrarListaCampCartera(){
   const prod=document.getElementById('campCartFiltProd')?.value||'';
   const q=(document.getElementById('campCartBuscar')?.value||'').toLowerCase();
   document.querySelectorAll('#listaCampCartera .camp-cart-fila').forEach(fila=>{
-    const matchProd=!prod||fila.dataset.prod===prod;
+    const matchProd=!prod||fila.dataset.prod?.includes(prod);
     const matchQ=!q||fila.dataset.razon?.includes(q);
     fila.style.display=(matchProd&&matchQ)?'flex':'none';
   });
 }
 
 function seleccionarTodosCampCartera(marcar){
-  // Solo los visibles (no ocultos por el filtro)
   document.querySelectorAll('#listaCampCartera .camp-cart-fila').forEach(fila=>{
     if(fila.style.display!=='none'){
       const cb=fila.querySelector('input[type="checkbox"]');
@@ -2152,17 +2026,16 @@ function seleccionarTodosCampCartera(marcar){
 async function guardarSeleccionCampCartera(campanaId){
   const checks=document.querySelectorAll('#listaCampCartera input[type="checkbox"]');
   const seleccionadas=[...checks].filter(c=>c.checked).map(c=>c.dataset.id);
-  // Borrar las que ya no están y agregar las nuevas
-  const {error:delErr}=await sb.from('campana_cartera_cuentas').delete().eq('campana_id',campanaId);
+  const {error:delErr}=await sb.from('campana_cartera_clientes').delete().eq('campana_id',campanaId);
   if(delErr){alert('Error: '+delErr.message);return;}
   if(seleccionadas.length){
-    const filas=seleccionadas.map(id=>({campana_id:campanaId,cuenta_id:id}));
-    const {error}=await sb.from('campana_cartera_cuentas').insert(filas);
+    const filas=seleccionadas.map(id=>({campana_id:campanaId,cliente_id:id}));
+    const {error}=await sb.from('campana_cartera_clientes').insert(filas);
     if(error){alert('Error al guardar: '+error.message);return;}
   }
   await sb.from('campanas_cartera').update({total_cuentas:seleccionadas.length,updated_at:new Date().toISOString()}).eq('id',campanaId);
   const msgEl=document.createElement('div');
-  msgEl.textContent=`✓ ${seleccionadas.length} cuentas guardadas en la campaña`;
+  msgEl.textContent=`✓ ${seleccionadas.length} clientes guardados en la campaña`;
   msgEl.style.cssText='position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#27AE60;color:#fff;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;z-index:9999;';
   document.body.appendChild(msgEl);
   setTimeout(()=>msgEl.remove(),3000);
@@ -3192,9 +3065,9 @@ async function renderTeleClientes(){
     return;
   }
   // Cargar cuentas de la campaña
-  const {data:cuentasRel}=await sb.from('campana_cartera_cuentas')
-    .select('cuenta_id').eq('campana_id',campActiva.id);
-  const ids=(cuentasRel||[]).map(r=>r.cuenta_id);
+  const {data:cuentasRel}=await sb.from('campana_cartera_clientes')
+    .select('cliente_id').eq('campana_id',campActiva.id);
+  const ids=(cuentasRel||[]).map(r=>r.cliente_id);
   if(!ids.length){
     mc.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--text3);">La campaña no tiene cuentas asignadas aún.</div>`;
     return;
