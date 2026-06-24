@@ -2067,16 +2067,34 @@ async function guardarNuevaCampanaCartera(){
     fecha_fin:document.getElementById('ncFin')?.value||null,
     created_at:new Date().toISOString()
   };
-  const {error}=await sb.from('campanas_cartera').insert(payload);
+  const {data:nuevaCamp,error}=await sb.from('campanas_cartera').insert(payload).select().single();
   if(error){msg.textContent='Error: '+error.message;return;}
   document.getElementById('modalNuevaCampCartera').remove();
-  renderDirCarteraCampanas();
+  // Abrir directamente gestionar para que seleccione los clientes
+  gestionarCampanaCartera(nuevaCamp.id);
 }
 
 async function toggleCampanaCartera(id,activar){
   const {error}=await sb.from('campanas_cartera').update({activa:activar,updated_at:new Date().toISOString()}).eq('id',id);
   if(error){alert('Error: '+error.message);return;}
   renderDirCarteraCampanas();
+}
+
+async function guardarDatosCampana(campanaId){
+  const {error}=await sb.from('campanas_cartera').update({
+    nombre:document.getElementById('gCampNombre')?.value.trim()||null,
+    descripcion:document.getElementById('gCampDesc')?.value.trim()||null,
+    fecha_inicio:document.getElementById('gCampInicio')?.value||null,
+    fecha_fin:document.getElementById('gCampFin')?.value||null,
+    asignado_a:document.getElementById('gCampAsignado')?.value||null,
+    updated_at:new Date().toISOString()
+  }).eq('id',campanaId);
+  if(error){alert('Error: '+error.message);return;}
+  const toast=document.createElement('div');
+  toast.textContent='✓ Datos de la campaña guardados';
+  toast.style.cssText='position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#27AE60;color:#fff;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;z-index:9999;';
+  document.body.appendChild(toast);
+  setTimeout(()=>toast.remove(),2500);
 }
 
 async function gestionarCampanaCartera(campanaId){
@@ -2096,9 +2114,35 @@ async function gestionarCampanaCartera(campanaId){
   mc.innerHTML=`
   <button onclick="renderDirCarteraCampanas()" style="background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;margin-bottom:12px;">← Volver a campañas</button>
   <div class="card" style="padding:16px;margin-bottom:16px;">
-    <div style="font-size:14px;font-weight:700;color:var(--text);margin-bottom:4px;">${camp.nombre}</div>
-    <div style="font-size:12px;color:var(--text3);">${idsEnCamp.size} clientes seleccionados · ${camp.activa?'<span style="color:#27AE60;">● Activa</span>':'Inactiva'}</div>
-    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+      <div style="grid-column:1/-1;">
+        <label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Nombre</label>
+        <input id="gCampNombre" type="text" value="${(camp.nombre||'').replace(/"/g,'&quot;')}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+      </div>
+      <div style="grid-column:1/-1;">
+        <label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Descripción</label>
+        <input id="gCampDesc" type="text" value="${(camp.descripcion||'').replace(/"/g,'&quot;')}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+      </div>
+      <div>
+        <label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Fecha inicio</label>
+        <input id="gCampInicio" type="date" value="${camp.fecha_inicio||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+      </div>
+      <div>
+        <label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Fecha fin</label>
+        <input id="gCampFin" type="date" value="${camp.fecha_fin||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+      </div>
+      <div>
+        <label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Asignado a</label>
+        <select id="gCampAsignado" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+          ${(await sb.from('usuarios').select('id,nombre').then(r=>r.data||[])).map(u=>`<option value="${u.id}" ${u.id===camp.asignado_a?'selected':''}>${u.nombre}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:8px;">
+        <button onclick="guardarDatosCampana('${campanaId}')" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar datos</button>
+        <span style="font-size:11px;color:${camp.activa?'#27AE60':'var(--text3)'};">${camp.activa?'● Activa':'○ Inactiva'} · ${idsEnCamp.size} clientes</span>
+      </div>
+    </div>
+    <div style="border-top:1px solid var(--border);padding-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <select id="campCartFiltProd" onchange="filtrarListaCampCartera()" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">
         <option value="">Todos los sistemas</option>
         ${productos.map(p=>`<option value="${p}">${p}</option>`).join('')}
