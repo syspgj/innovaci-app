@@ -517,7 +517,7 @@ let currentVendTab='miMes';
 function swV(id){
   currentVendTab=id;
   const esVendedor=userProfile.email.includes('dulce')||userProfile.email.includes('manuel');
-  const tabs=esVendedor?['miMes','anual','cartera','registro','historico']:['miMes','registro','historico'];
+  const tabs=esVendedor?['miMes','anual','cartera','registro','proyeccion','historico']:['miMes','registro','historico'];
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',tabs[i]===id));
   if(id==='miMes')renderVendorMiMes();
   else if(id==='anual')renderVendorAnual();
@@ -969,16 +969,36 @@ const TIPOS_SERVICIO=['Póliza','Curso Empresarial','IT','Servicio','Otro'];
 const ESTATUS_PIPE=['Negociando','Ganado','Perdido','Pospuesto'];
 const PROB_OPTS=[10,25,50,70,90,100];
 
+let pipeSortCol='fecha_prevista', pipeSortDir=1, pipeFiltroEstatus='', pipeFiltroTexto='';
+
 async function renderProyeccion(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando proyección...</div>';
   const {data:rows}=await sb.from('pipeline_vendedor')
     .select('*').eq('usuario_id',currentUser.id)
-    .eq('anio',currentYear).eq('mes',currentMonth)
-    .order('fecha_prevista',{ascending:true});
-  const pipe=rows||[];
+    .eq('anio',currentYear).eq('mes',currentMonth);
+  window._pipeRows=rows||[];
+  renderProyeccionTabla();
+}
+
+function renderProyeccionTabla(){
+  const mc=document.getElementById('mainContent');
+  if(!mc) return;
+  let pipe=window._pipeRows||[];
+  // Filtros
+  if(pipeFiltroEstatus) pipe=pipe.filter(r=>r.estatus===pipeFiltroEstatus);
+  if(pipeFiltroTexto){const q=pipeFiltroTexto.toLowerCase();pipe=pipe.filter(r=>(r.producto||'').toLowerCase().includes(q)||(r.cliente||'').toLowerCase().includes(q)||(r.tipo_servicio||'').toLowerCase().includes(q));}
+  // Ordenamiento
+  pipe=[...pipe].sort((a,b)=>{
+    let va=a[pipeSortCol]||'', vb=b[pipeSortCol]||'';
+    if(!isNaN(va)&&!isNaN(vb)){va=Number(va);vb=Number(vb);}
+    return va<vb?-pipeSortDir:va>vb?pipeSortDir:0;
+  });
   const totalMonto=pipe.reduce((s,r)=>s+(r.monto_total||0),0);
   const totalSubtotal=pipe.reduce((s,r)=>s+(r.subtotal||0),0);
+  const flecha=(col)=>pipeSortCol===col?(pipeSortDir===1?' ▲':' ▼'):'';
+  const thS=(lbl,col,extra='')=>`<th onclick="pipeSort('${col}')" style="padding:8px 10px;text-align:${extra||'left'};white-space:nowrap;cursor:pointer;user-select:none;" title="Ordenar">${lbl}${flecha(col)}</th>`;
+  const estatusOpciones=['Negociando','Ganado','Perdido','Pospuesto'];
 
   mc.innerHTML=`
   <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
@@ -988,25 +1008,33 @@ async function renderProyeccion(){
     </div>
     <button onclick="agregarFilaPipe()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar</button>
   </div>
+  <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
+    <div style="position:relative;flex:1;min-width:160px;">
+      <input type="text" id="pipeBuscar" placeholder="Buscar por cliente, servicio..." value="${pipeFiltroTexto}" oninput="pipeFiltroTexto=this.value;renderProyeccionTabla()"
+        style="width:100%;padding:7px 30px 7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+      ${pipeFiltroTexto?`<button onclick="pipeFiltroTexto='';renderProyeccionTabla()" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:15px;">✕</button>`:''}
+    </div>
+    <select onchange="pipeFiltroEstatus=this.value;renderProyeccionTabla()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+      <option value="">Todos los estatus</option>
+      ${estatusOpciones.map(e=>`<option value="${e}" ${pipeFiltroEstatus===e?'selected':''}>${e}</option>`).join('')}
+    </select>
+    ${(pipeFiltroEstatus||pipeFiltroTexto)?`<button onclick="pipeFiltroEstatus='';pipeFiltroTexto='';renderProyeccionTabla()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:6px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕ Limpiar</button>`:''}
+  </div>
   <div style="overflow-x:auto;">
   <table style="width:100%;border-collapse:collapse;font-size:12px;">
     <thead>
       <tr style="background:var(--navy);color:#fff;">
-        <th style="padding:8px 10px;text-align:left;border-radius:var(--radsm) 0 0 0;white-space:nowrap;">Tipo</th>
-        <th style="padding:8px 10px;text-align:left;white-space:nowrap;">Servicio / Póliza</th>
-        <th style="padding:8px 10px;text-align:left;white-space:nowrap;">Cliente</th>
-        <th style="padding:8px 10px;text-align:right;white-space:nowrap;">Monto Total</th>
-        <th style="padding:8px 10px;text-align:right;white-space:nowrap;">Subtotal</th>
-        <th style="padding:8px 10px;text-align:center;white-space:nowrap;">Prob.</th>
-        <th style="padding:8px 10px;text-align:center;white-space:nowrap;">Fecha prev.</th>
-        <th style="padding:8px 10px;text-align:center;white-space:nowrap;">Estatus</th>
+        ${thS('Tipo','tipo_servicio')}${thS('Servicio / Póliza','producto')}${thS('Cliente','cliente')}
+        ${thS('Monto Total','monto_total','right')}${thS('Subtotal','subtotal','right')}
+        ${thS('Prob.','probabilidad','center')}${thS('Fecha prev.','fecha_prevista','center')}
+        ${thS('Estatus','estatus','center')}
         <th style="padding:8px 10px;text-align:left;white-space:nowrap;">Objeción / Nota</th>
-        <th style="padding:8px 10px;border-radius:0 var(--radsm) 0 0;"></th>
+        <th style="padding:8px 10px;"></th>
       </tr>
     </thead>
     <tbody id="pipeBody">
       ${pipe.map(r=>filaPipe(r)).join('')}
-      ${pipe.length===0?`<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--text3);">Sin negociaciones este mes — agrega una con el botón de arriba</td></tr>`:''}
+      ${pipe.length===0?`<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--text3);">${window._pipeRows.length?'Ningún resultado coincide con los filtros.':'Sin negociaciones este mes — agrega una con el botón de arriba'}</td></tr>`:''}
     </tbody>
     <tfoot>
       <tr style="background:var(--surface-2,#f4f6f8);font-weight:700;">
@@ -1018,6 +1046,12 @@ async function renderProyeccion(){
     </tfoot>
   </table>
   </div>`;
+}
+
+function pipeSort(col){
+  if(pipeSortCol===col) pipeSortDir*=-1;
+  else{pipeSortCol=col;pipeSortDir=1;}
+  renderProyeccionTabla();
 }
 
 function filaPipe(r){
@@ -1323,27 +1357,48 @@ async function abrirFichaClienteModal(clienteId){
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:flex-start;justify-content:center;z-index:9999;padding:20px;overflow-y:auto;';
   const suscripciones=cl._suscripciones||[];
 
+  const ESTADOS_SUSC=['sin_reclamar','reclamada','renovada','no_renovada'];
+  const ESTADO_COLOR={'sin_reclamar':'var(--text3)','reclamada':'var(--gold)','renovada':'#27AE60','no_renovada':'var(--red)'};
   const renderSusc=(s,editable=true)=>{
     const vence=s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
-    return `<div style="border:1px solid ${vence?'var(--red)':'var(--border)'};border-radius:var(--radsm);padding:10px 14px;background:#fff;">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:${editable?'8px':'0'};">
+    const estadoColor=ESTADO_COLOR[s.estado]||'var(--text3)';
+    return `<div style="border:1px solid ${vence&&s.estado!=='renovada'?'var(--red)':'var(--border)'};border-radius:var(--radsm);padding:10px 14px;background:#fff;margin-bottom:4px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
         <span style="font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--navy);">${s.numserie||'—'}</span>
         <span style="font-size:11px;color:var(--text3);">${s.producto||''}</span>
         ${s.periodicidad?`<span style="font-size:10px;color:var(--text3);text-transform:capitalize;">${s.periodicidad}</span>`:''}
         ${s.monto?`<span style="font-size:11px;font-weight:600;color:var(--teal);">$${Math.round(s.monto).toLocaleString('es-MX')}</span>`:''}
-        <span style="margin-left:auto;font-size:10px;padding:2px 8px;border-radius:4px;background:${s.estado==='renovada'?'rgba(39,174,96,0.1)':s.estado==='no_renovada'?'rgba(231,76,60,0.1)':'rgba(0,0,0,0.05)'};color:${s.estado==='renovada'?'#27AE60':s.estado==='no_renovada'?'var(--red)':'var(--text3)'};">${s.estado||'—'}</span>
       </div>
-      ${editable?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      ${editable?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
         <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Última renovación</label>
           <input type="date" data-susc-id="${s.id}" data-field="fecha_ultima_renovacion" value="${s.fecha_ultima_renovacion||''}"
             style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;"></div>
         <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Próxima renovación</label>
           <input type="date" data-susc-id="${s.id}" data-field="fecha_proxima_renovacion" value="${s.fecha_proxima_renovacion||''}"
-            style="width:100%;padding:5px 8px;border:1px solid ${vence?'var(--red)':'var(--border)'};border-radius:var(--radsm);font-size:11px;box-sizing:border-box;${vence?'color:var(--red);font-weight:600;':''}"></div>
+            style="width:100%;padding:5px 8px;border:1px solid ${vence&&s.estado!=='renovada'?'var(--red)':'var(--border)'};border-radius:var(--radsm);font-size:11px;box-sizing:border-box;${vence&&s.estado!=='renovada'?'color:var(--red);font-weight:600;':''}"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Estado</label>
+          <select data-susc-id="${s.id}" data-field="estado"
+            style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;color:${estadoColor};font-weight:600;">
+            ${ESTADOS_SUSC.map(e=>`<option value="${e}" ${e===s.estado?'selected':''}>${e.replace('_',' ')}</option>`).join('')}
+          </select></div>
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Evidencia <span style="font-weight:400;">(URL o archivo)</span></label>
+          <div style="display:flex;gap:4px;">
+            <input type="text" data-susc-id="${s.id}" data-field="evidencia_url" value="${s.evidencia_url||''}" placeholder="URL del comprobante..."
+              style="flex:1;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;">
+            ${s.evidencia_url?`<a href="${s.evidencia_url}" target="_blank" style="padding:5px 8px;background:var(--teal);color:#fff;border-radius:var(--radsm);font-size:10px;text-decoration:none;white-space:nowrap;">Ver</a>`:''}
+          </div></div>
+      </div>
+      <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Notas / Observaciones</label>
+        <textarea data-susc-id="${s.id}" data-field="notas_seguimiento" rows="2" placeholder="Ej: Cliente confirmó que renovará en julio, pendiente de factura..."
+          style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;resize:vertical;font-family:'Inter',sans-serif;">${s.notas_seguimiento||''}</textarea>
       </div>`
       :`<div style="font-size:10px;color:var(--text3);">
         ${s.fecha_ultima_renovacion?`Última: ${fmtFecha(s.fecha_ultima_renovacion)} &nbsp;`:''}
-        ${s.fecha_proxima_renovacion?`Próxima: <strong>${fmtFecha(s.fecha_proxima_renovacion)}</strong>`:'Sin fecha'}
+        ${s.fecha_proxima_renovacion?`Próxima: <strong style="color:${vence&&s.estado!=='renovada'?'var(--red)':'inherit'};">${fmtFecha(s.fecha_proxima_renovacion)}</strong>`:'Sin fecha'}
+        &nbsp;·&nbsp;<span style="color:${estadoColor};font-weight:600;">${(s.estado||'').replace('_',' ')}</span>
+        ${s.notas_seguimiento?`<div style="margin-top:4px;color:var(--text2);">${s.notas_seguimiento}</div>`:''}
       </div>`}
     </div>`;
   };
@@ -1468,7 +1523,7 @@ async function guardarFichaClienteCompleta(id){
     const sId=inp.dataset.suscId;
     const field=inp.dataset.field;
     if(!suscUpdates[sId]) suscUpdates[sId]={};
-    suscUpdates[sId][field]=inp.value||null;
+    suscUpdates[sId][field]=inp.tagName==='TEXTAREA'?inp.value:(inp.value||null);
   });
   const promises=Object.entries(suscUpdates).map(([sId,upd])=>
     sb.from('suscripciones_cartera').update({...upd,updated_at:new Date().toISOString()}).eq('id',sId)
@@ -2473,6 +2528,55 @@ async function renderDirectorResumen(){
       canalizadosPorVendedorMes[p.vendedor_asignado]=(canalizadosPorVendedorMes[p.vendedor_asignado]||0)+1;
     }
   });
+  // ── MÉTRICAS ANUALES POR VENDEDOR ──────────────────────────
+  const desdeAnio=`${currentYear}-01-01`, hastaAnio=`${currentYear}-12-31`;
+  const {data:regsAnioDir}=await sb.from('registros_diarios').select('usuario_id,svc,cotizaciones').gte('fecha',desdeAnio).lte('fecha',hastaAnio);
+  const metricasAnuales={};
+  vendedoresRes.forEach(u=>{
+    const regsU=(regsAnioDir||[]).filter(r=>r.usuario_id===u.id);
+    const svcTot=regsU.reduce((s,r)=>s+(r.svc||0),0);
+    const cotizTot=regsU.reduce((s,r)=>s+(r.cotizaciones||0),0);
+    const facturas=regsU.filter(r=>(r.svc||0)>0).length;
+    metricasAnuales[u.id]={ticket:cotizTot>0?svcTot/cotizTot:0,conversion:cotizTot>0?facturas/cotizTot:null,cotizTot,svcTot,facturas};
+  });
+  // ── CAMPAÑAS ACTIVAS ──────────────────────────────────────
+  const [{data:campProspectos},{data:campCarteraList}]=await Promise.all([
+    sb.from('campanas').select('id,nombre,activa').eq('activa',true).maybeSingle(),
+    sb.from('campanas_cartera').select('id,nombre,activa,total_cuentas').eq('activa',true)
+  ]);
+  let panelCampanias='';
+  const bloquesCamp=[];
+  if(campProspectos){
+    const [{data:llPros},{count:totalP}]=await Promise.all([
+      sb.from('prospecto_llamadas').select('prospecto_id,resultado'),
+      sb.from('campana_prospectos').select('id',{count:'exact',head:true}).eq('campana_id',campProspectos.id).then(r=>r)
+    ]);
+    const contactadosP=new Set((llPros||[]).filter(l=>!['No contestó','Buzón'].includes(l.resultado)).map(l=>l.prospecto_id)).size;
+    const tP=(await sb.from('campana_prospectos').select('id',{count:'exact',head:true}).eq('campana_id',campProspectos.id)).count||0;
+    const pctP=tP>0?Math.round(contactadosP/tP*100):0;
+    bloquesCamp.push(`<div style="flex:1;min-width:200px;"><div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">📣 ${campProspectos.nombre}</div>
+      <div style="height:6px;background:var(--border);border-radius:3px;margin:6px 0;overflow:hidden;"><div style="height:100%;width:${pctP}%;background:${pctP>=80?'#27AE60':pctP>=50?'#F5A623':'#E84040'};border-radius:3px;"></div></div>
+      <div style="font-size:11px;color:var(--text3);">${contactadosP}/${tP} contactados · <strong style="color:${pctP>=80?'#27AE60':pctP>=50?'#F5A623':'#E84040'};">${pctP}%</strong></div>
+    </div>`);
+  }
+  for(const camp of (campCarteraList||[])){
+    const {data:llCart}=await sb.from('llamadas_cartera').select('cliente_id,resultado').eq('campana_id',camp.id);
+    const totalC=camp.total_cuentas||0;
+    const contactosC=new Set((llCart||[]).filter(l=>!['No contestó','Buzón'].includes(l.resultado)).map(l=>l.cliente_id)).size;
+    const pctC=totalC>0?Math.round(contactosC/totalC*100):0;
+    const resCont={};(llCart||[]).forEach(l=>{resCont[l.resultado]=(resCont[l.resultado]||0)+1;});
+    bloquesCamp.push(`<div style="flex:1;min-width:200px;"><div style="font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">📋 ${camp.nombre}</div>
+      <div style="height:6px;background:var(--border);border-radius:3px;margin:6px 0;overflow:hidden;"><div style="height:100%;width:${pctC}%;background:${pctC>=80?'#27AE60':pctC>=50?'#F5A623':'#E84040'};border-radius:3px;"></div></div>
+      <div style="font-size:11px;color:var(--text3);">${contactosC}/${totalC} contactados · <strong style="color:${pctC>=80?'#27AE60':pctC>=50?'#F5A623':'#E84040'};">${pctC}%</strong>${pctC>=80?' <span style="color:#27AE60;">✓</span>':''}</div>
+      <div style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;">${Object.entries(resCont).map(([r,c])=>`<span style="font-size:9px;padding:1px 6px;background:rgba(0,0,0,0.05);border-radius:3px;">${r}: ${c}</span>`).join('')}</div>
+    </div>`);
+  }
+  if(bloquesCamp.length){
+    panelCampanias=`<div class="card" style="padding:16px;margin-bottom:16px;">
+      <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px;">Avance de campañas activas</div>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;">${bloquesCamp.join('')}</div>
+    </div>`;
+  }
   mc.innerHTML=`
   <div class="alert" style="background:${cerrado?'var(--green-bg)':'var(--gold-bg)'};border-color:${cerrado?'rgba(39,174,96,0.25)':'var(--gold-b)'};">
     ${cerrado?`✅ <strong>${getNombreMes(currentMonth)} ${currentYear}</strong> — Mes cerrado · Datos definitivos`:`⚠️ <strong>${getNombreMes(currentMonth)} ${currentYear} en curso</strong> · ${diasTrans} de ${diasHab} días hábiles · ${diasRest} días restantes`}
@@ -2916,73 +3020,6 @@ async function renderDirectorKpis(){
   const susPorVendedor={},renPorVendedor={};
   (altasCartera||[]).forEach(c=>{if(c.vendedor_asignado)susPorVendedor[c.vendedor_asignado]=(susPorVendedor[c.vendedor_asignado]||0)+1;});
   (renovCartera||[]).forEach(c=>{if(c.vendedor_asignado)renPorVendedor[c.vendedor_asignado]=(renPorVendedor[c.vendedor_asignado]||0)+1;});
-
-  // ── MÉTRICAS ANUALES POR VENDEDOR ──────────────────────────
-  const desdeAnio=`${currentYear}-01-01`, hastaAnio=`${currentYear}-12-31`;
-  const {data:regsAnioDir}=await sb.from('registros_diarios').select('usuario_id,svc,cotizaciones').gte('fecha',desdeAnio).lte('fecha',hastaAnio);
-  const metricasAnuales={};
-  (vendedoresRes||[]).forEach(u=>{
-    const regsU=(regsAnioDir||[]).filter(r=>r.usuario_id===u.id);
-    const svcTot=regsU.reduce((s,r)=>s+(r.svc||0),0);
-    const cotizTot=regsU.reduce((s,r)=>s+(r.cotizaciones||0),0);
-    const facturas=regsU.filter(r=>(r.svc||0)>0).length;
-    metricasAnuales[u.id]={
-      ticket:cotizTot>0?svcTot/cotizTot:0,
-      conversion:cotizTot>0?facturas/cotizTot:null,
-      cotizTot, svcTot, facturas
-    };
-  });
-
-  // ── DATOS DE CAMPAÑAS ──────────────────────────────────────
-  const [{data:campProspectos},{data:campCartera}]=await Promise.all([
-    sb.from('campanas').select('id,nombre,activa').eq('activa',true).maybeSingle(),
-    sb.from('campanas_cartera').select('id,nombre,activa,total_cuentas,asignado_a').eq('activa',true)
-  ]);
-  let panelCampanias='';
-  if(campProspectos||campCartera){
-    const bloques=[];
-    if(campProspectos){
-      const {data:totalPros}=await sb.from('campana_prospectos').select('id',{count:'exact',head:true}).eq('campana_id',campProspectos.id);
-      const {data:llamadasPros}=await sb.from('prospecto_llamadas').select('prospecto_id').eq('resultado','Contactado');
-      const totalP=totalPros||0;
-      const contactadosP=new Set((llamadasPros||[]).map(l=>l.prospecto_id)).size;
-      const pctP=totalP>0?Math.round(contactadosP/totalP*100):0;
-      bloques.push(`<div style="flex:1;">
-        <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">📣 Campaña prospectos</div>
-        <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px;">${campProspectos.nombre}</div>
-        <div style="height:6px;background:var(--border);border-radius:3px;margin-bottom:6px;overflow:hidden;">
-          <div style="height:100%;width:${pctP}%;background:${pctP>=80?'#27AE60':pctP>=50?'#F5A623':'#E84040'};border-radius:3px;"></div>
-        </div>
-        <div style="font-size:11px;color:var(--text3);">${contactadosP} de ${totalP} contactados · <strong style="color:${pctP>=80?'#27AE60':pctP>=50?'#F5A623':'#E84040'};">${pctP}%</strong></div>
-      </div>`);
-    }
-    for(const camp of (campCartera||[])){
-      const {data:clientesRel}=await sb.from('campana_cartera_clientes').select('cliente_id',{count:'exact',head:true}).eq('campana_id',camp.id);
-      const {data:llamadasCart}=await sb.from('llamadas_cartera').select('cliente_id,resultado').eq('campana_id',camp.id);
-      const totalC=camp.total_cuentas||0;
-      const contactosReales=new Set((llamadasCart||[]).filter(l=>!['No contestó','Buzón'].includes(l.resultado)).map(l=>l.cliente_id)).size;
-      const pctC=totalC>0?Math.round(contactosReales/totalC*100):0;
-      const resultadosCont={};
-      (llamadasCart||[]).forEach(l=>{resultadosCont[l.resultado]=(resultadosCont[l.resultado]||0)+1;});
-      bloques.push(`<div style="flex:1;">
-        <div style="font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">📋 Campaña clientes</div>
-        <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px;">${camp.nombre}</div>
-        <div style="height:6px;background:var(--border);border-radius:3px;margin-bottom:6px;overflow:hidden;">
-          <div style="height:100%;width:${pctC}%;background:${pctC>=80?'#27AE60':pctC>=50?'#F5A623':'#E84040'};border-radius:3px;"></div>
-        </div>
-        <div style="font-size:11px;color:var(--text3);">${contactosReales} de ${totalC} contactados · <strong style="color:${pctC>=80?'#27AE60':pctC>=50?'#F5A623':'#E84040'};">${pctC}%</strong>
-          ${pctC>=80?` <span style="color:#27AE60;font-weight:600;">✓ Meta alcanzada</span>`:''}
-        </div>
-        <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">
-          ${Object.entries(resultadosCont).map(([res,cnt])=>`<span style="font-size:10px;padding:1px 7px;background:rgba(0,0,0,0.05);border-radius:4px;">${res}: ${cnt}</span>`).join('')}
-        </div>
-      </div>`);
-    }
-    panelCampanias=`<div class="card" style="padding:16px;margin-bottom:16px;">
-      <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px;">Avance de campañas activas</div>
-      <div style="display:flex;gap:20px;flex-wrap:wrap;">${bloques.join('')}</div>
-    </div>`;
-  }
 
   const rows=kpiConfig.filter(k=>!/_m$/.test(k.kpi_key)).map(k=>{
     const tag=k.categoria==='principal'?'<span class="badge bt" style="font-size:9px;">p</span>':k.categoria==='extra'?'<span class="badge bo" style="font-size:9px;">e</span>':'';
