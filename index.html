@@ -596,10 +596,9 @@ async function renderVendorMiMes(){
   const commission=ajusteResult.comisionFinal;
   const rateMostrada=ajusteResult.tasaFinal;
   // Métricas del mes anterior para mostrar en Mi mes
-  // Mes anterior al mes SELECCIONADO (no al mes del sistema)
-  const [selectedAnio, selectedMesNum] = [currentYear, parseInt((desde||'').slice(5,7)||new Date().getMonth()+1)];
-  const mesAntNum=selectedMesNum===1?12:selectedMesNum-1;
-  const anioAnt=selectedMesNum===1?selectedAnio-1:selectedAnio;
+  // Mes anterior al mes SELECCIONADO
+  const mesAntNum=currentMonth===1?12:currentMonth-1;
+  const anioAnt=currentMonth===1?currentYear-1:currentYear;
   const desdeAnt=`${anioAnt}-${String(mesAntNum).padStart(2,'0')}-01`;
   const lastDayAnt=new Date(anioAnt,mesAntNum,0).getDate();
   const hastaAnt=`${anioAnt}-${String(mesAntNum).padStart(2,'0')}-${String(lastDayAnt).padStart(2,'0')}`;
@@ -711,8 +710,10 @@ async function renderVendorMiMes(){
     <div class="card" style="padding:16px;display:flex;gap:16px;align-items:center;">
       <div style="flex:1;">
         <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Ticket promedio ${MESES_N_MIMES[mesAntNum]}</div>
-        <div style="font-size:26px;font-weight:700;color:var(--teal);font-family:'JetBrains Mono',monospace;">${ticketAnt>0?fmt(ticketAnt):'—'}</div>
-        <div style="font-size:11px;color:var(--text3);margin-top:4px;">${fmt(svcAnt)} svc ÷ ${cotizAnt} cotizaciones</div>
+        <div style="font-size:26px;font-weight:700;color:${ticketAnt>0?'var(--teal)':'var(--text3)'};font-family:'JetBrains Mono',monospace;">${ticketAnt>0?fmt(ticketAnt):'—'}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px;">
+          ${cotizAnt>0?`${fmt(svcAnt)} svc ÷ ${cotizAnt} cot.`:`Sin cotizaciones en ${MESES_N_MIMES[mesAntNum]}`}
+        </div>
       </div>
       <div style="width:1px;background:var(--border);align-self:stretch;"></div>
       <div style="flex:1;">
@@ -720,7 +721,9 @@ async function renderVendorMiMes(){
         <div style="font-size:26px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${conversionAnt!==null?(conversionAnt>=0.5?'#27AE60':conversionAnt>=0.3?'#F5A623':'#E84040'):'var(--text3)'};">
           ${conversionAnt!==null?Math.round(conversionAnt*100)+'%':'—'}
         </div>
-        <div style="font-size:11px;color:var(--text3);margin-top:4px;">${facturasAnt} facturas de ${cotizAnt} cotizaciones</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px;">
+          ${cotizAnt>0?`${facturasAnt} facturas de ${cotizAnt} cotizaciones`:`Registra cotizaciones en "Registrar día"`}
+        </div>
       </div>
     </div>
     <div class="card" style="padding:16px;background:var(--surface-2,#f8f9fa);">
@@ -2497,12 +2500,12 @@ async function renderDirectorResumen(){
       </div>
     </div>
   </div>`:''}
+  ${panelCampanias}
   <div class="vgrid">${vData.map(v=>{
     const cc=v.rate>=0.10?'#27AE60':v.rate>=0.09?'#00A99D':v.rate>0?'#F5A623':'#E84040';
     const ini=v.u.nombre.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase();
     const col=v.u.email.toLowerCase().includes('dulce')?'#00A99D':'#0D2240';
     const metaKey=v.u.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
-    // Tarjetas director: siempre Servicios, Aspel, Suscripciones/Renovaciones (fijo, sin depender de orden/categoria dinámicos como meta_depto)
     const KEYS_TARJETA=['svc','aspel','sus'];
     const totMap={svc:v.tot.svc,aspel:v.tot.aspel,it:v.tot.it,sus:v.tot.sus};
     const mainK=KEYS_TARJETA.map(key=>kpiConfig.find(k=>k.kpi_key===key)).filter(Boolean);
@@ -2513,10 +2516,23 @@ async function renderDirectorResumen(){
     const totMap2={demos:v.tot.demos,val:v.tot.val,cn:v.tot.cn};
     const pills=secK.map(k=>{const kv=totMap2[k.kpi_key]||0,km=k[metaKey]||1,ok=kv>=km;
       return `<div class="pill"><span class="pd" style="background:${ok?'#27AE60':'#E84040'};"></span>${k.kpi_nombre}: <span class="pv">${kv}/${km}</span></div>`;}).join('');
+    const ma=metricasAnuales[v.u.id]||{ticket:0,conversion:null,cotizTot:0};
+    const convColor=ma.conversion!==null?(ma.conversion>=0.5?'#27AE60':ma.conversion>=0.3?'#F5A623':'#E84040'):'var(--text3)';
     return `<div class="vc"><div class="vc-top"><div class="vc-head">
       <div style="display:flex;align-items:center;gap:10px;"><div class="vc-av" style="background:${col};">${ini}</div><div><div class="vc-name">${v.u.nombre}${v.tieneAjuste?' <span style="font-size:10px;background:rgba(245,166,35,0.15);color:#B8740A;padding:1px 7px;border-radius:10px;font-weight:600;">⭐ ajuste</span>':''}</div><div class="vc-role">Vendedor B2B</div></div></div>
       <div class="vc-cr"><div class="vc-clbl">Comisión</div><div class="vc-cval" style="color:${cc};">${fmtK(v.comm)}</div><div class="vc-crate" style="color:${cc};">tasa ${(v.rate*100).toFixed(1)}%</div></div>
-    </div><div>${bars}</div></div><div class="vc-bot">${pills}</div></div>`;
+    </div><div>${bars}</div></div>
+    <div style="padding:8px 14px;border-top:1px solid var(--border);display:flex;gap:16px;">
+      <div style="flex:1;"><div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;">Ticket prom. anual</div>
+        <div style="font-size:13px;font-weight:700;color:var(--teal);font-family:'JetBrains Mono',monospace;">${ma.ticket>0?fmt(ma.ticket):'—'}</div>
+        <div style="font-size:9px;color:var(--text3);">${ma.cotizTot} cotizaciones</div>
+      </div>
+      <div style="flex:1;"><div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;">Conversión anual</div>
+        <div style="font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${convColor};">${ma.conversion!==null?Math.round(ma.conversion*100)+'%':'—'}</div>
+        <div style="font-size:9px;color:var(--text3);">${ma.facturas||0} facturas</div>
+      </div>
+    </div>
+    <div class="vc-bot">${pills}</div></div>`;
   }).join('')}</div>
   <div class="crow">
     <div class="cc"><div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px;">Servicios acumulados</div>
@@ -2900,6 +2916,73 @@ async function renderDirectorKpis(){
   const susPorVendedor={},renPorVendedor={};
   (altasCartera||[]).forEach(c=>{if(c.vendedor_asignado)susPorVendedor[c.vendedor_asignado]=(susPorVendedor[c.vendedor_asignado]||0)+1;});
   (renovCartera||[]).forEach(c=>{if(c.vendedor_asignado)renPorVendedor[c.vendedor_asignado]=(renPorVendedor[c.vendedor_asignado]||0)+1;});
+
+  // ── MÉTRICAS ANUALES POR VENDEDOR ──────────────────────────
+  const desdeAnio=`${currentYear}-01-01`, hastaAnio=`${currentYear}-12-31`;
+  const {data:regsAnioDir}=await sb.from('registros_diarios').select('usuario_id,svc,cotizaciones').gte('fecha',desdeAnio).lte('fecha',hastaAnio);
+  const metricasAnuales={};
+  (vendedoresRes||[]).forEach(u=>{
+    const regsU=(regsAnioDir||[]).filter(r=>r.usuario_id===u.id);
+    const svcTot=regsU.reduce((s,r)=>s+(r.svc||0),0);
+    const cotizTot=regsU.reduce((s,r)=>s+(r.cotizaciones||0),0);
+    const facturas=regsU.filter(r=>(r.svc||0)>0).length;
+    metricasAnuales[u.id]={
+      ticket:cotizTot>0?svcTot/cotizTot:0,
+      conversion:cotizTot>0?facturas/cotizTot:null,
+      cotizTot, svcTot, facturas
+    };
+  });
+
+  // ── DATOS DE CAMPAÑAS ──────────────────────────────────────
+  const [{data:campProspectos},{data:campCartera}]=await Promise.all([
+    sb.from('campanas').select('id,nombre,activa').eq('activa',true).maybeSingle(),
+    sb.from('campanas_cartera').select('id,nombre,activa,total_cuentas,asignado_a').eq('activa',true)
+  ]);
+  let panelCampanias='';
+  if(campProspectos||campCartera){
+    const bloques=[];
+    if(campProspectos){
+      const {data:totalPros}=await sb.from('campana_prospectos').select('id',{count:'exact',head:true}).eq('campana_id',campProspectos.id);
+      const {data:llamadasPros}=await sb.from('prospecto_llamadas').select('prospecto_id').eq('resultado','Contactado');
+      const totalP=totalPros||0;
+      const contactadosP=new Set((llamadasPros||[]).map(l=>l.prospecto_id)).size;
+      const pctP=totalP>0?Math.round(contactadosP/totalP*100):0;
+      bloques.push(`<div style="flex:1;">
+        <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">📣 Campaña prospectos</div>
+        <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px;">${campProspectos.nombre}</div>
+        <div style="height:6px;background:var(--border);border-radius:3px;margin-bottom:6px;overflow:hidden;">
+          <div style="height:100%;width:${pctP}%;background:${pctP>=80?'#27AE60':pctP>=50?'#F5A623':'#E84040'};border-radius:3px;"></div>
+        </div>
+        <div style="font-size:11px;color:var(--text3);">${contactadosP} de ${totalP} contactados · <strong style="color:${pctP>=80?'#27AE60':pctP>=50?'#F5A623':'#E84040'};">${pctP}%</strong></div>
+      </div>`);
+    }
+    for(const camp of (campCartera||[])){
+      const {data:clientesRel}=await sb.from('campana_cartera_clientes').select('cliente_id',{count:'exact',head:true}).eq('campana_id',camp.id);
+      const {data:llamadasCart}=await sb.from('llamadas_cartera').select('cliente_id,resultado').eq('campana_id',camp.id);
+      const totalC=camp.total_cuentas||0;
+      const contactosReales=new Set((llamadasCart||[]).filter(l=>!['No contestó','Buzón'].includes(l.resultado)).map(l=>l.cliente_id)).size;
+      const pctC=totalC>0?Math.round(contactosReales/totalC*100):0;
+      const resultadosCont={};
+      (llamadasCart||[]).forEach(l=>{resultadosCont[l.resultado]=(resultadosCont[l.resultado]||0)+1;});
+      bloques.push(`<div style="flex:1;">
+        <div style="font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">📋 Campaña clientes</div>
+        <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px;">${camp.nombre}</div>
+        <div style="height:6px;background:var(--border);border-radius:3px;margin-bottom:6px;overflow:hidden;">
+          <div style="height:100%;width:${pctC}%;background:${pctC>=80?'#27AE60':pctC>=50?'#F5A623':'#E84040'};border-radius:3px;"></div>
+        </div>
+        <div style="font-size:11px;color:var(--text3);">${contactosReales} de ${totalC} contactados · <strong style="color:${pctC>=80?'#27AE60':pctC>=50?'#F5A623':'#E84040'};">${pctC}%</strong>
+          ${pctC>=80?` <span style="color:#27AE60;font-weight:600;">✓ Meta alcanzada</span>`:''}
+        </div>
+        <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">
+          ${Object.entries(resultadosCont).map(([res,cnt])=>`<span style="font-size:10px;padding:1px 7px;background:rgba(0,0,0,0.05);border-radius:4px;">${res}: ${cnt}</span>`).join('')}
+        </div>
+      </div>`);
+    }
+    panelCampanias=`<div class="card" style="padding:16px;margin-bottom:16px;">
+      <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px;">Avance de campañas activas</div>
+      <div style="display:flex;gap:20px;flex-wrap:wrap;">${bloques.join('')}</div>
+    </div>`;
+  }
 
   const rows=kpiConfig.filter(k=>!/_m$/.test(k.kpi_key)).map(k=>{
     const tag=k.categoria==='principal'?'<span class="badge bt" style="font-size:9px;">p</span>':k.categoria==='extra'?'<span class="badge bo" style="font-size:9px;">e</span>':'';
