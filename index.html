@@ -596,9 +596,10 @@ async function renderVendorMiMes(){
   const commission=ajusteResult.comisionFinal;
   const rateMostrada=ajusteResult.tasaFinal;
   // Métricas del mes anterior para mostrar en Mi mes
-  const hoyMiMes=new Date();
-  const mesAntNum=hoyMiMes.getMonth()===0?12:hoyMiMes.getMonth();
-  const anioAnt=hoyMiMes.getMonth()===0?currentYear-1:currentYear;
+  // Mes anterior al mes SELECCIONADO (no al mes del sistema)
+  const [selectedAnio, selectedMesNum] = [currentYear, parseInt((desde||'').slice(5,7)||new Date().getMonth()+1)];
+  const mesAntNum=selectedMesNum===1?12:selectedMesNum-1;
+  const anioAnt=selectedMesNum===1?selectedAnio-1:selectedAnio;
   const desdeAnt=`${anioAnt}-${String(mesAntNum).padStart(2,'0')}-01`;
   const lastDayAnt=new Date(anioAnt,mesAntNum,0).getDate();
   const hastaAnt=`${anioAnt}-${String(mesAntNum).padStart(2,'0')}-${String(lastDayAnt).padStart(2,'0')}`;
@@ -2225,7 +2226,19 @@ function renderHistoricoTabla(){
       </tr>
       <tr id="histDetalle_${idx}" style="display:none;"><td colspan="10" style="padding:0;background:var(--surface-2,#f8f9fa);">
         ${renderHistDetalleContenido(r)}
-      </td></tr>`).join('')||'<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text3);">Sin registros</td></tr>'}</tbody>
+      </td></tr>`).join('')||'<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text3);">Sin registros</td></tr>'}
+      </tbody>
+      ${rows.length?`<tfoot><tr style="background:var(--navy);color:#fff;font-weight:700;">
+        <td colspan="2" style="padding:8px 12px;font-size:12px;">TOTAL</td>
+        <td style="font-family:'JetBrains Mono',monospace;color:#5ff;">${fmt(rows.reduce((s,r)=>s+(r.svc||0),0))}</td>
+        <td style="font-family:'JetBrains Mono',monospace;">${fmt(rows.reduce((s,r)=>s+(r.aspel||0),0))}</td>
+        <td style="font-family:'JetBrains Mono',monospace;">${fmt(rows.reduce((s,r)=>s+(r.it||0),0))}</td>
+        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r.cotizaciones||0),0)||'—'}</td>
+        <td>${rows.reduce((s,r)=>s+(r.cursos||0),0)||'—'}</td>
+        <td>${rows.reduce((s,r)=>s+(r.demos||0),0)||'—'}</td>
+        <td>${rows.reduce((s,r)=>s+(r.clientes_nuevos||0),0)||'—'}</td>
+        <td>${rows.reduce((s,r)=>s+(r.valoraciones||0),0)||'—'}</td>
+      </tr></tfoot>`:''}
     </table>
   </div>`;
 }
@@ -3716,7 +3729,7 @@ async function renderTeleRegistro(){
     <div class="form-grid">
       <div class="form-field"><label>Actualización cuentas CRM</label><input type="number" id="fCrm" value="${r.crm_actualizaciones||''}" placeholder="0" min="0"></div>
     </div>
-    <div style="font-size:11px;color:var(--text3);margin:-6px 0 14px 2px;">Los campos marcados como "automático" se calculan a partir de tu actividad en Mis prospectos y no se pueden editar aquí.</div>
+    <div style="font-size:11px;color:var(--text3);margin:12px 0 14px 2px;padding-top:4px;border-top:1px solid var(--border);">Los campos marcados como "automático" se calculan a partir de tu actividad en Mis prospectos y no se pueden editar aquí.</div>
     <div class="form-actions">
       <button class="btn-save" id="btnSave" onclick="saveTeleRegistro('${today}',${llamadasAuto},${canalizadosAuto})">💾 Guardar registro</button>
     </div>
@@ -3748,28 +3761,70 @@ async function saveTeleRegistro(fecha,llamadasAuto,canalizadosAuto){
   else{msg.style.color='var(--green)';msg.textContent='✓ Registro guardado correctamente';}
 }
 
+let teleHistFiltroMes='';
 async function renderTeleHistorico(){
   document.getElementById('mainContent').innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
-  const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).order('fecha',{ascending:false}).limit(60);
-  const rs=regs||[];
-  document.getElementById('mainContent').innerHTML=`
+  const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).order('fecha',{ascending:false});
+  window._teleHistRows=regs||[];
+  renderTeleHistTabla();
+}
+
+function renderTeleHistTabla(){
+  const mc=document.getElementById('mainContent');
+  if(!mc) return;
+  let rows=window._teleHistRows||[];
+  if(teleHistFiltroMes) rows=rows.filter(r=>r.fecha&&r.fecha.slice(0,7)===teleHistFiltroMes);
+  const mesesUnicos=[...new Set((window._teleHistRows||[]).map(r=>r.fecha?r.fecha.slice(0,7):null).filter(Boolean))].sort().reverse();
+
+  // Totales
+  const tot={
+    llamadas:rows.reduce((s,r)=>s+(r.llamadas_efectivas||0),0),
+    prospectos:rows.reduce((s,r)=>s+(r.prospectos_canalizados||0),0),
+    confirmaciones:rows.reduce((s,r)=>s+(r.confirmaciones_evento||0),0),
+    siigo:rows.reduce((s,r)=>s+(r.siigo_activaciones||0),0),
+    seguimientos:rows.reduce((s,r)=>s+(r.seguimientos_post||0),0),
+    crm:rows.reduce((s,r)=>s+(r.crm_actualizaciones||0),0),
+  };
+
+  mc.innerHTML=`
   <div class="card">
-    <div class="card-head"><span class="card-title">Histórico de actividad</span><span class="badge bt">${rs.length} días</span></div>
+    <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <div><span class="card-title">Histórico de actividad</span><span class="badge bt" style="margin-left:8px;">${rows.length} días</span></div>
+      <select onchange="teleHistFiltroMes=this.value;renderTeleHistTabla()" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+        <option value="">Todos los meses</option>
+        ${mesesUnicos.map(m=>`<option value="${m}" ${teleHistFiltroMes===m?'selected':''}>${m}</option>`).join('')}
+      </select>
+    </div>
     <div style="font-size:11px;color:var(--text3);padding:8px 16px 0;">Haz clic en cualquier fila para ver el detalle completo del día.</div>
     <table class="daily">
-      <thead><tr><th></th><th>Fecha</th><th>Llamadas</th><th>Prospectos</th><th>Confirmaciones</th><th>Siigo</th><th>Seguimientos</th></tr></thead>
-      <tbody>${rs.map((r,idx)=>`<tr onclick="toggleTeleHistDetalle(${idx})" style="cursor:pointer;">
-        <td style="width:18px;color:var(--text3);font-size:10px;" id="teleHistArrow_${idx}">▸</td>
-        <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${r.fecha}</td>
-        <td style="text-align:center;">${r.llamadas_efectivas||0}</td>
-        <td style="text-align:center;font-weight:600;color:${(r.prospectos_canalizados||0)>0?'#00A99D':'var(--text3)'};">${r.prospectos_canalizados||0}</td>
-        <td style="text-align:center;">${r.confirmaciones_evento||0}</td>
-        <td style="text-align:center;">${r.siigo_activaciones||0}</td>
-        <td style="text-align:center;">${r.seguimientos_post||0}</td>
-      </tr>
-      <tr id="teleHistDetalle_${idx}" style="display:none;"><td colspan="7" style="padding:0;background:var(--surface-2,#f8f9fa);">
-        ${renderTeleHistDetalleContenido(r)}
-      </td></tr>`).join('')||'<tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text3);">Sin registros</td></tr>'}</tbody>
+      <thead><tr>
+        <th></th><th>Fecha</th><th>Llamadas</th><th>Prospectos</th>
+        <th>Confirmaciones</th><th>Siigo</th><th>Seguimientos</th><th>Actualiz. CRM</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map((r,idx)=>`<tr onclick="toggleTeleHistDetalle(${idx})" style="cursor:pointer;" id="teleHistRow_${idx}">
+          <td style="width:18px;color:var(--text3);font-size:10px;" id="teleHistArrow_${idx}">▸</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${fmtFecha(r.fecha)||r.fecha}</td>
+          <td style="text-align:center;">${r.llamadas_efectivas||0}</td>
+          <td style="text-align:center;font-weight:600;color:${(r.prospectos_canalizados||0)>0?'#00A99D':'var(--text3)'};">${r.prospectos_canalizados||0}</td>
+          <td style="text-align:center;">${r.confirmaciones_evento||0}</td>
+          <td style="text-align:center;">${r.siigo_activaciones||0}</td>
+          <td style="text-align:center;">${r.seguimientos_post||0}</td>
+          <td style="text-align:center;">${r.crm_actualizaciones||0}</td>
+        </tr>
+        <tr id="teleHistDetalle_${idx}" style="display:none;"><td colspan="8" style="padding:0;background:var(--surface-2,#f8f9fa);">
+          ${renderTeleHistDetalleContenido(r)}
+        </td></tr>`).join('')||'<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text3);">Sin registros</td></tr>'}
+      </tbody>
+      ${rows.length?`<tfoot><tr style="background:var(--navy);color:#fff;font-weight:700;">
+        <td colspan="2" style="padding:8px 12px;font-size:12px;">TOTAL</td>
+        <td style="text-align:center;">${tot.llamadas}</td>
+        <td style="text-align:center;color:#5ff;">${tot.prospectos||'—'}</td>
+        <td style="text-align:center;">${tot.confirmaciones||'—'}</td>
+        <td style="text-align:center;">${tot.siigo||'—'}</td>
+        <td style="text-align:center;">${tot.seguimientos||'—'}</td>
+        <td style="text-align:center;">${tot.crm||'—'}</td>
+      </tr></tfoot>`:''}
     </table>
   </div>`;
 }
@@ -3878,7 +3933,11 @@ async function renderProspectos(){
         <option value="">Todos los estatus</option>
         ${Object.keys(ESTATUS_COLORS).map(e=>`<option value="${e}">${e}</option>`).join('')}
       </select>
-      <input type="text" id="buscarPros" placeholder="Buscar nombre o tel..." oninput="filtrarProspectos()"
+      <div style="position:relative;margin-bottom:10px;">
+        <input type="text" id="buscarPros" placeholder="Buscar nombre o tel..." oninput="filtrarProspectos()"
+          style="width:100%;padding:8px 32px 8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
+        <button onclick="document.getElementById('buscarPros').value='';filtrarProspectos()" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:15px;">✕</button>
+      </div>
         style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;width:200px;">
     </div>
   </div>
@@ -4556,8 +4615,11 @@ async function renderDirectorCRM(){
       <option value="">Todos los estatus</option>
       ${Object.keys(ESTATUS_COLORS).map(e=>`<option value="${e}">${e}</option>`).join('')}
     </select>
-    <input type="text" id="dirBuscar" placeholder="Buscar..." oninput="dirFiltrar()"
-      style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;width:180px;">
+    <div style="position:relative;">
+      <input type="text" id="dirBuscar" placeholder="Buscar..." oninput="dirFiltrar()"
+        style="padding:7px 32px 7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;width:180px;box-sizing:border-box;">
+      <button onclick="document.getElementById('dirBuscar').value='';dirFiltrar()" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:15px;">✕</button>
+    </div>
   </div>
 
   <!-- TABLA -->
