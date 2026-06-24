@@ -3139,8 +3139,11 @@ async function renderTeleActual(){
 async function renderTeleClientes(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
-  const {data:campActiva}=await sb.from('campanas_cartera')
-    .select('*').eq('asignado_a',currentUser.id).eq('activa',true).maybeSingle();
+  // Buscar campaña activa asignada a este usuario
+  // Si no hay activa, mostrar la más reciente aunque esté inactiva
+  const {data:todasCampanas}=await sb.from('campanas_cartera')
+    .select('*').eq('asignado_a',currentUser.id).order('created_at',{ascending:false});
+  const campActiva=(todasCampanas||[]).find(c=>c.activa)||(todasCampanas||[])[0];
   if(!campActiva){
     mc.innerHTML=`<div style="text-align:center;padding:60px 20px;">
       <div style="font-size:32px;margin-bottom:12px;">📋</div>
@@ -3153,7 +3156,9 @@ async function renderTeleClientes(){
     .select('cliente_id').eq('campana_id',campActiva.id);
   const ids=(clientesRel||[]).map(r=>r.cliente_id);
   if(!ids.length){
-    mc.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--text3);">La campaña no tiene clientes asignados aún.</div>`;
+    mc.innerHTML=`<div style="text-align:center;padding:60px 20px;color:var(--text3);">
+      ${campActiva.activa?'La campaña no tiene clientes asignados aún.':'⚠️ La campaña <strong>'+campActiva.nombre+'</strong> aún no está activa. Pide al director que la active para poder hacer llamadas.'}
+    </div>`;
     return;
   }
   // Cargar clientes + sus suscripciones + vendedores
