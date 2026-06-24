@@ -1180,8 +1180,11 @@ async function renderCarteraVendedor(){
     <button onclick="swCartera('resueltas')" id="carteraSub_resueltas" class="cartera-subtab">Resueltas este mes</button>
     <button onclick="abrirAltaCliente()" style="margin-left:auto;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nuevo cliente</button>
   </div>
-  <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
-    <input type="text" id="carteraFiltroTextoInput" placeholder="Buscar por nombre, RFC, número de cliente..." value="${carteraFiltroTexto}" oninput="onCarteraFiltroChange()" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+  <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;">
+    <div style="flex:1;min-width:200px;position:relative;">
+      <input type="text" id="carteraFiltroTextoInput" placeholder="Buscar por nombre, RFC, número de cliente..." value="${carteraFiltroTexto}" oninput="onCarteraFiltroChange()" style="width:100%;padding:8px 36px 8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
+      ${carteraFiltroTexto?`<button onclick="carteraFiltroTexto='';document.getElementById('carteraFiltroTextoInput').value='';document.getElementById('carteraFiltroProductoInput').value='';carteraFiltroProducto='';swCartera(currentCarteraSub)" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;line-height:1;">✕</button>`:''}
+    </div>
     <select id="carteraFiltroProductoInput" onchange="onCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
       <option value="">Todos los productos</option>
       ${productos.map(p=>`<option value="${p}" ${carteraFiltroProducto===p?'selected':''}>${p}</option>`).join('')}
@@ -1309,76 +1312,169 @@ async function abrirFichaClienteModal(clienteId){
   const cl=(window._cartClientes||[]).find(c=>c.id===clienteId);
   if(!cl) return;
   const vendedores=window._carteraVendedores||[];
+  // Cargar subcuentas y sus suscripciones
+  const subcuentas=(window._cartClientes||[]).filter(c=>c.cliente_padre_id===clienteId);
   const modal=document.createElement('div');
   modal.id='modalFichaCliente';
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;overflow-y:auto;';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:flex-start;justify-content:center;z-index:9999;padding:20px;overflow-y:auto;';
   const suscripciones=cl._suscripciones||[];
-  modal.innerHTML=`
-  <div style="background:#fff;border-radius:12px;max-width:560px;width:100%;margin:auto;overflow:hidden;">
-    <div style="padding:20px 24px 14px;border-bottom:1px solid var(--border);background:var(--navy);">
-      <div style="font-size:11px;color:rgba(255,255,255,0.6);font-family:'JetBrains Mono',monospace;">${cl.num_cliente||'Sin número'}</div>
-      <div style="font-size:18px;font-weight:700;color:#fff;margin-top:2px;">${cl.razon_social||'Sin nombre'}</div>
-      <div style="font-size:12px;color:rgba(255,255,255,0.7);margin-top:2px;">${cl.rfc||'Sin RFC'} · ${cl.tipo_cliente||''}</div>
-    </div>
-    <div style="padding:20px 24px;max-height:70vh;overflow-y:auto;">
-      <!-- DATOS DEL CLIENTE -->
-      <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">Datos del cliente</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
-        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Razón social</label>
-          <input id="fcRazon" type="text" value="${(cl.razon_social||'').replace(/"/g,'&quot;')}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
-        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">RFC</label>
-          <input id="fcRfc" type="text" value="${cl.rfc||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;text-transform:uppercase;"></div>
-        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Contacto principal</label>
-          <input id="fcContacto" type="text" value="${cl.contacto_principal||''}" placeholder="Nombre del contacto" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
-        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Correo</label>
-          <input id="fcEmail" type="email" value="${cl.email||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
-        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Teléfono principal</label>
-          <input id="fcTel1" type="text" value="${cl.telefono||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
-        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Teléfono secundario</label>
-          <input id="fcTel2" type="text" value="${cl.telefono2||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
-        <div style="grid-column:1/-1;"><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Escritorio de servicios</label>
-          <input id="fcEscritorio" type="text" value="${cl.escritorio_servicios||''}" placeholder="usuario | contraseña" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;font-family:'JetBrains Mono',monospace;"></div>
-        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Vendedor asignado</label>
-          <select id="fcVendedor" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
-            <option value="">Sin asignar</option>
-            ${vendedores.map(v=>`<option value="${v.id}" ${v.id===cl.vendedor_asignado?'selected':''}>${v.nombre}</option>`).join('')}
-          </select></div>
-        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Cuenta principal (si es subcuenta)</label>
-          <input id="fcPadreSearch" type="text" placeholder="Buscar cuenta principal..." oninput="buscarClientePadre(this.value,'${clienteId}')"
-            value="${cl.cliente_padre?cl.cliente_padre.razon_social:''}"
-            style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
-          <input type="hidden" id="fcPadreId" value="${cl.cliente_padre_id||''}">
-          <div id="fcPadreSugs" style="display:none;border:1px solid var(--border);border-radius:var(--radsm);background:#fff;max-height:120px;overflow-y:auto;position:relative;z-index:10;"></div>
-          ${cl.cliente_padre_id?`<span style="font-size:10px;color:var(--red);cursor:pointer;" onclick="document.getElementById('fcPadreId').value='';document.getElementById('fcPadreSearch').value=''">✕ Quitar</span>`:''}
-        </div>
+
+  const renderSusc=(s,editable=true)=>{
+    const vence=s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
+    return `<div style="border:1px solid ${vence?'var(--red)':'var(--border)'};border-radius:var(--radsm);padding:10px 14px;background:#fff;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:${editable?'8px':'0'};">
+        <span style="font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--navy);">${s.numserie||'—'}</span>
+        <span style="font-size:11px;color:var(--text3);">${s.producto||''}</span>
+        ${s.periodicidad?`<span style="font-size:10px;color:var(--text3);text-transform:capitalize;">${s.periodicidad}</span>`:''}
+        ${s.monto?`<span style="font-size:11px;font-weight:600;color:var(--teal);">$${Math.round(s.monto).toLocaleString('es-MX')}</span>`:''}
+        <span style="margin-left:auto;font-size:10px;padding:2px 8px;border-radius:4px;background:${s.estado==='renovada'?'rgba(39,174,96,0.1)':s.estado==='no_renovada'?'rgba(231,76,60,0.1)':'rgba(0,0,0,0.05)'};color:${s.estado==='renovada'?'#27AE60':s.estado==='no_renovada'?'var(--red)':'var(--text3)'};">${s.estado||'—'}</span>
       </div>
-      <!-- SUSCRIPCIONES -->
-      <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">Suscripciones (${suscripciones.length})</div>
-      ${suscripciones.length?`<div style="display:grid;gap:6px;margin-bottom:16px;">
-        ${suscripciones.map(s=>{
-          const vence=s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
-          return `<div style="border:1px solid ${vence?'var(--red)':'var(--border)'};border-radius:var(--radsm);padding:10px 12px;display:flex;gap:12px;align-items:center;">
-            <div style="flex:1;">
-              <span style="font-size:11px;font-weight:600;font-family:'JetBrains Mono',monospace;color:var(--navy);">${s.numserie||'—'}</span>
-              <span style="font-size:11px;color:var(--text3);margin-left:8px;">${s.producto||''} · ${s.periodicidad||''}</span>
-              ${s.monto?`<span style="font-size:11px;font-weight:600;color:var(--teal);margin-left:8px;">$${Math.round(s.monto).toLocaleString('es-MX')}</span>`:''}
-            </div>
-            <div style="font-size:10px;color:${vence?'var(--red)':'var(--text3)'};text-align:right;">
-              ${s.fecha_ultima_renovacion?`Última: ${fmtFecha(s.fecha_ultima_renovacion)}<br>`:''}
-              ${s.fecha_proxima_renovacion?`Próxima: <strong>${fmtFecha(s.fecha_proxima_renovacion)}</strong>`:'Sin fecha'}
-            </div>
-            <span style="font-size:10px;padding:2px 8px;border-radius:4px;background:${s.estado==='renovada'?'rgba(39,174,96,0.1)':s.estado==='no_renovada'?'rgba(231,76,60,0.1)':'rgba(0,0,0,0.05)'};color:${s.estado==='renovada'?'#27AE60':s.estado==='no_renovada'?'var(--red)':'var(--text3)'};">${s.estado||'—'}</span>
-          </div>`;
-        }).join('')}
-      </div>`:`<div style="font-size:12px;color:var(--text3);font-style:italic;margin-bottom:16px;">Sin suscripciones registradas. Las series se agregan automáticamente al cargar reportes de comisiones.</div>`}
-      <div id="fichaClienteMsg" style="font-size:11px;color:var(--red);"></div>
+      ${editable?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Última renovación</label>
+          <input type="date" data-susc-id="${s.id}" data-field="fecha_ultima_renovacion" value="${s.fecha_ultima_renovacion||''}"
+            style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;"></div>
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Próxima renovación</label>
+          <input type="date" data-susc-id="${s.id}" data-field="fecha_proxima_renovacion" value="${s.fecha_proxima_renovacion||''}"
+            style="width:100%;padding:5px 8px;border:1px solid ${vence?'var(--red)':'var(--border)'};border-radius:var(--radsm);font-size:11px;box-sizing:border-box;${vence?'color:var(--red);font-weight:600;':''}"></div>
+      </div>`
+      :`<div style="font-size:10px;color:var(--text3);">
+        ${s.fecha_ultima_renovacion?`Última: ${fmtFecha(s.fecha_ultima_renovacion)} &nbsp;`:''}
+        ${s.fecha_proxima_renovacion?`Próxima: <strong>${fmtFecha(s.fecha_proxima_renovacion)}</strong>`:'Sin fecha'}
+      </div>`}
+    </div>`;
+  };
+
+  modal.innerHTML=`
+  <div style="background:#fff;border-radius:12px;max-width:820px;width:100%;margin:auto;overflow:hidden;">
+    <div style="padding:18px 28px 14px;border-bottom:1px solid var(--border);background:var(--navy);">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.6);font-family:'JetBrains Mono',monospace;">${cl.num_cliente||'Sin número'}</div>
+          <div style="font-size:20px;font-weight:700;color:#fff;margin-top:2px;">${cl.razon_social||'Sin nombre'}</div>
+          <div style="font-size:12px;color:rgba(255,255,255,0.7);margin-top:2px;">${cl.rfc||'Sin RFC'} · ${cl.tipo_cliente||''}</div>
+        </div>
+        <button onclick="document.getElementById('modalFichaCliente').remove()" style="background:rgba(255,255,255,0.15);border:none;color:#fff;border-radius:50%;width:32px;height:32px;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;">✕</button>
+      </div>
     </div>
-    <div style="padding:14px 24px;border-top:1px solid var(--border);display:flex;gap:8px;">
-      <button onclick="guardarFichaCliente('${clienteId}')" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar cambios</button>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0;max-height:80vh;overflow:hidden;">
+      <!-- COLUMNA IZQUIERDA: datos del cliente -->
+      <div style="padding:20px 24px;overflow-y:auto;border-right:1px solid var(--border);">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">Datos del cliente</div>
+        <div style="display:grid;gap:8px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Razón social</label>
+              <input id="fcRazon" type="text" value="${(cl.razon_social||'').replace(/"/g,'&quot;')}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+            <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">RFC</label>
+              <input id="fcRfc" type="text" value="${cl.rfc||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;text-transform:uppercase;"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Contacto principal</label>
+              <input id="fcContacto" type="text" value="${cl.contacto_principal||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+            <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Correo</label>
+              <input id="fcEmail" type="email" value="${cl.email||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+            <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Teléfono principal</label>
+              <input id="fcTel1" type="text" value="${cl.telefono||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+            <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Teléfono secundario</label>
+              <input id="fcTel2" type="text" value="${cl.telefono2||''}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+          </div>
+          <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Escritorio de servicios</label>
+            <input id="fcEscritorio" type="text" value="${cl.escritorio_servicios||''}" placeholder="usuario | contraseña" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;font-family:'JetBrains Mono',monospace;"></div>
+          <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Vendedor asignado</label>
+            <select id="fcVendedor" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+              <option value="">Sin asignar</option>
+              ${vendedores.map(v=>`<option value="${v.id}" ${v.id===cl.vendedor_asignado?'selected':''}>${v.nombre}</option>`).join('')}
+            </select></div>
+          <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Cuenta principal (si es subcuenta)</label>
+            <input id="fcPadreSearch" type="text" placeholder="Buscar cuenta principal..." oninput="buscarClientePadre(this.value,'${clienteId}')"
+              value="${cl.cliente_padre?cl.cliente_padre.razon_social:''}"
+              style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+            <input type="hidden" id="fcPadreId" value="${cl.cliente_padre_id||''}">
+            <div id="fcPadreSugs" style="display:none;border:1px solid var(--border);border-radius:var(--radsm);background:#fff;max-height:120px;overflow-y:auto;position:relative;z-index:10;"></div>
+            ${cl.cliente_padre_id?`<span style="font-size:10px;color:var(--red);cursor:pointer;" onclick="document.getElementById('fcPadreId').value='';document.getElementById('fcPadreSearch').value=''">✕ Quitar</span>`:''}
+          </div>
+        </div>
+        <div id="fichaClienteMsg" style="font-size:11px;color:var(--red);margin-top:8px;"></div>
+      </div>
+      <!-- COLUMNA DERECHA: suscripciones -->
+      <div style="padding:20px 24px;overflow-y:auto;background:var(--surface-2,#f8f9fa);">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">
+          Suscripciones (${suscripciones.length})
+        </div>
+        <div style="display:grid;gap:8px;margin-bottom:16px;">
+          ${suscripciones.length
+            ? suscripciones.map(s=>renderSusc(s,true)).join('')
+            : `<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin suscripciones. Se agregan al cargar reportes de comisiones.</div>`}
+        </div>
+        ${subcuentas.length?`
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;margin-top:8px;border-top:1px solid var(--border);padding-top:12px;">
+          Suscripciones de subcuentas
+        </div>
+        ${subcuentas.map(sub=>{
+          const subSuscs=sub._suscripciones||[];
+          return subSuscs.length?`
+          <div style="margin-bottom:12px;">
+            <div style="font-size:11px;font-weight:600;color:var(--teal);margin-bottom:6px;">↳ ${sub.razon_social} <span style="font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;">${sub.num_cliente||''}</span></div>
+            <div style="display:grid;gap:6px;">
+              ${subSuscs.map(s=>renderSusc(s,true)).join('')}
+            </div>
+          </div>`:''}).join('')}`:''}
+      </div>
+    </div>
+    <div style="padding:14px 28px;border-top:1px solid var(--border);display:flex;gap:8px;background:#fff;">
+      <button onclick="guardarFichaClienteCompleta('${clienteId}')" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar cambios</button>
       <button onclick="document.getElementById('modalFichaCliente').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;font-family:'Inter',sans-serif;">Cancelar</button>
     </div>
   </div>`;
   document.body.appendChild(modal);
+}
+
+// Guardar ficha completa: datos del cliente + fechas de suscripciones editadas
+async function guardarFichaClienteCompleta(id){
+  const msg=document.getElementById('fichaClienteMsg');
+  // 1. Guardar datos del cliente
+  const payload={
+    razon_social:document.getElementById('fcRazon')?.value.trim()||null,
+    rfc:document.getElementById('fcRfc')?.value.trim().toUpperCase()||null,
+    contacto_principal:document.getElementById('fcContacto')?.value.trim()||null,
+    email:document.getElementById('fcEmail')?.value.trim()||null,
+    telefono:document.getElementById('fcTel1')?.value.trim()||null,
+    telefono2:document.getElementById('fcTel2')?.value.trim()||null,
+    escritorio_servicios:document.getElementById('fcEscritorio')?.value.trim()||null,
+    vendedor_asignado:document.getElementById('fcVendedor')?.value||null,
+    cliente_padre_id:document.getElementById('fcPadreId')?.value||null,
+    updated_at:new Date().toISOString()
+  };
+  if(payload.cliente_padre_id){
+    const padre=(window._cartClientes||[]).find(p=>p.id===payload.cliente_padre_id);
+    if(padre){
+      if(!payload.telefono&&padre.telefono) payload.telefono=padre.telefono;
+      if(!payload.email&&padre.email) payload.email=padre.email;
+      if(!payload.vendedor_asignado&&padre.vendedor_asignado) payload.vendedor_asignado=padre.vendedor_asignado;
+    }
+  }
+  const {error:errCl}=await sb.from('clientes_cartera').update(payload).eq('id',id);
+  if(errCl){msg.textContent='Error: '+errCl.message;return;}
+
+  // 2. Guardar fechas de suscripciones (todas las que tienen data-susc-id)
+  const inputs=document.querySelectorAll('[data-susc-id]');
+  const suscUpdates={};
+  inputs.forEach(inp=>{
+    const sId=inp.dataset.suscId;
+    const field=inp.dataset.field;
+    if(!suscUpdates[sId]) suscUpdates[sId]={};
+    suscUpdates[sId][field]=inp.value||null;
+  });
+  const promises=Object.entries(suscUpdates).map(([sId,upd])=>
+    sb.from('suscripciones_cartera').update({...upd,updated_at:new Date().toISOString()}).eq('id',sId)
+  );
+  const results=await Promise.all(promises);
+  const errSusc=results.find(r=>r.error);
+  if(errSusc){msg.textContent='Error en suscripción: '+errSusc.error.message;return;}
+
+  document.getElementById('modalFichaCliente').remove();
+  renderCarteraVendedor();
 }
 
 function buscarClientePadre(q, excluyeId){
@@ -1808,48 +1904,72 @@ function swDirCartera(sub){
 function renderDirCarteraAuditoria(){
   const mc=document.getElementById('dirCarteraContenidoMain');
   if(!mc) return;
-  const todas=window._carteraTodas||[];
+  const clientes=window._cartClientes||[];
+  const suscripciones=window._cartSuscripciones||[];
   const vendedores=window._carteraVendedores||[];
-  const productos=[...new Set(todas.map(c=>c.producto).filter(Boolean))].sort();
-  const totalCuentas=todas.length;
-  const sinReclamar=todas.filter(c=>c.estado==='sin_reclamar').length;
-  const reclamadas=todas.filter(c=>['reclamada','en_revision'].includes(c.estado)).length;
-  const noRenovadas=todas.filter(c=>c.estado==='no_renovada').length;
+  const productos=[...new Set(suscripciones.map(s=>s.producto).filter(Boolean))].sort();
+  const totalClientes=clientes.length;
+  const sinRenovar=suscripciones.filter(s=>s.estado==='sin_reclamar').length;
+  const reclamadas=suscripciones.filter(s=>['reclamada','en_revision'].includes(s.estado)).length;
+  const noRenovadas=suscripciones.filter(s=>s.estado==='no_renovada').length;
+
   mc.innerHTML=`
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
-    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Total cuentas</div><div style="font-size:20px;font-weight:700;color:var(--text);">${totalCuentas}</div></div>
-    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Sin reclamar</div><div style="font-size:20px;font-weight:700;color:var(--gold);">${sinReclamar}</div></div>
-    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Reclamadas (activas)</div><div style="font-size:20px;font-weight:700;color:var(--teal);">${reclamadas}</div></div>
+    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Total clientes</div><div style="font-size:20px;font-weight:700;color:var(--text);">${totalClientes}</div></div>
+    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Suscripciones sin reclamar</div><div style="font-size:20px;font-weight:700;color:var(--gold);">${sinRenovar}</div></div>
+    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Reclamadas activas</div><div style="font-size:20px;font-weight:700;color:var(--teal);">${reclamadas}</div></div>
     <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">No renovadas</div><div style="font-size:20px;font-weight:700;color:var(--red);">${noRenovadas}</div></div>
   </div>
-  <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
-    <input type="text" id="dirCarteraFiltroTextoInput" placeholder="Buscar por razón social o RFC..." value="${carteraFiltroTexto}" oninput="onDirCarteraFiltroChange()" style="flex:1;min-width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+  <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;">
+    <div style="flex:1;min-width:200px;position:relative;">
+      <input type="text" id="dirCarteraFiltroTextoInput" placeholder="Buscar por nombre, RFC, número..." value="${carteraFiltroTexto}" oninput="onDirCarteraFiltroChange()" style="width:100%;padding:8px 36px 8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
+      ${carteraFiltroTexto?`<button onclick="carteraFiltroTexto='';dirCarteraVendedorFiltro='';carteraFiltroProducto='';renderDirCarteraAuditoria()" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;">✕</button>`:''}
+    </div>
     <select id="dirCarteraFiltroVendedorInput" onchange="onDirCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
       <option value="">Todos los vendedores</option>
       <option value="__sin_asignar__" ${dirCarteraVendedorFiltro==='__sin_asignar__'?'selected':''}>Sin asignar</option>
       ${vendedores.map(v=>`<option value="${v.id}" ${dirCarteraVendedorFiltro===v.id?'selected':''}>${v.nombre}</option>`).join('')}
     </select>
     <select id="dirCarteraFiltroProductoInput" onchange="onDirCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
-      <option value="">Todos los productos</option>
+      <option value="">Todos los sistemas</option>
       ${productos.map(p=>`<option value="${p}" ${carteraFiltroProducto===p?'selected':''}>${p}</option>`).join('')}
-    </select>
-    <select id="dirCarteraFiltroPeriodicidadInput" onchange="onDirCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
-      <option value="">Toda periodicidad</option>
-      <option value="mensual">Mensual</option>
-      <option value="semestral">Semestral</option>
-      <option value="anual">Anual</option>
-    </select>
-    <select id="dirCarteraFiltroEstadoInput" onchange="onDirCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
-      <option value="">Todo estado</option>
-      <option value="sin_reclamar">Sin reclamar</option>
-      <option value="reclamada">Reclamada</option>
-      <option value="en_revision">En revisión</option>
-      <option value="renovada">Renovada</option>
-      <option value="no_renovada">No renovada</option>
     </select>
   </div>
   <div id="dirCarteraContenido"></div>`;
   renderDirCarteraContenido();
+}
+
+function renderDirCarteraContenido(){
+  const cont=document.getElementById('dirCarteraContenido');
+  if(!cont) return;
+  const clientes=window._cartClientes||[];
+  const q=carteraFiltroTexto.toLowerCase();
+  const prod=carteraFiltroProducto;
+  const vend=dirCarteraVendedorFiltro;
+
+  let filtrados=clientes.filter(cl=>{
+    const matchQ=!q||(cl.razon_social||'').toLowerCase().includes(q)||(cl.rfc||'').toLowerCase().includes(q)||(cl.num_cliente||'').toLowerCase().includes(q);
+    const matchProd=!prod||(cl._suscripciones||[]).some(s=>s.producto===prod);
+    const matchVend=!vend||(vend==='__sin_asignar__'?!cl.vendedor_asignado:cl.vendedor_asignado===vend);
+    return matchQ&&matchProd&&matchVend;
+  });
+
+  // Agrupar con subcuentas
+  const principales=filtrados.filter(c=>!c.cliente_padre_id);
+  const subcuentas=filtrados.filter(c=>!!c.cliente_padre_id);
+  const agrupados=[];
+  for(const p of principales){
+    agrupados.push(p);
+    subcuentas.filter(s=>s.cliente_padre_id===p.id).forEach(s=>agrupados.push(s));
+  }
+  const enAgrupados=new Set(agrupados.map(c=>c.id));
+  subcuentas.filter(s=>!enAgrupados.has(s.id)).forEach(s=>agrupados.push(s));
+
+  if(!agrupados.length){
+    cont.innerHTML=`<div style="text-align:center;padding:50px;color:var(--text3);">${q||prod||vend?'Ningún cliente coincide con los filtros.':'No hay clientes en la cartera.'}</div>`;
+    return;
+  }
+  cont.innerHTML=`<div style="display:grid;gap:8px;">${agrupados.map(cl=>fichaClienteCartera(cl,'todos')).join('')}</div>`;
 }
 
 async function renderDirCarteraCampanas(){
