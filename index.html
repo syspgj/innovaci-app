@@ -5964,14 +5964,32 @@ async function renderFinNomina(){
               const incQ=q===1?inc1:inc2;
               const baseQ=emp.quincenal_bruto||0;
               const descQ=incQ.filter(i=>i.monto>0).reduce((s,i)=>s+i.monto,0);
-              return`<div style="min-width:160px;padding:10px 12px;background:var(--surface,#f8f9fa);border-radius:8px;border:1px solid var(--border);">
+              const bonoQ=incQ.filter(i=>i.monto<0).reduce((s,i)=>s+Math.abs(i.monto),0);
+              // Desglose honorarios: subtotal + IVA16% - RetIVA10.67% - RetISR10%
+              const esHonorarios=emp.tipo_pago==='honorarios';
+              const subtotalH=baseQ-descQ+bonoQ;
+              const ivaH=esHonorarios?Math.round(subtotalH*0.16*100)/100:0;
+              const retIvaH=esHonorarios?Math.round(subtotalH*0.1067*100)/100:0;
+              const retIsrH=esHonorarios?Math.round(subtotalH*0.10*100)/100:0;
+              const totalH=esHonorarios?Math.round((subtotalH+ivaH-retIvaH-retIsrH)*100)/100:netQ;
+              return`<div style="min-width:${esHonorarios?'200px':'160px'};padding:10px 12px;background:var(--surface,#f8f9fa);border-radius:8px;border:1px solid var(--border);">
                 <div style="font-size:10px;color:var(--text3);font-weight:600;margin-bottom:6px;">${q}ª QUINCENA · ${q===1?fp1:fp2}</div>
                 <div style="font-size:11px;color:var(--text3);margin-bottom:2px;">Base: <span style="font-family:'JetBrains Mono',monospace;">${fmt(baseQ)}</span></div>
                 ${descQ>0?`<div style="font-size:11px;color:var(--red);margin-bottom:2px;">Descuentos: <span style="font-family:'JetBrains Mono',monospace;">-${fmt(descQ)}</span></div>`:''}
-                <div style="font-size:15px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--teal);margin:4px 0;">${fmt(netQ)}</div>
+                ${bonoQ>0?`<div style="font-size:11px;color:#27AE60;margin-bottom:2px;">Bonos: <span style="font-family:'JetBrains Mono',monospace;">+${fmt(bonoQ)}</span></div>`:''}
+                ${esHonorarios?`
+                <div style="margin:6px 0;padding:6px 8px;background:rgba(13,34,64,0.04);border-radius:5px;border:1px solid var(--border);">
+                  <div style="font-size:10px;color:var(--text3);margin-bottom:3px;font-weight:600;">DESGLOSE HONORARIOS</div>
+                  <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3);margin-bottom:1px;"><span>Subtotal</span><span style="font-family:'JetBrains Mono',monospace;">${fmt(subtotalH)}</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:10px;color:#27AE60;margin-bottom:1px;"><span>+ IVA 16%</span><span style="font-family:'JetBrains Mono',monospace;">+${fmt(ivaH)}</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--red);margin-bottom:1px;"><span>- Ret. IVA 10.67%</span><span style="font-family:'JetBrains Mono',monospace;">-${fmt(retIvaH)}</span></div>
+                  <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--red);"><span>- Ret. ISR 10%</span><span style="font-family:'JetBrains Mono',monospace;">-${fmt(retIsrH)}</span></div>
+                </div>`:''}
+                <div style="font-size:10px;color:var(--text3);margin-top:4px;">${esHonorarios?'Total a pagar:':'Neto:'}</div>
+                <div style="font-size:15px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--teal);margin:2px 0;">${fmt(esHonorarios?totalH:netQ)}</div>
                 <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
-                  <button onclick="abrirIncidencia('${emp.id}',${q})" style="background:rgba(245,166,35,0.12);color:#B45309;border:1px solid rgba(245,166,35,0.3);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Incidencia${incQ.length>0?` (${incQ.length})`:''}</button>
-                  <button onclick="togglePagadoQ('${emp.id}',${q},'${p?p.id:''}',${netQ},${baseQ},${descQ})" style="background:${p?.pagado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.06)'};color:${p?.pagado?'#27AE60':'var(--red)'};border:1px solid ${p?.pagado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">${p?.pagado?'✓ Pagado':'Pendiente'}</button>
+                  <button onclick="abrirIncidencia('${emp.id}',${q})" style="background:rgba(245,166,35,0.12);color:#B45309;border:1px solid rgba(245,166,35,0.3);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Incidencia${incQ.length>0?` (${incQ.filter(i=>i.monto>0).length} desc · ${incQ.filter(i=>i.monto<0).length} bono)`:''}</button>
+                  <button onclick="togglePagadoQ('${emp.id}',${q},'${p?p.id:''}',${esHonorarios?totalH:netQ},${baseQ},${descQ})" style="background:${p?.pagado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.06)'};color:${p?.pagado?'#27AE60':'var(--red)'};border:1px solid ${p?.pagado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">${p?.pagado?'✓ Pagado':'Pendiente'}</button>
                 </div>
               </div>`;
             }).join('')}
@@ -6007,25 +6025,27 @@ function abrirIncidencia(empId,quincena){
   const form=document.createElement('div');
   form.id='formIncidencia';
   form.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
-  form.innerHTML=`<div style="background:var(--bg,#fff);border-radius:12px;padding:24px;width:440px;max-width:95vw;">
+  form.innerHTML=`<div style="background:var(--bg,#fff);border-radius:12px;padding:24px;width:460px;max-width:95vw;">
     <div style="font-size:15px;font-weight:600;margin-bottom:4px;">Agregar incidencia</div>
     <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">${emp?.nombre||''} · ${quincena}ª quincena</div>
-    <div style="margin-bottom:10px;">
-      <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Tipo</div>
-      <select id="incTipo" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:'Inter',sans-serif;box-sizing:border-box;">
-        <option value="falta">Falta</option>
-        <option value="descuento">Descuento</option>
-        <option value="prestamo">Préstamo</option>
-        <option value="bono_extra">Bono extra</option>
-        <option value="otro">Otro</option>
-      </select>
+    <div style="margin-bottom:12px;">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:6px;font-weight:500;">Tipo</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;" id="incTipoGrid">
+        <button type="button" data-val="falta" onclick="selIncTipo('falta')" style="padding:8px 10px;border:1.5px solid transparent;border-radius:7px;background:rgba(232,64,64,0.08);color:var(--red);font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;text-align:left;">↓ Falta</button>
+        <button type="button" data-val="descuento" onclick="selIncTipo('descuento')" style="padding:8px 10px;border:1.5px solid transparent;border-radius:7px;background:rgba(232,64,64,0.08);color:var(--red);font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;text-align:left;">↓ Descuento</button>
+        <button type="button" data-val="prestamo" onclick="selIncTipo('prestamo')" style="padding:8px 10px;border:1.5px solid transparent;border-radius:7px;background:rgba(245,166,35,0.10);color:#B45309;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;text-align:left;">↓ Préstamo</button>
+        <button type="button" data-val="otro" onclick="selIncTipo('otro')" style="padding:8px 10px;border:1.5px solid transparent;border-radius:7px;background:rgba(0,0,0,0.05);color:var(--text2);font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;text-align:left;">↓ Otro descuento</button>
+        <button type="button" data-val="bono_fijo" onclick="selIncTipo('bono_fijo')" style="padding:8px 10px;border:1.5px solid transparent;border-radius:7px;background:rgba(39,174,96,0.10);color:#27AE60;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;text-align:left;">↑ Bono fijo</button>
+        <button type="button" data-val="bono_variable" onclick="selIncTipo('bono_variable')" style="padding:8px 10px;border:1.5px solid transparent;border-radius:7px;background:rgba(39,174,96,0.10);color:#27AE60;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;text-align:left;">↑ Bono variable</button>
+      </div>
+      <input type="hidden" id="incTipo" value="">
     </div>
     <div style="margin-bottom:10px;">
       <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Descripción</div>
-      <input type="text" id="incDesc" placeholder="Describe la incidencia..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;">
+      <input type="text" id="incDesc" placeholder="Ej: Bono quincenal, falta del día 10..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;">
     </div>
     <div style="margin-bottom:16px;">
-      <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Monto (descuento = positivo, bono extra = positivo también, se identifica por tipo)</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Monto</div>
       <input type="number" id="incMonto" min="0" step="0.01" placeholder="0.00" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;font-family:'JetBrains Mono',monospace;">
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
@@ -6036,13 +6056,27 @@ function abrirIncidencia(empId,quincena){
   document.body.appendChild(form);
 }
 
+function selIncTipo(val){
+  document.getElementById('incTipo').value=val;
+  document.querySelectorAll('#incTipoGrid button').forEach(b=>{
+    const active=b.dataset.val===val;
+    b.style.borderColor=active?'currentColor':'transparent';
+    b.style.boxShadow=active?'0 0 0 1px currentColor':'none';
+  });
+  // Auto-seleccionar el botón
+  const btn=document.querySelector(`#incTipoGrid button[data-val="${val}"]`);
+  if(btn) btn.click=null; // already selected via onclick
+}
+
 async function guardarIncidencia(empId,quincena){
   const tipo=document.getElementById('incTipo')?.value;
   const desc=document.getElementById('incDesc')?.value.trim()||null;
   const montoRaw=parseFloat(document.getElementById('incMonto')?.value)||0;
+  if(!tipo){alert('Selecciona el tipo de incidencia.');return;}
   if(!montoRaw){alert('El monto es obligatorio.');return;}
-  // bono_extra = monto negativo (a favor del empleado)
-  const monto=tipo==='bono_extra'?-montoRaw:montoRaw;
+  // bonos = monto negativo (suman al neto), descuentos = positivo (restan)
+  const esBono=tipo==='bono_fijo'||tipo==='bono_variable';
+  const monto=esBono?-montoRaw:montoRaw;
   const {error}=await sb.from('nomina_incidencias').insert({
     empleado_id:empId,anio:currentYear,mes:currentMonth,quincena,tipo,descripcion:desc,monto,aplicado:false
   });
@@ -6118,8 +6152,8 @@ async function abrirFichaEmpleado(empId){
         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
           ${field('SDI',emp.sdi,true,'number','fi_sdi')}
           ${field('Quincenal bruto (SDI×15.2)',emp.quincenal_bruto,true,'number','fi_qb')}
-          ${field('Bonos fijos',emp.bonos_fijos||0,true,'number','fi_bf')}
-          ${field('Bono variable',emp.bono_variable||0,true,'number','fi_bv')}
+          ${field('Aguinaldo',emp.aguinaldo||0,true,'number','fi_agui')}
+          <div style="grid-column:1/-1;font-size:11px;color:var(--text3);background:rgba(0,169,157,0.06);padding:8px 10px;border-radius:6px;border:1px solid rgba(0,169,157,0.15);">💡 Los bonos fijos y variables se registran por quincena como incidencias tipo "Bono extra" en la vista principal de nómina.</div>
         </div>
       </div>
       <!-- Datos bancarios -->
@@ -6170,7 +6204,11 @@ async function abrirFichaEmpleado(empId){
             ${(incs||[]).map(i=>`<tr style="border-bottom:1px solid var(--border);">
               <td style="padding:6px 10px;">${meses[i.mes]}</td>
               <td style="padding:6px 10px;text-align:center;">${i.quincena}ª</td>
-              <td style="padding:6px 10px;"><span style="font-size:10px;padding:1px 7px;border-radius:8px;background:rgba(0,0,0,0.06);">${i.tipo}</span></td>
+              <td style="padding:6px 10px;">
+                <span style="font-size:10px;padding:1px 7px;border-radius:8px;background:${['bono_fijo','bono_variable'].includes(i.tipo)?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${['bono_fijo','bono_variable'].includes(i.tipo)?'#27AE60':'var(--red)'};">
+                  ${i.tipo==='bono_fijo'?'Bono fijo':i.tipo==='bono_variable'?'Bono variable':i.tipo}
+                </span>
+              </td>
               <td style="padding:6px 10px;color:var(--text3);">${i.descripcion||'—'}</td>
               <td style="padding:6px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:${i.monto>0?'var(--red)':'#27AE60'};">${i.monto>0?'-':'+'}${fmt(Math.abs(i.monto))}</td>
             </tr>`).join('')}
@@ -6205,7 +6243,7 @@ async function guardarFichaEmpleado(empId){
     fecha_ingreso:g('fi_fing')||null,fecha_egreso:g('fi_feg')||null,
     activo:!g('fi_feg'),
     sdi,quincenal_bruto:qb,
-    bonos_fijos:gn('fi_bf')||0,bono_variable:gn('fi_bv')||0,
+    aguinaldo:gn('fi_agui')||0,
     banco:g('fi_banco'),clabe:g('fi_clabe'),
     updated_at:new Date().toISOString()
   };
