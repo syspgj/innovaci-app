@@ -5389,6 +5389,7 @@ async function renderDirectorProyeccion(){
   function renderDirPipeTabla(){
     const filtVend=document.getElementById('dpFiltVend')?.value||'';
     const filtEst=document.getElementById('dpFiltEst')?.value||'';
+    const filtTipo=document.getElementById('dpFiltTipo')?.value||'';
     const filtBus=(document.getElementById('dpBus')?.value||'').toLowerCase();
     const sortCol=window._dpSort||'fecha_prevista';
     const sortAsc=window._dpSortAsc!==false;
@@ -5396,8 +5397,9 @@ async function renderDirectorProyeccion(){
     let rows=(window._dirPipeRows||[]).filter(r=>{
       const vMatch=!filtVend||r.usuario_id===filtVend;
       const eMatch=!filtEst||r.estatus===filtEst;
+      const tMatch=!filtTipo||r.tipo_servicio===filtTipo;
       const bMatch=!filtBus||(r.cliente||'').toLowerCase().includes(filtBus)||(r.producto||'').toLowerCase().includes(filtBus);
-      return vMatch&&eMatch&&bMatch;
+      return vMatch&&eMatch&&tMatch&&bMatch;
     });
     rows.sort((a,b)=>{
       let va=a[sortCol]||'',vb=b[sortCol]||'';
@@ -5408,12 +5410,21 @@ async function renderDirectorProyeccion(){
     const totalMonto=rows.reduce((s,r)=>s+(r.monto_total||0),0);
     const totalSub=rows.reduce((s,r)=>s+(r.subtotal||0),0);
 
-    function thS(label,col){
-      const act=window._dpSort===col;
-      const arr=act?(window._dpSortAsc?'▲':'▼'):'⇅';
-      return `<th style="cursor:pointer;user-select:none;" onclick="window._dpSort='${col}';window._dpSortAsc=!(window._dpSort==='${col}'&&window._dpSortAsc);renderDirPipeTabla();">${label} <span style="opacity:${act?1:0.3};font-size:10px;">${arr}</span></th>`;
-    }
 
+
+    const head=document.getElementById('dirPipeHead');
+    if(head){
+      const cols=[
+        ['Vendedor','usuario_id'],['Tipo','tipo_servicio'],['Servicio / Póliza','producto'],
+        ['Cliente','cliente'],['Monto total','monto_total'],['Subtotal','subtotal'],
+        ['Prob.','probabilidad'],['Fecha prev.','fecha_prevista'],['Estatus','estatus']
+      ];
+      head.innerHTML=cols.map(([lbl,col])=>{
+        const act=window._dpSort===col;
+        const arr=act?(window._dpSortAsc?'▲':'▼'):'⇅';
+        return `<th style="cursor:pointer;user-select:none;padding:8px 10px;" onclick="window._dpSort='${col}';window._dpSortAsc=${act}?!window._dpSortAsc:true;renderDirPipeTabla();">${lbl} <span style="opacity:${act?1:0.3};font-size:10px;">${arr}</span></th>`;
+      }).join('');
+    }
     const tbody=document.getElementById('dirPipeBody');
     const sumRow=document.getElementById('dirPipeSum');
     if(!tbody)return;
@@ -5471,6 +5482,10 @@ async function renderDirectorProyeccion(){
       <option value="">Todos los estatus</option>
       ${['Negociando','Ganado','Perdido','En pausa'].map(e=>`<option value="${e}">${e}</option>`).join('')}
     </select>
+    <select id="dpFiltTipo" onchange="renderDirPipeTabla()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+      <option value="">Todos los tipos</option>
+      ${TIPOS_SERVICIO.map(t=>`<option value="${t}">${t}</option>`).join('')}
+    </select>
     <div style="position:relative;">
       <input type="text" id="dpBus" placeholder="Buscar cliente o servicio..." oninput="renderDirPipeTabla()"
         style="padding:7px 32px 7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;width:200px;box-sizing:border-box;">
@@ -5479,10 +5494,7 @@ async function renderDirectorProyeccion(){
   </div>
   <div class="card" style="padding:0;overflow-x:auto;">
     <table class="daily" style="font-size:12px;width:100%;">
-      <thead><tr style="background:var(--navy);color:#fff;">
-        <th>Vendedor</th><th>Tipo</th><th>Servicio / Póliza</th><th>Cliente</th>
-        <th>Monto total</th><th>Subtotal</th><th>Prob.</th><th>Fecha prev.</th><th>Estatus</th>
-      </tr></thead>
+      <thead><tr id="dirPipeHead" style="background:var(--navy);color:#fff;"></tr></thead>
       <tbody id="dirPipeBody"></tbody>
       <tfoot><tr id="dirPipeSum" style="background:var(--surface-2,#f8f9fa);font-size:12px;border-top:2px solid var(--border);"></tr></tfoot>
     </table>
