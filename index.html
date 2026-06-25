@@ -477,7 +477,7 @@ async function initApp(user){
   document.getElementById('appScreen').style.display='block';
   document.getElementById('userName').textContent=userProfile.nombre;
   document.getElementById('userAv').textContent=userProfile.nombre.substring(0,2).toUpperCase();
-  document.getElementById('viewLabel').textContent=userProfile.rol==='director'?'Vista Director':userProfile.rol==='telemarketing'?'Telemarketing':'Mi Mes';
+  document.getElementById('viewLabel').textContent=userProfile.rol==='director'?'Vista Director':userProfile.rol==='telemarketing'?'Telemarketing':userProfile.rol==='administracion'?'Administración':'Mi Mes';
   // Month selector
   const msel=document.getElementById('monthSel');
   msel.style.display='block';
@@ -486,11 +486,12 @@ async function initApp(user){
   // Build UI by role
   if(userProfile.rol==='director') buildDirectorUI();
   else if(userProfile.rol==='telemarketing') buildTeleUI();
+  else if(userProfile.rol==='administracion') buildAdminUI();
   else buildVendorUI();
 }
 
 // ─── MONTH SELECT ─────────────────────────────────────────────────────────────
-function setMonth(m){currentMonth=parseInt(m);if(userProfile.rol==='director')renderDirector();else if(userProfile.rol==='telemarketing')renderTeleActual();else renderVendor();}
+function setMonth(m){currentMonth=parseInt(m);if(userProfile.rol==='director')renderDirector();else if(userProfile.rol==='telemarketing')renderTeleActual();else if(userProfile.rol==='administracion')renderAdminActual();else renderVendor();}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // VENDOR VIEW
@@ -2478,13 +2479,14 @@ function buildDirectorUI(){
     <div class="tab" onclick="swD('cartera')">💼 Cartera</div>
     <div class="tab" onclick="swD('proyecciondir')">📊 Proyección</div>
     <div class="tab" onclick="swD('promociones')">🏷 Promociones</div>
+    <div class="tab" onclick="swD('finanzas')">💰 Finanzas</div>
     <div class="tab" onclick="swD('config')" style="color:#F5A623;">⚙ Configuración</div>`;
   renderDirector();
 }
 let currentDirTab='resumen';
 function swD(id){
   currentDirTab=id;
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['resumen','vendedores','anual','kpis','liberaciones','crm','campanas','cartera','proyecciondir','promociones','config'][i]===id));
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['resumen','vendedores','anual','kpis','liberaciones','crm','campanas','cartera','proyecciondir','promociones','finanzas','config'][i]===id));
   if(id==='resumen')renderDirectorResumen();
   else if(id==='vendedores')renderDirectorVendedores();
   else if(id==='anual')renderDirectorAnual();
@@ -2495,6 +2497,7 @@ function swD(id){
   else if(id==='cartera')renderDirectorCartera();
   else if(id==='proyecciondir')renderDirectorProyeccion();
   else if(id==='promociones')renderDirectorPromociones();
+  else if(id==='finanzas')renderFinanzas();
   else if(id==='config')renderDirectorConfig();
 }
 async function renderDirector(){
@@ -2508,6 +2511,7 @@ async function renderDirector(){
   else if(currentDirTab==='cartera')renderDirectorCartera();
   else if(currentDirTab==='proyecciondir')renderDirectorProyeccion();
   else if(currentDirTab==='promociones')renderDirectorPromociones();
+  else if(currentDirTab==='finanzas')renderFinanzas();
   else if(currentDirTab==='config')renderDirectorConfig();
   else renderDirectorResumen();
 }
@@ -5585,8 +5589,8 @@ function buildPromoVistaHtml(bySeccion){
   }
   const thStyle='padding:6px 12px;font-size:11px;font-weight:500;color:var(--text3);text-align:left;border-bottom:1px solid var(--border);white-space:nowrap;';
   const thCStyle='padding:6px 12px;font-size:11px;font-weight:500;color:var(--text3);text-align:center;border-bottom:1px solid var(--border);white-space:nowrap;';
-  const headStyle=(bg,text,label)=>`<div style="padding:9px 14px;background:${bg};border-radius:6px 6px 0 0;font-size:12px;font-weight:500;letter-spacing:.04em;color:${text};">${label}</div>`;
-  const tableWrap=(inner)=>`<table style="width:100%;border-collapse:collapse;border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;overflow:hidden;background:var(--bg);">${inner}</table>`;
+  const headStyle=(_bg,accentColor,label)=>`<div style="padding:9px 14px;background:var(--bg,#fff);border-radius:6px 6px 0 0;font-size:12px;font-weight:600;color:${accentColor};border:1px solid var(--border);border-bottom:none;">${label}</div>`;
+  const tableWrap=(inner)=>`<table style="width:100%;border-collapse:collapse;border:1px solid var(--border);border-radius:0 0 6px 6px;overflow:hidden;background:var(--bg,#fff);">${inner}</table>`;
 
   // ── Aspel ──
   const aspelRows=[
@@ -5812,6 +5816,885 @@ async function renderPromoVistaDirInline(){
     return;
   }
   cont.innerHTML=buildPromoVistaHtml(bySeccion);
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MÓDULO FINANZAS
+// ══════════════════════════════════════════════════════════════════════════════
+
+let currentFinTab='nomina';
+const FIN_TABS=[
+  {id:'nomina',    label:'👥 Nómina'},
+  {id:'egresos',   label:'📤 Egresos'},
+  {id:'admin',     label:'📋 Administración'},
+  {id:'impuestos', label:'🏛 Impuestos'},
+  {id:'flujo',     label:'📊 Flujo de efectivo'},
+  {id:'balance',   label:'📈 Balance anual'},
+];
+
+function renderFinanzas(){
+  const mc=document.getElementById('mainContent');
+  const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  mc.innerHTML=`
+  <div style="margin-bottom:16px;">
+    <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:12px;">💰 Finanzas — ${meses[currentMonth]} ${currentYear}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;border-bottom:2px solid var(--border);padding-bottom:0;">
+      ${FIN_TABS.map(t=>`<button onclick="swFin('${t.id}')" id="ftab_${t.id}"
+        style="padding:7px 14px;border:none;border-bottom:2px solid ${currentFinTab===t.id?'var(--teal)':'transparent'};margin-bottom:-2px;background:none;font-size:12px;font-weight:${currentFinTab===t.id?'600':'400'};color:${currentFinTab===t.id?'var(--teal)':'var(--text2)'};cursor:pointer;font-family:'Inter',sans-serif;transition:all .15s;">
+        ${t.label}</button>`).join('')}
+    </div>
+  </div>
+  <div id="finContent"></div>`;
+  dispatchFinTab(currentFinTab);
+}
+
+function swFin(id){
+  currentFinTab=id;
+  FIN_TABS.forEach(t=>{
+    const b=document.getElementById('ftab_'+t.id);
+    if(!b)return;
+    b.style.borderBottomColor=t.id===id?'var(--teal)':'transparent';
+    b.style.fontWeight=t.id===id?'600':'400';
+    b.style.color=t.id===id?'var(--teal)':'var(--text2)';
+  });
+  dispatchFinTab(id);
+}
+
+function dispatchFinTab(id){
+  if(id==='nomina')    renderFinNomina();
+  else if(id==='egresos')   renderFinEgresos();
+  else if(id==='admin')     renderFinAdmin();
+  else if(id==='impuestos') renderFinImpuestos();
+  else if(id==='flujo')     renderFinFlujo();
+  else if(id==='balance')   renderFinBalance();
+}
+
+// ─── SHARED HELPERS ──────────────────────────────────────────────────────────
+function finCont(){return document.getElementById('finContent');}
+function finLoading(){const c=finCont();if(c)c.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';}
+
+// ─── 1. NÓMINA ───────────────────────────────────────────────────────────────
+let _nominaEmpleados=[];
+async function renderFinNomina(){
+  finLoading();
+  const [{data:emps},{data:pagos}]=await Promise.all([
+    sb.from('nomina_empleados').select('*').eq('activo',true).order('orden'),
+    sb.from('nomina_pagos').select('*').eq('anio',currentYear).eq('mes',currentMonth)
+  ]);
+  _nominaEmpleados=emps||[];
+  const pagoMap={};
+  (pagos||[]).forEach(p=>{pagoMap[p.empleado_id]=p;});
+  const totalNomina=(pagos||[]).reduce((s,p)=>s+(p.total_neto||0),0);
+  const c=finCont();
+  c.innerHTML=`
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+    <div class="thc" style="min-width:180px;">
+      <div class="th-lbl">Total nómina mes</div>
+      <div class="th-val">${fmt(totalNomina)}</div>
+    </div>
+    <button onclick="abrirNuevoEmpleado()" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Empleado</button>
+  </div>
+  ${_nominaEmpleados.length===0?`<div style="text-align:center;padding:40px;color:var(--text3);">No hay empleados registrados. Agrega uno para comenzar.</div>`:''}
+  <div style="display:grid;gap:10px;">
+    ${_nominaEmpleados.map(emp=>{
+      const p=pagoMap[emp.id]||{};
+      const neto=p.total_neto||0;
+      const tipoBadge=emp.tipo==='imss'
+        ?`<span style="font-size:10px;background:rgba(0,169,157,0.12);color:var(--teal);padding:2px 8px;border-radius:10px;font-weight:600;">IMSS</span>`
+        :`<span style="font-size:10px;background:rgba(245,166,35,0.12);color:#F5A623;padding:2px 8px;border-radius:10px;font-weight:600;">Honorarios</span>`;
+      return`<div class="card" style="padding:14px 16px;">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:160px;">
+            <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px;">${emp.nombre} ${tipoBadge}</div>
+            ${emp.tipo==='imss'?`
+            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px;">
+              ${[['Sueldo base','sueldo_base'],['Comisión','comision_calculada'],['Bonos','bonos'],['Deducciones','deducciones']].map(([lbl,fld])=>`
+              <div>
+                <div style="font-size:10px;color:var(--text3);">${lbl}</div>
+                <input type="number" value="${p[fld]||0}" min="0" step="0.01" id="nom_${emp.id}_${fld}"
+                  style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:12px;font-family:'JetBrains Mono',monospace;">
+              </div>`).join('')}
+            </div>`:`
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
+              <div>
+                <div style="font-size:10px;color:var(--text3);">Monto honorarios</div>
+                <input type="number" value="${p.sueldo_base||0}" min="0" step="0.01" id="nom_${emp.id}_sueldo_base"
+                  style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:12px;font-family:'JetBrains Mono',monospace;">
+              </div>
+              <div>
+                <div style="font-size:10px;color:var(--text3);">Folio factura</div>
+                <input type="text" value="${p.folio_factura||''}" placeholder="Ej. H-0042" id="nom_${emp.id}_folio"
+                  style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:12px;">
+              </div>
+            </div>`}
+            <div style="margin-top:8px;">
+              <div style="font-size:10px;color:var(--text3);">Notas</div>
+              <input type="text" value="${(p.notas||'').replace(/"/g,'&quot;')}" placeholder="Opcional..." id="nom_${emp.id}_notas"
+                style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:12px;">
+            </div>
+          </div>
+          <div style="text-align:right;min-width:120px;">
+            <div style="font-size:11px;color:var(--text3);">Neto del mes</div>
+            <div style="font-size:22px;font-weight:700;color:var(--teal);font-family:'JetBrains Mono',monospace;">${fmt(neto)}</div>
+            <button onclick="guardarNomina('${emp.id}','${emp.tipo}','${p.id||''}')" data-pid="${p.id||''}"
+              style="margin-top:8px;background:var(--teal);color:#fff;border:none;border-radius:5px;padding:5px 14px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">
+              Guardar</button>
+          </div>
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+async function guardarNomina(empId,tipo,pagoId){
+  const get=id=>parseFloat(document.getElementById(id)?.value)||0;
+  const gett=id=>document.getElementById(id)?.value?.trim()||null;
+  let sueldo=get(`nom_${empId}_sueldo_base`);
+  let comision=tipo==='imss'?get(`nom_${empId}_comision_calculada`):0;
+  let bonos=tipo==='imss'?get(`nom_${empId}_bonos`):0;
+  let deduc=tipo==='imss'?get(`nom_${empId}_deducciones`):0;
+  let neto=tipo==='imss'?(sueldo+comision+bonos-deduc):sueldo;
+  const payload={
+    empleado_id:empId,anio:currentYear,mes:currentMonth,
+    sueldo_base:sueldo,comision_calculada:comision,bonos,deducciones:deduc,
+    total_neto:neto,
+    folio_factura:gett(`nom_${empId}_folio`),
+    notas:gett(`nom_${empId}_notas`),
+    updated_at:new Date().toISOString()
+  };
+  let error;
+  if(pagoId){({error}=await sb.from('nomina_pagos').update(payload).eq('id',pagoId));}
+  else{({error}=await sb.from('nomina_pagos').insert(payload));}
+  if(error){alert('Error: '+error.message);return;}
+  renderFinNomina();
+}
+
+function abrirNuevoEmpleado(){
+  const c=finCont();
+  const form=document.createElement('div');
+  form.id='formNuevoEmp';
+  form.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  form.innerHTML=`<div style="background:var(--bg,#fff);border-radius:12px;padding:24px;width:400px;max-width:95vw;">
+    <div style="font-size:15px;font-weight:600;margin-bottom:16px;">Nuevo empleado</div>
+    <div style="margin-bottom:12px;">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Nombre completo</div>
+      <input type="text" id="newEmpNombre" placeholder="Nombre..." style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;">
+    </div>
+    <div style="margin-bottom:16px;">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Tipo</div>
+      <select id="newEmpTipo" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;font-family:'Inter',sans-serif;">
+        <option value="imss">IMSS (empleado formal)</option>
+        <option value="honorarios">Honorarios (factura)</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button onclick="document.getElementById('formNuevoEmp').remove()" style="padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;">Cancelar</button>
+      <button onclick="crearEmpleado()" style="padding:8px 16px;background:var(--navy);color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;">Crear</button>
+    </div>
+  </div>`;
+  document.body.appendChild(form);
+}
+
+async function crearEmpleado(){
+  const nombre=document.getElementById('newEmpNombre')?.value.trim();
+  const tipo=document.getElementById('newEmpTipo')?.value;
+  if(!nombre)return;
+  const orden=_nominaEmpleados.length;
+  const {error}=await sb.from('nomina_empleados').insert({nombre,tipo,activo:true,orden});
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('formNuevoEmp')?.remove();
+  renderFinNomina();
+}
+
+// ─── 2. EGRESOS ──────────────────────────────────────────────────────────────
+const EGRESO_CATS={
+  fijo:['Renta','Servidores','Suscripciones','Nómina externa','Otro fijo'],
+  variable:['Campañas marketing','Compras Aspel/Timbres','Mantenimiento','Viáticos','Otro variable']
+};
+
+async function renderFinEgresos(){
+  finLoading();
+  const {data:rows}=await sb.from('egresos').select('*')
+    .eq('anio',currentYear).eq('mes',currentMonth).order('fecha',{ascending:true});
+  const eg=rows||[];
+  const totalFijo=eg.filter(e=>e.categoria==='fijo').reduce((s,e)=>s+(e.monto||0),0);
+  const totalVar=eg.filter(e=>e.categoria==='variable').reduce((s,e)=>s+(e.monto||0),0);
+  const c=finCont();
+  c.innerHTML=`
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">
+    <div class="thc"><div class="th-lbl">Total egresos</div><div class="th-val">${fmt(totalFijo+totalVar)}</div></div>
+    <div class="thc"><div class="th-lbl">Fijos</div><div class="th-val" style="color:var(--text2);">${fmt(totalFijo)}</div></div>
+    <div class="thc"><div class="th-lbl">Variables</div><div class="th-val" style="color:#F5A623;">${fmt(totalVar)}</div></div>
+  </div>
+  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+    <button onclick="abrirNuevoEgreso()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar egreso</button>
+  </div>
+  <div class="card" style="padding:0;overflow-x:auto;">
+    <table class="daily" style="font-size:12px;width:100%;">
+      <thead><tr style="background:var(--navy);color:#fff;">
+        <th>Categoría</th><th>Concepto</th><th>Proveedor</th><th>Monto</th><th>Fecha</th><th>Factura</th><th>Acciones</th>
+      </tr></thead>
+      <tbody>
+        ${eg.length===0?`<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:24px;">Sin egresos registrados este mes</td></tr>`:''}
+        ${eg.map(e=>`<tr>
+          <td><span style="font-size:10px;padding:2px 8px;border-radius:10px;background:${e.categoria==='fijo'?'rgba(13,34,64,0.08)':'rgba(245,166,35,0.12)'};color:${e.categoria==='fijo'?'var(--navy)':'#F5A623'};font-weight:600;">${e.categoria==='fijo'?'Fijo':'Variable'}</span>
+            ${e.subcategoria?`<div style="font-size:10px;color:var(--text3);margin-top:2px;">${e.subcategoria}</div>`:''}
+          </td>
+          <td style="font-weight:500;">${e.concepto||'—'}</td>
+          <td style="color:var(--text3);">${e.proveedor||'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-weight:600;">${fmt(e.monto||0)}</td>
+          <td style="color:var(--text3);">${e.fecha||'—'}</td>
+          <td>${e.tiene_factura?`<span style="color:#27AE60;font-size:11px;">✓ ${e.folio_factura||''}</span>`:`<span style="color:var(--text3);font-size:11px;">Sin factura</span>`}</td>
+          <td><button onclick="eliminarEgreso('${e.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:3px 8px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function abrirNuevoEgreso(){
+  const today=new Date().toISOString().slice(0,10);
+  const form=document.createElement('div');
+  form.id='formEgreso';
+  form.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  form.innerHTML=`<div style="background:var(--bg,#fff);border-radius:12px;padding:24px;width:480px;max-width:95vw;max-height:90vh;overflow-y:auto;">
+    <div style="font-size:15px;font-weight:600;margin-bottom:16px;">Nuevo egreso</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Categoría</div>
+        <select id="egCat" onchange="updateEgSubcats()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:'Inter',sans-serif;box-sizing:border-box;">
+          <option value="fijo">Fijo</option><option value="variable">Variable</option>
+        </select>
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Subcategoría</div>
+        <select id="egSubcat" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:'Inter',sans-serif;box-sizing:border-box;">
+          ${EGRESO_CATS.fijo.map(s=>`<option>${s}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div style="margin-bottom:10px;">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Concepto</div>
+      <input type="text" id="egConcepto" placeholder="Descripción del egreso..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;">
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Proveedor</div>
+        <input type="text" id="egProv" placeholder="Nombre del proveedor..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;">
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Monto</div>
+        <input type="number" id="egMonto" min="0" step="0.01" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;">
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Fecha</div>
+        <input type="date" id="egFecha" value="${today}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;">
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Folio factura (opcional)</div>
+        <input type="text" id="egFolio" placeholder="Ej. A-00123" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;">
+      </div>
+    </div>
+    <div style="margin-bottom:16px;">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Notas</div>
+      <input type="text" id="egNotas" placeholder="Opcional..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;">
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button onclick="document.getElementById('formEgreso').remove()" style="padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;">Cancelar</button>
+      <button onclick="guardarEgreso()" style="padding:8px 16px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;">Guardar</button>
+    </div>
+  </div>`;
+  document.body.appendChild(form);
+}
+
+function updateEgSubcats(){
+  const cat=document.getElementById('egCat')?.value||'fijo';
+  const sel=document.getElementById('egSubcat');
+  if(!sel)return;
+  sel.innerHTML=EGRESO_CATS[cat].map(s=>`<option>${s}</option>`).join('');
+}
+
+async function guardarEgreso(){
+  const cat=document.getElementById('egCat')?.value;
+  const sub=document.getElementById('egSubcat')?.value;
+  const concepto=document.getElementById('egConcepto')?.value.trim();
+  const prov=document.getElementById('egProv')?.value.trim()||null;
+  const monto=parseFloat(document.getElementById('egMonto')?.value)||0;
+  const fecha=document.getElementById('egFecha')?.value||null;
+  const folio=document.getElementById('egFolio')?.value.trim()||null;
+  const notas=document.getElementById('egNotas')?.value.trim()||null;
+  if(!concepto||!monto){alert('Concepto y monto son obligatorios.');return;}
+  const {error}=await sb.from('egresos').insert({
+    anio:currentYear,mes:currentMonth,categoria:cat,subcategoria:sub,
+    concepto,proveedor:prov,monto,tiene_factura:!!folio,folio_factura:folio,fecha,notas
+  });
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('formEgreso')?.remove();
+  renderFinEgresos();
+}
+
+async function eliminarEgreso(id){
+  if(!confirm('¿Eliminar este egreso?'))return;
+  await sb.from('egresos').delete().eq('id',id);
+  renderFinEgresos();
+}
+
+// ─── 3. ADMINISTRACIÓN ───────────────────────────────────────────────────────
+let currentAdminTab='ingresos';
+function renderFinAdmin(){
+  const c=finCont();
+  const ATABS=[{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'}];
+  c.innerHTML=`
+  <div style="display:flex;gap:6px;margin-bottom:16px;border-bottom:2px solid var(--border);padding-bottom:0;">
+    ${ATABS.map(t=>`<button onclick="swAdmin('${t.id}')" id="atab_${t.id}"
+      style="padding:7px 14px;border:none;border-bottom:2px solid ${currentAdminTab===t.id?'var(--navy)':'transparent'};margin-bottom:-2px;background:none;font-size:12px;font-weight:${currentAdminTab===t.id?'600':'400'};color:${currentAdminTab===t.id?'var(--navy)':'var(--text2)'};cursor:pointer;font-family:'Inter',sans-serif;">
+      ${t.l}</button>`).join('')}
+  </div>
+  <div id="adminContent"></div>`;
+  dispatchAdminTab(currentAdminTab);
+}
+
+function swAdmin(id){
+  currentAdminTab=id;
+  [{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'}].forEach(t=>{
+    const b=document.getElementById('atab_'+t.id);
+    if(!b)return;
+    b.style.borderBottomColor=t.id===id?'var(--navy)':'transparent';
+    b.style.fontWeight=t.id===id?'600':'400';
+    b.style.color=t.id===id?'var(--navy)':'var(--text2)';
+  });
+  dispatchAdminTab(id);
+}
+
+function dispatchAdminTab(id){
+  if(id==='ingresos') renderAdminIngresos();
+  else if(id==='gb')  renderAdminGB();
+  else                renderAdminEgresos();
+}
+
+function adminCont(){return document.getElementById('adminContent');}
+
+async function renderAdminIngresos(){
+  const ac=adminCont();if(!ac)return;
+  ac.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  const {data:rows}=await sb.from('fact_ingresos').select('*')
+    .eq('anio',currentYear).eq('mes',currentMonth).order('fecha');
+  const fi=rows||[];
+  const totalFact=fi.reduce((s,r)=>s+(r.monto||0),0);
+  const totalCob=fi.filter(r=>r.cobrado).reduce((s,r)=>s+(r.monto||0),0);
+  const pendCob=fi.filter(r=>!r.cobrado).reduce((s,r)=>s+(r.monto||0),0);
+  ac.innerHTML=`
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">
+    <div class="thc"><div class="th-lbl">Total facturado</div><div class="th-val">${fmt(totalFact)}</div></div>
+    <div class="thc"><div class="th-lbl">Cobrado</div><div class="th-val" style="color:#27AE60;">${fmt(totalCob)}</div></div>
+    <div class="thc"><div class="th-lbl">Por cobrar</div><div class="th-val" style="color:${pendCob>0?'#E84040':'var(--text3)'};">${fmt(pendCob)}</div></div>
+  </div>
+  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+    <button onclick="abrirNuevaFactIngreso()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Registrar factura</button>
+  </div>
+  <div class="card" style="padding:0;overflow-x:auto;">
+    <table class="daily" style="font-size:12px;width:100%;">
+      <thead><tr style="background:var(--navy);color:#fff;">
+        <th>Folio/Serie</th><th>Cliente</th><th>Vendedor</th><th>Concepto</th><th>Monto</th><th>Fecha</th><th>Cobrado</th><th>Acc.</th>
+      </tr></thead>
+      <tbody>
+        ${fi.length===0?`<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px;">Sin facturas registradas este mes</td></tr>`:''}
+        ${fi.map(r=>`<tr>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">
+            ${r.serie?`<span style="background:${r.serie==='GVE'?'rgba(232,64,64,0.1)':'rgba(0,169,157,0.1)'};color:${r.serie==='GVE'?'var(--red)':'var(--teal)'};padding:1px 6px;border-radius:4px;font-weight:600;">${r.serie}</span> `:''}
+            ${r.folio||'—'}
+          </td>
+          <td style="font-weight:500;">${r.cliente||'—'}</td>
+          <td style="color:var(--text3);font-size:11px;">${r.vendedor||'—'}</td>
+          <td style="color:var(--text3);font-size:11px;">${r.concepto||'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-weight:600;">${fmt(r.monto||0)}</td>
+          <td style="color:var(--text3);">${r.fecha||'—'}</td>
+          <td>
+            <button onclick="toggleCobrado('${r.id}',${!r.cobrado})" style="background:${r.cobrado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${r.cobrado?'#27AE60':'var(--red)'};border:1px solid ${r.cobrado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:10px;padding:2px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">
+              ${r.cobrado?'✓ Cobrado':'Pendiente'}
+            </button>
+          </td>
+          <td><button onclick="eliminarFactIngreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:3px 8px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function abrirNuevaFactIngreso(){
+  const today=new Date().toISOString().slice(0,10);
+  const form=document.createElement('div');
+  form.id='formFactIng';
+  form.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  form.innerHTML=`<div style="background:var(--bg,#fff);border-radius:12px;padding:24px;width:480px;max-width:95vw;max-height:90vh;overflow-y:auto;">
+    <div style="font-size:15px;font-weight:600;margin-bottom:16px;">Registrar factura de ingreso</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Serie</div>
+        <input type="text" id="fiSerie" placeholder="Ej. GVE, A, B..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;" oninput="this.value=this.value.toUpperCase()"></div>
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Folio</div>
+        <input type="text" id="fiFolio" placeholder="Ej. 00123" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+    </div>
+    <div style="margin-bottom:10px;"><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Cliente</div>
+      <input type="text" id="fiCliente" placeholder="Nombre del cliente..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Vendedor</div>
+        <input type="text" id="fiVendedor" placeholder="Nombre o concepto..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Monto</div>
+        <input type="number" id="fiMonto" min="0" step="0.01" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Concepto</div>
+        <input type="text" id="fiConcepto" placeholder="Descripción..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Fecha</div>
+        <input type="date" id="fiFecha" value="${today}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+    </div>
+    <div style="margin-bottom:16px;"><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Notas</div>
+      <input type="text" id="fiNotas" placeholder="Opcional..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button onclick="document.getElementById('formFactIng').remove()" style="padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;">Cancelar</button>
+      <button onclick="guardarFactIngreso()" style="padding:8px 16px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;">Guardar</button>
+    </div>
+  </div>`;
+  document.body.appendChild(form);
+}
+
+async function guardarFactIngreso(){
+  const serie=(document.getElementById('fiSerie')?.value||'').trim().toUpperCase()||null;
+  const folio=document.getElementById('fiFolio')?.value.trim()||null;
+  const cliente=document.getElementById('fiCliente')?.value.trim();
+  const vendedor=document.getElementById('fiVendedor')?.value.trim()||null;
+  const monto=parseFloat(document.getElementById('fiMonto')?.value)||0;
+  const concepto=document.getElementById('fiConcepto')?.value.trim()||null;
+  const fecha=document.getElementById('fiFecha')?.value||null;
+  const notas=document.getElementById('fiNotas')?.value.trim()||null;
+  if(!cliente||!monto){alert('Cliente y monto son obligatorios.');return;}
+  const {data:newRow,error}=await sb.from('fact_ingresos').insert({
+    anio:currentYear,mes:currentMonth,folio,serie,cliente,vendedor,concepto,monto,fecha,notas,cobrado:false
+  }).select().single();
+  if(error){alert('Error: '+error.message);return;}
+  // Si es GVE → crear retención automáticamente
+  if(serie==='GVE'&&newRow){
+    const ret=parseFloat((monto*0.025).toFixed(2));
+    await sb.from('gb_retenciones').insert({
+      fact_ingreso_id:newRow.id,anio:currentYear,mes:currentMonth,
+      monto_factura:monto,retencion_pct:2.50,monto_retencion:ret,
+      monto_transferir:parseFloat((monto-ret).toFixed(2)),transferido:false
+    });
+  }
+  document.getElementById('formFactIng')?.remove();
+  renderAdminIngresos();
+}
+
+async function toggleCobrado(id,cobrado){
+  await sb.from('fact_ingresos').update({cobrado,fecha_cobro:cobrado?new Date().toISOString().slice(0,10):null}).eq('id',id);
+  renderAdminIngresos();
+}
+
+async function eliminarFactIngreso(id){
+  if(!confirm('¿Eliminar esta factura?'))return;
+  await sb.from('gb_retenciones').delete().eq('fact_ingreso_id',id);
+  await sb.from('fact_ingresos').delete().eq('id',id);
+  renderAdminIngresos();
+}
+
+async function renderAdminGB(){
+  const ac=adminCont();if(!ac)return;
+  ac.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  const [{data:gbMes},{data:gbAnio}]=await Promise.all([
+    sb.from('gb_retenciones').select('*,fact_ingresos(folio,serie,cliente,fecha,cobrado)')
+      .eq('anio',currentYear).eq('mes',currentMonth).order('created_at'),
+    sb.from('gb_retenciones').select('monto_retencion,monto_factura').eq('anio',currentYear)
+  ]);
+  const rows=gbMes||[];
+  const totalFactMes=rows.reduce((s,r)=>s+(r.monto_factura||0),0);
+  const totalRetMes=rows.reduce((s,r)=>s+(r.monto_retencion||0),0);
+  const totalTransMes=rows.reduce((s,r)=>s+(r.monto_transferir||0),0);
+  const totalRetAnio=(gbAnio||[]).reduce((s,r)=>s+(r.monto_retencion||0),0);
+  const totalFactAnio=(gbAnio||[]).reduce((s,r)=>s+(r.monto_factura||0),0);
+  ac.innerHTML=`
+  <div style="margin-bottom:12px;padding:12px 16px;background:rgba(232,64,64,0.06);border:1px solid rgba(232,64,64,0.2);border-radius:8px;font-size:12px;color:var(--text3);">
+    <strong style="color:var(--text);">Serie GVE — Guillermo Blancas</strong> · Retención fija: <strong>2.5%</strong> por factura · Las facturas GVE se registran automáticamente aquí al capturarlas en Ingresos.
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px;">
+    <div class="card" style="padding:14px;">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Este mes</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+        <div><div style="font-size:10px;color:var(--text3);">Facturado GB</div><div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;">${fmt(totalFactMes)}</div></div>
+        <div><div style="font-size:10px;color:var(--red);">Retención 2.5%</div><div style="font-size:16px;font-weight:700;color:var(--red);font-family:'JetBrains Mono',monospace;">${fmt(totalRetMes)}</div></div>
+        <div><div style="font-size:10px;color:#27AE60;">A transferir a GB</div><div style="font-size:16px;font-weight:700;color:#27AE60;font-family:'JetBrains Mono',monospace;">${fmt(totalTransMes)}</div></div>
+      </div>
+    </div>
+    <div class="card" style="padding:14px;">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Acumulado ${currentYear}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div><div style="font-size:10px;color:var(--text3);">Total facturado GB</div><div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;">${fmt(totalFactAnio)}</div></div>
+        <div><div style="font-size:10px;color:var(--red);">Total retenido</div><div style="font-size:16px;font-weight:700;color:var(--red);font-family:'JetBrains Mono',monospace;">${fmt(totalRetAnio)}</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="card" style="padding:0;overflow-x:auto;">
+    <table class="daily" style="font-size:12px;width:100%;">
+      <thead><tr style="background:#8B0000;color:#fff;">
+        <th>Folio</th><th>Cliente</th><th>Fecha</th><th>Monto factura</th><th>Retención (2.5%)</th><th>A transferir</th><th>Transferido</th>
+      </tr></thead>
+      <tbody>
+        ${rows.length===0?`<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:24px;">Sin facturas GVE este mes</td></tr>`:''}
+        ${rows.map(r=>`<tr>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${r.fact_ingresos?.folio||'—'}</td>
+          <td style="font-weight:500;">${r.fact_ingresos?.cliente||'—'}</td>
+          <td style="color:var(--text3);">${r.fact_ingresos?.fecha||'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-weight:600;">${fmt(r.monto_factura||0)}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--red);">${fmt(r.monto_retencion||0)}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-weight:700;color:#27AE60;">${fmt(r.monto_transferir||0)}</td>
+          <td>
+            <button onclick="toggleTransferido('${r.id}',${!r.transferido})" style="background:${r.transferido?'rgba(39,174,96,0.12)':'rgba(245,166,35,0.1)'};color:${r.transferido?'#27AE60':'#F5A623'};border:1px solid ${r.transferido?'rgba(39,174,96,0.3)':'rgba(245,166,35,0.3)'};border-radius:10px;padding:2px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">
+              ${r.transferido?'✓ Transferido':'Pendiente'}
+            </button>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+async function toggleTransferido(id,val){
+  await sb.from('gb_retenciones').update({transferido:val,fecha_transferencia:val?new Date().toISOString().slice(0,10):null}).eq('id',id);
+  renderAdminGB();
+}
+
+async function renderAdminEgresos(){
+  const ac=adminCont();if(!ac)return;
+  ac.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  const {data:rows}=await sb.from('fact_egresos').select('*')
+    .eq('anio',currentYear).eq('mes',currentMonth).order('fecha');
+  const fe=rows||[];
+  const totalEg=fe.reduce((s,r)=>s+(r.monto||0),0);
+  const conciliados=fe.filter(r=>r.conciliado).reduce((s,r)=>s+(r.monto||0),0);
+  const pendConc=fe.filter(r=>!r.conciliado).reduce((s,r)=>s+(r.monto||0),0);
+  ac.innerHTML=`
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">
+    <div class="thc"><div class="th-lbl">Total egresos</div><div class="th-val">${fmt(totalEg)}</div></div>
+    <div class="thc"><div class="th-lbl">Conciliados</div><div class="th-val" style="color:#27AE60;">${fmt(conciliados)}</div></div>
+    <div class="thc"><div class="th-lbl">Por conciliar</div><div class="th-val" style="color:${pendConc>0?'#E84040':'var(--text3)'};">${fmt(pendConc)}</div></div>
+  </div>
+  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+    <button onclick="abrirNuevaFactEgreso()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Registrar egreso</button>
+  </div>
+  <div class="card" style="padding:0;overflow-x:auto;">
+    <table class="daily" style="font-size:12px;width:100%;">
+      <thead><tr style="background:var(--navy);color:#fff;">
+        <th>Folio</th><th>Proveedor</th><th>Concepto</th><th>Monto</th><th>Fecha</th><th>Conciliado</th><th>Acc.</th>
+      </tr></thead>
+      <tbody>
+        ${fe.length===0?`<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:24px;">Sin egresos con factura este mes</td></tr>`:''}
+        ${fe.map(r=>`<tr>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${r.folio||'—'}</td>
+          <td style="font-weight:500;">${r.proveedor||'—'}</td>
+          <td style="color:var(--text3);font-size:11px;">${r.concepto||'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-weight:600;">${fmt(r.monto||0)}</td>
+          <td style="color:var(--text3);">${r.fecha||'—'}</td>
+          <td>
+            <button onclick="toggleConciliado('${r.id}',${!r.conciliado})" style="background:${r.conciliado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${r.conciliado?'#27AE60':'var(--red)'};border:1px solid ${r.conciliado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:10px;padding:2px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">
+              ${r.conciliado?'✓ Conciliado':'Pendiente'}
+            </button>
+          </td>
+          <td><button onclick="eliminarFactEgreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:3px 8px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function abrirNuevaFactEgreso(){
+  const today=new Date().toISOString().slice(0,10);
+  const form=document.createElement('div');
+  form.id='formFactEg';
+  form.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  form.innerHTML=`<div style="background:var(--bg,#fff);border-radius:12px;padding:24px;width:480px;max-width:95vw;">
+    <div style="font-size:15px;font-weight:600;margin-bottom:16px;">Registrar egreso con factura</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Folio</div>
+        <input type="text" id="feFolio" placeholder="Ej. A-00456" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Proveedor</div>
+        <input type="text" id="feProv" placeholder="Nombre..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+    </div>
+    <div style="margin-bottom:10px;"><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Concepto</div>
+      <input type="text" id="feConcepto" placeholder="Descripción..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Monto</div>
+        <input type="number" id="feMonto" min="0" step="0.01" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Fecha</div>
+        <input type="date" id="feFecha" value="${today}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button onclick="document.getElementById('formFactEg').remove()" style="padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;">Cancelar</button>
+      <button onclick="guardarFactEgreso()" style="padding:8px 16px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;">Guardar</button>
+    </div>
+  </div>`;
+  document.body.appendChild(form);
+}
+
+async function guardarFactEgreso(){
+  const folio=document.getElementById('feFolio')?.value.trim()||null;
+  const prov=document.getElementById('feProv')?.value.trim();
+  const concepto=document.getElementById('feConcepto')?.value.trim()||null;
+  const monto=parseFloat(document.getElementById('feMonto')?.value)||0;
+  const fecha=document.getElementById('feFecha')?.value||null;
+  if(!prov||!monto){alert('Proveedor y monto son obligatorios.');return;}
+  const {error}=await sb.from('fact_egresos').insert({
+    anio:currentYear,mes:currentMonth,folio,proveedor:prov,concepto,monto,fecha,conciliado:false
+  });
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('formFactEg')?.remove();
+  renderAdminEgresos();
+}
+
+async function toggleConciliado(id,val){
+  await sb.from('fact_egresos').update({conciliado:val,fecha_conciliacion:val?new Date().toISOString().slice(0,10):null}).eq('id',id);
+  renderAdminEgresos();
+}
+
+async function eliminarFactEgreso(id){
+  if(!confirm('¿Eliminar este egreso?'))return;
+  await sb.from('fact_egresos').delete().eq('id',id);
+  renderAdminEgresos();
+}
+
+// ─── 4. IMPUESTOS ────────────────────────────────────────────────────────────
+async function renderFinImpuestos(){
+  finLoading();
+  const [{data:mes},{data:anio},{data:gbAnio}]=await Promise.all([
+    sb.from('impuestos_pagos').select('*').eq('anio',currentYear).eq('mes',currentMonth).order('fecha_pago'),
+    sb.from('impuestos_pagos').select('tipo,monto').eq('anio',currentYear),
+    sb.from('gb_retenciones').select('monto_retencion').eq('anio',currentYear)
+  ]);
+  const rows=mes||[];
+  const totalMes=rows.reduce((s,r)=>s+(r.monto||0),0);
+  const byTipo={};
+  (anio||[]).forEach(r=>{byTipo[r.tipo]=(byTipo[r.tipo]||0)+(r.monto||0);});
+  const totalAnio=Object.values(byTipo).reduce((s,v)=>s+v,0);
+  const totalRetGB=(gbAnio||[]).reduce((s,r)=>s+(r.monto_retencion||0),0);
+  const diff=totalRetGB-totalAnio;
+  const c=finCont();
+  c.innerHTML=`
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">
+    <div class="thc"><div class="th-lbl">Pagado este mes</div><div class="th-val">${fmt(totalMes)}</div></div>
+    <div class="thc"><div class="th-lbl">Pagado en ${currentYear}</div><div class="th-val">${fmt(totalAnio)}</div></div>
+    <div class="thc">
+      <div class="th-lbl">Retenido GB vs Pagado</div>
+      <div class="th-val" style="color:${diff>=0?'#27AE60':'var(--red)'};">${diff>=0?'+':''}${fmt(diff)}</div>
+      <div class="th-sub" style="font-size:10px;">${diff>=0?'Retención cubre impuestos ✓':'⚠ Retención insuficiente'}</div>
+    </div>
+  </div>
+  ${Object.keys(byTipo).length>0?`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">
+    ${Object.entries(byTipo).map(([tipo,monto])=>`<div class="thc" style="min-width:120px;">
+      <div class="th-lbl">${tipo} (${currentYear})</div>
+      <div class="th-val" style="font-size:16px;">${fmt(monto)}</div>
+    </div>`).join('')}
+  </div>`:''}
+  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+    <button onclick="abrirNuevoImpuesto()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Registrar pago</button>
+  </div>
+  <div class="card" style="padding:0;overflow-x:auto;">
+    <table class="daily" style="font-size:12px;width:100%;">
+      <thead><tr style="background:var(--navy);color:#fff;">
+        <th>Tipo</th><th>Monto</th><th>Fecha pago</th><th>Referencia</th><th>Notas</th><th>Acc.</th>
+      </tr></thead>
+      <tbody>
+        ${rows.length===0?`<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:24px;">Sin pagos de impuestos registrados este mes</td></tr>`:''}
+        ${rows.map(r=>`<tr>
+          <td><span style="font-size:11px;padding:2px 8px;border-radius:10px;background:rgba(13,34,64,0.08);color:var(--navy);font-weight:600;">${r.tipo}</span></td>
+          <td style="font-family:'JetBrains Mono',monospace;font-weight:600;">${fmt(r.monto||0)}</td>
+          <td style="color:var(--text3);">${r.fecha_pago||'—'}</td>
+          <td style="color:var(--text3);font-size:11px;">${r.referencia||'—'}</td>
+          <td style="color:var(--text3);font-size:11px;">${r.notas||'—'}</td>
+          <td><button onclick="eliminarImpuesto('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:3px 8px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function abrirNuevoImpuesto(){
+  const today=new Date().toISOString().slice(0,10);
+  const form=document.createElement('div');
+  form.id='formImpuesto';
+  form.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  form.innerHTML=`<div style="background:var(--bg,#fff);border-radius:12px;padding:24px;width:400px;max-width:95vw;">
+    <div style="font-size:15px;font-weight:600;margin-bottom:16px;">Registrar pago de impuesto</div>
+    <div style="margin-bottom:10px;"><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Tipo</div>
+      <select id="impTipo" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:'Inter',sans-serif;box-sizing:border-box;">
+        ${['ISR','IVA','IMSS','Otro'].map(t=>`<option>${t}</option>`).join('')}
+      </select></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Monto</div>
+        <input type="number" id="impMonto" min="0" step="0.01" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Fecha de pago</div>
+        <input type="date" id="impFecha" value="${today}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+    </div>
+    <div style="margin-bottom:10px;"><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Referencia</div>
+      <input type="text" id="impRef" placeholder="Número de operación, banco..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+    <div style="margin-bottom:16px;"><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Notas</div>
+      <input type="text" id="impNotas" placeholder="Opcional..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button onclick="document.getElementById('formImpuesto').remove()" style="padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;">Cancelar</button>
+      <button onclick="guardarImpuesto()" style="padding:8px 16px;background:var(--navy);color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;">Guardar</button>
+    </div>
+  </div>`;
+  document.body.appendChild(form);
+}
+
+async function guardarImpuesto(){
+  const tipo=document.getElementById('impTipo')?.value;
+  const monto=parseFloat(document.getElementById('impMonto')?.value)||0;
+  const fecha=document.getElementById('impFecha')?.value||null;
+  const ref=document.getElementById('impRef')?.value.trim()||null;
+  const notas=document.getElementById('impNotas')?.value.trim()||null;
+  if(!monto){alert('El monto es obligatorio.');return;}
+  const {error}=await sb.from('impuestos_pagos').insert({anio:currentYear,mes:currentMonth,tipo,monto,fecha_pago:fecha,referencia:ref,notas});
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('formImpuesto')?.remove();
+  renderFinImpuestos();
+}
+
+async function eliminarImpuesto(id){
+  if(!confirm('¿Eliminar este registro?'))return;
+  await sb.from('impuestos_pagos').delete().eq('id',id);
+  renderFinImpuestos();
+}
+
+// ─── 5. FLUJO DE EFECTIVO ────────────────────────────────────────────────────
+async function renderFinFlujo(){
+  finLoading();
+  const meses=['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const [ingR,egR,nomR,impR]=await Promise.all([
+    sb.from('fact_ingresos').select('mes,monto,cobrado').eq('anio',currentYear),
+    sb.from('egresos').select('mes,monto').eq('anio',currentYear),
+    sb.from('nomina_pagos').select('mes,total_neto').eq('anio',currentYear),
+    sb.from('impuestos_pagos').select('mes,monto').eq('anio',currentYear)
+  ]);
+  const byMes=Array.from({length:13},(_,i)=>({mes:i,ing:0,egr:0,nom:0,imp:0,res:0}));
+  (ingR.data||[]).filter(r=>r.cobrado).forEach(r=>{byMes[r.mes].ing+=(r.monto||0);});
+  (egR.data||[]).forEach(r=>{byMes[r.mes].egr+=(r.monto||0);});
+  (nomR.data||[]).forEach(r=>{byMes[r.mes].nom+=(r.total_neto||0);});
+  (impR.data||[]).forEach(r=>{byMes[r.mes].imp+=(r.monto||0);});
+  for(let i=1;i<=12;i++)byMes[i].res=byMes[i].ing-byMes[i].egr-byMes[i].nom-byMes[i].imp;
+  const cur=byMes[currentMonth];
+  const c=finCont();
+  c.innerHTML=`
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px;">
+    <div class="thc"><div class="th-lbl">Ingresos cobrados</div><div class="th-val" style="color:#27AE60;">${fmt(cur.ing)}</div></div>
+    <div class="thc"><div class="th-lbl">Egresos</div><div class="th-val" style="color:var(--red);">${fmt(cur.egr)}</div></div>
+    <div class="thc"><div class="th-lbl">Nómina</div><div class="th-val" style="color:var(--red);">${fmt(cur.nom)}</div></div>
+    <div class="thc"><div class="th-lbl">Resultado mes</div><div class="th-val" style="color:${cur.res>=0?'#27AE60':'var(--red)'};">${fmt(cur.res)}</div></div>
+  </div>
+  <div class="card" style="padding:0;overflow-x:auto;">
+    <table class="daily" style="font-size:12px;width:100%;">
+      <thead><tr style="background:var(--navy);color:#fff;">
+        <th>Mes</th><th>Ingresos</th><th>Egresos</th><th>Nómina</th><th>Impuestos</th><th>Resultado</th>
+      </tr></thead>
+      <tbody>
+        ${byMes.slice(1).map((r,i)=>{
+          const m=i+1;
+          const esActual=m===currentMonth;
+          return`<tr style="border-bottom:1px solid var(--border);${esActual?'background:rgba(0,169,157,0.05);font-weight:600;':''}">
+            <td>${meses[m]}${esActual?' ◀':''}</td>
+            <td style="font-family:'JetBrains Mono',monospace;color:#27AE60;">${r.ing>0?fmt(r.ing):'—'}</td>
+            <td style="font-family:'JetBrains Mono',monospace;color:var(--red);">${r.egr>0?fmt(r.egr):'—'}</td>
+            <td style="font-family:'JetBrains Mono',monospace;color:var(--red);">${r.nom>0?fmt(r.nom):'—'}</td>
+            <td style="font-family:'JetBrains Mono',monospace;color:var(--red);">${r.imp>0?fmt(r.imp):'—'}</td>
+            <td style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${r.res>0?'#27AE60':r.res<0?'var(--red)':'var(--text3)'};">${r.res!==0?fmt(r.res):'—'}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+// ─── 6. BALANCE ANUAL ────────────────────────────────────────────────────────
+async function renderFinBalance(){
+  finLoading();
+  const [ingR,egR,nomR,impR,gbR]=await Promise.all([
+    sb.from('fact_ingresos').select('monto,cobrado').eq('anio',currentYear),
+    sb.from('egresos').select('monto,categoria').eq('anio',currentYear),
+    sb.from('nomina_pagos').select('total_neto').eq('anio',currentYear),
+    sb.from('impuestos_pagos').select('tipo,monto').eq('anio',currentYear),
+    sb.from('gb_retenciones').select('monto_factura,monto_retencion').eq('anio',currentYear)
+  ]);
+  const totalIngFact=(ingR.data||[]).reduce((s,r)=>s+(r.monto||0),0);
+  const totalIngCob=(ingR.data||[]).filter(r=>r.cobrado).reduce((s,r)=>s+(r.monto||0),0);
+  const totalEgFij=(egR.data||[]).filter(r=>r.categoria==='fijo').reduce((s,r)=>s+(r.monto||0),0);
+  const totalEgVar=(egR.data||[]).filter(r=>r.categoria==='variable').reduce((s,r)=>s+(r.monto||0),0);
+  const totalNom=(nomR.data||[]).reduce((s,r)=>s+(r.total_neto||0),0);
+  const totalImp=(impR.data||[]).reduce((s,r)=>s+(r.monto||0),0);
+  const totalGB=(gbR.data||[]).reduce((s,r)=>s+(r.monto_factura||0),0);
+  const totalRetGB=(gbR.data||[]).reduce((s,r)=>s+(r.monto_retencion||0),0);
+  const totalEgr=totalEgFij+totalEgVar+totalNom+totalImp;
+  const utilidad=totalIngCob-totalEgr;
+  const byImp={};
+  (impR.data||[]).forEach(r=>{byImp[r.tipo]=(byImp[r.tipo]||0)+(r.monto||0);});
+  const c=finCont();
+  c.innerHTML=`
+  <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:16px;">Resumen anual ${currentYear}</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">
+    <div class="card" style="padding:16px;">
+      <div style="font-size:12px;font-weight:600;color:var(--text3);margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em;">Ingresos</div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:12px;">Facturado total</span><span style="font-family:'JetBrains Mono',monospace;font-weight:600;">${fmt(totalIngFact)}</span></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:12px;color:var(--text3);">Cobrado</span><span style="font-family:'JetBrains Mono',monospace;color:#27AE60;font-weight:600;">${fmt(totalIngCob)}</span></div>
+      <div style="display:flex;justify-content:space-between;"><span style="font-size:12px;color:var(--text3);">Por cobrar</span><span style="font-family:'JetBrains Mono',monospace;color:${totalIngFact-totalIngCob>0?'var(--red)':'var(--text3)'};">${fmt(totalIngFact-totalIngCob)}</span></div>
+    </div>
+    <div class="card" style="padding:16px;">
+      <div style="font-size:12px;font-weight:600;color:var(--text3);margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em;">Egresos</div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:12px;">Fijos</span><span style="font-family:'JetBrains Mono',monospace;">${fmt(totalEgFij)}</span></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:12px;">Variables</span><span style="font-family:'JetBrains Mono',monospace;">${fmt(totalEgVar)}</span></div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="font-size:12px;">Nómina</span><span style="font-family:'JetBrains Mono',monospace;">${fmt(totalNom)}</span></div>
+      <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:6px;margin-top:6px;"><span style="font-size:12px;font-weight:600;">Total</span><span style="font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--red);">${fmt(totalEgr)}</span></div>
+    </div>
+    <div class="card" style="padding:16px;">
+      <div style="font-size:12px;font-weight:600;color:var(--text3);margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em;">Resultado</div>
+      <div style="font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${utilidad>=0?'#27AE60':'var(--red)'};">${fmt(utilidad)}</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">Ingresos cobrados − todos los egresos</div>
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:6px;">Guillermo Blancas</div>
+        <div style="display:flex;justify-content:space-between;"><span style="font-size:11px;">Facturado</span><span style="font-family:'JetBrains Mono',monospace;font-size:11px;">${fmt(totalGB)}</span></div>
+        <div style="display:flex;justify-content:space-between;"><span style="font-size:11px;color:var(--red);">Retenido 2.5%</span><span style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--red);">${fmt(totalRetGB)}</span></div>
+        <div style="display:flex;justify-content:space-between;margin-top:4px;"><span style="font-size:11px;font-weight:600;">vs Impuestos pagados</span><span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:${totalRetGB-totalImp>=0?'#27AE60':'var(--red)'};">${fmt(totalRetGB-totalImp)}</span></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ─── ADMIN UI (Alejandra) ─────────────────────────────────────────────────────
+function buildAdminUI(){
+  const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  document.getElementById('app').innerHTML=`
+  <div class="topbar">
+    <div class="brand"><span class="brand-logo">IN</span><span class="brand-name">Grupo Innovaci</span><span class="brand-sep">|</span><span id="viewLabel">Administración</span></div>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <select id="monthSel" onchange="setMonth(this.value)" style="padding:6px 10px;border-radius:var(--radsm);border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:#fff;font-size:13px;font-family:'Inter',sans-serif;cursor:pointer;">
+        ${meses.slice(1).map((m,i)=>`<option value="${i+1}" ${i+1===currentMonth?'selected':''}>${m} ${currentYear}</option>`).join('')}
+      </select>
+      <span style="color:#fff;font-weight:600;">${userProfile.nombre}</span>
+      <button onclick="sb.auth.signOut().then(()=>location.reload())" style="background:rgba(255,255,255,0.15);color:#fff;border:none;border-radius:var(--radsm);padding:6px 12px;cursor:pointer;font-family:'Inter',sans-serif;">Salir</button>
+    </div>
+  </div>
+  <div class="tabs"><div id="tabBar">
+    <div class="tab active" onclick="swAdminTab('admin')">📋 Administración</div>
+  </div></div>
+  <div class="main-content"><div id="mainContent"></div></div>`;
+  renderAdminActual();
+}
+
+let currentAdminMainTab='admin';
+function swAdminTab(id){currentAdminMainTab=id;renderAdminActual();}
+function renderAdminActual(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='';
+  currentFinTab='admin';
+  renderFinanzas();
 }
 
 
