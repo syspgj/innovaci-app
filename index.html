@@ -6068,7 +6068,12 @@ async function togglePagadoQ(empId,quincena,pagoId,neto,base,descs){
   if(emp?.tipo_pago==='honorarios'){
     total_neto=Math.round((sub+sub*0.16-sub*0.1067-sub*0.10)*100)/100;
   }
-  const EGRESO_CONCEPTO=`Nómina ${emp?.nombre||''} · ${quincena}ª quincena`;
+  // factura_tercero → agrupado en un solo movimiento por quincena
+  // imss y honorarios → individuales
+  const esGrupo=emp?.tipo_pago==='factura_tercero';
+  const EGRESO_CONCEPTO=esGrupo
+    ?`Nómina Factura Tercero · ${quincena}ª quincena`
+    :`Nómina ${emp?.nombre||''} · ${quincena}ª quincena`;
 
   if(pagoId){
     const p=window._nominaPagos.find(p=>p.id===pagoId);
@@ -6079,15 +6084,38 @@ async function togglePagadoQ(empId,quincena,pagoId,neto,base,descs){
       fecha_pago:ahora_pagado?new Date().toISOString().slice(0,10):null,
       updated_at:new Date().toISOString()
     }).eq('id',pagoId);
-    // Egreso automático: borrar el anterior y recrear si pagado
-    await sb.from('egresos').delete().eq('anio',currentYear).eq('mes',currentMonth)
-      .eq('concepto',EGRESO_CONCEPTO);
-    if(ahora_pagado){
-      await sb.from('egresos').insert({
-        anio:currentYear,mes:currentMonth,categoria:'fijo',subcategoria:'nomina',
-        concepto:EGRESO_CONCEPTO,monto:total_neto,
-        tiene_factura:false,fecha:new Date().toISOString().slice(0,10)
-      });
+    // Egreso automático
+    if(esGrupo){
+      // factura_tercero: recalcular suma de todos los pagados de ese tipo en la quincena
+      const {data:pagosFT}=await sb.from('nomina_pagos')
+        .select('total_neto,empleado_id').eq('anio',currentYear).eq('mes',currentMonth)
+        .eq('quincena',quincena).eq('pagado',true);
+      const empsFT=(window._nominaEmps||[]).filter(e=>e.tipo_pago==='factura_tercero').map(e=>e.id);
+      // Si estamos desmarcando, excluir el actual
+      let sumaFT=(pagosFT||[]).filter(p=>empsFT.includes(p.empleado_id)&&p.empleado_id!==empId)
+        .reduce((s,p)=>s+(p.total_neto||0),0);
+      if(ahora_pagado) sumaFT+=total_neto;
+      // Borrar y recrear el egreso grupal
+      await sb.from('egresos').delete().eq('anio',currentYear).eq('mes',currentMonth)
+        .eq('concepto',EGRESO_CONCEPTO);
+      if(sumaFT>0){
+        await sb.from('egresos').insert({
+          anio:currentYear,mes:currentMonth,categoria:'fijo',subcategoria:'nomina',
+          concepto:EGRESO_CONCEPTO,monto:Math.round(sumaFT*100)/100,
+          tiene_factura:false,fecha:new Date().toISOString().slice(0,10)
+        });
+      }
+    } else {
+      // IMSS / honorarios: egreso individual
+      await sb.from('egresos').delete().eq('anio',currentYear).eq('mes',currentMonth)
+        .eq('concepto',EGRESO_CONCEPTO);
+      if(ahora_pagado){
+        await sb.from('egresos').insert({
+          anio:currentYear,mes:currentMonth,categoria:'fijo',subcategoria:'nomina',
+          concepto:EGRESO_CONCEPTO,monto:total_neto,
+          tiene_factura:false,fecha:new Date().toISOString().slice(0,10)
+        });
+      }
     }
   } else {
     // Crear registro de pago nuevo
@@ -6100,14 +6128,32 @@ async function togglePagadoQ(empId,quincena,pagoId,neto,base,descs){
       updated_at:new Date().toISOString()
     });
     if(error){alert('Error: '+error.message);return;}
-    // Crear egreso automático
-    await sb.from('egresos').delete().eq('anio',currentYear).eq('mes',currentMonth)
-      .eq('concepto',EGRESO_CONCEPTO);
-    await sb.from('egresos').insert({
-      anio:currentYear,mes:currentMonth,categoria:'fijo',subcategoria:'nomina',
-      concepto:EGRESO_CONCEPTO,monto:total_neto,
-      tiene_factura:false,fecha:new Date().toISOString().slice(0,10)
-    });
+    // Egreso automático para nuevo pago
+    if(esGrupo){
+      const {data:pagosFT}=await sb.from('nomina_pagos')
+        .select('total_neto,empleado_id').eq('anio',currentYear).eq('mes',currentMonth)
+        .eq('quincena',quincena).eq('pagado',true);
+      const empsFT=(window._nominaEmps||[]).filter(e=>e.tipo_pago==='factura_tercero').map(e=>e.id);
+      const sumaFT=(pagosFT||[]).filter(p=>empsFT.includes(p.empleado_id))
+        .reduce((s,p)=>s+(p.total_neto||0),0)+total_neto;
+      await sb.from('egresos').delete().eq('anio',currentYear).eq('mes',currentMonth)
+        .eq('concepto',EGRESO_CONCEPTO);
+      if(sumaFT>0){
+        await sb.from('egresos').insert({
+          anio:currentYear,mes:currentMonth,categoria:'fijo',subcategoria:'nomina',
+          concepto:EGRESO_CONCEPTO,monto:Math.round(sumaFT*100)/100,
+          tiene_factura:false,fecha:new Date().toISOString().slice(0,10)
+        });
+      }
+    } else {
+      await sb.from('egresos').delete().eq('anio',currentYear).eq('mes',currentMonth)
+        .eq('concepto',EGRESO_CONCEPTO);
+      await sb.from('egresos').insert({
+        anio:currentYear,mes:currentMonth,categoria:'fijo',subcategoria:'nomina',
+        concepto:EGRESO_CONCEPTO,monto:total_neto,
+        tiene_factura:false,fecha:new Date().toISOString().slice(0,10)
+      });
+    }
   }
   renderFinNomina();
 }
@@ -6519,11 +6565,11 @@ async function renderAdminIngresos(){
   const ac=adminCont();if(!ac)return;
   ac.innerHTML='<div class="loading"><div class="spinner"></div></div>';
   const {data:rows}=await sb.from('fact_ingresos').select('*')
-    .eq('anio',currentYear).eq('mes',currentMonth).order('fecha');
+    .eq('anio',currentYear).eq('mes',currentMonth).order('fecha',{ascending:true});
   const fi=rows||[];
-  const totalFact=fi.reduce((s,r)=>s+(r.monto||0),0);
-  const totalCob=fi.filter(r=>r.cobrado).reduce((s,r)=>s+(r.monto||0),0);
-  const pendCob=fi.filter(r=>!r.cobrado).reduce((s,r)=>s+(r.monto||0),0);
+  const totalFact=fi.reduce((s,r)=>s+(r.total||0),0);
+  const totalCob=fi.filter(r=>r.cobrado).reduce((s,r)=>s+(r.total||0),0);
+  const pendCob=fi.filter(r=>!r.cobrado).reduce((s,r)=>s+(r.total||0),0);
   ac.innerHTML=`
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">
     <div class="thc"><div class="th-lbl">Total facturado</div><div class="th-val">${fmt(totalFact)}</div></div>
@@ -6536,26 +6582,34 @@ async function renderAdminIngresos(){
   <div class="card" style="padding:0;overflow-x:auto;">
     <table class="daily" style="font-size:12px;width:100%;">
       <thead><tr style="background:var(--navy);color:#fff;">
-        <th>Folio/Serie</th><th>Cliente</th><th>Vendedor</th><th>Concepto</th><th>Monto</th><th>Fecha</th><th>Cobrado</th><th>Acc.</th>
+        <th>Fecha</th><th>Folio/Serie</th><th>Cliente</th><th>Vendedor</th><th>Rubro</th>
+        <th>Subtotal</th><th>Desc.</th><th>S.Final</th><th>IVA</th><th>Total</th>
+        <th>Forma pago</th><th>Estatus</th><th>Cobrado</th><th>Conciliado</th><th>Acc.</th>
       </tr></thead>
       <tbody>
-        ${fi.length===0?`<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:24px;">Sin facturas registradas este mes</td></tr>`:''}
+        ${fi.length===0?`<tr><td colspan="15" style="text-align:center;color:var(--text3);padding:24px;">Sin facturas registradas este mes</td></tr>`:''}
         ${fi.map(r=>`<tr>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">
-            ${r.serie?`<span style="background:${r.serie==='GVE'?'rgba(232,64,64,0.1)':'rgba(0,169,157,0.1)'};color:${r.serie==='GVE'?'var(--red)':'var(--teal)'};padding:1px 6px;border-radius:4px;font-weight:600;">${r.serie}</span> `:''}
-            ${r.folio||'—'}
+          <td style="font-size:11px;color:var(--text3);white-space:nowrap;">${r.fecha||'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;white-space:nowrap;">
+            ${r.serie?`<span style="background:${r.serie==='GVE'?'rgba(232,64,64,0.1)':'rgba(0,169,157,0.1)'};color:${r.serie==='GVE'?'var(--red)':'var(--teal)'};padding:1px 5px;border-radius:4px;font-size:10px;font-weight:600;">${r.serie}</span> `:''}${r.folio||'—'}
           </td>
-          <td style="font-weight:500;">${r.cliente||'—'}</td>
-          <td style="color:var(--text3);font-size:11px;">${r.vendedor||'—'}</td>
-          <td style="color:var(--text3);font-size:11px;">${r.concepto||'—'}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-weight:600;">${fmt(r.monto||0)}</td>
-          <td style="color:var(--text3);">${r.fecha||'—'}</td>
-          <td>
-            <button onclick="toggleCobrado('${r.id}',${!r.cobrado})" style="background:${r.cobrado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${r.cobrado?'#27AE60':'var(--red)'};border:1px solid ${r.cobrado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:10px;padding:2px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">
-              ${r.cobrado?'✓ Cobrado':'Pendiente'}
-            </button>
-          </td>
-          <td><button onclick="eliminarFactIngreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:3px 8px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
+          <td style="font-weight:500;font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.cliente||'—'}</td>
+          <td style="font-size:11px;color:var(--text3);white-space:nowrap;">${r.vendedor||'—'}</td>
+          <td><span style="font-size:10px;padding:1px 6px;border-radius:8px;background:rgba(0,0,0,0.06);">${r.rubro||'—'}</span></td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;">${r.subtotal_original?fmt(r.subtotal_original):'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;color:var(--red);">${r.descuento>0?'-'+fmt(r.descuento):'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;font-weight:600;">${fmt(r.subtotal_final||r.total||0)}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;color:var(--text3);">${r.iva?fmt(r.iva):'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;font-weight:700;">${fmt(r.total||0)}</td>
+          <td style="font-size:10px;color:var(--text3);">${r.forma_pago||'—'}</td>
+          <td><span style="font-size:10px;padding:1px 7px;border-radius:8px;background:${r.estatus==='PAGADA'?'rgba(39,174,96,0.1)':r.estatus==='EMITIDA'?'rgba(245,166,35,0.1)':'rgba(0,0,0,0.06)'};color:${r.estatus==='PAGADA'?'#27AE60':r.estatus==='EMITIDA'?'#F5A623':'var(--text3)'};">${r.estatus||'—'}</span></td>
+          <td><button onclick="toggleCobrado('${r.id}',${!r.cobrado})" style="background:${r.cobrado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${r.cobrado?'#27AE60':'var(--red)'};border:1px solid ${r.cobrado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:10px;padding:2px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">
+            ${r.cobrado?'✓':'○'}
+          </button></td>
+          <td><button onclick="toggleConciliadoIng('${r.id}',${!r.conciliado})" style="background:${r.conciliado?'rgba(13,34,64,0.08)':'none'};color:${r.conciliado?'var(--navy)':'var(--text3)'};border:1px solid ${r.conciliado?'rgba(13,34,64,0.2)':'var(--border)'};border-radius:10px;padding:2px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">
+            ${r.conciliado?'✓':'○'}
+          </button></td>
+          <td><button onclick="eliminarFactIngreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 6px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
         </tr>`).join('')}
       </tbody>
     </table>
@@ -6623,6 +6677,11 @@ async function guardarFactIngreso(){
     });
   }
   document.getElementById('formFactIng')?.remove();
+  renderAdminIngresos();
+}
+
+async function toggleConciliadoIng(id,val){
+  await sb.from('fact_ingresos').update({conciliado:val}).eq('id',id);
   renderAdminIngresos();
 }
 
@@ -6707,11 +6766,11 @@ async function renderAdminEgresos(){
   const ac=adminCont();if(!ac)return;
   ac.innerHTML='<div class="loading"><div class="spinner"></div></div>';
   const {data:rows}=await sb.from('fact_egresos').select('*')
-    .eq('anio',currentYear).eq('mes',currentMonth).order('fecha');
+    .eq('anio',currentYear).eq('mes',currentMonth).order('fecha_factura');
   const fe=rows||[];
-  const totalEg=fe.reduce((s,r)=>s+(r.monto||0),0);
-  const conciliados=fe.filter(r=>r.conciliado).reduce((s,r)=>s+(r.monto||0),0);
-  const pendConc=fe.filter(r=>!r.conciliado).reduce((s,r)=>s+(r.monto||0),0);
+  const totalEg=fe.reduce((s,r)=>s+(r.total||0),0);
+  const conciliados=fe.filter(r=>r.conciliado).reduce((s,r)=>s+(r.total||0),0);
+  const pendConc=fe.filter(r=>!r.conciliado).reduce((s,r)=>s+(r.total||0),0);
   ac.innerHTML=`
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">
     <div class="thc"><div class="th-lbl">Total egresos</div><div class="th-val">${fmt(totalEg)}</div></div>
@@ -6724,22 +6783,28 @@ async function renderAdminEgresos(){
   <div class="card" style="padding:0;overflow-x:auto;">
     <table class="daily" style="font-size:12px;width:100%;">
       <thead><tr style="background:var(--navy);color:#fff;">
-        <th>Folio</th><th>Proveedor</th><th>Concepto</th><th>Monto</th><th>Fecha</th><th>Conciliado</th><th>Acc.</th>
+        <th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Rubro</th><th>Factura</th>
+        <th>Subtotal</th><th>IVA Ret.</th><th>IVA Tras.</th><th>ISR</th><th>Total</th>
+        <th>Estatus</th><th>Conciliado</th><th>Acc.</th>
       </tr></thead>
       <tbody>
-        ${fe.length===0?`<tr><td colspan="7" style="text-align:center;color:var(--text3);padding:24px;">Sin egresos con factura este mes</td></tr>`:''}
+        ${fe.length===0?`<tr><td colspan="13" style="text-align:center;color:var(--text3);padding:24px;">Sin egresos con factura este mes</td></tr>`:''}
         ${fe.map(r=>`<tr>
+          <td style="font-size:11px;color:var(--text3);white-space:nowrap;">${r.fecha_factura||'—'}</td>
+          <td style="font-weight:500;font-size:11px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.proveedor||'—'}</td>
+          <td style="font-size:11px;color:var(--text3);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.concepto||'—'}</td>
+          <td><span style="font-size:10px;padding:1px 6px;border-radius:8px;background:rgba(0,0,0,0.06);">${r.rubro||'—'}</span></td>
           <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${r.folio||'—'}</td>
-          <td style="font-weight:500;">${r.proveedor||'—'}</td>
-          <td style="color:var(--text3);font-size:11px;">${r.concepto||'—'}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-weight:600;">${fmt(r.monto||0)}</td>
-          <td style="color:var(--text3);">${r.fecha||'—'}</td>
-          <td>
-            <button onclick="toggleConciliado('${r.id}',${!r.conciliado})" style="background:${r.conciliado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${r.conciliado?'#27AE60':'var(--red)'};border:1px solid ${r.conciliado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:10px;padding:2px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">
-              ${r.conciliado?'✓ Conciliado':'Pendiente'}
-            </button>
-          </td>
-          <td><button onclick="eliminarFactEgreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:3px 8px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;">${r.subtotal?fmt(r.subtotal):'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;color:var(--red);">${r.iva_retenido>0?fmt(r.iva_retenido):'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;color:#27AE60;">${r.iva_trasladado>0?fmt(r.iva_trasladado):'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;color:var(--red);">${r.isr>0?fmt(r.isr):'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;font-weight:700;">${fmt(r.total||0)}</td>
+          <td><span style="font-size:10px;padding:1px 7px;border-radius:8px;background:${r.status&&r.status.includes('PAG')?'rgba(39,174,96,0.1)':'rgba(0,0,0,0.05)'};color:${r.status&&r.status.includes('PAG')?'#27AE60':'var(--text3)'};">${r.status||'—'}</span></td>
+          <td><button onclick="toggleConciliado('${r.id}',${!r.conciliado})" style="background:${r.conciliado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${r.conciliado?'#27AE60':'var(--red)'};border:1px solid ${r.conciliado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:10px;padding:2px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">
+            ${r.conciliado?'✓':'○'}
+          </button></td>
+          <td><button onclick="eliminarFactEgreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 6px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
         </tr>`).join('')}
       </tbody>
     </table>
