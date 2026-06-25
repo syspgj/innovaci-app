@@ -2035,12 +2035,23 @@ async function renderDirCarteraCampanas(){
   const mc=document.getElementById('dirCarteraContenidoMain');
   if(!mc) return;
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
-  // Cargar campañas de cartera (tabla nueva: campanas_cartera)
   const [{data:campanas},{data:teleUsers}]=await Promise.all([
     sb.from('campanas_cartera').select('*').order('created_at',{ascending:false}),
     sb.from('usuarios').select('id,nombre').eq('rol','telemarketing').order('nombre')
   ]);
   const camp=campanas||[];
+
+  // Para campañas activas, cargar llamadas para calcular proyección
+  const activasIds=camp.filter(c=>c.activa).map(c=>c.id);
+  let llamadasPorCampana={};
+  if(activasIds.length){
+    const {data:llRaw}=await sb.from('llamadas_cartera').select('campana_id,created_at').in('campana_id',activasIds);
+    (llRaw||[]).forEach(l=>{
+      if(!llamadasPorCampana[l.campana_id]) llamadasPorCampana[l.campana_id]=[];
+      llamadasPorCampana[l.campana_id].push(l.created_at);
+    });
+  }
+
   mc.innerHTML=`
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
     <div>
@@ -2053,6 +2064,50 @@ async function renderDirCarteraCampanas(){
   :`<div style="display:grid;gap:12px;">${camp.map(c=>{
     const asignado=teleUsers.find(u=>u.id===c.asignado_a);
     const activa=c.activa;
+    const total=c.total_cuentas||0;
+
+    // Calcular proyección solo para campañas activas con datos
+    let proyHtml='';
+    if(activa && total>0){
+      const llamadas=llamadasPorCampana[c.id]||[];
+      const contactadas=llamadas.length;
+      const pct=Math.round(contactadas/total*100);
+      // Calcular promedio diario: agrupar por fecha
+      const porDia={};
+      llamadas.forEach(ts=>{
+        const d=ts.slice(0,10);
+        porDia[d]=(porDia[d]||0)+1;
+      });
+      const dias=Object.keys(porDia).length;
+      const promDia=dias>0?contactadas/dias:0;
+      const restantes=total-contactadas;
+
+      let proyTexto='';
+      if(contactadas>=total){
+        proyTexto='<span style="color:#27AE60;font-weight:600;">✓ Campaña completada</span>';
+      } else if(promDia>0){
+        const diasRestantes=Math.ceil(restantes/promDia);
+        const fechaEst=new Date();
+        fechaEst.setDate(fechaEst.getDate()+diasRestantes);
+        const meses=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+        const fechaStr=fechaEst.getDate()+' '+meses[fechaEst.getMonth()];
+        proyTexto=`<span style="color:var(--teal);">📅 A este ritmo (${promDia<1?'<1':Math.round(promDia*10)/10} llamadas/día) termina en ~${diasRestantes} día${diasRestantes===1?'':'s'} · est. ${fechaStr}</span>`;
+      } else {
+        proyTexto='<span style="color:var(--text3);">Sin actividad registrada aún</span>';
+      }
+
+      proyHtml=`
+      <div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px;">
+        <div style="height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin-bottom:6px;">
+          <div style="height:100%;width:${pct}%;background:var(--teal);border-radius:2px;transition:width .3s;"></div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;">
+          <span style="color:var(--text3);">${contactadas}/${total} contactados (${pct}%)</span>
+          ${proyTexto}
+        </div>
+      </div>`;
+    }
+
     return `<div class="card" style="padding:16px;border-left:4px solid ${activa?'var(--teal)':'var(--border)'};">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
         <div style="flex:1;">
@@ -2060,9 +2115,10 @@ async function renderDirCarteraCampanas(){
           <div style="font-size:11px;color:var(--text3);">${c.descripcion||''}</div>
           <div style="font-size:11px;color:var(--text3);margin-top:4px;">
             ${asignado?`Asignada a: <strong>${asignado.nombre}</strong> · `:''}
-            ${c.total_cuentas||0} cuentas · 
+            ${total} cuentas · 
             <span style="color:${activa?'#27AE60':'var(--text3)'};">${activa?'● Activa':'Inactiva'}</span>
           </div>
+          ${proyHtml}
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0;">
           <button onclick="gestionarCampanaCartera('${c.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Gestionar</button>
@@ -3348,6 +3404,28 @@ async function renderTeleClientes(){
   (llamadasExist||[]).forEach(l=>{ if(!llamadasMap[l.cliente_id]) llamadasMap[l.cliente_id]=l.resultado; });
   const total=ids.length;
   const contactadas=Object.keys(llamadasMap).length;
+  const pct=total>0?Math.round(contactadas/total*100):0;
+  const restantes=total-contactadas;
+
+  // Proyección de completado basada en promedio diario de llamadas
+  const porDia={};
+  (llamadasExist||[]).forEach(l=>{
+    if(l.created_at){const d=l.created_at.slice(0,10);porDia[d]=(porDia[d]||0)+1;}
+  });
+  const diasActivos=Object.keys(porDia).length;
+  const promDia=diasActivos>0?contactadas/diasActivos:0;
+  let proyHtml='';
+  if(contactadas>=total&&total>0){
+    proyHtml=`<div style="margin-top:6px;font-size:12px;color:#27AE60;font-weight:600;">\u2713 \u00a1Campa\u00f1a completada!</div>`;
+  } else if(promDia>0&&restantes>0){
+    const diasRest=Math.ceil(restantes/promDia);
+    const fechaEst=new Date();fechaEst.setDate(fechaEst.getDate()+diasRest);
+    const mes=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][fechaEst.getMonth()];
+    const fechaStr=fechaEst.getDate()+' '+mes;
+    proyHtml=`<div style="margin-top:6px;font-size:11px;color:var(--text3);">&#x1F4C5; Promedio: ${promDia<1?'<1':Math.round(promDia*10)/10} llamadas/d\u00eda\u00b7 A este ritmo terminas en <strong style="color:var(--teal);">~${diasRest} d\u00eda${diasRest===1?'':'s'}</strong> \u00b7 est. <strong style="color:var(--teal);">${fechaStr}</strong></div>`;
+  } else if(total>0){
+    proyHtml=`<div style="margin-top:6px;font-size:11px;color:var(--text3);">Registra tu primera llamada para ver la proyecci\u00f3n de completado.</div>`;
+  }
 
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
@@ -3355,11 +3433,12 @@ async function renderTeleClientes(){
     <div style="font-size:12px;color:var(--text3);margin-top:2px;">${campActiva.descripcion||''}</div>
     <div style="margin-top:8px;display:flex;gap:12px;font-size:12px;">
       <span style="color:var(--teal);font-weight:600;">${contactadas}/${total} contactados</span>
-      <span style="color:var(--text3);">${total-contactadas} pendientes</span>
+      <span style="color:var(--text3);">${restantes} pendientes</span>
     </div>
     <div style="height:6px;background:var(--border);border-radius:3px;margin-top:8px;overflow:hidden;">
-      <div style="height:100%;width:${total>0?Math.round(contactadas/total*100):0}%;background:var(--teal);border-radius:3px;"></div>
+      <div style="height:100%;width:${pct}%;background:var(--teal);border-radius:3px;"></div>
     </div>
+    ${proyHtml}
   </div>
   <div style="position:relative;margin-bottom:12px;">
     <input type="text" id="teleClienteBuscar" placeholder="Buscar cliente..." oninput="filtrarTeleClientes()" style="width:100%;padding:9px 36px 9px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
