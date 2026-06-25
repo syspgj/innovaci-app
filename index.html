@@ -5804,6 +5804,24 @@ async function guardarPromo(seccion,itemLabel){
   setTimeout(()=>{if(btn){btn.textContent='Guardar';btn.style.background='var(--teal)';}},2000);
 }
 
+async function guardarSaldoInicial(existingId){
+  const monto=parseFloat(document.getElementById('saldoInicialInput')?.value)||0;
+  const btn=document.querySelector('[onclick*="guardarSaldoInicial"]');
+  let error;
+  if(existingId){
+    ({error}=await sb.from('egresos').update({monto,updated_at:new Date().toISOString()}).eq('id',existingId));
+  } else {
+    ({error}=await sb.from('egresos').insert({
+      anio:currentYear,mes:0,categoria:'fijo',subcategoria:'saldo_inicial',
+      concepto:`Saldo inicial ${currentYear}`,monto,tiene_factura:false
+    }));
+  }
+  if(error){alert('Error: '+error.message);return;}
+  if(btn){const t=btn.textContent;btn.textContent='✓ Guardado';btn.style.background='#27AE60';setTimeout(()=>{btn.textContent=t;btn.style.background='var(--navy)';},2000);}
+  renderFinBalance();
+}
+
+
 async function renderPromoVistaDirInline(){
   const cont=document.getElementById('promoContent');
   if(!cont)return;
@@ -5914,41 +5932,80 @@ async function renderFinNomina(){
     incMap[k].push(i);
   });
 
-  // Totals
-  const t1q=(pagos||[]).filter(p=>p.quincena===1).reduce((s,p)=>s+(p.total_neto||0),0);
-  const t2q=(pagos||[]).filter(p=>p.quincena===2).reduce((s,p)=>s+(p.total_neto||0),0);
+  // ── Helper: calcular neto de una quincena ────────────────────────────────────
+  function calcNeto(emp, pago, incs){
+    if(pago) return pago.total_neto||0;
+    const base=emp.quincenal_bruto||0;
+    const desc=incs.filter(i=>i.monto>0).reduce((s,i)=>s+(i.monto||0),0);
+    const bono=incs.filter(i=>i.monto<0).reduce((s,i)=>s+Math.abs(i.monto||0),0);
+    const sub=base-desc+bono;
+    if(emp.tipo_pago==='honorarios'){
+      return Math.round((sub+sub*0.16-sub*0.1067-sub*0.10)*100)/100;
+    }
+    return sub;
+  }
+
   const fp1=fechaPagoQuincenal(currentYear,currentMonth,1);
   const fp2=fechaPagoQuincenal(currentYear,currentMonth,2);
   const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+  // ── Pre-calcular netos por empleado activo para resumen ───────────────────
+  const activeEmps=(emps||[]).filter(e=>e.activo);
+  let sum1paid=0,sum2paid=0,sum1pend=0,sum2pend=0;
+  activeEmps.forEach(emp=>{
+    const p1=pagoMap[emp.id+'_1']||null;
+    const p2=pagoMap[emp.id+'_2']||null;
+    const inc1=incMap[emp.id+'_1']||[];
+    const inc2=incMap[emp.id+'_2']||[];
+    const n1=calcNeto(emp,p1,inc1);
+    const n2=calcNeto(emp,p2,inc2);
+    if(p1?.pagado) sum1paid+=n1; else sum1pend+=n1;
+    if(p2?.pagado) sum2paid+=n2; else sum2pend+=n2;
+  });
+  const t1q=(pagos||[]).filter(p=>p.quincena===1&&p.pagado).reduce((s,p)=>s+(p.total_neto||0),0);
+  const t2q=(pagos||[]).filter(p=>p.quincena===2&&p.pagado).reduce((s,p)=>s+(p.total_neto||0),0);
+
+  // ── Estado de filtro ──────────────────────────────────────────────────────
+  if(window._nominaMostrarTodos===undefined) window._nominaMostrarTodos=false;
+  const empsVista=window._nominaMostrarTodos?(emps||[]):(emps||[]).filter(e=>e.activo);
 
   const c=finCont();
   c.innerHTML=`
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">
     <div class="thc">
       <div class="th-lbl">1ª Quincena · pago ${fp1}</div>
-      <div class="th-val">${fmt(t1q)}</div>
+      <div class="th-val">${fmt(sum1paid)}</div>
+      ${sum1pend>0?`<div class="th-sub" style="color:var(--red);font-size:11px;">Pendiente: ${fmt(sum1pend)}</div>`:'<div class="th-sub" style="color:#27AE60;font-size:11px;">✓ Todo pagado</div>'}
     </div>
     <div class="thc">
       <div class="th-lbl">2ª Quincena · pago ${fp2}</div>
-      <div class="th-val">${fmt(t2q)}</div>
+      <div class="th-val">${fmt(sum2paid)}</div>
+      ${sum2pend>0?`<div class="th-sub" style="color:var(--red);font-size:11px;">Pendiente: ${fmt(sum2pend)}</div>`:'<div class="th-sub" style="color:#27AE60;font-size:11px;">✓ Todo pagado</div>'}
     </div>
     <div class="thc">
-      <div class="th-lbl">Total ${meses[currentMonth]}</div>
-      <div class="th-val" style="color:var(--teal);">${fmt(t1q+t2q)}</div>
+      <div class="th-lbl">Total pagado ${meses[currentMonth]}</div>
+      <div class="th-val" style="color:var(--teal);">${fmt(sum1paid+sum2paid)}</div>
+      ${(sum1pend+sum2pend)>0?`<div class="th-sub" style="color:var(--red);font-size:11px;">Pendiente total: ${fmt(sum1pend+sum2pend)}</div>`:''}
     </div>
   </div>
+  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+    <button onclick="window._nominaMostrarTodos=!window._nominaMostrarTodos;renderFinNomina();"
+      style="padding:6px 14px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;background:${window._nominaMostrarTodos?'var(--navy)':'none'};color:${window._nominaMostrarTodos?'#fff':'var(--text2)'};">
+      ${window._nominaMostrarTodos?'👁 Mostrando todos':'👁 Mostrar inactivos'}
+    </button>
+  </div>
   <div id="nominaLista" style="display:grid;gap:10px;">
-    ${(window._nominaEmps||[]).map(emp=>{
+    ${empsVista.map(emp=>{
       const p1=pagoMap[emp.id+'_1']||null;
       const p2=pagoMap[emp.id+'_2']||null;
       const inc1=incMap[emp.id+'_1']||[];
       const inc2=incMap[emp.id+'_2']||[];
-      const base=emp.quincenal_bruto||0;
-      const neto1=p1?p1.total_neto:base-inc1.filter(i=>i.monto>0).reduce((s,i)=>s+i.monto,0)+inc1.filter(i=>i.monto<0).reduce((s,i)=>s+Math.abs(i.monto),0);
-      const neto2=p2?p2.total_neto:base-inc2.filter(i=>i.monto>0).reduce((s,i)=>s+i.monto,0)+inc2.filter(i=>i.monto<0).reduce((s,i)=>s+Math.abs(i.monto),0);
+      const neto1=calcNeto(emp,p1,inc1);
+      const neto2=calcNeto(emp,p2,inc2);
+      const mensual=neto1+neto2;
       const tipoBadge=`<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:${TIPO_PAGO_COLORS[emp.tipo_pago]};color:${TIPO_PAGO_TEXT[emp.tipo_pago]};font-weight:600;">${TIPO_PAGO_LABELS[emp.tipo_pago]||emp.tipo_pago}</span>`;
       const inactivoBadge=!emp.activo?`<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:rgba(232,64,64,0.1);color:var(--red);font-weight:600;margin-left:4px;">Inactivo</span>`:'';
-      return`<div class="card" style="padding:14px 16px;${!emp.activo?'opacity:0.7;':''}">
+      return`<div class="card" style="padding:14px 16px;${!emp.activo?'opacity:0.7;border-left:3px solid var(--red);':''}">
         <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;">
           <div style="flex:1;min-width:180px;">
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap;">
@@ -5956,6 +6013,7 @@ async function renderFinNomina(){
               ${tipoBadge}${inactivoBadge}
             </div>
             <div style="font-size:11px;color:var(--text3);">${emp.puesto||''} · ${emp.area||''} · SDI $${emp.sdi||0}</div>
+            <div style="font-size:12px;color:var(--text2);margin-top:4px;font-weight:600;">Mensual: <span style="font-family:'JetBrains Mono',monospace;color:var(--teal);">${fmt(mensual)}</span></div>
           </div>
           <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">
             ${[1,2].map(q=>{
@@ -6001,20 +6059,54 @@ async function renderFinNomina(){
 }
 
 async function togglePagadoQ(empId,quincena,pagoId,neto,base,descs){
+  const emp=(window._nominaEmps||[]).find(e=>e.id===empId);
+  const incs=(window._nominaIncs||[]).filter(i=>i.empleado_id===empId&&i.quincena===quincena);
+  const desc=incs.filter(i=>i.monto>0).reduce((s,i)=>s+(i.monto||0),0);
+  const bono=incs.filter(i=>i.monto<0).reduce((s,i)=>s+Math.abs(i.monto||0),0);
+  const sub=(emp?.quincenal_bruto||0)-desc+bono;
+  let total_neto=sub;
+  if(emp?.tipo_pago==='honorarios'){
+    total_neto=Math.round((sub+sub*0.16-sub*0.1067-sub*0.10)*100)/100;
+  }
+  const EGRESO_CONCEPTO=`Nómina ${emp?.nombre||''} · ${quincena}ª quincena`;
+
   if(pagoId){
     const p=window._nominaPagos.find(p=>p.id===pagoId);
-    const pagado=!(p?.pagado);
-    await sb.from('nomina_pagos').update({pagado,fecha_pago:pagado?new Date().toISOString().slice(0,10):null,updated_at:new Date().toISOString()}).eq('id',pagoId);
-  } else {
-    const incs=(window._nominaIncs||[]).filter(i=>i.empleado_id===empId&&i.quincena===quincena);
-    const desc=incs.filter(i=>i.monto>0).reduce((s,i)=>s+i.monto,0);
-    const extra=incs.filter(i=>i.monto<0).reduce((s,i)=>s+Math.abs(i.monto),0);
-    const total_neto=base-desc+extra;
-    await sb.from('nomina_pagos').insert({
-      empleado_id:empId,anio:currentYear,mes:currentMonth,quincena,
-      monto_base:base,incidencias_descuento:desc,incidencias_extra:extra,
-      total_neto,pagado:true,fecha_pago:new Date().toISOString().slice(0,10),
+    const ahora_pagado=!(p?.pagado);
+    await sb.from('nomina_pagos').update({
+      pagado:ahora_pagado,
+      total_neto,
+      fecha_pago:ahora_pagado?new Date().toISOString().slice(0,10):null,
       updated_at:new Date().toISOString()
+    }).eq('id',pagoId);
+    // Egreso automático: borrar el anterior y recrear si pagado
+    await sb.from('egresos').delete().eq('anio',currentYear).eq('mes',currentMonth)
+      .eq('concepto',EGRESO_CONCEPTO);
+    if(ahora_pagado){
+      await sb.from('egresos').insert({
+        anio:currentYear,mes:currentMonth,categoria:'fijo',subcategoria:'nomina',
+        concepto:EGRESO_CONCEPTO,monto:total_neto,
+        tiene_factura:false,fecha:new Date().toISOString().slice(0,10)
+      });
+    }
+  } else {
+    // Crear registro de pago nuevo
+    const {error}=await sb.from('nomina_pagos').insert({
+      empleado_id:empId,anio:currentYear,mes:currentMonth,quincena,
+      monto_base:emp?.quincenal_bruto||0,
+      incidencias_descuento:desc,incidencias_extra:bono,
+      total_neto,pagado:true,
+      fecha_pago:new Date().toISOString().slice(0,10),
+      updated_at:new Date().toISOString()
+    });
+    if(error){alert('Error: '+error.message);return;}
+    // Crear egreso automático
+    await sb.from('egresos').delete().eq('anio',currentYear).eq('mes',currentMonth)
+      .eq('concepto',EGRESO_CONCEPTO);
+    await sb.from('egresos').insert({
+      anio:currentYear,mes:currentMonth,categoria:'fijo',subcategoria:'nomina',
+      concepto:EGRESO_CONCEPTO,monto:total_neto,
+      tiene_factura:false,fecha:new Date().toISOString().slice(0,10)
     });
   }
   renderFinNomina();
@@ -6863,9 +6955,15 @@ async function renderFinFlujo(){
 // ─── 6. BALANCE ANUAL ────────────────────────────────────────────────────────
 async function renderFinBalance(){
   finLoading();
+  // Cargar saldo inicial guardado
+  const {data:saldoRow}=await sb.from('egresos')
+    .select('id,monto').eq('anio',currentYear).eq('mes',0).eq('subcategoria','saldo_inicial').maybeSingle();
+  const saldoInicial=saldoRow?.monto||0;
+  const saldoInicialId=saldoRow?.id||null;
+
   const [ingR,egR,nomR,impR,gbR]=await Promise.all([
     sb.from('fact_ingresos').select('monto,cobrado').eq('anio',currentYear),
-    sb.from('egresos').select('monto,categoria').eq('anio',currentYear),
+    sb.from('egresos').select('monto,categoria').eq('anio',currentYear).neq('subcategoria','saldo_inicial'),
     sb.from('nomina_pagos').select('total_neto').eq('anio',currentYear),
     sb.from('impuestos_pagos').select('tipo,monto').eq('anio',currentYear),
     sb.from('gb_retenciones').select('monto_factura,monto_retencion').eq('anio',currentYear)
@@ -6885,6 +6983,22 @@ async function renderFinBalance(){
   const c=finCont();
   c.innerHTML=`
   <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:16px;">Resumen anual ${currentYear}</div>
+  <!-- Saldo inicial -->
+  <div class="card" style="padding:14px 16px;margin-bottom:16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+    <div style="flex:1;">
+      <div style="font-size:12px;font-weight:600;color:var(--text);">Saldo inicial ${currentYear}</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:2px;">Capital con el que inició el año. Se suma al flujo acumulado del balance.</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span style="font-size:13px;color:var(--text3);">$</span>
+      <input type="number" id="saldoInicialInput" value="${saldoInicial}" min="0" step="0.01"
+        style="width:140px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:14px;font-family:'JetBrains Mono',monospace;text-align:right;">
+      <button onclick="guardarSaldoInicial('${saldoInicialId||''}')"
+        style="padding:7px 16px;background:var(--navy);color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+        Guardar
+      </button>
+    </div>
+  </div>
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">
     <div class="card" style="padding:16px;">
       <div style="font-size:12px;font-weight:600;color:var(--text3);margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em;">Ingresos</div>
@@ -6903,6 +7017,10 @@ async function renderFinBalance(){
       <div style="font-size:12px;font-weight:600;color:var(--text3);margin-bottom:10px;text-transform:uppercase;letter-spacing:.05em;">Resultado</div>
       <div style="font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${utilidad>=0?'#27AE60':'var(--red)'};">${fmt(utilidad)}</div>
       <div style="font-size:11px;color:var(--text3);margin-top:4px;">Ingresos cobrados − todos los egresos</div>
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);">
+        <div style="font-size:11px;color:var(--text3);">Con saldo inicial</div>
+        <div style="font-size:18px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${(utilidad+saldoInicial)>=0?'#27AE60':'var(--red)'};">${fmt(utilidad+saldoInicial)}</div>
+      </div>
       <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
         <div style="font-size:11px;color:var(--text3);margin-bottom:6px;">Guillermo Blancas</div>
         <div style="display:flex;justify-content:space-between;"><span style="font-size:11px;">Facturado</span><span style="font-family:'JetBrains Mono',monospace;font-size:11px;">${fmt(totalGB)}</span></div>
