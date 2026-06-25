@@ -5545,18 +5545,8 @@ async function renderVistaPromociones(){
   const data=promos||[];
   const bySeccion={};
   data.forEach(p=>{bySeccion[p.seccion]=p;});
-
-  // Agrupar por grupo
-  const grupos={};
-  PROMO_STRUCTURE.forEach(s=>{
-    if(!grupos[s.grupo])grupos[s.grupo]={label:s.label,items:[]};
-    const p=bySeccion[s.seccion];
-    if(p&&p.descuento>0) grupos[s.grupo].items.push({...s,...p});
-  });
-
-  const activeGroups=Object.entries(grupos).filter(([,g])=>g.items.length>0);
-
-  if(activeGroups.length===0){
+  const total=data.filter(p=>p.descuento>0).length;
+  if(total===0){
     mc.innerHTML=`<div style="text-align:center;padding:60px 20px;">
       <div style="font-size:32px;margin-bottom:12px;">🏷</div>
       <div style="font-size:15px;font-weight:600;color:var(--text);">Sin promociones activas</div>
@@ -5564,45 +5554,107 @@ async function renderVistaPromociones(){
     </div>`;
     return;
   }
+  mc.innerHTML='<div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px;">Promociones — '+meses[currentMonth]+' '+currentYear+'</div>'
+    +'<div style="font-size:12px;color:var(--text3);margin-bottom:20px;">Descuentos y condiciones especiales vigentes</div>'
+    +buildPromoVistaHtml(bySeccion);
+}
 
+function buildPromoVistaHtml(bySeccion){
   const today=new Date().toISOString().slice(0,10);
-  function vigenciaHtml(p){
-    if(p.permanente)return`<span style="font-size:10px;background:rgba(39,174,96,0.12);color:#27AE60;padding:2px 8px;border-radius:10px;font-weight:600;">Permanente</span>`;
+  function vig(p){
+    if(!p||!p.descuento)return'';
+    if(p.permanente)return'<span style="font-size:10px;background:rgba(39,174,96,0.12);color:#27AE60;padding:1px 7px;border-radius:10px;font-weight:600;">Permanente</span>';
     if(p.fecha_inicio&&p.fecha_fin){
-      const activo=today>=p.fecha_inicio&&today<=p.fecha_fin;
-      const color=activo?'#27AE60':'var(--text3)';
-      return`<span style="font-size:10px;color:${color};">${fmtFecha(p.fecha_inicio)} al ${fmtFecha(p.fecha_fin)}</span>`;
+      const ok=today>=p.fecha_inicio&&today<=p.fecha_fin;
+      return`<span style="font-size:10px;color:${ok?'#27AE60':'var(--text3)'};">${fmtFecha(p.fecha_inicio)} al ${fmtFecha(p.fecha_fin)}</span>`;
     }
     return'';
   }
+  function pctCell(p,color){
+    if(!p||!p.descuento)return`<td style="text-align:center;font-size:12px;color:var(--text3);">—</td>`;
+    return`<td style="text-align:center;font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;color:${color};">${p.descuento}%</td>`;
+  }
+  function singleRow(seccion,label,color){
+    const p=bySeccion[seccion];
+    if(!p||!p.descuento)return'';
+    return`<tr style="border-bottom:1px solid var(--border);">
+      <td style="padding:8px 12px;font-size:12px;font-weight:500;color:var(--text);">${label}</td>
+      <td style="text-align:center;font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;color:${color};padding:8px 12px;">${p.descuento}%</td>
+      <td style="padding:8px 12px;">${vig(p)}</td>
+    </tr>`;
+  }
+  const thStyle='padding:6px 12px;font-size:11px;font-weight:500;color:var(--text3);text-align:left;border-bottom:1px solid var(--border);white-space:nowrap;';
+  const thCStyle='padding:6px 12px;font-size:11px;font-weight:500;color:var(--text3);text-align:center;border-bottom:1px solid var(--border);white-space:nowrap;';
+  const headStyle=(bg,text,label)=>`<div style="padding:9px 14px;background:${bg};border-radius:6px 6px 0 0;font-size:12px;font-weight:500;letter-spacing:.04em;color:${text};">${label}</div>`;
+  const tableWrap=(inner)=>`<table style="width:100%;border-collapse:collapse;border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;overflow:hidden;background:var(--bg);">${inner}</table>`;
 
-  mc.innerHTML=`
-  <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px;">Promociones — ${meses[currentMonth]} ${currentYear}</div>
-  <div style="font-size:12px;color:var(--text3);margin-bottom:20px;">Descuentos y condiciones especiales vigentes este mes</div>
-  <div style="display:grid;gap:16px;">
-    ${activeGroups.map(([grpKey,grp])=>{
-      const color=PROMO_GRUPO_COLORS[grpKey]||'var(--teal)';
-      return`<div class="card" style="padding:0;overflow:hidden;">
-        <div style="padding:10px 16px;background:${color};color:#fff;">
-          <div style="font-size:13px;font-weight:700;">${grp.label}</div>
-        </div>
-        <div style="padding:4px 0;">
-          ${grp.items.map(item=>`
-          <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);">
-            <div style="flex:1;">
-              <div style="font-size:13px;font-weight:600;color:var(--text);">${item.subseccion}</div>
-              ${item.notas?`<div style="font-size:11px;color:var(--text3);margin-top:2px;">${item.notas}</div>`:''}
-            </div>
-            <div style="text-align:right;">
-              <div style="font-size:20px;font-weight:700;color:${color};">${item.descuento}%</div>
-              <div style="margin-top:2px;">${vigenciaHtml(item)}</div>
-            </div>
-          </div>`).join('')}
-        </div>
-      </div>`;
-    }).join('')}
-  </div>`;
+  // ── Aspel ──
+  const aspelRows=[
+    singleRow('aspel_timbres','Timbres y licencias nuevas','#185FA5'),
+    singleRow('aspel_actualizacion','Licencias de actualización','#185FA5')
+  ].filter(Boolean).join('');
+  const aspelHtml=aspelRows?`<div style="margin-bottom:16px;">
+    ${headStyle('#E6F1FB','#0C447C','Sistemas Aspel')}
+    ${tableWrap(`<thead><tr><th style="${thStyle}">Producto</th><th style="${thCStyle}">Descuento</th><th style="${thStyle}">Vigencia</th></tr></thead><tbody>${aspelRows}</tbody>`)}
+  </div>`:'' ;
+
+  // ── Pólizas (tabla cruzada póliza × categoría) ──
+  const polizas=['emp','pro','emp2','inf','eli'];
+  const polizaNom={emp:'Emprendedor',pro:'Profesionista',emp2:'Mi Empresa',inf:'Infinito',eli:'Elite'};
+  const cats=[['nuevas','Nuevas'],['renov','Renovaciones'],['recup','Recuperación']];
+  const polizaRows=polizas.map(k=>{
+    const cells=cats.map(([cat])=>pctCell(bySeccion[`polizas_${cat}_${k}`],'#1D9E75')).join('');
+    const hasData=cats.some(([cat])=>bySeccion[`polizas_${cat}_${k}`]?.descuento>0);
+    if(!hasData)return'';
+    return`<tr style="border-bottom:1px solid var(--border);">
+      <td style="padding:8px 12px;font-size:12px;font-weight:500;color:var(--text);">${polizaNom[k]}</td>
+      ${cells}
+    </tr>`;
+  }).filter(Boolean).join('');
+
+  // Vigencias para las categorías de pólizas (una nota al pie)
+  const vigNotas=cats.map(([cat,lbl])=>{
+    const sample=polizas.map(k=>bySeccion[`polizas_${cat}_${k}`]).find(p=>p?.descuento>0);
+    if(!sample)return'';
+    return`${lbl}: ${vig(sample)}`;
+  }).filter(Boolean).join(' · ');
+
+  const polizasHtml=polizaRows?`<div style="margin-bottom:16px;">
+    ${headStyle('#E1F5EE','#0F6E56','Pólizas de soporte')}
+    ${tableWrap(`<thead><tr>
+      <th style="${thStyle}">Póliza</th>
+      ${cats.map(([,lbl])=>`<th style="${thCStyle}">${lbl}</th>`).join('')}
+    </tr></thead><tbody>${polizaRows}</tbody>`)}
+    ${vigNotas?`<div style="font-size:10px;color:var(--text3);padding:5px 12px;border:1px solid var(--border);border-top:none;border-radius:0 0 6px 6px;">${vigNotas}</div>`:''}
+  </div>`:'';
+
+  // ── Cursos y Resguardo en grid 2 cols ──
+  const cursosRows=[
+    singleRow('cursos_linea','En línea','#BA7517'),
+    singleRow('cursos_sitio','En sitio','#BA7517')
+  ].filter(Boolean).join('');
+  const cursosHtml=cursosRows?`<div>
+    ${headStyle('#FAEEDA','#633806','Cursos')}
+    ${tableWrap(`<thead><tr><th style="${thStyle}">Modalidad</th><th style="${thCStyle}">Descuento</th><th style="${thStyle}">Vigencia</th></tr></thead><tbody>${cursosRows}</tbody>`)}
+  </div>`:'' ;
+
+  const resRows=[
+    singleRow('resguardo_in1','In 1','#A32D2D'),
+    singleRow('resguardo_in2','In 2','#A32D2D'),
+    singleRow('resguardo_in3','In 3','#A32D2D')
+  ].filter(Boolean).join('');
+  const resHtml=resRows?`<div style="margin-top:${cursosHtml?'16px':'0'};">
+    ${headStyle('#FCEBEB','#791F1F','Pólizas de resguardo')}
+    ${tableWrap(`<thead><tr><th style="${thStyle}">Póliza</th><th style="${thCStyle}">Descuento</th><th style="${thStyle}">Vigencia</th></tr></thead><tbody>${resRows}</tbody>`)}
+  </div>`:'' ;
+
+  const rightCol=(cursosHtml||resHtml)?`<div>${cursosHtml}${resHtml}</div>`:'' ;
+
+  return aspelHtml
+    + polizasHtml
+    + (rightCol?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">${rightCol}</div>`:'');
 }
+
 
 // ─── PROMOCIONES DIRECTOR (config + vista) ────────────────────────────────────
 let currentPromoTab='vista';
@@ -5751,50 +5803,15 @@ async function guardarPromo(seccion,itemLabel){
 async function renderPromoVistaDirInline(){
   const cont=document.getElementById('promoContent');
   if(!cont)return;
-  // Reusar renderVistaPromociones pero en el contenedor inline
-  const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
   const data=window._promoData||[];
   const bySeccion={};
   data.forEach(p=>{bySeccion[p.seccion]=p;});
-  const grupos={};
-  PROMO_STRUCTURE.forEach(s=>{
-    if(!grupos[s.grupo])grupos[s.grupo]={label:s.label,items:[]};
-    const p=bySeccion[s.seccion];
-    if(p&&p.descuento>0)grupos[s.grupo].items.push({...s,...p});
-  });
-  const activeGroups=Object.entries(grupos).filter(([,g])=>g.items.length>0);
-  const today=new Date().toISOString().slice(0,10);
-  function vigHtml(p){
-    if(p.permanente)return`<span style="font-size:10px;background:rgba(39,174,96,0.12);color:#27AE60;padding:2px 8px;border-radius:10px;font-weight:600;">Permanente</span>`;
-    if(p.fecha_inicio&&p.fecha_fin){
-      const activo=today>=p.fecha_inicio&&today<=p.fecha_fin;
-      return`<span style="font-size:10px;color:${activo?'#27AE60':'var(--text3)'};">${fmtFecha(p.fecha_inicio)} al ${fmtFecha(p.fecha_fin)}</span>`;
-    }
-    return'';
-  }
-  if(activeGroups.length===0){
-    cont.innerHTML=`<div style="text-align:center;padding:40px;color:var(--text3);">No hay promociones con descuento &gt; 0% configuradas para este mes.</div>`;
+  const hasData=data.some(p=>p.descuento>0);
+  if(!hasData){
+    cont.innerHTML=`<div style="text-align:center;padding:40px;color:var(--text3);">No hay promociones con descuento > 0% configuradas para este mes.</div>`;
     return;
   }
-  cont.innerHTML=`<div style="display:grid;gap:16px;">
-    ${activeGroups.map(([grpKey,grp])=>{
-      const color=PROMO_GRUPO_COLORS[grpKey]||'var(--teal)';
-      return`<div class="card" style="padding:0;overflow:hidden;">
-        <div style="padding:10px 16px;background:${color};color:#fff;"><div style="font-size:13px;font-weight:700;">${grp.label}</div></div>
-        <div style="padding:4px 0;">
-          ${grp.items.map(item=>`
-          <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);">
-            <div style="flex:1;"><div style="font-size:13px;font-weight:600;color:var(--text);">${item.subseccion}</div>
-            ${item.notas?`<div style="font-size:11px;color:var(--text3);margin-top:2px;">${item.notas}</div>`:''}</div>
-            <div style="text-align:right;">
-              <div style="font-size:20px;font-weight:700;color:${color};">${item.descuento}%</div>
-              <div style="margin-top:2px;">${vigHtml(item)}</div>
-            </div>
-          </div>`).join('')}
-        </div>
-      </div>`;
-    }).join('')}
-  </div>`;
+  cont.innerHTML=buildPromoVistaHtml(bySeccion);
 }
 
 
