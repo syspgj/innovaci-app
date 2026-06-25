@@ -5875,71 +5875,106 @@ function finCont(){return document.getElementById('finContent');}
 function finLoading(){const c=finCont();if(c)c.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';}
 
 // ─── 1. NÓMINA ───────────────────────────────────────────────────────────────
-let _nominaEmpleados=[];
+// Calcular fecha de pago quincenal (adelantar si cae en finde)
+function fechaPagoQuincenal(anio, mes, quincena){
+  let d;
+  if(quincena===1){
+    d=new Date(anio,mes-1,15);
+  } else {
+    d=new Date(anio,mes,0); // último día del mes
+  }
+  const dow=d.getDay();
+  if(dow===6) d.setDate(d.getDate()-1);
+  if(dow===0) d.setDate(d.getDate()-2);
+  return d.toISOString().slice(0,10);
+}
+
+const TIPO_PAGO_LABELS={'imss':'IMSS','honorarios':'Honorarios','factura_tercero':'Factura Tercero'};
+const TIPO_PAGO_COLORS={'imss':'rgba(0,169,157,0.12)','honorarios':'rgba(139,92,246,0.12)','factura_tercero':'rgba(245,166,35,0.12)'};
+const TIPO_PAGO_TEXT={'imss':'var(--teal)','honorarios':'#7C3AED','factura_tercero':'#B45309'};
+
 async function renderFinNomina(){
   finLoading();
-  const [{data:emps},{data:pagos}]=await Promise.all([
-    sb.from('nomina_empleados').select('*').eq('activo',true).order('orden'),
-    sb.from('nomina_pagos').select('*').eq('anio',currentYear).eq('mes',currentMonth)
+  const [{data:emps},{data:pagos},{data:incs}]=await Promise.all([
+    sb.from('nomina_empleados').select('*').order('orden'),
+    sb.from('nomina_pagos').select('*').eq('anio',currentYear).eq('mes',currentMonth),
+    sb.from('nomina_incidencias').select('*').eq('anio',currentYear).eq('mes',currentMonth)
   ]);
-  _nominaEmpleados=emps||[];
+  window._nominaEmps=emps||[];
+  window._nominaPagos=pagos||[];
+  window._nominaIncs=incs||[];
+
+  // Build pago maps: empId_quincena -> pago
   const pagoMap={};
-  (pagos||[]).forEach(p=>{pagoMap[p.empleado_id]=p;});
-  const totalNomina=(pagos||[]).reduce((s,p)=>s+(p.total_neto||0),0);
+  (pagos||[]).forEach(p=>{pagoMap[p.empleado_id+'_'+p.quincena]=p;});
+  const incMap={};
+  (incs||[]).forEach(i=>{
+    const k=i.empleado_id+'_'+i.quincena;
+    if(!incMap[k])incMap[k]=[];
+    incMap[k].push(i);
+  });
+
+  // Totals
+  const t1q=(pagos||[]).filter(p=>p.quincena===1).reduce((s,p)=>s+(p.total_neto||0),0);
+  const t2q=(pagos||[]).filter(p=>p.quincena===2).reduce((s,p)=>s+(p.total_neto||0),0);
+  const fp1=fechaPagoQuincenal(currentYear,currentMonth,1);
+  const fp2=fechaPagoQuincenal(currentYear,currentMonth,2);
+  const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
   const c=finCont();
   c.innerHTML=`
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-    <div class="thc" style="min-width:180px;">
-      <div class="th-lbl">Total nómina mes</div>
-      <div class="th-val">${fmt(totalNomina)}</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">
+    <div class="thc">
+      <div class="th-lbl">1ª Quincena · pago ${fp1}</div>
+      <div class="th-val">${fmt(t1q)}</div>
     </div>
-    <button onclick="abrirNuevoEmpleado()" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Empleado</button>
+    <div class="thc">
+      <div class="th-lbl">2ª Quincena · pago ${fp2}</div>
+      <div class="th-val">${fmt(t2q)}</div>
+    </div>
+    <div class="thc">
+      <div class="th-lbl">Total ${meses[currentMonth]}</div>
+      <div class="th-val" style="color:var(--teal);">${fmt(t1q+t2q)}</div>
+    </div>
   </div>
-  ${_nominaEmpleados.length===0?`<div style="text-align:center;padding:40px;color:var(--text3);">No hay empleados registrados. Agrega uno para comenzar.</div>`:''}
-  <div style="display:grid;gap:10px;">
-    ${_nominaEmpleados.map(emp=>{
-      const p=pagoMap[emp.id]||{};
-      const neto=p.total_neto||0;
-      const tipoBadge=emp.tipo==='imss'
-        ?`<span style="font-size:10px;background:rgba(0,169,157,0.12);color:var(--teal);padding:2px 8px;border-radius:10px;font-weight:600;">IMSS</span>`
-        :`<span style="font-size:10px;background:rgba(245,166,35,0.12);color:#F5A623;padding:2px 8px;border-radius:10px;font-weight:600;">Honorarios</span>`;
-      return`<div class="card" style="padding:14px 16px;">
-        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-          <div style="flex:1;min-width:160px;">
-            <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:4px;">${emp.nombre} ${tipoBadge}</div>
-            ${emp.tipo==='imss'?`
-            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px;">
-              ${[['Sueldo base','sueldo_base'],['Comisión','comision_calculada'],['Bonos','bonos'],['Deducciones','deducciones']].map(([lbl,fld])=>`
-              <div>
-                <div style="font-size:10px;color:var(--text3);">${lbl}</div>
-                <input type="number" value="${p[fld]||0}" min="0" step="0.01" id="nom_${emp.id}_${fld}"
-                  style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:12px;font-family:'JetBrains Mono',monospace;">
-              </div>`).join('')}
-            </div>`:`
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
-              <div>
-                <div style="font-size:10px;color:var(--text3);">Monto honorarios</div>
-                <input type="number" value="${p.sueldo_base||0}" min="0" step="0.01" id="nom_${emp.id}_sueldo_base"
-                  style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:12px;font-family:'JetBrains Mono',monospace;">
-              </div>
-              <div>
-                <div style="font-size:10px;color:var(--text3);">Folio factura</div>
-                <input type="text" value="${p.folio_factura||''}" placeholder="Ej. H-0042" id="nom_${emp.id}_folio"
-                  style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:12px;">
-              </div>
-            </div>`}
-            <div style="margin-top:8px;">
-              <div style="font-size:10px;color:var(--text3);">Notas</div>
-              <input type="text" value="${(p.notas||'').replace(/"/g,'&quot;')}" placeholder="Opcional..." id="nom_${emp.id}_notas"
-                style="width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:12px;">
+  <div id="nominaLista" style="display:grid;gap:10px;">
+    ${(window._nominaEmps||[]).map(emp=>{
+      const p1=pagoMap[emp.id+'_1']||null;
+      const p2=pagoMap[emp.id+'_2']||null;
+      const inc1=incMap[emp.id+'_1']||[];
+      const inc2=incMap[emp.id+'_2']||[];
+      const base=emp.quincenal_bruto||0;
+      const neto1=p1?p1.total_neto:base-inc1.filter(i=>i.monto>0).reduce((s,i)=>s+i.monto,0)+inc1.filter(i=>i.monto<0).reduce((s,i)=>s+Math.abs(i.monto),0);
+      const neto2=p2?p2.total_neto:base-inc2.filter(i=>i.monto>0).reduce((s,i)=>s+i.monto,0)+inc2.filter(i=>i.monto<0).reduce((s,i)=>s+Math.abs(i.monto),0);
+      const tipoBadge=`<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:${TIPO_PAGO_COLORS[emp.tipo_pago]};color:${TIPO_PAGO_TEXT[emp.tipo_pago]};font-weight:600;">${TIPO_PAGO_LABELS[emp.tipo_pago]||emp.tipo_pago}</span>`;
+      const inactivoBadge=!emp.activo?`<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:rgba(232,64,64,0.1);color:var(--red);font-weight:600;margin-left:4px;">Inactivo</span>`:'';
+      return`<div class="card" style="padding:14px 16px;${!emp.activo?'opacity:0.7;':''}">
+        <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:180px;">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap;">
+              <button onclick="abrirFichaEmpleado('${emp.id}')" style="font-size:14px;font-weight:700;color:var(--navy);background:none;border:none;cursor:pointer;padding:0;font-family:'Inter',sans-serif;text-decoration:underline;">${emp.nombre}</button>
+              ${tipoBadge}${inactivoBadge}
             </div>
+            <div style="font-size:11px;color:var(--text3);">${emp.puesto||''} · ${emp.area||''} · SDI $${emp.sdi||0}</div>
           </div>
-          <div style="text-align:right;min-width:120px;">
-            <div style="font-size:11px;color:var(--text3);">Neto del mes</div>
-            <div style="font-size:22px;font-weight:700;color:var(--teal);font-family:'JetBrains Mono',monospace;">${fmt(neto)}</div>
-            <button onclick="guardarNomina('${emp.id}','${emp.tipo}','${p.id||''}')" data-pid="${p.id||''}"
-              style="margin-top:8px;background:var(--teal);color:#fff;border:none;border-radius:5px;padding:5px 14px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">
-              Guardar</button>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">
+            ${[1,2].map(q=>{
+              const p=q===1?p1:p2;
+              const netQ=q===1?neto1:neto2;
+              const incQ=q===1?inc1:inc2;
+              const baseQ=emp.quincenal_bruto||0;
+              const descQ=incQ.filter(i=>i.monto>0).reduce((s,i)=>s+i.monto,0);
+              return`<div style="min-width:160px;padding:10px 12px;background:var(--surface,#f8f9fa);border-radius:8px;border:1px solid var(--border);">
+                <div style="font-size:10px;color:var(--text3);font-weight:600;margin-bottom:6px;">${q}ª QUINCENA · ${q===1?fp1:fp2}</div>
+                <div style="font-size:11px;color:var(--text3);margin-bottom:2px;">Base: <span style="font-family:'JetBrains Mono',monospace;">${fmt(baseQ)}</span></div>
+                ${descQ>0?`<div style="font-size:11px;color:var(--red);margin-bottom:2px;">Descuentos: <span style="font-family:'JetBrains Mono',monospace;">-${fmt(descQ)}</span></div>`:''}
+                <div style="font-size:15px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--teal);margin:4px 0;">${fmt(netQ)}</div>
+                <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
+                  <button onclick="abrirIncidencia('${emp.id}',${q})" style="background:rgba(245,166,35,0.12);color:#B45309;border:1px solid rgba(245,166,35,0.3);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Incidencia${incQ.length>0?` (${incQ.length})`:''}</button>
+                  <button onclick="togglePagadoQ('${emp.id}',${q},'${p?p.id:''}',${netQ},${baseQ},${descQ})" style="background:${p?.pagado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.06)'};color:${p?.pagado?'#27AE60':'var(--red)'};border:1px solid ${p?.pagado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">${p?.pagado?'✓ Pagado':'Pendiente'}</button>
+                </div>
+              </div>`;
+            }).join('')}
           </div>
         </div>
       </div>`;
@@ -5947,63 +5982,236 @@ async function renderFinNomina(){
   </div>`;
 }
 
-async function guardarNomina(empId,tipo,pagoId){
-  const get=id=>parseFloat(document.getElementById(id)?.value)||0;
-  const gett=id=>document.getElementById(id)?.value?.trim()||null;
-  let sueldo=get(`nom_${empId}_sueldo_base`);
-  let comision=tipo==='imss'?get(`nom_${empId}_comision_calculada`):0;
-  let bonos=tipo==='imss'?get(`nom_${empId}_bonos`):0;
-  let deduc=tipo==='imss'?get(`nom_${empId}_deducciones`):0;
-  let neto=tipo==='imss'?(sueldo+comision+bonos-deduc):sueldo;
-  const payload={
-    empleado_id:empId,anio:currentYear,mes:currentMonth,
-    sueldo_base:sueldo,comision_calculada:comision,bonos,deducciones:deduc,
-    total_neto:neto,
-    folio_factura:gett(`nom_${empId}_folio`),
-    notas:gett(`nom_${empId}_notas`),
-    updated_at:new Date().toISOString()
-  };
-  let error;
-  if(pagoId){({error}=await sb.from('nomina_pagos').update(payload).eq('id',pagoId));}
-  else{({error}=await sb.from('nomina_pagos').insert(payload));}
-  if(error){alert('Error: '+error.message);return;}
+async function togglePagadoQ(empId,quincena,pagoId,neto,base,descs){
+  if(pagoId){
+    const p=window._nominaPagos.find(p=>p.id===pagoId);
+    const pagado=!(p?.pagado);
+    await sb.from('nomina_pagos').update({pagado,fecha_pago:pagado?new Date().toISOString().slice(0,10):null,updated_at:new Date().toISOString()}).eq('id',pagoId);
+  } else {
+    const incs=(window._nominaIncs||[]).filter(i=>i.empleado_id===empId&&i.quincena===quincena);
+    const desc=incs.filter(i=>i.monto>0).reduce((s,i)=>s+i.monto,0);
+    const extra=incs.filter(i=>i.monto<0).reduce((s,i)=>s+Math.abs(i.monto),0);
+    const total_neto=base-desc+extra;
+    await sb.from('nomina_pagos').insert({
+      empleado_id:empId,anio:currentYear,mes:currentMonth,quincena,
+      monto_base:base,incidencias_descuento:desc,incidencias_extra:extra,
+      total_neto,pagado:true,fecha_pago:new Date().toISOString().slice(0,10),
+      updated_at:new Date().toISOString()
+    });
+  }
   renderFinNomina();
 }
 
-function abrirNuevoEmpleado(){
-  const c=finCont();
+function abrirIncidencia(empId,quincena){
+  const emp=(window._nominaEmps||[]).find(e=>e.id===empId);
   const form=document.createElement('div');
-  form.id='formNuevoEmp';
+  form.id='formIncidencia';
   form.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
-  form.innerHTML=`<div style="background:var(--bg,#fff);border-radius:12px;padding:24px;width:400px;max-width:95vw;">
-    <div style="font-size:15px;font-weight:600;margin-bottom:16px;">Nuevo empleado</div>
-    <div style="margin-bottom:12px;">
-      <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Nombre completo</div>
-      <input type="text" id="newEmpNombre" placeholder="Nombre..." style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;">
-    </div>
-    <div style="margin-bottom:16px;">
+  form.innerHTML=`<div style="background:var(--bg,#fff);border-radius:12px;padding:24px;width:440px;max-width:95vw;">
+    <div style="font-size:15px;font-weight:600;margin-bottom:4px;">Agregar incidencia</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">${emp?.nombre||''} · ${quincena}ª quincena</div>
+    <div style="margin-bottom:10px;">
       <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Tipo</div>
-      <select id="newEmpTipo" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;font-family:'Inter',sans-serif;">
-        <option value="imss">IMSS (empleado formal)</option>
-        <option value="honorarios">Honorarios (factura)</option>
+      <select id="incTipo" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;font-family:'Inter',sans-serif;box-sizing:border-box;">
+        <option value="falta">Falta</option>
+        <option value="descuento">Descuento</option>
+        <option value="prestamo">Préstamo</option>
+        <option value="bono_extra">Bono extra</option>
+        <option value="otro">Otro</option>
       </select>
     </div>
+    <div style="margin-bottom:10px;">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Descripción</div>
+      <input type="text" id="incDesc" placeholder="Describe la incidencia..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;">
+    </div>
+    <div style="margin-bottom:16px;">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Monto (descuento = positivo, bono extra = positivo también, se identifica por tipo)</div>
+      <input type="number" id="incMonto" min="0" step="0.01" placeholder="0.00" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;font-family:'JetBrains Mono',monospace;">
+    </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;">
-      <button onclick="document.getElementById('formNuevoEmp').remove()" style="padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;">Cancelar</button>
-      <button onclick="crearEmpleado()" style="padding:8px 16px;background:var(--navy);color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;">Crear</button>
+      <button onclick="document.getElementById('formIncidencia').remove()" style="padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;">Cancelar</button>
+      <button onclick="guardarIncidencia('${empId}',${quincena})" style="padding:8px 16px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;">Guardar</button>
     </div>
   </div>`;
   document.body.appendChild(form);
 }
 
-async function crearEmpleado(){
-  const nombre=document.getElementById('newEmpNombre')?.value.trim();
-  const tipo=document.getElementById('newEmpTipo')?.value;
-  if(!nombre)return;
-  const orden=_nominaEmpleados.length;
-  const {error}=await sb.from('nomina_empleados').insert({nombre,tipo,activo:true,orden});
+async function guardarIncidencia(empId,quincena){
+  const tipo=document.getElementById('incTipo')?.value;
+  const desc=document.getElementById('incDesc')?.value.trim()||null;
+  const montoRaw=parseFloat(document.getElementById('incMonto')?.value)||0;
+  if(!montoRaw){alert('El monto es obligatorio.');return;}
+  // bono_extra = monto negativo (a favor del empleado)
+  const monto=tipo==='bono_extra'?-montoRaw:montoRaw;
+  const {error}=await sb.from('nomina_incidencias').insert({
+    empleado_id:empId,anio:currentYear,mes:currentMonth,quincena,tipo,descripcion:desc,monto,aplicado:false
+  });
   if(error){alert('Error: '+error.message);return;}
-  document.getElementById('formNuevoEmp')?.remove();
+  document.getElementById('formIncidencia')?.remove();
+  renderFinNomina();
+}
+
+async function abrirFichaEmpleado(empId){
+  const emp=(window._nominaEmps||[]).find(e=>e.id===empId);
+  if(!emp)return;
+  // Cargar historial de pagos e incidencias del año
+  const [{data:pagos},{data:incs}]=await Promise.all([
+    sb.from('nomina_pagos').select('*').eq('empleado_id',empId).eq('anio',currentYear).order('mes').order('quincena'),
+    sb.from('nomina_incidencias').select('*').eq('empleado_id',empId).eq('anio',currentYear).order('mes').order('quincena')
+  ]);
+  const meses=['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const tipoBadge=`<span style="font-size:11px;padding:3px 10px;border-radius:10px;background:${TIPO_PAGO_COLORS[emp.tipo_pago]};color:${TIPO_PAGO_TEXT[emp.tipo_pago]};font-weight:600;">${TIPO_PAGO_LABELS[emp.tipo_pago]||emp.tipo_pago}</span>`;
+
+  function field(label,val,editable,type='text',fieldId){
+    return`<div>
+      <div style="font-size:10px;color:var(--text3);font-weight:500;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;">${label}</div>
+      ${editable
+        ?`<input type="${type}" id="${fieldId}" value="${(val||'').toString().replace(/"/g,'&quot;')}" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">`
+        :`<div style="font-size:13px;color:var(--text);font-weight:500;">${val||'—'}</div>`}
+    </div>`;
+  }
+
+  const modal=document.createElement('div');
+  modal.id='fichaModal';
+  modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+  modal.innerHTML=`<div style="background:var(--bg,#fff);border-radius:14px;width:820px;max-width:100%;max-height:90vh;overflow-y:auto;display:flex;flex-direction:column;">
+    <!-- Header -->
+    <div style="padding:20px 24px 16px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;justify-content:space-between;position:sticky;top:0;background:var(--bg,#fff);z-index:1;">
+      <div>
+        <div style="font-size:18px;font-weight:700;color:var(--text);margin-bottom:4px;">${emp.nombre}</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          ${tipoBadge}
+          ${!emp.activo?`<span style="font-size:11px;padding:3px 10px;border-radius:10px;background:rgba(232,64,64,0.1);color:var(--red);font-weight:600;">Inactivo · Egreso: ${emp.fecha_egreso||'—'}</span>`:''}
+        </div>
+      </div>
+      <button onclick="document.getElementById('fichaModal').remove()" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--text3);padding:0 4px;">✕</button>
+    </div>
+    <!-- Cuerpo -->
+    <div style="padding:20px 24px;display:grid;gap:20px;">
+      <!-- Datos personales -->
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:10px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-bottom:6px;">👤 Datos personales</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+          ${field('CURP',emp.curp,true,'text','fi_curp')}
+          ${field('RFC',emp.rfc,true,'text','fi_rfc')}
+          ${field('Fecha de nacimiento',emp.fecha_nacimiento,true,'date','fi_fnac')}
+          ${field('Teléfono',emp.telefono,true,'text','fi_tel')}
+          ${field('Contacto emergencia',emp.contacto_emergencia,true,'text','fi_emer')}
+          ${field('NSS (IMSS)',emp.nss,true,'text','fi_nss')}
+        </div>
+      </div>
+      <!-- Datos laborales -->
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:10px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-bottom:6px;">💼 Datos laborales</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+          ${field('Puesto',emp.puesto,true,'text','fi_puesto')}
+          ${field('Área',emp.area,true,'text','fi_area')}
+          ${field('Fecha de ingreso',emp.fecha_ingreso,true,'date','fi_fing')}
+          ${field('Fecha de egreso',emp.fecha_egreso,true,'date','fi_feg')}
+          ${field('Tipo de nómina',emp.tipo_nomina,false)}
+          ${field('Tipo de pago',TIPO_PAGO_LABELS[emp.tipo_pago]||emp.tipo_pago,false)}
+        </div>
+      </div>
+      <!-- Compensación -->
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:10px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-bottom:6px;">💰 Compensación</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
+          ${field('SDI',emp.sdi,true,'number','fi_sdi')}
+          ${field('Quincenal bruto (SDI×15.2)',emp.quincenal_bruto,true,'number','fi_qb')}
+          ${field('Bonos fijos',emp.bonos_fijos||0,true,'number','fi_bf')}
+          ${field('Bono variable',emp.bono_variable||0,true,'number','fi_bv')}
+        </div>
+      </div>
+      <!-- Datos bancarios -->
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:10px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-bottom:6px;">🏦 Datos bancarios</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          ${field('Banco',emp.banco,true,'text','fi_banco')}
+          ${field('CLABE interbancaria',emp.clabe,true,'text','fi_clabe')}
+        </div>
+      </div>
+      <!-- Historial nómina año -->
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:10px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-bottom:6px;">📋 Historial ${currentYear}</div>
+        ${(pagos||[]).length===0?`<div style="font-size:12px;color:var(--text3);">Sin pagos registrados en ${currentYear}.</div>`:`
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead><tr style="background:var(--navy);color:#fff;">
+            <th style="padding:6px 10px;text-align:left;">Mes</th>
+            <th style="padding:6px 10px;text-align:center;">Q</th>
+            <th style="padding:6px 10px;text-align:right;">Base</th>
+            <th style="padding:6px 10px;text-align:right;">Descuentos</th>
+            <th style="padding:6px 10px;text-align:right;">Neto</th>
+            <th style="padding:6px 10px;text-align:center;">Pagado</th>
+          </tr></thead>
+          <tbody>
+            ${(pagos||[]).map(p=>`<tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:6px 10px;">${meses[p.mes]}</td>
+              <td style="padding:6px 10px;text-align:center;">${p.quincena}ª</td>
+              <td style="padding:6px 10px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(p.monto_base||0)}</td>
+              <td style="padding:6px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${p.incidencias_descuento>0?'-'+fmt(p.incidencias_descuento):'—'}</td>
+              <td style="padding:6px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;">${fmt(p.total_neto||0)}</td>
+              <td style="padding:6px 10px;text-align:center;"><span style="color:${p.pagado?'#27AE60':'var(--red)'};">${p.pagado?'✓':'○'}</span></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`}
+      </div>
+      <!-- Incidencias año -->
+      ${(incs||[]).length>0?`<div>
+        <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:10px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-bottom:6px;">⚡ Incidencias ${currentYear}</div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px;">
+          <thead><tr style="background:var(--navy);color:#fff;">
+            <th style="padding:6px 10px;text-align:left;">Mes</th>
+            <th style="padding:6px 10px;text-align:center;">Q</th>
+            <th style="padding:6px 10px;">Tipo</th>
+            <th style="padding:6px 10px;">Descripción</th>
+            <th style="padding:6px 10px;text-align:right;">Monto</th>
+          </tr></thead>
+          <tbody>
+            ${(incs||[]).map(i=>`<tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:6px 10px;">${meses[i.mes]}</td>
+              <td style="padding:6px 10px;text-align:center;">${i.quincena}ª</td>
+              <td style="padding:6px 10px;"><span style="font-size:10px;padding:1px 7px;border-radius:8px;background:rgba(0,0,0,0.06);">${i.tipo}</span></td>
+              <td style="padding:6px 10px;color:var(--text3);">${i.descripcion||'—'}</td>
+              <td style="padding:6px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:${i.monto>0?'var(--red)':'#27AE60'};">${i.monto>0?'-':'+'}${fmt(Math.abs(i.monto))}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`:''}
+      <!-- Documentos (placeholder) -->
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:10px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border);padding-bottom:6px;">📁 Documentos</div>
+        <div style="padding:16px;border:1.5px dashed var(--border);border-radius:8px;text-align:center;color:var(--text3);font-size:12px;">Próximamente: CV, actas administrativas, capacitaciones y más.</div>
+      </div>
+    </div>
+    <!-- Footer -->
+    <div style="padding:14px 24px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;position:sticky;bottom:0;background:var(--bg,#fff);">
+      <button onclick="document.getElementById('fichaModal').remove()" style="padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;">Cerrar</button>
+      <button onclick="guardarFichaEmpleado('${empId}')" style="padding:8px 20px;background:var(--navy);color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;">Guardar cambios</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+async function guardarFichaEmpleado(empId){
+  const g=id=>document.getElementById(id)?.value?.trim()||null;
+  const gn=id=>parseFloat(document.getElementById(id)?.value)||null;
+  const sdi=gn('fi_sdi');
+  const qb=gn('fi_qb')||( sdi? Math.round(sdi*15.2*100)/100 : null );
+  const payload={
+    curp:g('fi_curp'),rfc:g('fi_rfc'),nss:g('fi_nss'),
+    fecha_nacimiento:g('fi_fnac')||null,
+    telefono:g('fi_tel'),contacto_emergencia:g('fi_emer'),
+    puesto:g('fi_puesto'),area:g('fi_area'),
+    fecha_ingreso:g('fi_fing')||null,fecha_egreso:g('fi_feg')||null,
+    activo:!g('fi_feg'),
+    sdi,quincenal_bruto:qb,
+    bonos_fijos:gn('fi_bf')||0,bono_variable:gn('fi_bv')||0,
+    banco:g('fi_banco'),clabe:g('fi_clabe'),
+    updated_at:new Date().toISOString()
+  };
+  const {error}=await sb.from('nomina_empleados').update(payload).eq('id',empId);
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('fichaModal')?.remove();
   renderFinNomina();
 }
 
