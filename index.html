@@ -5855,6 +5855,7 @@ const FIN_TABS=[
 function renderFinanzas(){
   const mc=document.getElementById('mainContent');
   mc.classList.add('full-width');
+  cargarRubros();
   const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
@@ -6532,7 +6533,7 @@ async function eliminarEgreso(id){
 let currentAdminTab='ingresos';
 function renderFinAdmin(){
   const c=finCont();
-  const ATABS=[{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'},{id:'rubros',l:'📊 Rubros'}];
+  const ATABS=[{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'},{id:'rubros',l:'📊 Rubros'},{id:'rubros_config',l:'⚙️ Config. rubros'}];
   c.innerHTML=`
   <div style="display:flex;gap:6px;margin-bottom:16px;border-bottom:2px solid var(--border);padding-bottom:0;">
     ${ATABS.map(t=>`<button onclick="swAdmin('${t.id}')" id="atab_${t.id}"
@@ -6545,7 +6546,7 @@ function renderFinAdmin(){
 
 function swAdmin(id){
   currentAdminTab=id;
-  [{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'},{id:'rubros',l:'📊 Rubros'}].forEach(t=>{
+  [{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'},{id:'rubros',l:'📊 Rubros'},{id:'rubros_config',l:'⚙️ Config. rubros'}].forEach(t=>{
     const b=document.getElementById('atab_'+t.id);
     if(!b)return;
     b.style.borderBottomColor=t.id===id?'var(--navy)':'transparent';
@@ -6556,10 +6557,11 @@ function swAdmin(id){
 }
 
 function dispatchAdminTab(id){
-  if(id==='ingresos')    renderAdminIngresos();
-  else if(id==='gb')     renderAdminGB();
-  else if(id==='rubros') renderAdminRubros();
-  else                   renderAdminEgresos();
+  if(id==='ingresos')         renderAdminIngresos();
+  else if(id==='gb')          renderAdminGB();
+  else if(id==='rubros')      renderAdminRubros();
+  else if(id==='rubros_config') renderAdminRubrosConfig();
+  else                        renderAdminEgresos();
 }
 
 async function renderAdminRubros(){
@@ -6683,6 +6685,62 @@ async function renderAdminRubros(){
       </div>
     </div>
   </div>`;
+}
+
+async function renderAdminRubrosConfig(){
+  const ac=adminCont();if(!ac)return;
+  ac.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  const {data}=await sb.from('rubros_config').select('*').eq('activo',true).order('tipo').order('orden');
+  const ingRubros=(data||[]).filter(r=>r.tipo==='ingreso');
+  const egRubros=(data||[]).filter(r=>r.tipo==='egreso');
+
+  function rubrosList(list,tipo){
+    return list.map(r=>`
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);">
+        <span style="flex:1;font-size:12px;font-weight:500;">${r.nombre}</span>
+        <button onclick="eliminarRubro('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button>
+      </div>`).join('')+`
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <input id="newRubro_${tipo}" type="text" placeholder="Nuevo rubro en mayúsculas..." style="${INP}flex:1;" onkeydown="if(event.key==='Enter')agregarRubro('${tipo}')">
+        <button onclick="agregarRubro('${tipo}')" style="padding:6px 14px;background:var(--teal);color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">+ Agregar</button>
+      </div>`;
+  }
+
+  ac.innerHTML=`
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">
+    <div class="card" style="padding:16px;">
+      <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid var(--teal);">
+        📥 Rubros de Ingresos
+        <span style="font-size:11px;font-weight:400;color:var(--text3);margin-left:8px;">${ingRubros.length} rubros</span>
+      </div>
+      ${rubrosList(ingRubros,'ingreso')}
+    </div>
+    <div class="card" style="padding:16px;">
+      <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid var(--red);">
+        📤 Rubros de Egresos
+        <span style="font-size:11px;font-weight:400;color:var(--text3);margin-left:8px;">${egRubros.length} rubros</span>
+      </div>
+      ${rubrosList(egRubros,'egreso')}
+    </div>
+  </div>`;
+}
+
+async function agregarRubro(tipo){
+  const inp=document.getElementById('newRubro_'+tipo);
+  const nombre=(inp?.value||'').trim().toUpperCase();
+  if(!nombre)return;
+  const orden=(tipo==='ingreso'?(window._rubrosIng||[]).length:(window._rubrosEg||[]).length)+1;
+  const {error}=await sb.from('rubros_config').insert({tipo,nombre,orden,activo:true});
+  if(error){alert('Error: '+error.message);return;}
+  await cargarRubros();
+  renderAdminRubrosConfig();
+}
+
+async function eliminarRubro(id){
+  if(!confirm('¿Eliminar este rubro?'))return;
+  await sb.from('rubros_config').update({activo:false}).eq('id',id);
+  await cargarRubros();
+  renderAdminRubrosConfig();
 }
 
 function adminCont(){return document.getElementById('adminContent');}
@@ -7037,6 +7095,16 @@ async function editarEgreso(id,campo,valor){
 
 
 const INP="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;";
+// Rubros cargados desde Supabase
+window._rubrosIng=['MEMBRESIA','24/7','CURSOS O TALLERES EN VIVO','DIPLOMADOS EN VIVO','RENTA ASPEL','POLIZA ASPEL','POLIZA TOTAL O ALIADO','CLOUD','POLIZA RESGUARDO','TIMBRES','CLIENTES GB'];
+window._rubrosEg=['IMSS','SAT','CLOUD','GASTOS OFICINA','RENTA OFICINA','DEVOLUCION','NOMINA','MARKETING','GASTOS OPERATIVOS'];
+async function cargarRubros(){
+  const {data}=await sb.from('rubros_config').select('tipo,nombre,orden').eq('activo',true).order('orden');
+  if(data&&data.length){
+    window._rubrosIng=data.filter(r=>r.tipo==='ingreso').map(r=>r.nombre);
+    window._rubrosEg=data.filter(r=>r.tipo==='egreso').map(r=>r.nombre);
+  }
+}
 function mkModal(id,titulo,contenido,onSave,saveLabel='Guardar',wide=false){
   document.getElementById(id)?.remove();
   const m=document.createElement('div');
@@ -7062,8 +7130,7 @@ function sel(id,opts,val=''){return `<select id="${id}" style="width:100%;paddin
 // ─── MODAL INGRESO NUEVO ─────────────────────────────────────────────────────
 function abrirNuevaFactIngreso(){
   const today=new Date().toISOString().slice(0,10);
-  const vendedores=['DULCE SOLANO','MANUEL PEÑA','MIREYA','EDUARDO','CARLOS','GUILLERMO BLANCAS'];
-  const rubros=['MEMBRESIA','POLIZA','TIMBRES','CLOUD','LINEA 24/7','ASESORIA','LICENCIA','DIAGNOSTICO','DIOT','DESDE CERO','ASPEL','CLIENTES GB'];
+  const rubros=window._rubrosIng||['MEMBRESIA','TIMBRES','CLOUD','CLIENTES GB'];
   const html=`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha',inp('fiFecha','date','',today))}
@@ -7154,7 +7221,7 @@ function editarIngreso(id){
     <div style="margin-bottom:10px;">${fld('Cliente',inp('eiiCliente','text','',r.cliente||''))}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Vendedor',sel('eiiVendedor',['','DULCE SOLANO','MANUEL PEÑA','MIREYA','EDUARDO','CARLOS','GUILLERMO BLANCAS'],r.vendedor||''))}
-      ${fld('Rubro',inp('eiiRubro','text','',r.rubro||''))}
+      ${fld('Rubro',(()=>{const opts=(window._rubrosIng||[]);const hasOther=r.rubro&&!opts.includes(r.rubro);return`<select id="eiiRubroSel" onchange="document.getElementById('eiiRubro').value=this.value==='__otro__'?'':this.value;document.getElementById('eiiRubroOtro').style.display=this.value==='__otro__'?'block':'none'" style="${INP}"><option value="">-- Seleccionar --</option>${opts.map(o=>`<option value="${o}" ${r.rubro===o?'selected':''}>${o}</option>`).join('')}<option value="__otro__" ${hasOther?'selected':''}>+ Otro...</option></select><input id="eiiRubroOtro" type="text" value="${hasOther?r.rubro:''}" placeholder="Nuevo rubro..." style="${INP}margin-top:4px;display:${hasOther?'block':'none'};"><input id="eiiRubro" type="hidden" value="${r.rubro||''}">`;})())}
     </div>
     <div style="margin-bottom:10px;">${fld('Concepto',inp('eiiConcepto','text','',r.concepto||''))}</div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;">
@@ -7184,7 +7251,7 @@ async function guardarEdicionIngreso(){
     folio:document.getElementById('eiiFolio')?.value.trim()||null,
     cliente:document.getElementById('eiiCliente')?.value.trim()||null,
     vendedor:document.getElementById('eiiVendedor')?.value||null,
-    rubro:document.getElementById('eiiRubro')?.value.trim()||null,
+    rubro:(document.getElementById('eiiRubroOtro')?.style.display!=='none'?document.getElementById('eiiRubroOtro')?.value.trim():document.getElementById('eiiRubro')?.value)||null,
     concepto:document.getElementById('eiiConcepto')?.value.trim()||null,
     subtotal_original:parseFloat(document.getElementById('eiiSubOrig')?.value)||0,
     descuento:parseFloat(document.getElementById('eiiDescuento')?.value)||0,
@@ -7208,7 +7275,7 @@ async function guardarEdicionIngreso(){
 // ─── MODAL EGRESO NUEVO ───────────────────────────────────────────────────────
 function abrirNuevaFactEgreso(){
   const today=new Date().toISOString().slice(0,10);
-  const rubros=['SOFTWARE','SUSCRIPCIONES','TELECOM','NOMINA','IMPUESTOS','GASTOS GENERALES','COMISIONES','TRANSPORTE','CLOUD','CONTABILIDAD','OTRO'];
+  const rubros=window._rubrosEg||['IMSS','SAT','CLOUD','GASTOS OPERATIVOS'];
   const provs=(window._feRows||[]).map(r=>r.proveedor).filter(Boolean);
   const uProvs=[...new Set(provs)].sort();
   const html=`
@@ -7326,7 +7393,7 @@ async function guardarFactEgreso(){
 function editarEgresoModal(id){
   const r=(window._feRows||[]).find(x=>x.id===id);
   if(!r)return;
-  const rubros=['SOFTWARE','SUSCRIPCIONES','TELECOM','NOMINA','IMPUESTOS','GASTOS GENERALES','COMISIONES','TRANSPORTE','CLOUD','CONTABILIDAD','OTRO'];
+  const rubros=window._rubrosEg||['IMSS','SAT','CLOUD','GASTOS OPERATIVOS'];
   const html=`
     <div style="background:rgba(0,169,157,0.06);border:1px dashed var(--teal);border-radius:8px;padding:10px 12px;margin-bottom:12px;display:flex;align-items:center;gap:10px;">
       <span style="font-size:12px;font-weight:600;color:var(--teal);">📎 Re-cargar desde XML SAT</span>
