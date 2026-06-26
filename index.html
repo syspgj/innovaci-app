@@ -6777,9 +6777,9 @@ function renderIngresosTabla(){
         const num=ce+"text-align:right;font-family:'JetBrains Mono',monospace;";
         return`<tr style="border-bottom:1px solid var(--border);${bg}${bord}">
           <td style="padding:4px 6px;min-width:90px;"><span contenteditable="true" onblur="editarFactIng('${r.id}','fecha',this.textContent.trim())" style="${ce}white-space:nowrap;">${r.fecha||''}</span></td>
-          <td style="padding:4px 6px;font-family:'JetBrains Mono',monospace;white-space:nowrap;">
+          <td style="padding:4px 6px;font-family:'JetBrains Mono',monospace;white-space:nowrap;cursor:pointer;" onclick="editarIngreso('${r.id}')">
             ${r.serie?`<span style="background:${r.serie==='GBE'?'rgba(232,64,64,0.1)':'rgba(0,169,157,0.1)'};color:${r.serie==='GBE'?'var(--red)':'var(--teal)'};padding:1px 5px;border-radius:4px;font-size:10px;font-weight:600;">${r.serie}</span> `:''}
-            <span contenteditable="true" onblur="editarFactIng('${r.id}','folio',this.textContent.trim())" style="${ce}font-family:'JetBrains Mono',monospace;display:inline;">${r.folio||''}</span>
+            <span style="text-decoration:underline;text-decoration-style:dotted;color:var(--navy);">${r.folio||'(sin folio)'}</span>
           </td>
           <td style="padding:4px 6px;max-width:150px;"><span contenteditable="true" onblur="editarFactIng('${r.id}','cliente',this.textContent.trim())" style="${ce}font-weight:500;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.cliente||''}</span></td>
           <td style="padding:4px 6px;"><span contenteditable="true" onblur="editarFactIng('${r.id}','vendedor',this.textContent.trim())" style="${ce}color:var(--text3);white-space:nowrap;">${r.vendedor||''}</span></td>
@@ -6982,7 +6982,7 @@ function renderEgresosTabla(){
         const num=ce+"text-align:right;font-family:'JetBrains Mono',monospace;";
         return`<tr style="border-bottom:1px solid var(--border);">
         <td style="padding:4px 6px;min-width:90px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','fecha_factura',this.textContent.trim())" style="${ce}white-space:nowrap;">${r.fecha_factura||''}</span></td>
-        <td style="padding:4px 6px;max-width:130px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','proveedor',this.textContent.trim())" style="${ce}font-weight:500;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.proveedor||''}</span></td>
+        <td style="padding:4px 6px;max-width:130px;cursor:pointer;" onclick="editarEgresoModal('${r.id}')"><span style="font-weight:500;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:underline;text-decoration-style:dotted;color:var(--navy);">${r.proveedor||'(sin proveedor)'}</span></td>
         <td style="padding:4px 6px;max-width:150px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','concepto',this.textContent.trim())" style="${ce}color:var(--text3);font-size:10px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.concepto||''}</span></td>
         <td style="padding:4px 6px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','rubro',this.textContent.trim())" style="display:inline-block;padding:1px 6px;border-radius:8px;background:rgba(0,0,0,0.06);font-size:10px;cursor:text;min-width:30px;outline:none;">${r.rubro||'—'}</span></td>
         <td style="padding:4px 6px;min-width:80px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','folio',this.textContent.trim())" style="${ce}font-family:'JetBrains Mono',monospace;font-size:10px;">${r.folio||''}</span></td>
@@ -7035,49 +7035,385 @@ async function editarEgreso(id,campo,valor){
   if(row) row[campo]=valor;
 }
 
-function abrirNuevaFactEgreso(){
-  const today=new Date().toISOString().slice(0,10);
-  const form=document.createElement('div');
-  form.id='formFactEg';
-  form.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
-  form.innerHTML=`<div style="background:var(--bg,#fff);border-radius:12px;padding:24px;width:480px;max-width:95vw;">
-    <div style="font-size:15px;font-weight:600;margin-bottom:16px;">Registrar egreso con factura</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Folio</div>
-        <input type="text" id="feFolio" placeholder="Ej. A-00456" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
-      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Proveedor</div>
-        <input type="text" id="feProv" placeholder="Nombre..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
+
+function mkModal(id,titulo,contenido,onSave,saveLabel='Guardar',wide=false){
+  document.getElementById(id)?.remove();
+  const m=document.createElement('div');
+  m.id=id;
+  m.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow-y:auto;';
+  m.innerHTML=`<div style="background:#fff;border-radius:12px;padding:24px;width:${wide?'700px':'520px'};max-width:98vw;margin:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div style="font-size:15px;font-weight:700;color:var(--navy);">${titulo}</div>
+      <button onclick="document.getElementById('${id}').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);">✕</button>
     </div>
-    <div style="margin-bottom:10px;"><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Concepto</div>
-      <input type="text" id="feConcepto" placeholder="Descripción..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
-      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Monto</div>
-        <input type="number" id="feMonto" min="0" step="0.01" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
-      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Fecha</div>
-        <input type="date" id="feFecha" value="${today}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
-    </div>
-    <div style="display:flex;gap:8px;justify-content:flex-end;">
-      <button onclick="document.getElementById('formFactEg').remove()" style="padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;">Cancelar</button>
-      <button onclick="guardarFactEgreso()" style="padding:8px 16px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;">Guardar</button>
+    ${contenido}
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
+      <button onclick="document.getElementById('${id}').remove()" style="padding:8px 18px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-size:12px;font-family:'Inter',sans-serif;">Cancelar</button>
+      <button onclick="${onSave}()" style="padding:8px 18px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">${saveLabel}</button>
     </div>
   </div>`;
-  document.body.appendChild(form);
+  document.body.appendChild(m);
+}
+function fld(label,input){return `<div><div style="font-size:11px;color:var(--text3);margin-bottom:3px;font-weight:500;">${label}</div>${input}</div>`;}
+function inp(id,type='text',ph='',val='',extra=''){return `<input id="${id}" type="${type}" placeholder="${ph}" value="${val}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;" ${extra}>`;}
+function sel(id,opts,val=''){return `<select id="${id}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${opts.map(o=>`<option value="${o}" ${o===val?'selected':''}>${o}</option>`).join('')}</select>`;}
+
+// ─── MODAL INGRESO NUEVO ─────────────────────────────────────────────────────
+function abrirNuevaFactIngreso(){
+  const today=new Date().toISOString().slice(0,10);
+  const vendedores=['DULCE SOLANO','MANUEL PEÑA','MIREYA','EDUARDO','CARLOS','GUILLERMO BLANCAS'];
+  const rubros=['MEMBRESIA','POLIZA','TIMBRES','CLOUD','LINEA 24/7','ASESORIA','LICENCIA','DIAGNOSTICO','DIOT','DESDE CERO','ASPEL','CLIENTES GB'];
+  const html=`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Fecha',inp('fiFecha','date','',today))}
+      ${fld('Folio',inp('fiFolio','text','Ej. INN215'))}
+    </div>
+    <div style="margin-bottom:10px;">${fld('Cliente',inp('fiCliente','text','Nombre del cliente'))}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Vendedor',sel('fiVendedor',['','DULCE SOLANO','MANUEL PEÑA','MIREYA','EDUARDO','CARLOS','GUILLERMO BLANCAS']))}
+      ${fld('Rubro',`<select id="fiRubroSel" onchange="if(this.value==='OTRO'){document.getElementById('fiRubroOtro').style.display='block'}else{document.getElementById('fiRubroOtro').style.display='none';document.getElementById('fiRubro').value=this.value}" style="${INP}">${rubros.map(r=>`<option>${r}</option>`).join('')}<option value="OTRO">+ Otro...</option></select><input id="fiRubroOtro" type="text" placeholder="Nuevo rubro..." style="${INP}margin-top:4px;display:none;"><input id="fiRubro" type="hidden" value="${rubros[0]}">`)}}
+    </div>
+    <div style="margin-bottom:10px;">${fld('Concepto',inp('fiConcepto','text','Descripción del servicio'))}</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;">
+      ${fld('Subtotal',inp('fiSubtotal','number','0','','min=0 step=0.01 oninput="calcIngTotales()"'))}
+      ${fld('Descuento',inp('fiDescuento','number','0','','min=0 step=0.01 oninput="calcIngTotales()"'))}
+      ${fld('IVA 16%',`<input id="fiIva" type="number" value="0" readonly style="${INP}background:rgba(0,0,0,0.04);">`)}
+      ${fld('Total',`<input id="fiTotal" type="number" value="0" readonly style="${INP}background:rgba(0,0,0,0.04);font-weight:700;">`)}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px;">
+      ${fld('Forma de pago',sel('fiFormaPago',['TRANSFERENCIA','TARJETA DE CREDITO','TARJETA DE DEBITO','PAYPAL','EFECTIVO','CHEQUE']))}
+      ${fld('Estatus',sel('fiEstatus',['EMITIDA','PAGADA','CANCELADA']))}
+      ${fld('Fecha de pago',inp('fiFechaPago','date'))}
+    </div>`;
+  mkModal('modalIngNuevo','Nueva factura de ingreso',html,'guardarFactIngreso');
+}
+
+function calcIngTotales(){
+  const sub=parseFloat(document.getElementById('fiSubtotal')?.value)||0;
+  const desc=parseFloat(document.getElementById('fiDescuento')?.value)||0;
+  const sf=Math.max(0,sub-desc);
+  const iva=Math.round(sf*16)/100;
+  const total=sf+iva;
+  if(document.getElementById('fiIva')) document.getElementById('fiIva').value=iva.toFixed(2);
+  if(document.getElementById('fiTotal')) document.getElementById('fiTotal').value=total.toFixed(2);
+  if(document.getElementById('fiRubroOtro')?.style.display!=='none'){
+    document.getElementById('fiRubro').value=document.getElementById('fiRubroOtro').value;
+  }
+}
+
+async function guardarFactIngreso(){
+  const fecha=document.getElementById('fiFecha')?.value||null;
+  const folio=document.getElementById('fiFolio')?.value.trim()||null;
+  const cliente=document.getElementById('fiCliente')?.value.trim()||null;
+  const vendedor=document.getElementById('fiVendedor')?.value||null;
+  const rubro=document.getElementById('fiRubroOtro')?.style.display!=='none'
+    ?document.getElementById('fiRubroOtro')?.value.trim()
+    :document.getElementById('fiRubroSel')?.value;
+  const concepto=document.getElementById('fiConcepto')?.value.trim()||null;
+  const subtotal_original=parseFloat(document.getElementById('fiSubtotal')?.value)||0;
+  const descuento=parseFloat(document.getElementById('fiDescuento')?.value)||0;
+  const subtotal_final=Math.max(0,subtotal_original-descuento);
+  const iva=Math.round(subtotal_final*16)/100;
+  const total=subtotal_final+iva;
+  const forma_pago=document.getElementById('fiFormaPago')?.value||null;
+  const estatus=document.getElementById('fiEstatus')?.value||'EMITIDA';
+  const fecha_pago=document.getElementById('fiFechaPago')?.value||null;
+  const cobrado=estatus==='PAGADA';
+  if(!cliente){alert('El cliente es obligatorio.');return;}
+  const serie=vendedor==='GUILLERMO BLANCAS'?'GBE':null;
+  const {data:newRow,error}=await sb.from('fact_ingresos').insert({
+    anio:currentYear,mes:currentMonth,fecha,folio,serie,cliente,vendedor,concepto,rubro,
+    subtotal_original,descuento,subtotal_final,iva,total,forma_pago,estatus,fecha_pago,cobrado,conciliado:false
+  }).select().single();
+  if(error){alert('Error: '+error.message);return;}
+  // Retención GB automática
+  if(serie==='GBE'&&subtotal_final>0){
+    const ret=parseFloat((subtotal_final*0.025).toFixed(2));
+    await sb.from('gb_retenciones').insert({
+      fact_ingreso_id:newRow.id,anio:currentYear,mes:currentMonth,
+      monto_factura:subtotal_final,retencion_pct:2.50,monto_retencion:ret,
+      monto_transferir:parseFloat((subtotal_final-ret).toFixed(2)),transferido:false
+    });
+  }
+  document.getElementById('modalIngNuevo')?.remove();
+  renderAdminIngresos();
+}
+
+// ─── MODAL EDICIÓN INGRESO ────────────────────────────────────────────────────
+function editarIngreso(id){
+  const r=(window._fiRows||[]).find(x=>x.id===id);
+  if(!r)return;
+  const rubros=['MEMBRESIA','POLIZA','TIMBRES','CLOUD','LINEA 24/7','ASESORIA','LICENCIA','DIAGNOSTICO','DIOT','DESDE CERO','ASPEL','CLIENTES GB'];
+  const tieneRubro=rubros.includes(r.rubro);
+  const html=`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Fecha',inp('eiiFecha','date','',r.fecha||''))}
+      ${fld('Folio',inp('eiiFolio','text','',r.folio||''))}
+    </div>
+    <div style="margin-bottom:10px;">${fld('Cliente',inp('eiiCliente','text','',r.cliente||''))}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Vendedor',sel('eiiVendedor',['','DULCE SOLANO','MANUEL PEÑA','MIREYA','EDUARDO','CARLOS','GUILLERMO BLANCAS'],r.vendedor||''))}
+      ${fld('Rubro',inp('eiiRubro','text','',r.rubro||''))}
+    </div>
+    <div style="margin-bottom:10px;">${fld('Concepto',inp('eiiConcepto','text','',r.concepto||''))}</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;">
+      ${fld('Subtotal orig.',inp('eiiSubOrig','number','',r.subtotal_original||0,'min=0 step=0.01'))}
+      ${fld('Descuento',inp('eiiDescuento','number','',r.descuento||0,'min=0 step=0.01'))}
+      ${fld('S.Final',inp('eiiSubFin','number','',r.subtotal_final||0,'min=0 step=0.01'))}
+      ${fld('IVA',inp('eiiIva','number','',r.iva||0,'min=0 step=0.01'))}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px;">
+      ${fld('Total',inp('eiiTotal','number','',r.total||0,'min=0 step=0.01'))}
+      ${fld('Forma de pago',sel('eiiFormaPago',['TRANSFERENCIA','TARJETA DE CREDITO','TARJETA DE DEBITO','PAYPAL','EFECTIVO','CHEQUE'],r.forma_pago||'TRANSFERENCIA'))}
+      ${fld('Estatus',sel('eiiEstatus',['EMITIDA','PAGADA','CANCELADA'],r.estatus||'EMITIDA'))}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      ${fld('Fecha de pago',inp('eiiFechaPago','date','',r.fecha_pago||''))}
+      ${fld('Complemento de pago',inp('eiiComplemento','text','UUID...',r.complemento_pago||''))}
+    </div>
+    <input type="hidden" id="eiiId" value="${id}">`;
+  mkModal('modalIngEdit','Editar factura — '+( r.folio||r.cliente||''),html,'guardarEdicionIngreso',undefined,true);
+}
+
+async function guardarEdicionIngreso(){
+  const id=document.getElementById('eiiId')?.value;
+  if(!id)return;
+  const payload={
+    fecha:document.getElementById('eiiFecha')?.value||null,
+    folio:document.getElementById('eiiFolio')?.value.trim()||null,
+    cliente:document.getElementById('eiiCliente')?.value.trim()||null,
+    vendedor:document.getElementById('eiiVendedor')?.value||null,
+    rubro:document.getElementById('eiiRubro')?.value.trim()||null,
+    concepto:document.getElementById('eiiConcepto')?.value.trim()||null,
+    subtotal_original:parseFloat(document.getElementById('eiiSubOrig')?.value)||0,
+    descuento:parseFloat(document.getElementById('eiiDescuento')?.value)||0,
+    subtotal_final:parseFloat(document.getElementById('eiiSubFin')?.value)||0,
+    iva:parseFloat(document.getElementById('eiiIva')?.value)||0,
+    total:parseFloat(document.getElementById('eiiTotal')?.value)||0,
+    forma_pago:document.getElementById('eiiFormaPago')?.value||null,
+    estatus:document.getElementById('eiiEstatus')?.value||'EMITIDA',
+    fecha_pago:document.getElementById('eiiFechaPago')?.value||null,
+    complemento_pago:document.getElementById('eiiComplemento')?.value.trim()||null,
+  };
+  payload.cobrado=payload.estatus==='PAGADA';
+  const {error}=await sb.from('fact_ingresos').update(payload).eq('id',id);
+  if(error){alert('Error: '+error.message);return;}
+  const row=(window._fiRows||[]).find(r=>r.id===id);
+  if(row) Object.assign(row,payload);
+  document.getElementById('modalIngEdit')?.remove();
+  renderIngresosTabla();
+}
+
+// ─── MODAL EGRESO NUEVO ───────────────────────────────────────────────────────
+function abrirNuevaFactEgreso(){
+  const today=new Date().toISOString().slice(0,10);
+  const rubros=['SOFTWARE','SUSCRIPCIONES','TELECOM','NOMINA','IMPUESTOS','GASTOS GENERALES','COMISIONES','TRANSPORTE','CLOUD','CONTABILIDAD','OTRO'];
+  const provs=(window._feRows||[]).map(r=>r.proveedor).filter(Boolean);
+  const uProvs=[...new Set(provs)].sort();
+  const html=`
+    <div style="background:rgba(0,169,157,0.06);border:1px dashed var(--teal);border-radius:8px;padding:10px 12px;margin-bottom:12px;display:flex;align-items:center;gap:10px;">
+      <span style="font-size:12px;font-weight:600;color:var(--teal);">📎 Cargar desde XML SAT</span>
+      <input type="file" id="feXmlFile" accept=".xml" onchange="parsearXmlEgreso()" style="font-size:11px;flex:1;">
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Fecha factura',inp('feFecha','date','',today))}
+      ${fld('Folio',inp('feFolio','text','Ej. A-00456'))}
+    </div>
+    <div style="margin-bottom:10px;">${fld('Proveedor',`
+      <select id="feProvSel" onchange="if(this.value==='__nuevo__'){document.getElementById('feProvNuevo').style.display='block'}else{document.getElementById('feProvNuevo').style.display='none';document.getElementById('feProv').value=this.value}" style="${INP}">
+        <option value="">-- Seleccionar --</option>
+        ${uProvs.map(p=>`<option value="${p}">${p}</option>`).join('')}
+        <option value="__nuevo__">+ Nuevo proveedor...</option>
+      </select>
+      <input id="feProvNuevo" type="text" placeholder="Nombre del nuevo proveedor..." style="${INP}margin-top:4px;display:none;">
+      <input id="feProv" type="hidden" value="">`)}</div>
+    <div style="margin-bottom:10px;">${fld('Concepto',inp('feConcepto','text','Descripción...'))}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Rubro',sel('feRubro',rubros))}
+      ${fld('Estatus',sel('feStatus',['PAGADO','PENDIENTE','CANCELADO']))}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:10px;">
+      ${fld('Subtotal',inp('feSubtotal','number','0','','min=0 step=0.01 oninput="calcEgTotales()"'))}
+      ${fld('IVA Ret.',inp('feIvaRet','number','0','','min=0 step=0.01 oninput="calcEgTotales()"'))}
+      ${fld('IVA Tras.',inp('feIvaTras','number','0','','min=0 step=0.01 oninput="calcEgTotales()"'))}
+      ${fld('ISR',inp('feIsr','number','0','','min=0 step=0.01 oninput="calcEgTotales()"'))}
+      ${fld('Total',`<input id="feTotal" type="number" value="0" style="${INP}font-weight:700;">`)}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      ${fld('Fecha de pago',inp('feFechaPago','date'))}
+    </div>`;
+  mkModal('modalEgNuevo','Nuevo egreso con factura',html,'guardarFactEgreso',undefined,true);
+}
+
+function calcEgTotales(){
+  const sub=parseFloat(document.getElementById('feSubtotal')?.value)||0;
+  const ivaRet=parseFloat(document.getElementById('feIvaRet')?.value)||0;
+  const ivaTras=parseFloat(document.getElementById('feIvaTras')?.value)||0;
+  const isr=parseFloat(document.getElementById('feIsr')?.value)||0;
+  const total=sub-ivaRet+ivaTras-isr;
+  if(document.getElementById('feTotal')) document.getElementById('feTotal').value=Math.max(0,total).toFixed(2);
+}
+
+async function parsearXmlEgreso(){
+  const file=document.getElementById('feXmlFile')?.files?.[0];
+  if(!file)return;
+  const txt=await file.text();
+  const parser=new DOMParser();
+  const xml=parser.parseFromString(txt,'text/xml');
+  const cfdi=xml.querySelector('Comprobante')||xml.documentElement;
+  const emisor=xml.querySelector('Emisor');
+  const receptor=xml.querySelector('Receptor');
+  // Fecha
+  const fecha=(cfdi.getAttribute('Fecha')||'').slice(0,10);
+  if(fecha&&document.getElementById('feFecha')) document.getElementById('feFecha').value=fecha;
+  // Folio
+  const folio=(cfdi.getAttribute('Serie')||'')+(cfdi.getAttribute('Folio')||'');
+  if(folio&&document.getElementById('feFolio')) document.getElementById('feFolio').value=folio;
+  // Proveedor (emisor)
+  const nomEmisor=emisor?.getAttribute('Nombre')||emisor?.getAttribute('nombre')||'';
+  if(nomEmisor){
+    document.getElementById('feProvNuevo').style.display='block';
+    document.getElementById('feProvNuevo').value=nomEmisor;
+    document.getElementById('feProv').value=nomEmisor;
+  }
+  // Montos
+  const subtotal=parseFloat(cfdi.getAttribute('SubTotal')||cfdi.getAttribute('subtotal')||0);
+  const total=parseFloat(cfdi.getAttribute('Total')||cfdi.getAttribute('total')||0);
+  if(document.getElementById('feSubtotal')) document.getElementById('feSubtotal').value=subtotal.toFixed(2);
+  // Impuestos
+  const ivaT=xml.querySelector('Traslado[Impuesto="002"],traslado[impuesto="002"]');
+  const ivaR=xml.querySelector('Retencion[Impuesto="002"],retencion[impuesto="002"]');
+  const isrR=xml.querySelector('Retencion[Impuesto="001"],retencion[impuesto="001"]');
+  const ivaTras=parseFloat(ivaT?.getAttribute('Importe')||ivaT?.getAttribute('importe')||0);
+  const ivaRet=parseFloat(ivaR?.getAttribute('Importe')||ivaR?.getAttribute('importe')||0);
+  const isr=parseFloat(isrR?.getAttribute('Importe')||isrR?.getAttribute('importe')||0);
+  if(document.getElementById('feIvaTras')) document.getElementById('feIvaTras').value=ivaTras.toFixed(2);
+  if(document.getElementById('feIvaRet')) document.getElementById('feIvaRet').value=ivaRet.toFixed(2);
+  if(document.getElementById('feIsr')) document.getElementById('feIsr').value=isr.toFixed(2);
+  if(document.getElementById('feTotal')) document.getElementById('feTotal').value=total.toFixed(2);
+  // Concepto
+  const concepto=xml.querySelector('Concepto,concepto')?.getAttribute('Descripcion')||xml.querySelector('Concepto,concepto')?.getAttribute('descripcion')||'';
+  if(concepto&&document.getElementById('feConcepto')) document.getElementById('feConcepto').value=concepto;
 }
 
 async function guardarFactEgreso(){
-  const folio=document.getElementById('feFolio')?.value.trim()||null;
-  const prov=document.getElementById('feProv')?.value.trim();
-  const concepto=document.getElementById('feConcepto')?.value.trim()||null;
-  const monto=parseFloat(document.getElementById('feMonto')?.value)||0;
+  const provSel=document.getElementById('feProvSel')?.value;
+  const provNuevo=document.getElementById('feProvNuevo')?.value.trim();
+  const prov=provSel==='__nuevo__'?provNuevo:(provNuevo&&document.getElementById('feProvNuevo')?.style.display!=='none'?provNuevo:provSel)||document.getElementById('feProv')?.value||provNuevo;
   const fecha=document.getElementById('feFecha')?.value||null;
-  if(!prov||!monto){alert('Proveedor y monto son obligatorios.');return;}
+  const folio=document.getElementById('feFolio')?.value.trim()||null;
+  const concepto=document.getElementById('feConcepto')?.value.trim()||null;
+  const rubro=document.getElementById('feRubro')?.value||null;
+  const status=document.getElementById('feStatus')?.value||'PAGADO';
+  const subtotal=parseFloat(document.getElementById('feSubtotal')?.value)||0;
+  const iva_retenido=parseFloat(document.getElementById('feIvaRet')?.value)||0;
+  const iva_trasladado=parseFloat(document.getElementById('feIvaTras')?.value)||0;
+  const isr=parseFloat(document.getElementById('feIsr')?.value)||0;
+  const total=parseFloat(document.getElementById('feTotal')?.value)||subtotal;
+  const fecha_pago=document.getElementById('feFechaPago')?.value||null;
+  if(!prov){alert('El proveedor es obligatorio.');return;}
   const {error}=await sb.from('fact_egresos').insert({
-    anio:currentYear,mes:currentMonth,folio,proveedor:prov,concepto,monto,fecha,conciliado:false
+    anio:currentYear,mes:currentMonth,fecha_factura:fecha,folio,proveedor:prov,
+    concepto,rubro,subtotal,iva_retenido,iva_trasladado,isr,total,status,fecha_pago,conciliado:false
   });
   if(error){alert('Error: '+error.message);return;}
-  document.getElementById('formFactEg')?.remove();
+  document.getElementById('modalEgNuevo')?.remove();
   renderAdminEgresos();
 }
+
+// ─── MODAL EDICIÓN EGRESO ─────────────────────────────────────────────────────
+function editarEgresoModal(id){
+  const r=(window._feRows||[]).find(x=>x.id===id);
+  if(!r)return;
+  const rubros=['SOFTWARE','SUSCRIPCIONES','TELECOM','NOMINA','IMPUESTOS','GASTOS GENERALES','COMISIONES','TRANSPORTE','CLOUD','CONTABILIDAD','OTRO'];
+  const html=`
+    <div style="background:rgba(0,169,157,0.06);border:1px dashed var(--teal);border-radius:8px;padding:10px 12px;margin-bottom:12px;display:flex;align-items:center;gap:10px;">
+      <span style="font-size:12px;font-weight:600;color:var(--teal);">📎 Re-cargar desde XML SAT</span>
+      <input type="file" id="eeXmlFile" accept=".xml" onchange="parsearXmlEgresoEdit()" style="font-size:11px;flex:1;">
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Fecha factura',inp('eeFecha','date','',r.fecha_factura||''))}
+      ${fld('Folio',inp('eeFolio','text','',r.folio||''))}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Proveedor',inp('eeProveedor','text','',r.proveedor||''))}
+      ${fld('Concepto',inp('eeConcepto','text','',r.concepto||''))}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Rubro',`<select id="eeRubro" style="${INP}">${rubros.map(rb=>`<option value="${rb}" ${r.rubro===rb?'selected':''}>${rb}</option>`).join('')}<option value="${r.rubro||''}" ${!rubros.includes(r.rubro||'')?'selected':''}>${r.rubro||'OTRO'}</option></select>`)}
+      ${fld('Estatus',sel('eeStatus',['PAGADO','PENDIENTE','CANCELADO'],r.status||'PAGADO'))}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:10px;">
+      ${fld('Subtotal',inp('eeSubtotal','number','',r.subtotal||0,'min=0 step=0.01'))}
+      ${fld('IVA Ret.',inp('eeIvaRet','number','',r.iva_retenido||0,'min=0 step=0.01'))}
+      ${fld('IVA Tras.',inp('eeIvaTras','number','',r.iva_trasladado||0,'min=0 step=0.01'))}
+      ${fld('ISR',inp('eeIsr','number','',r.isr||0,'min=0 step=0.01'))}
+      ${fld('Total',inp('eeTotal','number','',r.total||0,'min=0 step=0.01'))}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      ${fld('Fecha de pago',inp('eeFechaPago','date','',r.fecha_pago||''))}
+    </div>
+    <input type="hidden" id="eeId" value="${id}">`;
+  mkModal('modalEgEdit','Editar egreso — '+(r.proveedor||''),html,'guardarEdicionEgreso',undefined,true);
+}
+
+function parsearXmlEgresoEdit(){
+  // Reuse same parser but target edit fields
+  const file=document.getElementById('eeXmlFile')?.files?.[0];
+  if(!file)return;
+  const r=new FileReader();
+  r.onload=e=>{
+    const xml=(new DOMParser()).parseFromString(e.target.result,'text/xml');
+    const cfdi=xml.querySelector('Comprobante')||xml.documentElement;
+    const emisor=xml.querySelector('Emisor');
+    const fecha=(cfdi.getAttribute('Fecha')||'').slice(0,10);
+    if(fecha) document.getElementById('eeFecha').value=fecha;
+    const folio=(cfdi.getAttribute('Serie')||'')+(cfdi.getAttribute('Folio')||'');
+    if(folio) document.getElementById('eeFolio').value=folio;
+    const nom=emisor?.getAttribute('Nombre')||'';
+    if(nom) document.getElementById('eeProveedor').value=nom;
+    const sub=parseFloat(cfdi.getAttribute('SubTotal')||0);
+    const tot=parseFloat(cfdi.getAttribute('Total')||0);
+    if(sub) document.getElementById('eeSubtotal').value=sub.toFixed(2);
+    if(tot) document.getElementById('eeTotal').value=tot.toFixed(2);
+    const ivaT=xml.querySelector('Traslado[Impuesto="002"]');
+    const ivaR=xml.querySelector('Retencion[Impuesto="002"]');
+    const isrR=xml.querySelector('Retencion[Impuesto="001"]');
+    if(ivaT) document.getElementById('eeIvaTras').value=parseFloat(ivaT.getAttribute('Importe')||0).toFixed(2);
+    if(ivaR) document.getElementById('eeIvaRet').value=parseFloat(ivaR.getAttribute('Importe')||0).toFixed(2);
+    if(isrR) document.getElementById('eeIsr').value=parseFloat(isrR.getAttribute('Importe')||0).toFixed(2);
+    const conc=xml.querySelector('Concepto')?.getAttribute('Descripcion')||'';
+    if(conc) document.getElementById('eeConcepto').value=conc;
+  };
+  r.readAsText(file);
+}
+
+async function guardarEdicionEgreso(){
+  const id=document.getElementById('eeId')?.value;
+  if(!id)return;
+  const payload={
+    fecha_factura:document.getElementById('eeFecha')?.value||null,
+    folio:document.getElementById('eeFolio')?.value.trim()||null,
+    proveedor:document.getElementById('eeProveedor')?.value.trim()||null,
+    concepto:document.getElementById('eeConcepto')?.value.trim()||null,
+    rubro:document.getElementById('eeRubro')?.value||null,
+    status:document.getElementById('eeStatus')?.value||'PAGADO',
+    subtotal:parseFloat(document.getElementById('eeSubtotal')?.value)||0,
+    iva_retenido:parseFloat(document.getElementById('eeIvaRet')?.value)||0,
+    iva_trasladado:parseFloat(document.getElementById('eeIvaTras')?.value)||0,
+    isr:parseFloat(document.getElementById('eeIsr')?.value)||0,
+    total:parseFloat(document.getElementById('eeTotal')?.value)||0,
+    fecha_pago:document.getElementById('eeFechaPago')?.value||null,
+  };
+  const {error}=await sb.from('fact_egresos').update(payload).eq('id',id);
+  if(error){alert('Error: '+error.message);return;}
+  const row=(window._feRows||[]).find(r=>r.id===id);
+  if(row) Object.assign(row,payload);
+  document.getElementById('modalEgEdit')?.remove();
+  renderEgresosTabla();
+}
+
+
 
 async function toggleConciliado(id,val){
   await sb.from('fact_egresos').update({conciliado:val,fecha_conciliacion:val?new Date().toISOString().slice(0,10):null}).eq('id',id);
