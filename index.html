@@ -5809,7 +5809,7 @@ async function guardarSaldoInicial(existingId){
   const btn=document.querySelector('[onclick*="guardarSaldoInicial"]');
   let error;
   if(existingId){
-    ({error}=await sb.from('egresos').update({monto,updated_at:new Date().toISOString()}).eq('id',existingId));
+    ({error}=await sb.from('egresos').update({monto}).eq('id',existingId));
   } else {
     ({error}=await sb.from('egresos').insert({
       anio:currentYear,mes:0,categoria:'fijo',subcategoria:'saldo_inicial',
@@ -6566,135 +6566,126 @@ async function renderAdminIngresos(){
   ac.innerHTML='<div class="loading"><div class="spinner"></div></div>';
   const {data:rows}=await sb.from('fact_ingresos').select('*')
     .eq('anio',currentYear).eq('mes',currentMonth).order('fecha',{ascending:true});
-  const fi=rows||[];
+  window._fiRows=rows||[];
+  window._fiSort={col:'fecha',asc:true};
+  window._fiFilter={rubro:'',vendedor:'',estatus:'',texto:''};
+  renderIngresosTabla();
+}
+
+function renderIngresosTabla(){
+  const ac=adminCont();if(!ac)return;
+  const fi=window._fiRows||[];
+  const {col,asc}=window._fiSort||{col:'fecha',asc:true};
+  const {rubro,vendedor,estatus,texto}=window._fiFilter||{};
+
+  let rows=fi.filter(r=>{
+    const t=(texto||'').toLowerCase();
+    const tMatch=!t||(r.cliente||'').toLowerCase().includes(t)||(r.concepto||'').toLowerCase().includes(t)||(r.folio||'').toLowerCase().includes(t);
+    return(!rubro||r.rubro===rubro)&&(!vendedor||r.vendedor===vendedor)&&(!estatus||r.estatus===estatus)&&tMatch;
+  });
+  rows=[...rows].sort((a,b)=>{
+    let va=a[col]??'',vb=b[col]??'';
+    if(['total','subtotal_final','descuento','subtotal_original','iva'].includes(col)){va=parseFloat(va)||0;vb=parseFloat(vb)||0;}
+    return asc?(va>vb?1:va<vb?-1:0):(va<vb?1:va>vb?-1:0);
+  });
+
   const totalFact=fi.reduce((s,r)=>s+(r.total||0),0);
   const totalCob=fi.filter(r=>r.cobrado).reduce((s,r)=>s+(r.total||0),0);
   const pendCob=fi.filter(r=>!r.cobrado).reduce((s,r)=>s+(r.total||0),0);
+  const rubros=[...new Set(fi.map(r=>r.rubro).filter(Boolean))].sort();
+  const vendedores=[...new Set(fi.map(r=>r.vendedor).filter(Boolean))].sort();
+
+  function thS(label,c,align='left'){
+    const act=col===c;
+    const arr=act?(asc?'▲':'▼'):'⇅';
+    return `<th style="padding:7px 8px;text-align:${align};cursor:pointer;white-space:nowrap;user-select:none;" onclick="window._fiSort={col:'${c}',asc:${act}?!${asc}:true};renderIngresosTabla();">${label} <span style="opacity:${act?1:0.3};font-size:9px;">${arr}</span></th>`;
+  }
+
+  const selStyle='padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:11px;font-family:\'Inter\',sans-serif;';
+
   ac.innerHTML=`
-  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
     <div class="thc"><div class="th-lbl">Total facturado</div><div class="th-val">${fmt(totalFact)}</div></div>
     <div class="thc"><div class="th-lbl">Cobrado</div><div class="th-val" style="color:#27AE60;">${fmt(totalCob)}</div></div>
     <div class="thc"><div class="th-lbl">Por cobrar</div><div class="th-val" style="color:${pendCob>0?'#E84040':'var(--text3)'};">${fmt(pendCob)}</div></div>
   </div>
-  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-    <button onclick="abrirNuevaFactIngreso()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Registrar factura</button>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+    <select onchange="window._fiFilter.rubro=this.value;renderIngresosTabla()" style="${selStyle}">
+      <option value="">Todos los rubros</option>
+      ${rubros.map(r=>`<option value="${r}" ${rubro===r?'selected':''}>${r}</option>`).join('')}
+    </select>
+    <select onchange="window._fiFilter.vendedor=this.value;renderIngresosTabla()" style="${selStyle}">
+      <option value="">Todos los vendedores</option>
+      ${vendedores.map(v=>`<option value="${v}" ${vendedor===v?'selected':''}>${v}</option>`).join('')}
+    </select>
+    <select onchange="window._fiFilter.estatus=this.value;renderIngresosTabla()" style="${selStyle}">
+      <option value="">Todos los estatus</option>
+      ${['PAGADA','EMITIDA'].map(e=>`<option value="${e}" ${estatus===e?'selected':''}>${e}</option>`).join('')}
+    </select>
+    <div style="position:relative;flex:1;min-width:160px;">
+      <input type="text" value="${texto}" placeholder="Buscar cliente, concepto, folio..." oninput="window._fiFilter.texto=this.value;renderIngresosTabla()"
+        style="width:100%;padding:5px 28px 5px 8px;border:1px solid var(--border);border-radius:5px;font-size:11px;box-sizing:border-box;">
+      <button onclick="window._fiFilter.texto='';renderIngresosTabla()" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:14px;">✕</button>
+    </div>
+    <button onclick="abrirNuevaFactIngreso()" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">+ Registrar</button>
   </div>
-  <div class="card" style="padding:0;overflow-x:auto;">
-    <table class="daily" style="font-size:12px;width:100%;">
-      <thead><tr style="background:var(--navy);color:#fff;">
-        <th>Fecha</th><th>Folio/Serie</th><th>Cliente</th><th>Vendedor</th><th>Rubro</th>
-        <th>Subtotal</th><th>Desc.</th><th>S.Final</th><th>IVA</th><th>Total</th>
-        <th>Forma pago</th><th>Estatus</th><th>Cobrado</th><th>Conciliado</th><th>Acc.</th>
-      </tr></thead>
-      <tbody>
-        ${fi.length===0?`<tr><td colspan="15" style="text-align:center;color:var(--text3);padding:24px;">Sin facturas registradas este mes</td></tr>`:''}
-        ${fi.map(r=>`<tr>
-          <td style="font-size:11px;color:var(--text3);white-space:nowrap;">${r.fecha||'—'}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;white-space:nowrap;">
-            ${r.serie?`<span style="background:${r.serie==='GVE'?'rgba(232,64,64,0.1)':'rgba(0,169,157,0.1)'};color:${r.serie==='GVE'?'var(--red)':'var(--teal)'};padding:1px 5px;border-radius:4px;font-size:10px;font-weight:600;">${r.serie}</span> `:''}${r.folio||'—'}
+  <div style="width:100%;overflow-x:auto;">
+  <table style="font-size:11px;border-collapse:collapse;min-width:1200px;width:100%;">
+    <thead><tr style="background:var(--navy);color:#fff;">
+      ${thS('Fecha','fecha')}${thS('Folio','folio')}${thS('Cliente','cliente')}${thS('Vendedor','vendedor')}
+      ${thS('Concepto','concepto')}${thS('Rubro','rubro')}
+      ${thS('Subtotal','subtotal_original','right')}${thS('Desc.','descuento','right')}
+      ${thS('S.Final','subtotal_final','right')}${thS('IVA','iva','right')}${thS('Total','total','right')}
+      ${thS('Forma pago','forma_pago')}${thS('Estatus','estatus')}
+      <th style="padding:7px 8px;">Cobrado</th><th style="padding:7px 8px;">Concil.</th><th style="padding:7px 8px;">Acc.</th>
+    </tr></thead>
+    <tbody>
+      ${rows.length===0?`<tr><td colspan="16" style="text-align:center;color:var(--text3);padding:24px;">Sin resultados</td></tr>`:''}
+      ${rows.map(r=>{
+        const noCobrado=!r.cobrado&&r.estatus!=='CANCELADA';
+        const bg=noCobrado?'background:rgba(232,64,64,0.04);':'';
+        const bord=noCobrado?'border-left:3px solid rgba(232,64,64,0.4);':'';
+        return`<tr style="border-bottom:1px solid var(--border);${bg}${bord}">
+          <td style="padding:6px 8px;white-space:nowrap;">${r.fecha||'—'}</td>
+          <td style="padding:6px 8px;font-family:'JetBrains Mono',monospace;white-space:nowrap;">
+            ${r.serie?`<span style="background:${r.serie==='GBE'?'rgba(232,64,64,0.1)':'rgba(0,169,157,0.1)'};color:${r.serie==='GBE'?'var(--red)':'var(--teal)'};padding:1px 5px;border-radius:4px;font-size:10px;font-weight:600;">${r.serie}</span> `:''}${r.folio||'—'}
           </td>
-          <td style="font-weight:500;font-size:11px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.cliente||'—'}</td>
-          <td style="font-size:11px;color:var(--text3);white-space:nowrap;">${r.vendedor||'—'}</td>
-          <td><span style="font-size:10px;padding:1px 6px;border-radius:8px;background:rgba(0,0,0,0.06);">${r.rubro||'—'}</span></td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;">${r.subtotal_original?fmt(r.subtotal_original):'—'}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;color:var(--red);">${r.descuento>0?'-'+fmt(r.descuento):'—'}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;font-weight:600;">${fmt(r.subtotal_final||r.total||0)}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;color:var(--text3);">${r.iva?fmt(r.iva):'—'}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;font-weight:700;">${fmt(r.total||0)}</td>
-          <td style="font-size:10px;color:var(--text3);">${r.forma_pago||'—'}</td>
-          <td><span style="font-size:10px;padding:1px 7px;border-radius:8px;background:${r.estatus==='PAGADA'?'rgba(39,174,96,0.1)':r.estatus==='EMITIDA'?'rgba(245,166,35,0.1)':'rgba(0,0,0,0.06)'};color:${r.estatus==='PAGADA'?'#27AE60':r.estatus==='EMITIDA'?'#F5A623':'var(--text3)'};">${r.estatus||'—'}</span></td>
-          <td><button onclick="toggleCobrado('${r.id}',${!r.cobrado})" style="background:${r.cobrado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${r.cobrado?'#27AE60':'var(--red)'};border:1px solid ${r.cobrado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:10px;padding:2px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">
-            ${r.cobrado?'✓':'○'}
-          </button></td>
-          <td><button onclick="toggleConciliadoIng('${r.id}',${!r.conciliado})" style="background:${r.conciliado?'rgba(13,34,64,0.08)':'none'};color:${r.conciliado?'var(--navy)':'var(--text3)'};border:1px solid ${r.conciliado?'rgba(13,34,64,0.2)':'var(--border)'};border-radius:10px;padding:2px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">
-            ${r.conciliado?'✓':'○'}
-          </button></td>
-          <td><button onclick="eliminarFactIngreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 6px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
-        </tr>`).join('')}
-      </tbody>
-    </table>
+          <td style="padding:6px 8px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;">${r.cliente||'—'}</td>
+          <td style="padding:6px 8px;white-space:nowrap;color:var(--text3);">${r.vendedor||'—'}</td>
+          <td style="padding:6px 8px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text3);">${r.concepto||'—'}</td>
+          <td style="padding:6px 8px;">
+            <span contenteditable="true" onblur="actualizarRubroIng('${r.id}',this.textContent.trim())"
+              style="display:inline-block;padding:1px 6px;border-radius:8px;background:rgba(0,0,0,0.06);font-size:10px;cursor:text;min-width:30px;outline:none;">${r.rubro||'—'}</span>
+          </td>
+          <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${r.subtotal_original>0?fmt(r.subtotal_original):'—'}</td>
+          <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.descuento>0?'-'+fmt(r.descuento):'—'}</td>
+          <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:600;">${fmt(r.subtotal_final||0)}</td>
+          <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text3);">${r.iva>0?fmt(r.iva):'—'}</td>
+          <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;">${fmt(r.total||0)}</td>
+          <td style="padding:6px 8px;white-space:nowrap;color:var(--text3);font-size:10px;">${r.forma_pago||'—'}</td>
+          <td style="padding:6px 8px;"><span style="font-size:10px;padding:1px 6px;border-radius:8px;background:${r.estatus==='PAGADA'?'rgba(39,174,96,0.1)':r.estatus==='EMITIDA'?'rgba(245,166,35,0.1)':'rgba(0,0,0,0.06)'};color:${r.estatus==='PAGADA'?'#27AE60':r.estatus==='EMITIDA'?'#F5A623':'var(--text3)'};">${r.estatus||'—'}</span></td>
+          <td style="padding:6px 8px;text-align:center;"><button onclick="toggleCobrado('${r.id}',${!r.cobrado})" style="background:${r.cobrado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${r.cobrado?'#27AE60':'var(--red)'};border:1px solid ${r.cobrado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:10px;padding:2px 7px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">${r.cobrado?'✓':'○'}</button></td>
+          <td style="padding:6px 8px;text-align:center;"><button onclick="toggleConciliadoIng('${r.id}',${!r.conciliado})" style="background:${r.conciliado?'rgba(13,34,64,0.08)':'none'};color:${r.conciliado?'var(--navy)':'var(--text3)'};border:1px solid ${r.conciliado?'rgba(13,34,64,0.2)':'var(--border)'};border-radius:10px;padding:2px 7px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">${r.conciliado?'✓':'○'}</button></td>
+          <td style="padding:6px 8px;"><button onclick="eliminarFactIngreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 6px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table>
   </div>`;
 }
 
-function abrirNuevaFactIngreso(){
-  const today=new Date().toISOString().slice(0,10);
-  const form=document.createElement('div');
-  form.id='formFactIng';
-  form.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
-  form.innerHTML=`<div style="background:var(--bg,#fff);border-radius:12px;padding:24px;width:480px;max-width:95vw;max-height:90vh;overflow-y:auto;">
-    <div style="font-size:15px;font-weight:600;margin-bottom:16px;">Registrar factura de ingreso</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Serie</div>
-        <input type="text" id="fiSerie" placeholder="Ej. GVE, A, B..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;" oninput="this.value=this.value.toUpperCase()"></div>
-      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Folio</div>
-        <input type="text" id="fiFolio" placeholder="Ej. 00123" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
-    </div>
-    <div style="margin-bottom:10px;"><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Cliente</div>
-      <input type="text" id="fiCliente" placeholder="Nombre del cliente..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Vendedor</div>
-        <input type="text" id="fiVendedor" placeholder="Nombre o concepto..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
-      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Monto</div>
-        <input type="number" id="fiMonto" min="0" step="0.01" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Concepto</div>
-        <input type="text" id="fiConcepto" placeholder="Descripción..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
-      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Fecha</div>
-        <input type="date" id="fiFecha" value="${today}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
-    </div>
-    <div style="margin-bottom:16px;"><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Notas</div>
-      <input type="text" id="fiNotas" placeholder="Opcional..." style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;box-sizing:border-box;"></div>
-    <div style="display:flex;gap:8px;justify-content:flex-end;">
-      <button onclick="document.getElementById('formFactIng').remove()" style="padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;">Cancelar</button>
-      <button onclick="guardarFactIngreso()" style="padding:8px 16px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;">Guardar</button>
-    </div>
-  </div>`;
-  document.body.appendChild(form);
-}
-
-async function guardarFactIngreso(){
-  const serie=(document.getElementById('fiSerie')?.value||'').trim().toUpperCase()||null;
-  const folio=document.getElementById('fiFolio')?.value.trim()||null;
-  const cliente=document.getElementById('fiCliente')?.value.trim();
-  const vendedor=document.getElementById('fiVendedor')?.value.trim()||null;
-  const monto=parseFloat(document.getElementById('fiMonto')?.value)||0;
-  const concepto=document.getElementById('fiConcepto')?.value.trim()||null;
-  const fecha=document.getElementById('fiFecha')?.value||null;
-  const notas=document.getElementById('fiNotas')?.value.trim()||null;
-  if(!cliente||!monto){alert('Cliente y monto son obligatorios.');return;}
-  const {data:newRow,error}=await sb.from('fact_ingresos').insert({
-    anio:currentYear,mes:currentMonth,folio,serie,cliente,vendedor,concepto,monto,fecha,notas,cobrado:false
-  }).select().single();
-  if(error){alert('Error: '+error.message);return;}
-  // Si es GVE → crear retención automáticamente
-  if(serie==='GVE'&&newRow){
-    const ret=parseFloat((monto*0.025).toFixed(2));
-    await sb.from('gb_retenciones').insert({
-      fact_ingreso_id:newRow.id,anio:currentYear,mes:currentMonth,
-      monto_factura:monto,retencion_pct:2.50,monto_retencion:ret,
-      monto_transferir:parseFloat((monto-ret).toFixed(2)),transferido:false
-    });
-  }
-  document.getElementById('formFactIng')?.remove();
-  renderAdminIngresos();
-}
-
-async function toggleConciliadoIng(id,val){
-  await sb.from('fact_ingresos').update({conciliado:val}).eq('id',id);
-  renderAdminIngresos();
+async function actualizarRubroIng(id,rubro){
+  if(!id||!rubro||rubro==='—')return;
+  await sb.from('fact_ingresos').update({rubro}).eq('id',id);
+  const row=(window._fiRows||[]).find(r=>r.id===id);
+  if(row) row.rubro=rubro;
 }
 
 async function toggleCobrado(id,cobrado){
   await sb.from('fact_ingresos').update({cobrado,fecha_cobro:cobrado?new Date().toISOString().slice(0,10):null}).eq('id',id);
-  renderAdminIngresos();
-}
-
-async function eliminarFactIngreso(id){
-  if(!confirm('¿Eliminar esta factura?'))return;
-  await sb.from('gb_retenciones').delete().eq('fact_ingreso_id',id);
-  await sb.from('fact_ingresos').delete().eq('id',id);
-  renderAdminIngresos();
+  const row=(window._fiRows||[]).find(r=>r.id===id);
+  if(row){row.cobrado=cobrado;}
+  renderIngresosTabla();
 }
 
 async function renderAdminGB(){
@@ -6766,49 +6757,105 @@ async function renderAdminEgresos(){
   const ac=adminCont();if(!ac)return;
   ac.innerHTML='<div class="loading"><div class="spinner"></div></div>';
   const {data:rows}=await sb.from('fact_egresos').select('*')
-    .eq('anio',currentYear).eq('mes',currentMonth).order('fecha_factura');
-  const fe=rows||[];
+    .eq('anio',currentYear).eq('mes',currentMonth).order('fecha_factura',{ascending:true});
+  window._feRows=rows||[];
+  window._feSort={col:'fecha_factura',asc:true};
+  window._feFilter={rubro:'',proveedor:'',texto:''};
+  renderEgresosTabla();
+}
+
+function renderEgresosTabla(){
+  const ac=adminCont();if(!ac)return;
+  const fe=window._feRows||[];
+  const {col,asc}=window._feSort||{col:'fecha_factura',asc:true};
+  const {rubro,proveedor,texto}=window._feFilter||{};
+
+  let rows=fe.filter(r=>{
+    const t=(texto||'').toLowerCase();
+    const tMatch=!t||(r.proveedor||'').toLowerCase().includes(t)||(r.concepto||'').toLowerCase().includes(t)||(r.folio||'').toLowerCase().includes(t);
+    return(!rubro||r.rubro===rubro)&&(!proveedor||r.proveedor===proveedor)&&tMatch;
+  });
+  rows=[...rows].sort((a,b)=>{
+    let va=a[col]??'',vb=b[col]??'';
+    if(['total','subtotal','iva_retenido','iva_trasladado','isr'].includes(col)){va=parseFloat(va)||0;vb=parseFloat(vb)||0;}
+    return asc?(va>vb?1:va<vb?-1:0):(va<vb?1:va>vb?-1:0);
+  });
+
   const totalEg=fe.reduce((s,r)=>s+(r.total||0),0);
   const conciliados=fe.filter(r=>r.conciliado).reduce((s,r)=>s+(r.total||0),0);
   const pendConc=fe.filter(r=>!r.conciliado).reduce((s,r)=>s+(r.total||0),0);
+  const rubros=[...new Set(fe.map(r=>r.rubro).filter(Boolean))].sort();
+  const proveedores=[...new Set(fe.map(r=>r.proveedor).filter(Boolean))].sort();
+
+  function thS(label,c,align='left'){
+    const act=col===c;
+    const arr=act?(asc?'▲':'▼'):'⇅';
+    return `<th style="padding:7px 8px;text-align:${align};cursor:pointer;white-space:nowrap;user-select:none;" onclick="window._feSort={col:'${c}',asc:${act}?!${asc}:true};renderEgresosTabla();">${label} <span style="opacity:${act?1:0.3};font-size:9px;">${arr}</span></th>`;
+  }
+  const selStyle='padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:11px;font-family:\'Inter\',sans-serif;';
+
   ac.innerHTML=`
-  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px;">
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
     <div class="thc"><div class="th-lbl">Total egresos</div><div class="th-val">${fmt(totalEg)}</div></div>
     <div class="thc"><div class="th-lbl">Conciliados</div><div class="th-val" style="color:#27AE60;">${fmt(conciliados)}</div></div>
     <div class="thc"><div class="th-lbl">Por conciliar</div><div class="th-val" style="color:${pendConc>0?'#E84040':'var(--text3)'};">${fmt(pendConc)}</div></div>
   </div>
-  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
-    <button onclick="abrirNuevaFactEgreso()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Registrar egreso</button>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+    <select onchange="window._feFilter.rubro=this.value;renderEgresosTabla()" style="${selStyle}">
+      <option value="">Todos los rubros</option>
+      ${rubros.map(r=>`<option value="${r}" ${rubro===r?'selected':''}>${r}</option>`).join('')}
+    </select>
+    <select onchange="window._feFilter.proveedor=this.value;renderEgresosTabla()" style="${selStyle}">
+      <option value="">Todos los proveedores</option>
+      ${proveedores.map(p=>`<option value="${p}" ${proveedor===p?'selected':''}>${p}</option>`).join('')}
+    </select>
+    <div style="position:relative;flex:1;min-width:160px;">
+      <input type="text" value="${texto}" placeholder="Buscar proveedor, concepto, folio..." oninput="window._feFilter.texto=this.value;renderEgresosTabla()"
+        style="width:100%;padding:5px 28px 5px 8px;border:1px solid var(--border);border-radius:5px;font-size:11px;box-sizing:border-box;">
+      <button onclick="window._feFilter.texto='';renderEgresosTabla()" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:14px;">✕</button>
+    </div>
+    <button onclick="abrirNuevaFactEgreso()" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">+ Registrar</button>
   </div>
-  <div class="card" style="padding:0;overflow-x:auto;">
-    <table class="daily" style="font-size:12px;width:100%;">
-      <thead><tr style="background:var(--navy);color:#fff;">
-        <th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Rubro</th><th>Factura</th>
-        <th>Subtotal</th><th>IVA Ret.</th><th>IVA Tras.</th><th>ISR</th><th>Total</th>
-        <th>Estatus</th><th>Conciliado</th><th>Acc.</th>
-      </tr></thead>
-      <tbody>
-        ${fe.length===0?`<tr><td colspan="13" style="text-align:center;color:var(--text3);padding:24px;">Sin egresos con factura este mes</td></tr>`:''}
-        ${fe.map(r=>`<tr>
-          <td style="font-size:11px;color:var(--text3);white-space:nowrap;">${r.fecha_factura||'—'}</td>
-          <td style="font-weight:500;font-size:11px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.proveedor||'—'}</td>
-          <td style="font-size:11px;color:var(--text3);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.concepto||'—'}</td>
-          <td><span style="font-size:10px;padding:1px 6px;border-radius:8px;background:rgba(0,0,0,0.06);">${r.rubro||'—'}</span></td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${r.folio||'—'}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;">${r.subtotal?fmt(r.subtotal):'—'}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;color:var(--red);">${r.iva_retenido>0?fmt(r.iva_retenido):'—'}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;color:#27AE60;">${r.iva_trasladado>0?fmt(r.iva_trasladado):'—'}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;color:var(--red);">${r.isr>0?fmt(r.isr):'—'}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;text-align:right;font-weight:700;">${fmt(r.total||0)}</td>
-          <td><span style="font-size:10px;padding:1px 7px;border-radius:8px;background:${r.status&&r.status.includes('PAG')?'rgba(39,174,96,0.1)':'rgba(0,0,0,0.05)'};color:${r.status&&r.status.includes('PAG')?'#27AE60':'var(--text3)'};">${r.status||'—'}</span></td>
-          <td><button onclick="toggleConciliado('${r.id}',${!r.conciliado})" style="background:${r.conciliado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${r.conciliado?'#27AE60':'var(--red)'};border:1px solid ${r.conciliado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:10px;padding:2px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">
-            ${r.conciliado?'✓':'○'}
-          </button></td>
-          <td><button onclick="eliminarFactEgreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 6px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
-        </tr>`).join('')}
-      </tbody>
-    </table>
+  <div style="width:100%;overflow-x:auto;">
+  <table style="font-size:11px;border-collapse:collapse;min-width:1100px;width:100%;">
+    <thead><tr style="background:var(--navy);color:#fff;">
+      ${thS('Fecha','fecha_factura')}${thS('Proveedor','proveedor')}${thS('Concepto','concepto')}
+      <th style="padding:7px 8px;cursor:pointer;" onclick="window._feSort={col:'rubro',asc:window._feSort?.col==='rubro'?!window._feSort.asc:true};renderEgresosTabla();">Rubro ⇅</th>
+      ${thS('Folio','folio')}${thS('Subtotal','subtotal','right')}
+      ${thS('IVA Ret.','iva_retenido','right')}${thS('IVA Tras.','iva_trasladado','right')}
+      ${thS('ISR','isr','right')}${thS('Total','total','right')}
+      ${thS('Estatus','status')}<th style="padding:7px 8px;">Concil.</th><th style="padding:7px 8px;">Acc.</th>
+    </tr></thead>
+    <tbody>
+      ${rows.length===0?`<tr><td colspan="13" style="text-align:center;color:var(--text3);padding:24px;">Sin resultados</td></tr>`:''}
+      ${rows.map(r=>`<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px 8px;white-space:nowrap;">${r.fecha_factura||'—'}</td>
+        <td style="padding:6px 8px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;">${r.proveedor||'—'}</td>
+        <td style="padding:6px 8px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text3);font-size:10px;">${r.concepto||'—'}</td>
+        <td style="padding:6px 8px;">
+          <span contenteditable="true" onblur="actualizarRubroEg('${r.id}',this.textContent.trim())"
+            style="display:inline-block;padding:1px 6px;border-radius:8px;background:rgba(0,0,0,0.06);font-size:10px;cursor:text;min-width:30px;outline:none;">${r.rubro||'—'}</span>
+        </td>
+        <td style="padding:6px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;">${r.folio||'—'}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${r.subtotal>0?fmt(r.subtotal):'—'}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.iva_retenido>0?fmt(r.iva_retenido):'—'}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;">${r.iva_trasladado>0?fmt(r.iva_trasladado):'—'}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.isr>0?fmt(r.isr):'—'}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;">${fmt(r.total||0)}</td>
+        <td style="padding:6px 8px;"><span style="font-size:10px;padding:1px 6px;border-radius:8px;background:${r.status&&r.status.includes('PAG')?'rgba(39,174,96,0.1)':'rgba(0,0,0,0.05)'};color:${r.status&&r.status.includes('PAG')?'#27AE60':'var(--text3)'};">${r.status||'—'}</span></td>
+        <td style="padding:6px 8px;text-align:center;"><button onclick="toggleConciliado('${r.id}',${!r.conciliado})" style="background:${r.conciliado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${r.conciliado?'#27AE60':'var(--red)'};border:1px solid ${r.conciliado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:10px;padding:2px 7px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">${r.conciliado?'✓':'○'}</button></td>
+        <td style="padding:6px 8px;"><button onclick="eliminarFactEgreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 6px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
+      </tr>`).join('')}
+    </tbody>
+  </table>
   </div>`;
+}
+
+async function actualizarRubroEg(id,rubro){
+  if(!id||!rubro||rubro==='—')return;
+  await sb.from('fact_egresos').update({rubro}).eq('id',id);
+  const row=(window._feRows||[]).find(r=>r.id===id);
+  if(row) row.rubro=rubro;
 }
 
 function abrirNuevaFactEgreso(){
@@ -6973,47 +7020,89 @@ async function eliminarImpuesto(id){
 async function renderFinFlujo(){
   finLoading();
   const meses=['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
-  const [ingR,egR,nomR,impR]=await Promise.all([
-    sb.from('fact_ingresos').select('mes,monto,cobrado').eq('anio',currentYear),
-    sb.from('egresos').select('mes,monto').eq('anio',currentYear),
-    sb.from('nomina_pagos').select('mes,total_neto').eq('anio',currentYear),
-    sb.from('impuestos_pagos').select('mes,monto').eq('anio',currentYear)
+  // Cargar desde las tablas correctas
+  const [{data:ingData},{data:egData}]=await Promise.all([
+    sb.from('fact_ingresos').select('mes,total,cobrado').eq('anio',currentYear),
+    sb.from('fact_egresos').select('mes,total,proveedor,folio,concepto').eq('anio',currentYear)
   ]);
-  const byMes=Array.from({length:13},(_,i)=>({mes:i,ing:0,egr:0,nom:0,imp:0,res:0}));
-  (ingR.data||[]).filter(r=>r.cobrado).forEach(r=>{byMes[r.mes].ing+=(r.monto||0);});
-  (egR.data||[]).forEach(r=>{byMes[r.mes].egr+=(r.monto||0);});
-  (nomR.data||[]).forEach(r=>{byMes[r.mes].nom+=(r.total_neto||0);});
-  (impR.data||[]).forEach(r=>{byMes[r.mes].imp+=(r.monto||0);});
-  for(let i=1;i<=12;i++)byMes[i].res=byMes[i].ing-byMes[i].egr-byMes[i].nom-byMes[i].imp;
+
+  const byMes=Array.from({length:13},(_,i)=>({mes:i,ing:0,egr:0,nom:0,imp:0,gb:0,res:0}));
+
+  // Ingresos: solo cobrados
+  (ingData||[]).filter(r=>r.cobrado).forEach(r=>{byMes[r.mes].ing+=(r.total||0);});
+
+  // Clasificar egresos según patrones
+  (egData||[]).forEach(r=>{
+    if(!r.mes) return;
+    const prov=(r.proveedor||'').toUpperCase();
+    const folio=(r.folio||'').toUpperCase();
+    const conc=(r.concepto||'').toUpperCase();
+    const total=r.total||0;
+
+    // Nómina: folio NOM/NNOM (factura tercero) + HH (Karen honorarios) + Mercado Pago con concepto NOM/NO (Manuel IMSS)
+    const esNomFolio=/^(NOM|NNOM)/.test(folio);
+    const esHH=/^HH/.test(folio)||(prov==='MERCADO PAGO'&&(conc.endsWith('HH')||conc.endsWith('HH2')));
+    const esManuelIMSS=prov==='MERCADO PAGO'&&(conc.endsWith('NOM')||conc.endsWith('NO'));
+    if(esNomFolio||esHH||esManuelIMSS){byMes[r.mes].nom+=total;return;}
+
+    // Impuestos: SAT, SAT/GUIA, IMSS cuotas
+    if(prov.startsWith('SAT')||prov==='IMSS'){byMes[r.mes].imp+=total;return;}
+
+    // GB operativos: Guillermo Blancas con folio GBE, GB, FF
+    if(prov.includes('GUILLERMO')){byMes[r.mes].gb+=total;return;}
+
+    // Violeta: ignorar hasta julio (mes > 6)
+    if(prov.includes('VIOLETA')&&r.mes<=6){return;}
+
+    // Resto: egresos generales
+    byMes[r.mes].egr+=total;
+  });
+
+  // Saldo inicial enero
+  const SALDO_INICIAL=253480.54;
+  for(let i=1;i<=12;i++){
+    const si=i===1?SALDO_INICIAL:0;
+    byMes[i].res=si+byMes[i].ing-byMes[i].egr-byMes[i].nom-byMes[i].imp-byMes[i].gb;
+  }
   const cur=byMes[currentMonth];
   const c=finCont();
   c.innerHTML=`
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px;">
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px;">
     <div class="thc"><div class="th-lbl">Ingresos cobrados</div><div class="th-val" style="color:#27AE60;">${fmt(cur.ing)}</div></div>
-    <div class="thc"><div class="th-lbl">Egresos</div><div class="th-val" style="color:var(--red);">${fmt(cur.egr)}</div></div>
+    <div class="thc"><div class="th-lbl">Egresos generales</div><div class="th-val" style="color:var(--red);">${fmt(cur.egr)}</div></div>
     <div class="thc"><div class="th-lbl">Nómina</div><div class="th-val" style="color:var(--red);">${fmt(cur.nom)}</div></div>
+    <div class="thc"><div class="th-lbl">Impuestos</div><div class="th-val" style="color:var(--red);">${fmt(cur.imp)}</div></div>
     <div class="thc"><div class="th-lbl">Resultado mes</div><div class="th-val" style="color:${cur.res>=0?'#27AE60':'var(--red)'};">${fmt(cur.res)}</div></div>
   </div>
-  <div class="card" style="padding:0;overflow-x:auto;">
-    <table class="daily" style="font-size:12px;width:100%;">
-      <thead><tr style="background:var(--navy);color:#fff;">
-        <th>Mes</th><th>Ingresos</th><th>Egresos</th><th>Nómina</th><th>Impuestos</th><th>Resultado</th>
-      </tr></thead>
-      <tbody>
-        ${byMes.slice(1).map((r,i)=>{
-          const m=i+1;
-          const esActual=m===currentMonth;
-          return`<tr style="border-bottom:1px solid var(--border);${esActual?'background:rgba(0,169,157,0.05);font-weight:600;':''}">
-            <td>${meses[m]}${esActual?' ◀':''}</td>
-            <td style="font-family:'JetBrains Mono',monospace;color:#27AE60;">${r.ing>0?fmt(r.ing):'—'}</td>
-            <td style="font-family:'JetBrains Mono',monospace;color:var(--red);">${r.egr>0?fmt(r.egr):'—'}</td>
-            <td style="font-family:'JetBrains Mono',monospace;color:var(--red);">${r.nom>0?fmt(r.nom):'—'}</td>
-            <td style="font-family:'JetBrains Mono',monospace;color:var(--red);">${r.imp>0?fmt(r.imp):'—'}</td>
-            <td style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${r.res>0?'#27AE60':r.res<0?'var(--red)':'var(--text3)'};">${r.res!==0?fmt(r.res):'—'}</td>
-          </tr>`;
-        }).join('')}
-      </tbody>
-    </table>
+  <div style="overflow-x:auto;width:100%;">
+  <table style="font-size:12px;width:100%;border-collapse:collapse;min-width:700px;">
+    <thead><tr style="background:var(--navy);color:#fff;">
+      <th style="padding:8px 10px;text-align:left;">Mes</th>
+      <th style="padding:8px 10px;text-align:right;">Ingresos cobrados</th>
+      <th style="padding:8px 10px;text-align:right;">Egresos</th>
+      <th style="padding:8px 10px;text-align:right;">Nómina</th>
+      <th style="padding:8px 10px;text-align:right;">Impuestos</th>
+      <th style="padding:8px 10px;text-align:right;">GB operativos</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700;">Resultado</th>
+    </tr></thead>
+    <tbody>
+      ${byMes.slice(1).map((r,i)=>{
+        const m=i+1;
+        const esActual=m===currentMonth;
+        const tot=r.egr+r.nom+r.imp+r.gb;
+        const saldo=m===1?SALDO_INICIAL:0;
+        return`<tr style="border-bottom:1px solid var(--border);${esActual?'background:rgba(0,169,157,0.06);':''}">
+          <td style="padding:7px 10px;font-weight:${esActual?700:400};">${meses[m]}${esActual?' ◀':''}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;">${r.ing>0?fmt(r.ing):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.egr>0?fmt(r.egr):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.nom>0?fmt(r.nom):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.imp>0?fmt(r.imp):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.gb>0?fmt(r.gb):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:${r.res>0?'#27AE60':r.res<0?'var(--red)':'var(--text3)'};">${(r.ing>0||tot>0||saldo>0)?fmt(r.res):'—'}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table>
   </div>`;
 }
 
