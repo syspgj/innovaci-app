@@ -64,7 +64,7 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);min-h
 .tab.active{color:var(--teal);border-bottom-color:var(--teal);}
 
 /* ── MAIN ── */
-.main{max-width:1100px;margin:0 auto;padding:20px 16px 60px;}
+.main{max-width:1100px;margin:0 auto;padding:20px 16px 60px;}.main.full-width{max-width:100%;padding:20px 24px 60px;}
 .tc{display:none;} .tc.active{display:block;}
 
 /* ── HERO COMISIÓN ── */
@@ -2485,6 +2485,7 @@ function buildDirectorUI(){
 }
 let currentDirTab='resumen';
 function swD(id){
+  if(id!=='finanzas') document.getElementById('mainContent').classList.remove('full-width');
   currentDirTab=id;
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['resumen','vendedores','anual','kpis','liberaciones','crm','campanas','cartera','proyecciondir','promociones','finanzas','config'][i]===id));
   if(id==='resumen')renderDirectorResumen();
@@ -5853,6 +5854,7 @@ const FIN_TABS=[
 
 function renderFinanzas(){
   const mc=document.getElementById('mainContent');
+  mc.classList.add('full-width');
   const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
@@ -6530,7 +6532,7 @@ async function eliminarEgreso(id){
 let currentAdminTab='ingresos';
 function renderFinAdmin(){
   const c=finCont();
-  const ATABS=[{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'}];
+  const ATABS=[{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'},{id:'rubros',l:'📊 Rubros'}];
   c.innerHTML=`
   <div style="display:flex;gap:6px;margin-bottom:16px;border-bottom:2px solid var(--border);padding-bottom:0;">
     ${ATABS.map(t=>`<button onclick="swAdmin('${t.id}')" id="atab_${t.id}"
@@ -6543,7 +6545,7 @@ function renderFinAdmin(){
 
 function swAdmin(id){
   currentAdminTab=id;
-  [{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'}].forEach(t=>{
+  [{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'},{id:'rubros',l:'📊 Rubros'}].forEach(t=>{
     const b=document.getElementById('atab_'+t.id);
     if(!b)return;
     b.style.borderBottomColor=t.id===id?'var(--navy)':'transparent';
@@ -6554,9 +6556,133 @@ function swAdmin(id){
 }
 
 function dispatchAdminTab(id){
-  if(id==='ingresos') renderAdminIngresos();
-  else if(id==='gb')  renderAdminGB();
-  else                renderAdminEgresos();
+  if(id==='ingresos')    renderAdminIngresos();
+  else if(id==='gb')     renderAdminGB();
+  else if(id==='rubros') renderAdminRubros();
+  else                   renderAdminEgresos();
+}
+
+async function renderAdminRubros(){
+  const ac=adminCont();if(!ac)return;
+  ac.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  const [{data:fe},{data:fi}]=await Promise.all([
+    sb.from('fact_egresos').select('rubro,total,iva_retenido').eq('anio',currentYear).eq('mes',currentMonth),
+    sb.from('fact_ingresos').select('rubro,total,iva,cobrado').eq('anio',currentYear).eq('mes',currentMonth)
+  ]);
+
+  // Egresos por rubro
+  const egMap={};
+  (fe||[]).forEach(r=>{
+    const k=r.rubro||'SIN RUBRO';
+    if(!egMap[k]) egMap[k]={total:0,iva_ret:0,count:0};
+    egMap[k].total+=(r.total||0);
+    egMap[k].iva_ret+=(r.iva_retenido||0);
+    egMap[k].count++;
+  });
+  const egRubros=Object.entries(egMap).sort((a,b)=>b[1].total-a[1].total);
+
+  // Ingresos por rubro
+  const ingMap={};
+  (fi||[]).forEach(r=>{
+    const k=r.rubro||'SIN RUBRO';
+    if(!ingMap[k]) ingMap[k]={total:0,cobrado:0,iva:0,count:0};
+    ingMap[k].total+=(r.total||0);
+    if(r.cobrado) ingMap[k].cobrado+=(r.total||0);
+    ingMap[k].iva+=(r.iva||0);
+    ingMap[k].count++;
+  });
+  const ingRubros=Object.entries(ingMap).sort((a,b)=>b[1].total-a[1].total);
+
+  const totalEg=egRubros.reduce((s,[,v])=>s+v.total,0);
+  const totalIng=ingRubros.reduce((s,[,v])=>s+v.total,0);
+
+  const barColor=['#0DA99D','#1E4A6E','#27AE60','#F5A623','#E84040','#9B59B6','#2980B9','#E67E22','#1ABC9C','#E74C3C'];
+
+  function barChart(rows,total,colorFn){
+    return rows.map(([k,v],i)=>{
+      const pct=total>0?Math.round(v.total/total*100):0;
+      return`<div style="margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+          <span style="font-size:11px;font-weight:500;color:var(--text);">${k}</span>
+          <div style="display:flex;gap:12px;align-items:center;">
+            <span style="font-size:10px;color:var(--text3);">${v.count} mov.</span>
+            <span style="font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;">${fmt(v.total)}</span>
+            <span style="font-size:10px;color:var(--text3);min-width:32px;text-align:right;">${pct}%</span>
+          </div>
+        </div>
+        <div style="height:8px;background:rgba(0,0,0,0.06);border-radius:4px;overflow:hidden;">
+          <div style="height:100%;width:${pct}%;background:${colorFn(i)};border-radius:4px;transition:width .4s;"></div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  ac.innerHTML=`
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+    <div>
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid var(--border);">
+        📤 Egresos por rubro — <span style="font-family:'JetBrains Mono',monospace;color:var(--red);">${fmt(totalEg)}</span>
+      </div>
+      ${egRubros.length===0?'<p style="color:var(--text3);font-size:12px;">Sin egresos este mes</p>':barChart(egRubros,totalEg,i=>barColor[i%barColor.length])}
+      <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);">
+        <table style="width:100%;font-size:11px;border-collapse:collapse;">
+          <thead><tr style="background:var(--navy);color:#fff;">
+            <th style="padding:6px 8px;text-align:left;">Rubro</th>
+            <th style="padding:6px 8px;text-align:right;">Movs.</th>
+            <th style="padding:6px 8px;text-align:right;">IVA Ret.</th>
+            <th style="padding:6px 8px;text-align:right;font-weight:700;">Total</th>
+          </tr></thead>
+          <tbody>
+            ${egRubros.map(([k,v],i)=>`<tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:5px 8px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${barColor[i%barColor.length]};margin-right:6px;"></span>${k}</td>
+              <td style="padding:5px 8px;text-align:right;color:var(--text3);">${v.count}</td>
+              <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${v.iva_ret>0?fmt(v.iva_ret):'—'}</td>
+              <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;">${fmt(v.total)}</td>
+            </tr>`).join('')}
+            <tr style="background:rgba(0,0,0,0.04);font-weight:700;">
+              <td style="padding:6px 8px;">TOTAL</td>
+              <td style="padding:6px 8px;text-align:right;">${egRubros.reduce((s,[,v])=>s+v.count,0)}</td>
+              <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${fmt(egRubros.reduce((s,[,v])=>s+v.iva_ret,0))}</td>
+              <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${fmt(totalEg)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div>
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid var(--border);">
+        📥 Ingresos por rubro — <span style="font-family:'JetBrains Mono',monospace;color:#27AE60;">${fmt(totalIng)}</span>
+      </div>
+      ${ingRubros.length===0?'<p style="color:var(--text3);font-size:12px;">Sin ingresos este mes</p>':barChart(ingRubros,totalIng,i=>barColor[(i+4)%barColor.length])}
+      <div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border);">
+        <table style="width:100%;font-size:11px;border-collapse:collapse;">
+          <thead><tr style="background:var(--navy);color:#fff;">
+            <th style="padding:6px 8px;text-align:left;">Rubro</th>
+            <th style="padding:6px 8px;text-align:right;">Movs.</th>
+            <th style="padding:6px 8px;text-align:right;">IVA</th>
+            <th style="padding:6px 8px;text-align:right;">Cobrado</th>
+            <th style="padding:6px 8px;text-align:right;font-weight:700;">Total</th>
+          </tr></thead>
+          <tbody>
+            ${ingRubros.map(([k,v],i)=>`<tr style="border-bottom:1px solid var(--border);">
+              <td style="padding:5px 8px;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${barColor[(i+4)%barColor.length]};margin-right:6px;"></span>${k}</td>
+              <td style="padding:5px 8px;text-align:right;color:var(--text3);">${v.count}</td>
+              <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text3);">${v.iva>0?fmt(v.iva):'—'}</td>
+              <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;">${fmt(v.cobrado)}</td>
+              <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;">${fmt(v.total)}</td>
+            </tr>`).join('')}
+            <tr style="background:rgba(0,0,0,0.04);font-weight:700;">
+              <td style="padding:6px 8px;">TOTAL</td>
+              <td style="padding:6px 8px;text-align:right;">${ingRubros.reduce((s,[,v])=>s+v.count,0)}</td>
+              <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(ingRubros.reduce((s,[,v])=>s+v.iva,0))}</td>
+              <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;">${fmt(ingRubros.reduce((s,[,v])=>s+v.cobrado,0))}</td>
+              <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;">${fmt(totalIng)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>`;
 }
 
 function adminCont(){return document.getElementById('adminContent');}
@@ -6592,6 +6718,7 @@ function renderIngresosTabla(){
   const totalFact=fi.reduce((s,r)=>s+(r.total||0),0);
   const totalCob=fi.filter(r=>r.cobrado).reduce((s,r)=>s+(r.total||0),0);
   const pendCob=fi.filter(r=>!r.cobrado).reduce((s,r)=>s+(r.total||0),0);
+  const totalIvaCob=fi.filter(r=>r.cobrado).reduce((s,r)=>s+(r.iva||0),0);
   const rubros=[...new Set(fi.map(r=>r.rubro).filter(Boolean))].sort();
   const vendedores=[...new Set(fi.map(r=>r.vendedor).filter(Boolean))].sort();
 
@@ -6604,8 +6731,9 @@ function renderIngresosTabla(){
   const selStyle='padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:11px;font-family:\'Inter\',sans-serif;';
 
   ac.innerHTML=`
-  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;">
     <div class="thc"><div class="th-lbl">Total facturado</div><div class="th-val">${fmt(totalFact)}</div></div>
+    <div class="thc"><div class="th-lbl">IVA cobrado</div><div class="th-val" style="color:#27AE60;">${fmt(totalIvaCob)}</div></div>
     <div class="thc"><div class="th-lbl">Cobrado</div><div class="th-val" style="color:#27AE60;">${fmt(totalCob)}</div></div>
     <div class="thc"><div class="th-lbl">Por cobrar</div><div class="th-val" style="color:${pendCob>0?'#E84040':'var(--text3)'};">${fmt(pendCob)}</div></div>
   </div>
@@ -6784,6 +6912,7 @@ function renderEgresosTabla(){
   const totalEg=fe.reduce((s,r)=>s+(r.total||0),0);
   const conciliados=fe.filter(r=>r.conciliado).reduce((s,r)=>s+(r.total||0),0);
   const pendConc=fe.filter(r=>!r.conciliado).reduce((s,r)=>s+(r.total||0),0);
+  const totalIvaRet=fe.reduce((s,r)=>s+(r.iva_retenido||0),0);
   const rubros=[...new Set(fe.map(r=>r.rubro).filter(Boolean))].sort();
   const proveedores=[...new Set(fe.map(r=>r.proveedor).filter(Boolean))].sort();
 
@@ -6795,8 +6924,9 @@ function renderEgresosTabla(){
   const selStyle='padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:11px;font-family:\'Inter\',sans-serif;';
 
   ac.innerHTML=`
-  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;">
     <div class="thc"><div class="th-lbl">Total egresos</div><div class="th-val">${fmt(totalEg)}</div></div>
+    <div class="thc"><div class="th-lbl">IVA retenido</div><div class="th-val" style="color:var(--red);">${fmt(totalIvaRet)}</div></div>
     <div class="thc"><div class="th-lbl">Conciliados</div><div class="th-val" style="color:#27AE60;">${fmt(conciliados)}</div></div>
     <div class="thc"><div class="th-lbl">Por conciliar</div><div class="th-val" style="color:${pendConc>0?'#E84040':'var(--text3)'};">${fmt(pendConc)}</div></div>
   </div>
