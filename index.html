@@ -3423,6 +3423,14 @@ async function renderTeleClientes(){
   const pct=total>0?Math.round(contactadas/total*100):0;
   const restantes=total-contactadas;
 
+  // Desglose por resultado
+  const resultadoCount={};
+  Object.values(llamadasMap).forEach(res=>{
+    const k=res||'Pendiente';
+    resultadoCount[k]=(resultadoCount[k]||0)+1;
+  });
+  resultadoCount['Pendiente']=(resultadoCount['Pendiente']||0)+(total-contactadas);
+
   // Proyección de completado basada en promedio diario de llamadas
   const porDia={};
   (llamadasExist||[]).forEach(l=>{
@@ -3455,6 +3463,17 @@ async function renderTeleClientes(){
       <div style="height:100%;width:${pct}%;background:var(--teal);border-radius:3px;"></div>
     </div>
     ${proyHtml}
+    ${(()=>{
+      const resColors={'Interesado':'#27AE60','No le interesa':'#E84040','Buzón':'#F5A623','No contestó':'var(--text3)','Volver a llamar':'#2980B9','Pendiente':'rgba(0,0,0,0.15)'};
+      const resIconos={'Interesado':'✅','No le interesa':'❌','Buzón':'📵','No contestó':'📞','Volver a llamar':'🔄','Pendiente':'⏳'};
+      const desgloseHtml=Object.entries(resultadoCount).sort((a,b)=>b[1]-a[1]).map(([k,v])=>
+        `<div style="display:flex;align-items:center;gap:6px;">
+          <span>${resIconos[k]||'•'}</span>
+          <span style="font-size:11px;color:var(--text3);">${k}</span>
+          <span style="font-size:12px;font-weight:700;color:${resColors[k]||'var(--text)'};">${v}</span>
+        </div>`).join('');
+      return desgloseHtml?`<div style="margin-top:10px;padding:10px 14px;background:var(--surface-2,#f8f9fa);border-radius:8px;display:flex;gap:16px;flex-wrap:wrap;">${desgloseHtml}</div>`:'';
+    })()}
   </div>
   <div style="position:relative;margin-bottom:12px;">
     <input type="text" id="teleClienteBuscar" placeholder="Buscar cliente..." oninput="filtrarTeleClientes()" style="width:100%;padding:9px 36px 9px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
@@ -3964,6 +3983,12 @@ async function renderTeleRegistro(){
   const {data:llamadasHoy}=await sb.from('prospecto_llamadas').select('id').eq('usuario_id',currentUser.id).eq('fecha',today);
   const llamadasAuto=(llamadasHoy||[]).length;
 
+  // Llamadas a cartera de clientes hoy — cuenta automática desde llamadas_cartera
+  const {data:llamadasCartHoy}=await sb.from('llamadas_cartera')
+    .select('id').eq('usuario_id',currentUser.id)
+    .gte('created_at',today+'T00:00:00').lte('created_at',today+'T23:59:59');
+  const llamadasCartAuto=(llamadasCartHoy||[]).length;
+
   // Prospectos canalizados a ventas hoy — cuenta automática desde prospectos (aproximado por updated_at, mismo criterio que el dashboard)
   const {data:misProspectos}=await sb.from('prospectos').select('vendedor_asignado,updated_at').eq('asignado_a',currentUser.id).not('vendedor_asignado','is',null);
   const canalizadosAuto=(misProspectos||[]).filter(p=>p.updated_at&&p.updated_at.slice(0,10)===today).length;
@@ -3979,6 +4004,8 @@ async function renderTeleRegistro(){
         <input type="number" id="fLlam" value="${llamadasAuto}" disabled style="background:var(--teal-bg);color:var(--teal);font-weight:600;cursor:not-allowed;"></div>
       <div class="form-field"><label>Prospectos canalizados a ventas <span style="color:var(--teal);font-weight:400;">(automático)</span></label>
         <input type="number" id="fPros" value="${canalizadosAuto}" disabled style="background:var(--teal-bg);color:var(--teal);font-weight:600;cursor:not-allowed;"></div>
+      <div class="form-field"><label>Llamadas a cartera de clientes <span style="color:var(--teal);font-weight:400;">(automático)</span></label>
+        <input type="number" id="fLlamCart" value="${llamadasCartAuto}" disabled style="background:var(--teal-bg);color:var(--teal);font-weight:600;cursor:not-allowed;"></div>
       <div class="form-field"><label>Confirmaciones a evento</label><input type="number" id="fConf" value="${r.confirmaciones_evento||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Seguimientos post-evento</label><input type="number" id="fSeg" value="${r.seguimientos_post||''}" placeholder="0" min="0"></div>
     </div>
@@ -3995,13 +4022,13 @@ async function renderTeleRegistro(){
     </div>
     <div style="font-size:11px;color:var(--text3);margin:12px 0 14px 2px;padding-top:4px;border-top:1px solid var(--border);">Los campos marcados como "automático" se calculan a partir de tu actividad en Mis prospectos y no se pueden editar aquí.</div>
     <div class="form-actions">
-      <button class="btn-save" id="btnSave" onclick="saveTeleRegistro('${today}',${llamadasAuto},${canalizadosAuto})">💾 Guardar registro</button>
+      <button class="btn-save" id="btnSave" onclick="saveTeleRegistro('${today}',${llamadasAuto},${canalizadosAuto},${llamadasCartAuto})">💾 Guardar registro</button>
     </div>
     <div class="save-msg" id="saveMsg"></div>
   </div>`;
 }
 
-async function saveTeleRegistro(fecha,llamadasAuto,canalizadosAuto){
+async function saveTeleRegistro(fecha,llamadasAuto,canalizadosAuto,llamadasCartAuto){
   const btn=document.getElementById('btnSave');
   const msg=document.getElementById('saveMsg');
   btn.disabled=true;btn.textContent='Guardando...';
@@ -4011,6 +4038,7 @@ async function saveTeleRegistro(fecha,llamadasAuto,canalizadosAuto){
     usuario_id:currentUser.id,fecha,
     llamadas_efectivas:llamadasAuto,
     prospectos_canalizados:canalizadosAuto,
+    llamadas_cartera:llamadasCartAuto||parseInt(document.getElementById('fLlamCart')?.value)||0,
     confirmaciones_evento:parseInt(document.getElementById('fConf').value)||0,
     siigo_activaciones:parseInt(document.getElementById('fSiigo').value)||0,
     seguimientos_post:parseInt(document.getElementById('fSeg').value)||0,
@@ -4025,11 +4053,37 @@ async function saveTeleRegistro(fecha,llamadasAuto,canalizadosAuto){
   else{msg.style.color='var(--green)';msg.textContent='✓ Registro guardado correctamente';}
 }
 
+async function autoRegistrarDiasCartera(registrosExistentes){
+  const {data:llCart}=await sb.from('llamadas_cartera')
+    .select('created_at').eq('usuario_id',currentUser.id);
+  if(!llCart||!llCart.length) return;
+  const diasConLlamadas={};
+  llCart.forEach(l=>{
+    const d=(l.created_at||'').slice(0,10);
+    if(d) diasConLlamadas[d]=(diasConLlamadas[d]||0)+1;
+  });
+  const fechasConRegistro=new Set((registrosExistentes||[]).map(r=>r.fecha));
+  const today=new Date().toISOString().slice(0,10);
+  for(const [fecha,count] of Object.entries(diasConLlamadas)){
+    if(fecha>=today) continue;
+    if(fechasConRegistro.has(fecha)) continue;
+    await sb.from('registros_diarios').insert({
+      usuario_id:currentUser.id, fecha,
+      llamadas_efectivas:0, prospectos_canalizados:0,
+      llamadas_cartera:count,
+      notas:'⚙️ Registro automático — se detectaron '+count+' llamada(s) a cartera pero el vendedor no registró el día.',
+      updated_at:new Date().toISOString()
+    });
+  }
+}
+
 let teleHistFiltroMes='';
 async function renderTeleHistorico(){
   document.getElementById('mainContent').innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
   const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).order('fecha',{ascending:false});
-  window._teleHistRows=regs||[];
+  await autoRegistrarDiasCartera(regs||[]);
+  const {data:regs2}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).order('fecha',{ascending:false});
+  window._teleHistRows=regs2||[];
   renderTeleHistTabla();
 }
 
@@ -4043,6 +4097,7 @@ function renderTeleHistTabla(){
   // Totales
   const tot={
     llamadas:rows.reduce((s,r)=>s+(r.llamadas_efectivas||0),0),
+    cartera:rows.reduce((s,r)=>s+(r.llamadas_cartera||0),0),
     prospectos:rows.reduce((s,r)=>s+(r.prospectos_canalizados||0),0),
     confirmaciones:rows.reduce((s,r)=>s+(r.confirmaciones_evento||0),0),
     siigo:rows.reduce((s,r)=>s+(r.siigo_activaciones||0),0),
@@ -4062,27 +4117,29 @@ function renderTeleHistTabla(){
     <div style="font-size:11px;color:var(--text3);padding:8px 16px 0;">Haz clic en cualquier fila para ver el detalle completo del día.</div>
     <table class="daily">
       <thead><tr>
-        <th></th><th>Fecha</th><th>Llamadas</th><th>Prospectos</th>
+        <th></th><th>Fecha</th><th>Llamadas</th><th>Cartera</th><th>Prospectos</th>
         <th>Confirmaciones</th><th>Siigo</th><th>Seguimientos</th><th>Actualiz. CRM</th>
       </tr></thead>
       <tbody>
         ${rows.map((r,idx)=>`<tr onclick="toggleTeleHistDetalle(${idx})" style="cursor:pointer;" id="teleHistRow_${idx}">
           <td style="width:18px;color:var(--text3);font-size:10px;" id="teleHistArrow_${idx}">▸</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${fmtFecha(r.fecha)||r.fecha}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${fmtFecha(r.fecha)||r.fecha}${r.notas&&r.notas.includes('automático')?'<span style="margin-left:5px;font-size:9px;background:#2980B9;color:#fff;border-radius:3px;padding:1px 4px;vertical-align:middle;">AUTO</span>':''}</td>
           <td style="text-align:center;">${r.llamadas_efectivas||0}</td>
+          <td style="text-align:center;font-weight:600;color:${(r.llamadas_cartera||0)>0?'#2980B9':'var(--text3)'};">${r.llamadas_cartera||0}</td>
           <td style="text-align:center;font-weight:600;color:${(r.prospectos_canalizados||0)>0?'#00A99D':'var(--text3)'};">${r.prospectos_canalizados||0}</td>
           <td style="text-align:center;">${r.confirmaciones_evento||0}</td>
           <td style="text-align:center;">${r.siigo_activaciones||0}</td>
           <td style="text-align:center;">${r.seguimientos_post||0}</td>
           <td style="text-align:center;">${r.crm_actualizaciones||0}</td>
         </tr>
-        <tr id="teleHistDetalle_${idx}" style="display:none;"><td colspan="8" style="padding:0;background:var(--surface-2,#f8f9fa);">
+        <tr id="teleHistDetalle_${idx}" style="display:none;"><td colspan="9" style="padding:0;background:var(--surface-2,#f8f9fa);">
           ${renderTeleHistDetalleContenido(r)}
-        </td></tr>`).join('')||'<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text3);">Sin registros</td></tr>'}
+        </td></tr>`).join('')||'<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--text3);">Sin registros</td></tr>'}
       </tbody>
       ${rows.length?`<tfoot><tr style="background:var(--navy);color:#fff;font-weight:700;">
         <td colspan="2" style="padding:8px 12px;font-size:12px;">TOTAL</td>
         <td style="text-align:center;">${tot.llamadas}</td>
+        <td style="text-align:center;color:#5bf;">${tot.cartera||'—'}</td>
         <td style="text-align:center;color:#5ff;">${tot.prospectos||'—'}</td>
         <td style="text-align:center;">${tot.confirmaciones||'—'}</td>
         <td style="text-align:center;">${tot.siigo||'—'}</td>
