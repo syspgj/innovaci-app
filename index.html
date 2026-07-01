@@ -1005,10 +1005,101 @@ let pipeSortCol='fecha_prevista', pipeSortDir=1, pipeFiltroEstatus='', pipeFiltr
 async function renderProyeccion(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando proyección...</div>';
+
+  // Calcular mes anterior
+  const mesAnt=currentMonth===1?12:currentMonth-1;
+  const anioAnt=currentMonth===1?currentYear-1:currentYear;
+
+  // Cargar oportunidades del mes actual
   const {data:rows}=await sb.from('pipeline_vendedor')
     .select('*').eq('usuario_id',currentUser.id)
     .eq('anio',currentYear).eq('mes',currentMonth);
   window._pipeRows=rows||[];
+
+  // Buscar negociaciones abiertas del mes anterior
+  const {data:abiertas}=await sb.from('pipeline_vendedor')
+    .select('*').eq('usuario_id',currentUser.id)
+    .eq('anio',anioAnt).eq('mes',mesAnt)
+    .eq('estatus','Negociando');
+
+  // Solo mostrar oferta si hay abiertas y NO ya existen en el mes actual (comparar por cliente+producto)
+  const yaExisten=new Set((rows||[]).map(r=>`${r.cliente||''}|${r.producto||''}`));
+  const pendientes=(abiertas||[]).filter(r=>!yaExisten.has(`${r.cliente||''}|${r.producto||''}`));
+
+  window._pipeAbiertasMesAnt=pendientes;
+  renderProyeccionTabla();
+
+  // Mostrar banner si hay pendientes de traspasar
+  if(pendientes.length>0){
+    setTimeout(()=>mostrarBannerTraspaso(pendientes,mesAnt,anioAnt),100);
+  }
+}
+
+function mostrarBannerTraspaso(pendientes, mesAnt, anioAnt){
+  const mc=document.getElementById('mainContent');
+  if(!mc) return;
+  const nombreMesAnt=getNombreMes(mesAnt);
+  // Crear banner al inicio del contenido
+  const banner=document.createElement('div');
+  banner.id='bannerTraspaso';
+  banner.style.cssText='margin-bottom:14px;padding:14px 18px;background:linear-gradient(135deg,rgba(249,168,38,0.12),rgba(249,168,38,0.06));border:1.5px solid #F5A623;border-radius:10px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;';
+  banner.innerHTML=`
+    <div style="font-size:20px;">📋</div>
+    <div style="flex:1;min-width:200px;">
+      <div style="font-size:13px;font-weight:700;color:#92400e;">
+        Tienes ${pendientes.length} negociación${pendientes.length!==1?'es':''} abierta${pendientes.length!==1?'s':''} de ${nombreMesAnt}
+      </div>
+      <div style="font-size:11px;color:#b45309;margin-top:3px;">
+        ${pendientes.slice(0,3).map(r=>`${r.cliente||'—'} · ${r.producto||r.tipo_servicio||'—'} · ${fmt(r.monto_total||0)}`).join('<br>')}
+        ${pendientes.length>3?`<span style="color:#b45309;opacity:0.7;">...y ${pendientes.length-3} más</span>`:''}
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;flex-shrink:0;">
+      <button onclick="confirmarTraspaso()" style="background:#F5A623;color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">
+        ✅ Traspasar a ${getNombreMes(currentMonth)}
+      </button>
+      <button onclick="document.getElementById('bannerTraspaso')?.remove()" style="background:none;border:1px solid #F5A623;color:#92400e;border-radius:6px;padding:8px 12px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;">
+        No por ahora
+      </button>
+    </div>`;
+  mc.insertAdjacentElement('afterbegin', banner);
+}
+
+async function confirmarTraspaso(){
+  const pendientes=window._pipeAbiertasMesAnt||[];
+  if(!pendientes.length) return;
+  const btn=document.querySelector('#bannerTraspaso button');
+  if(btn){btn.disabled=true;btn.textContent='Traspasando...';}
+  let ok=0,err=0;
+  for(const r of pendientes){
+    // Calcular nueva fecha prevista en el mes actual
+    const nuevaFecha=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(new Date(currentYear,currentMonth,0).getDate()).padStart(2,'0')}`;
+    const {error}=await sb.from('pipeline_vendedor').insert({
+      usuario_id:r.usuario_id,
+      anio:currentYear,
+      mes:currentMonth,
+      tipo_servicio:r.tipo_servicio,
+      producto:r.producto,
+      cliente:r.cliente,
+      vendedor_asignado:r.vendedor_asignado,
+      monto_total:r.monto_total,
+      subtotal:r.subtotal,
+      probabilidad:r.probabilidad,
+      estatus:'Negociando',
+      notas:(r.notas?r.notas+'\n':'')+'📋 Traspasado de '+getNombreMes(currentMonth===1?12:currentMonth-1),
+      fecha_prevista:nuevaFecha,
+    });
+    if(error) err++;
+    else ok++;
+  }
+  document.getElementById('bannerTraspaso')?.remove();
+  if(err>0) alert(`⚠️ ${ok} traspasados, ${err} con error.`);
+  // Recargar pipeline del mes actual
+  const {data:rows}=await sb.from('pipeline_vendedor')
+    .select('*').eq('usuario_id',currentUser.id)
+    .eq('anio',currentYear).eq('mes',currentMonth);
+  window._pipeRows=rows||[];
+  window._pipeAbiertasMesAnt=[];
   renderProyeccionTabla();
 }
 
@@ -7725,7 +7816,27 @@ function editarEgresoModal(id){
       ${fld('Fecha de pago',inp('eeFechaPago','date','',r.fecha_pago||''))}
     </div>
     <input type="hidden" id="eeId" value="${id}">`;
-  mkModal('modalEgEdit','Editar egreso — '+(r.proveedor||''),html,'guardarEdicionEgreso',undefined,true);
+  // Modal con botones personalizados: Eliminar | Guardar y siguiente | Guardar
+  document.getElementById('modalEgEdit')?.remove();
+  const m=document.createElement('div');
+  m.id='modalEgEdit';
+  m.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow-y:auto;';
+  m.innerHTML=`<div style="background:#fff;border-radius:12px;padding:24px;width:700px;max-width:98vw;margin:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div style="font-size:15px;font-weight:700;color:var(--navy);">Editar egreso — ${r.proveedor||''}</div>
+      <button onclick="document.getElementById('modalEgEdit').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);">✕</button>
+    </div>
+    ${html}
+    <div style="display:flex;gap:8px;justify-content:space-between;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);align-items:center;">
+      <button onclick="eliminarFactEgresoDesdeModal('${id}')" style="padding:8px 14px;background:none;border:1px solid rgba(232,64,64,0.4);color:var(--red);border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">🗑 Eliminar</button>
+      <div style="display:flex;gap:8px;">
+        <button onclick="document.getElementById('modalEgEdit').remove()" style="padding:8px 18px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-size:12px;font-family:'Inter',sans-serif;">Cancelar</button>
+        <button onclick="guardarEdicionEgresoYSiguiente('${id}')" style="padding:8px 16px;background:var(--navy);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">Guardar y siguiente →</button>
+        <button onclick="guardarEdicionEgreso()" style="padding:8px 18px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">Guardar</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(m);
 }
 
 function parsearXmlEgresoEdit(){
@@ -7761,9 +7872,9 @@ function parsearXmlEgresoEdit(){
   r.readAsText(file);
 }
 
-async function guardarEdicionEgreso(){
+async function guardarEdicionEgreso(yaSiguiente=false){
   const id=document.getElementById('eeId')?.value;
-  if(!id)return;
+  if(!id)return false;
   const provSel=document.getElementById('eeProvSel')?.value;
   const provNuevo=document.getElementById('eeProvNuevo')?.value.trim();
   const prov=provSel==='__nuevo__'?provNuevo:(provSel||document.getElementById('eeProv')?.value||'');
@@ -7783,9 +7894,50 @@ async function guardarEdicionEgreso(){
     fecha_pago:document.getElementById('eeFechaPago')?.value||null,
   };
   const {error}=await sb.from('fact_egresos').update(payload).eq('id',id);
-  if(error){alert('Error: '+error.message);return;}
-  const row=(window._feRows||[]).find(r=>r.id===id);
+  if(error){alert('Error: '+error.message);return false;}
+  const row=(window._feRows||[]).find(r=>String(r.id)===String(id));
   if(row) Object.assign(row,payload);
+  if(!yaSiguiente){
+    document.getElementById('modalEgEdit')?.remove();
+    renderEgresosTabla();
+  }
+  return true;
+}
+
+async function guardarEdicionEgresoYSiguiente(idActual){
+  const ok=await guardarEdicionEgreso(true);
+  if(!ok) return;
+  // Buscar el siguiente registro en la tabla filtrada/ordenada actual
+  const fe=window._feRows||[];
+  const {col,asc}=window._feSort||{col:'fecha_factura',asc:true};
+  const {rubro,proveedor,texto}=window._feFilter||{};
+  let rows=fe.filter(r=>{
+    const t=(texto||'').toLowerCase();
+    const tMatch=!t||(r.proveedor||'').toLowerCase().includes(t)||(r.concepto||'').toLowerCase().includes(t)||(r.folio||'').toLowerCase().includes(t);
+    return(!rubro||r.rubro===rubro)&&(!proveedor||r.proveedor===proveedor)&&tMatch;
+  });
+  rows=[...rows].sort((a,b)=>{
+    let va=a[col]??'',vb=b[col]??'';
+    if(['total','subtotal','iva_retenido','iva_trasladado','isr'].includes(col)){va=parseFloat(va)||0;vb=parseFloat(vb)||0;}
+    return asc?(va>vb?1:va<vb?-1:0):(va<vb?1:va>vb?-1:0);
+  });
+  const idx=rows.findIndex(r=>String(r.id)===String(idActual));
+  const siguiente=rows[idx+1];
+  document.getElementById('modalEgEdit')?.remove();
+  if(siguiente){
+    editarEgresoModal(siguiente.id);
+  } else {
+    renderEgresosTabla();
+    // Pequeño indicador de que se llegó al final
+    setTimeout(()=>alert('✅ Último registro — llegaste al final de la lista.'),100);
+  }
+}
+
+async function eliminarFactEgresoDesdeModal(id){
+  if(!confirm('¿Eliminar este egreso? Esta acción no se puede deshacer.'))return;
+  const {error}=await sb.from('fact_egresos').delete().eq('id',id);
+  if(error){alert('Error al eliminar: '+error.message);return;}
+  window._feRows=(window._feRows||[]).filter(r=>String(r.id)!==String(id));
   document.getElementById('modalEgEdit')?.remove();
   renderEgresosTabla();
 }
