@@ -7099,7 +7099,7 @@ async function renderAdminEgresos(){
   renderEgresosTabla();
 }
 
-function renderEgresosTabla(){
+async function renderEgresosTabla(){
   const ac=adminCont();if(!ac)return;
   const fe=window._feRows||[];
   const {col,asc}=window._feSort||{col:'fecha_factura',asc:true};
@@ -7120,6 +7120,18 @@ function renderEgresosTabla(){
   const conciliados=fe.filter(r=>r.conciliado).reduce((s,r)=>s+(r.total||0),0);
   const pendConc=fe.filter(r=>!r.conciliado).reduce((s,r)=>s+(r.total||0),0);
   const totalIvaRet=fe.reduce((s,r)=>s+(r.iva_retenido||0),0);
+  // IVA acreditado: solo registros con XML (tiene_factura=true) Y conciliados
+  const ivaAcreditado=fe.filter(r=>r.tiene_factura&&r.conciliado).reduce((s,r)=>s+(r.iva_trasladado||0),0);
+  // IVA cobrado de ingresos
+  let ivaIngesos=null;
+  if(window._fiRows){
+    ivaIngesos=window._fiRows.filter(r=>r.cobrado).reduce((s,r)=>s+(r.iva||0),0);
+  } else {
+    const {data:ingData}=await sb.from('fact_ingresos').select('iva,cobrado')
+      .eq('anio',currentYear).eq('mes',currentMonth).eq('cobrado',true);
+    if(ingData) ivaIngesos=ingData.reduce((s,r)=>s+(r.iva||0),0);
+  }
+  const difIva=ivaIngesos!==null?ivaIngesos-ivaAcreditado:null;
   const rubros=[...new Set(fe.map(r=>r.rubro).filter(Boolean))].sort();
   const proveedores=[...new Set(fe.map(r=>r.proveedor).filter(Boolean))].sort();
 
@@ -7131,9 +7143,23 @@ function renderEgresosTabla(){
   const selStyle='padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:11px;font-family:\'Inter\',sans-serif;';
 
   ac.innerHTML=`
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;">
+  <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px;">
     <div class="thc"><div class="th-lbl">Total egresos</div><div class="th-val">${fmt(totalEg)}</div></div>
     <div class="thc"><div class="th-lbl">IVA retenido</div><div class="th-val" style="color:var(--red);">${fmt(totalIvaRet)}</div></div>
+    <div class="thc" title="IVA trasladado de egresos con XML y conciliados">
+      <div class="th-lbl">IVA acreditado</div>
+      <div class="th-val" style="color:#2980B9;">${fmt(ivaAcreditado)}</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;">XML + conciliado</div>
+    </div>
+    <div class="thc" title="IVA cobrado (ingresos) − IVA acreditado (egresos)">
+      <div class="th-lbl">Diferencia IVA</div>
+      <div class="th-val" style="color:${difIva===null?'var(--text3)':difIva>=0?'#27AE60':'var(--red)'};">
+        ${difIva===null?'—':fmt(Math.abs(difIva))}
+      </div>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;">
+        ${difIva===null?'Carga ingresos primero':difIva>=0?'▲ a favor':'▼ a pagar'}
+      </div>
+    </div>
     <div class="thc"><div class="th-lbl">Conciliados</div><div class="th-val" style="color:#27AE60;">${fmt(conciliados)}</div></div>
     <div class="thc"><div class="th-lbl">Por conciliar</div><div class="th-val" style="color:${pendConc>0?'#E84040':'var(--text3)'};">${fmt(pendConc)}</div></div>
   </div>
