@@ -7161,7 +7161,7 @@ function renderEgresosTabla(){
       ${thS('Folio','folio')}${thS('Subtotal','subtotal','right')}
       ${thS('IVA Ret.','iva_retenido','right')}${thS('IVA Tras.','iva_trasladado','right')}
       ${thS('ISR','isr','right')}${thS('Total','total','right')}
-      ${thS('Estatus','status')}<th style="padding:7px 8px;">Concil.</th><th style="padding:7px 8px;">Acc.</th>
+      ${thS('Estatus','status')}<th style="padding:7px 8px;text-align:center;">📎 Fac.</th><th style="padding:7px 8px;text-align:center;">Concil.</th><th style="padding:7px 8px;">Acc.</th>
     </tr></thead>
     <tbody>
       ${rows.length===0?`<tr><td colspan="13" style="text-align:center;color:var(--text3);padding:24px;">Sin resultados</td></tr>`:''}
@@ -7180,6 +7180,9 @@ function renderEgresosTabla(){
         <td style="padding:4px 6px;text-align:right;"><span contenteditable="true" onblur="editarFactEgresoNum('${r.id}','isr',this.textContent)" style="${num}color:var(--red);">${r.isr>0?fmt(r.isr):''}</span></td>
         <td style="padding:4px 6px;text-align:right;min-width:80px;"><span contenteditable="true" onblur="editarFactEgresoNum('${r.id}','total',this.textContent)" style="${num}font-weight:700;">${fmt(r.total||0)}</span></td>
         <td style="padding:4px 6px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','status',this.textContent.trim())" style="${ce}font-size:10px;">${r.status||''}</span></td>
+        <td style="padding:4px 6px;text-align:center;">
+          <button onclick="toggleTieneFactura('${r.id}',${!r.tiene_factura})" title="${r.tiene_factura?'Con factura SAT':'Sin factura'}" style="background:${r.tiene_factura?'rgba(39,174,96,0.12)':'rgba(107,114,128,0.08)'};color:${r.tiene_factura?'#27AE60':'var(--text3)'};border:1px solid ${r.tiene_factura?'rgba(39,174,96,0.3)':'var(--border)'};border-radius:10px;padding:2px 8px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:700;">${r.tiene_factura?'✓ XML':'—'}</button>
+        </td>
         <td style="padding:4px 6px;text-align:center;"><button onclick="toggleConciliado('${r.id}',${!r.conciliado})" style="background:${r.conciliado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${r.conciliado?'#27AE60':'var(--red)'};border:1px solid ${r.conciliado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:10px;padding:2px 7px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">${r.conciliado?'✓':'○'}</button></td>
         <td style="padding:4px 6px;"><button onclick="eliminarFactEgreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 6px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
       </tr>`;}).join('')}
@@ -7415,7 +7418,12 @@ function abrirNuevaFactEgreso(){
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha factura',inp('feFecha','date','',today))}
-      ${fld('Folio',inp('feFolio','text','Ej. A-00456'))}
+      ${fld('Folio',`<input type="text" id="feFolio" placeholder="Ej. A-00456" style="${INP}" oninput="if(this.value.trim()){document.getElementById('feTieneFactura').checked=true}else{document.getElementById('feTieneFactura').checked=false}">`)}
+    </div>
+    <div style="margin-bottom:10px;display:flex;align-items:center;gap:10px;padding:8px 12px;background:rgba(0,169,157,0.06);border:1px solid var(--teal);border-radius:8px;">
+      <input type="checkbox" id="feTieneFactura" style="width:16px;height:16px;accent-color:var(--teal);cursor:pointer;">
+      <label for="feTieneFactura" style="font-size:13px;font-weight:600;color:var(--teal);cursor:pointer;">📎 Tiene factura (XML SAT)</label>
+      <span style="font-size:11px;color:var(--text3);margin-left:auto;">Se activa automáticamente al subir XML o capturar folio</span>
     </div>
     <div style="margin-bottom:10px;">${fld('Proveedor',`
       <select id="feProvSel" onchange="if(this.value==='__nuevo__'){document.getElementById('feProvNuevo').style.display='block'}else{document.getElementById('feProvNuevo').style.display='none';document.getElementById('feProv').value=this.value}" style="${INP}">
@@ -7467,6 +7475,9 @@ async function parsearXmlEgreso(){
   // Folio
   const folio=(cfdi.getAttribute('Serie')||'')+(cfdi.getAttribute('Folio')||'');
   if(folio&&document.getElementById('feFolio')) document.getElementById('feFolio').value=folio;
+  // Marcar automáticamente "Tiene factura" al cargar XML
+  const chk=document.getElementById('feTieneFactura');
+  if(chk) chk.checked=true;
   // Proveedor (emisor)
   const nomEmisor=emisor?.getAttribute('Nombre')||emisor?.getAttribute('nombre')||'';
   if(nomEmisor){
@@ -7512,7 +7523,9 @@ async function guardarFactEgreso(){
   if(!prov){alert('El proveedor es obligatorio.');return;}
   const {error}=await sb.from('fact_egresos').insert({
     anio:currentYear,mes:currentMonth,fecha_factura:fecha,folio,proveedor:prov,
-    concepto,rubro,subtotal,iva_retenido,iva_trasladado,isr,total,status,fecha_pago,conciliado:false
+    concepto,rubro,subtotal,iva_retenido,iva_trasladado,isr,total,status,fecha_pago,
+    tiene_factura:!!(document.getElementById('feTieneFactura')?.checked)||(!!folio),
+    conciliado:false
   });
   if(error){alert('Error: '+error.message);return;}
   document.getElementById('modalEgNuevo')?.remove();
@@ -7531,7 +7544,10 @@ function editarEgresoModal(id){
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha factura',inp('eeFecha','date','',r.fecha_factura||''))}
-      ${fld('Folio',inp('eeFolio','text','',r.folio||''))}
+      ${fld('Folio',`<input type="text" id="eeFolio" value="${r.folio||''}" style="${INP}" oninput="if(this.value.trim()){document.getElementById('eeTieneFactura').checked=true}">`)}</div>
+    <div style="margin-bottom:10px;display:flex;align-items:center;gap:10px;padding:8px 12px;background:${r.tiene_factura?'rgba(39,174,96,0.06)':'rgba(107,114,128,0.06)'};border:1px solid ${r.tiene_factura?'#27AE60':'var(--border)'};border-radius:8px;">
+      <input type="checkbox" id="eeTieneFactura" ${r.tiene_factura?'checked':''} style="width:16px;height:16px;accent-color:var(--teal);cursor:pointer;">
+      <label for="eeTieneFactura" style="font-size:13px;font-weight:600;color:${r.tiene_factura?'#27AE60':'var(--text3)'};cursor:pointer;">📎 Tiene factura (XML SAT)</label>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Proveedor',inp('eeProveedor','text','',r.proveedor||''))}
@@ -7582,6 +7598,9 @@ function parsearXmlEgresoEdit(){
     if(isrR) document.getElementById('eeIsr').value=parseFloat(isrR.getAttribute('Importe')||0).toFixed(2);
     const conc=xml.querySelector('Concepto')?.getAttribute('Descripcion')||'';
     if(conc) document.getElementById('eeConcepto').value=conc;
+    // Marcar automáticamente "Tiene factura" al cargar XML
+    const chkE=document.getElementById('eeTieneFactura');
+    if(chkE) chkE.checked=true;
   };
   r.readAsText(file);
 }
@@ -7592,6 +7611,7 @@ async function guardarEdicionEgreso(){
   const payload={
     fecha_factura:document.getElementById('eeFecha')?.value||null,
     folio:document.getElementById('eeFolio')?.value.trim()||null,
+    tiene_factura:!!(document.getElementById('eeTieneFactura')?.checked)||(!!document.getElementById('eeFolio')?.value.trim()),
     proveedor:document.getElementById('eeProveedor')?.value.trim()||null,
     concepto:document.getElementById('eeConcepto')?.value.trim()||null,
     rubro:document.getElementById('eeRubro')?.value||null,
@@ -7612,6 +7632,13 @@ async function guardarEdicionEgreso(){
 }
 
 
+
+async function toggleTieneFactura(id, val){
+  await sb.from('fact_egresos').update({tiene_factura:val}).eq('id',id);
+  const row=(window._feRows||[]).find(r=>r.id===id);
+  if(row) row.tiene_factura=val;
+  renderEgresosTabla();
+}
 
 async function toggleConciliado(id,val){
   await sb.from('fact_egresos').update({conciliado:val,fecha_conciliacion:val?new Date().toISOString().slice(0,10):null}).eq('id',id);
