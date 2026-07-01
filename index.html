@@ -7152,6 +7152,7 @@ function renderEgresosTabla(){
       <button onclick="window._feFilter.texto='';renderEgresosTabla()" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:14px;">✕</button>
     </div>
     <button onclick="abrirNuevaFactEgreso()" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">+ Registrar</button>
+    <button onclick="abrirCargaMasivaXML()" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">📎 Cargar XMLs</button>
   </div>
   <div style="width:100%;overflow-x:auto;">
   <table style="font-size:11px;border-collapse:collapse;min-width:1100px;width:100%;">
@@ -7406,6 +7407,122 @@ async function guardarEdicionIngreso(){
 }
 
 // ─── MODAL EGRESO NUEVO ───────────────────────────────────────────────────────
+// ─── CARGA MASIVA DE XMLs ─────────────────────────────────────────────────────
+function abrirCargaMasivaXML(){
+  const rubros=window._rubrosEg||['IMSS','SAT','CLOUD','NOMINA','GASTOS OPERATIVOS','GASTOS OFICINA','MARKETING'];
+  const html=`
+    <div style="margin-bottom:12px;padding:10px 14px;background:rgba(0,169,157,0.07);border:1px dashed var(--teal);border-radius:8px;">
+      <div style="font-size:12px;font-weight:600;color:var(--teal);margin-bottom:6px;">Selecciona uno o varios archivos XML del SAT</div>
+      <input type="file" id="xmlMasivo" accept=".xml" multiple onchange="previsualizarXMLs()" style="font-size:12px;width:100%;">
+    </div>
+    <div id="xmlPreviewArea" style="max-height:420px;overflow-y:auto;"></div>
+    <div id="xmlMasivoMsg" style="margin-top:8px;font-size:12px;text-align:center;"></div>`;
+  mkModal('modalXmlMasivo','📎 Carga masiva de XMLs',html,null,undefined,true);
+  // Botón personalizado
+  const footer=document.querySelector('#modalXmlMasivo .modal-footer')||document.querySelector('#modalXmlMasivo [class*="footer"]');
+  const btnGuardar=document.createElement('button');
+  btnGuardar.id='btnXmlMasivoGuardar';
+  btnGuardar.textContent='💾 Guardar todos';
+  btnGuardar.style.cssText='background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 20px;font-size:13px;font-weight:600;cursor:pointer;font-family:Inter,sans-serif;display:none;';
+  btnGuardar.onclick=guardarXMLsMasivo;
+  if(footer) footer.prepend(btnGuardar);
+}
+
+let _xmlParsed=[];
+
+async function previsualizarXMLs(){
+  const files=Array.from(document.getElementById('xmlMasivo')?.files||[]);
+  if(!files.length)return;
+  const rubros=window._rubrosEg||['IMSS','SAT','CLOUD','NOMINA','GASTOS OPERATIVOS','GASTOS OFICINA','MARKETING'];
+  const provs=[...new Set((window._feRows||[]).map(r=>r.proveedor).filter(Boolean))].sort();
+  _xmlParsed=[];
+  const area=document.getElementById('xmlPreviewArea');
+  area.innerHTML='<div style="text-align:center;padding:20px;color:var(--text3);">Leyendo archivos...</div>';
+  for(const file of files){
+    const txt=await file.text();
+    const d=parsearCFDI(txt);
+    d._file=file.name;
+    d._rubro='';
+    _xmlParsed.push(d);
+  }
+  const INP2='width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;box-sizing:border-box;font-family:Inter,sans-serif;';
+  area.innerHTML=`
+    <table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <thead><tr style="background:var(--navy);color:#fff;">
+        <th style="padding:6px 8px;text-align:left;">Archivo</th>
+        <th style="padding:6px 8px;">Fecha</th>
+        <th style="padding:6px 8px;">Folio</th>
+        <th style="padding:6px 8px;text-align:left;">Proveedor</th>
+        <th style="padding:6px 8px;text-align:right;">Subtotal</th>
+        <th style="padding:6px 8px;text-align:right;">IVA Ret.</th>
+        <th style="padding:6px 8px;text-align:right;">IVA Tras.</th>
+        <th style="padding:6px 8px;text-align:right;">ISR</th>
+        <th style="padding:6px 8px;text-align:right;color:#5fe;">Total</th>
+        <th style="padding:6px 8px;">Rubro</th>
+      </tr></thead>
+      <tbody>
+        ${_xmlParsed.map((d,i)=>`<tr style="border-bottom:1px solid var(--border);background:${i%2===0?'#f9fafb':'#fff'};">
+          <td style="padding:4px 6px;color:var(--text3);font-size:10px;">${d._file.slice(0,22)}</td>
+          <td style="padding:4px 6px;text-align:center;">${d.fecha}</td>
+          <td style="padding:4px 6px;text-align:center;font-weight:700;color:var(--navy);">${d.folio||'—'}</td>
+          <td style="padding:4px 6px;max-width:160px;"><input type="text" value="${(d.proveedor||'').replace(/"/g,'&quot;')}" oninput="_xmlParsed[${i}].proveedor=this.value" style="${INP2}" list="xmlProvList"></td>
+          <td style="padding:4px 6px;text-align:right;">${d.subtotal>0?'$'+d.subtotal.toLocaleString('es-MX',{minimumFractionDigits:2}):''}</td>
+          <td style="padding:4px 6px;text-align:right;color:var(--red);">${d.ivaRet>0?'$'+d.ivaRet.toLocaleString('es-MX',{minimumFractionDigits:2}):''}</td>
+          <td style="padding:4px 6px;text-align:right;color:#27AE60;">${d.ivaTras>0?'$'+d.ivaTras.toLocaleString('es-MX',{minimumFractionDigits:2}):''}</td>
+          <td style="padding:4px 6px;text-align:right;color:var(--red);">${d.isr>0?'$'+d.isr.toLocaleString('es-MX',{minimumFractionDigits:2}):''}</td>
+          <td style="padding:4px 6px;text-align:right;font-weight:700;">$${d.total.toLocaleString('es-MX',{minimumFractionDigits:2})}</td>
+          <td style="padding:4px 6px;">
+            <select onchange="_xmlParsed[${i}]._rubro=this.value" style="${INP2}">
+              <option value="">-- Rubro --</option>
+              ${rubros.map(r=>`<option value="${r}">${r}</option>`).join('')}
+            </select>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    <datalist id="xmlProvList">${provs.map(p=>`<option value="${p}">`).join('')}</datalist>
+    <div style="margin-top:10px;padding:8px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font-size:11px;color:#15803d;font-weight:600;">
+      ✅ ${_xmlParsed.length} archivo(s) listos. Revisa los datos, asigna el rubro a cada uno y da clic en "Guardar todos".
+    </div>`;
+  const btn=document.getElementById('btnXmlMasivoGuardar');
+  if(btn) btn.style.display='inline-block';
+}
+
+async function guardarXMLsMasivo(){
+  const btn=document.getElementById('btnXmlMasivoGuardar');
+  const msg=document.getElementById('xmlMasivoMsg');
+  if(!_xmlParsed.length)return;
+  btn.disabled=true; btn.textContent='Guardando...';
+  let ok=0,err=0;
+  for(const d of _xmlParsed){
+    const payload={
+      anio:currentYear, mes:currentMonth,
+      fecha_factura:d.fecha||null,
+      folio:d.folio||null,
+      proveedor:d.proveedor||null,
+      concepto:d.concepto||null,
+      rubro:d._rubro||null,
+      subtotal:d.subtotal||0,
+      iva_retenido:d.ivaRet||0,
+      iva_trasladado:d.ivaTras||0,
+      isr:d.isr||0,
+      total:d.total||0,
+      status:'PAGADO',
+      tiene_factura:true,
+      conciliado:false
+    };
+    const {error}=await sb.from('fact_egresos').insert(payload);
+    if(error) err++;
+    else ok++;
+  }
+  btn.disabled=false; btn.textContent='💾 Guardar todos';
+  msg.style.color=err?'var(--red)':'#15803d';
+  msg.textContent=`✅ ${ok} guardados${err?` | ⚠️ ${err} con error`:''}`;
+  if(ok>0){
+    setTimeout(()=>{document.getElementById('modalXmlMasivo')?.remove();renderAdminEgresos();},1200);
+  }
+}
+
 function abrirNuevaFactEgreso(){
   const today=todayLocal();
   const rubros=window._rubrosEg||['IMSS','SAT','CLOUD','GASTOS OPERATIVOS'];
@@ -7460,49 +7577,60 @@ function calcEgTotales(){
   if(document.getElementById('feTotal')) document.getElementById('feTotal').value=Math.max(0,total).toFixed(2);
 }
 
+// ─── HELPER CFDI — usa localName para ignorar prefijo cfdi: ─────────────────
+function parsearCFDI(xmlStr){
+  const xml=(new DOMParser()).parseFromString(xmlStr,'text/xml');
+  const all=Array.from(xml.getElementsByTagName('*'));
+  const byLocal=n=>all.filter(el=>el.localName===n);
+  const cfdi=byLocal('Comprobante')[0]||xml.documentElement;
+  const emisor=byLocal('Emisor')[0];
+  const concepto=byLocal('Concepto')[0];
+  let ivaTras=0,ivaRet=0,isr=0;
+  byLocal('Traslado').forEach(el=>{
+    if(el.getAttribute('Impuesto')==='002') ivaTras+=parseFloat(el.getAttribute('Importe')||0);
+  });
+  byLocal('Retencion').forEach(el=>{
+    const imp=el.getAttribute('Impuesto');
+    const monto=parseFloat(el.getAttribute('Importe')||0);
+    if(imp==='002') ivaRet+=monto;
+    if(imp==='001') isr+=monto;
+  });
+  // Fallback a atributos del nodo Impuestos si no hay nodos de detalle
+  if(!ivaTras&&!ivaRet){
+    const impNode=byLocal('Impuestos')[0];
+    ivaTras=parseFloat(impNode?.getAttribute('TotalImpuestosTrasladados')||0);
+    ivaRet=parseFloat(impNode?.getAttribute('TotalImpuestosRetenidos')||0);
+  }
+  return {
+    fecha:(cfdi.getAttribute('Fecha')||'').slice(0,10),
+    folio:(cfdi.getAttribute('Serie')||'')+(cfdi.getAttribute('Folio')||''),
+    subtotal:parseFloat(cfdi.getAttribute('SubTotal')||0),
+    total:parseFloat(cfdi.getAttribute('Total')||0),
+    ivaTras,ivaRet,isr,
+    proveedor:emisor?.getAttribute('Nombre')||emisor?.getAttribute('nombre')||'',
+    rfcEmisor:emisor?.getAttribute('Rfc')||emisor?.getAttribute('rfc')||'',
+    concepto:concepto?.getAttribute('Descripcion')||concepto?.getAttribute('descripcion')||''
+  };
+}
+
 async function parsearXmlEgreso(){
   const file=document.getElementById('feXmlFile')?.files?.[0];
   if(!file)return;
-  const txt=await file.text();
-  const parser=new DOMParser();
-  const xml=parser.parseFromString(txt,'text/xml');
-  const cfdi=xml.querySelector('Comprobante')||xml.documentElement;
-  const emisor=xml.querySelector('Emisor');
-  const receptor=xml.querySelector('Receptor');
-  // Fecha
-  const fecha=(cfdi.getAttribute('Fecha')||'').slice(0,10);
-  if(fecha&&document.getElementById('feFecha')) document.getElementById('feFecha').value=fecha;
-  // Folio
-  const folio=(cfdi.getAttribute('Serie')||'')+(cfdi.getAttribute('Folio')||'');
-  if(folio&&document.getElementById('feFolio')) document.getElementById('feFolio').value=folio;
-  // Marcar automáticamente "Tiene factura" al cargar XML
-  const chk=document.getElementById('feTieneFactura');
-  if(chk) chk.checked=true;
-  // Proveedor (emisor)
-  const nomEmisor=emisor?.getAttribute('Nombre')||emisor?.getAttribute('nombre')||'';
-  if(nomEmisor){
+  const d=parsearCFDI(await file.text());
+  if(d.fecha) document.getElementById('feFecha').value=d.fecha;
+  if(d.folio) document.getElementById('feFolio').value=d.folio;
+  const chk=document.getElementById('feTieneFactura'); if(chk) chk.checked=true;
+  if(d.proveedor){
     document.getElementById('feProvNuevo').style.display='block';
-    document.getElementById('feProvNuevo').value=nomEmisor;
-    document.getElementById('feProv').value=nomEmisor;
+    document.getElementById('feProvNuevo').value=d.proveedor;
+    document.getElementById('feProv').value=d.proveedor;
   }
-  // Montos
-  const subtotal=parseFloat(cfdi.getAttribute('SubTotal')||cfdi.getAttribute('subtotal')||0);
-  const total=parseFloat(cfdi.getAttribute('Total')||cfdi.getAttribute('total')||0);
-  if(document.getElementById('feSubtotal')) document.getElementById('feSubtotal').value=subtotal.toFixed(2);
-  // Impuestos
-  const ivaT=xml.querySelector('Traslado[Impuesto="002"],traslado[impuesto="002"]');
-  const ivaR=xml.querySelector('Retencion[Impuesto="002"],retencion[impuesto="002"]');
-  const isrR=xml.querySelector('Retencion[Impuesto="001"],retencion[impuesto="001"]');
-  const ivaTras=parseFloat(ivaT?.getAttribute('Importe')||ivaT?.getAttribute('importe')||0);
-  const ivaRet=parseFloat(ivaR?.getAttribute('Importe')||ivaR?.getAttribute('importe')||0);
-  const isr=parseFloat(isrR?.getAttribute('Importe')||isrR?.getAttribute('importe')||0);
-  if(document.getElementById('feIvaTras')) document.getElementById('feIvaTras').value=ivaTras.toFixed(2);
-  if(document.getElementById('feIvaRet')) document.getElementById('feIvaRet').value=ivaRet.toFixed(2);
-  if(document.getElementById('feIsr')) document.getElementById('feIsr').value=isr.toFixed(2);
-  if(document.getElementById('feTotal')) document.getElementById('feTotal').value=total.toFixed(2);
-  // Concepto
-  const concepto=xml.querySelector('Concepto,concepto')?.getAttribute('Descripcion')||xml.querySelector('Concepto,concepto')?.getAttribute('descripcion')||'';
-  if(concepto&&document.getElementById('feConcepto')) document.getElementById('feConcepto').value=concepto;
+  if(document.getElementById('feSubtotal')) document.getElementById('feSubtotal').value=d.subtotal.toFixed(2);
+  if(document.getElementById('feIvaTras')) document.getElementById('feIvaTras').value=d.ivaTras.toFixed(2);
+  if(document.getElementById('feIvaRet')) document.getElementById('feIvaRet').value=d.ivaRet.toFixed(2);
+  if(document.getElementById('feIsr')) document.getElementById('feIsr').value=d.isr.toFixed(2);
+  if(document.getElementById('feTotal')) document.getElementById('feTotal').value=d.total.toFixed(2);
+  if(d.concepto&&document.getElementById('feConcepto')) document.getElementById('feConcepto').value=d.concepto;
 }
 
 async function guardarFactEgreso(){
@@ -7572,32 +7700,20 @@ function editarEgresoModal(id){
 }
 
 function parsearXmlEgresoEdit(){
-  // Reuse same parser but target edit fields
   const file=document.getElementById('eeXmlFile')?.files?.[0];
   if(!file)return;
   const r=new FileReader();
   r.onload=e=>{
-    const xml=(new DOMParser()).parseFromString(e.target.result,'text/xml');
-    const cfdi=xml.querySelector('Comprobante')||xml.documentElement;
-    const emisor=xml.querySelector('Emisor');
-    const fecha=(cfdi.getAttribute('Fecha')||'').slice(0,10);
-    if(fecha) document.getElementById('eeFecha').value=fecha;
-    const folio=(cfdi.getAttribute('Serie')||'')+(cfdi.getAttribute('Folio')||'');
-    if(folio) document.getElementById('eeFolio').value=folio;
-    const nom=emisor?.getAttribute('Nombre')||'';
-    if(nom) document.getElementById('eeProveedor').value=nom;
-    const sub=parseFloat(cfdi.getAttribute('SubTotal')||0);
-    const tot=parseFloat(cfdi.getAttribute('Total')||0);
-    if(sub) document.getElementById('eeSubtotal').value=sub.toFixed(2);
-    if(tot) document.getElementById('eeTotal').value=tot.toFixed(2);
-    const ivaT=xml.querySelector('Traslado[Impuesto="002"]');
-    const ivaR=xml.querySelector('Retencion[Impuesto="002"]');
-    const isrR=xml.querySelector('Retencion[Impuesto="001"]');
-    if(ivaT) document.getElementById('eeIvaTras').value=parseFloat(ivaT.getAttribute('Importe')||0).toFixed(2);
-    if(ivaR) document.getElementById('eeIvaRet').value=parseFloat(ivaR.getAttribute('Importe')||0).toFixed(2);
-    if(isrR) document.getElementById('eeIsr').value=parseFloat(isrR.getAttribute('Importe')||0).toFixed(2);
-    const conc=xml.querySelector('Concepto')?.getAttribute('Descripcion')||'';
-    if(conc) document.getElementById('eeConcepto').value=conc;
+    const d=parsearCFDI(e.target.result);
+    if(d.fecha) document.getElementById('eeFecha').value=d.fecha;
+    if(d.folio) document.getElementById('eeFolio').value=d.folio;
+    if(d.proveedor) document.getElementById('eeProveedor').value=d.proveedor;
+    if(d.subtotal) document.getElementById('eeSubtotal').value=d.subtotal.toFixed(2);
+    if(d.total) document.getElementById('eeTotal').value=d.total.toFixed(2);
+    if(document.getElementById('eeIvaTras')) document.getElementById('eeIvaTras').value=d.ivaTras.toFixed(2);
+    if(document.getElementById('eeIvaRet')) document.getElementById('eeIvaRet').value=d.ivaRet.toFixed(2);
+    if(document.getElementById('eeIsr')) document.getElementById('eeIsr').value=d.isr.toFixed(2);
+    if(d.concepto) document.getElementById('eeConcepto').value=d.concepto;
     // Marcar automáticamente "Tiene factura" al cargar XML
     const chkE=document.getElementById('eeTieneFactura');
     if(chkE) chkE.checked=true;
