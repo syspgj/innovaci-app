@@ -1071,30 +1071,29 @@ async function confirmarTraspaso(){
   const btn=document.querySelector('#bannerTraspaso button');
   if(btn){btn.disabled=true;btn.textContent='Traspasando...';}
   let ok=0,err=0;
+  const nuevaFecha=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(new Date(currentYear,currentMonth,0).getDate()).padStart(2,'0')}`;
   for(const r of pendientes){
-    // Calcular nueva fecha prevista en el mes actual
-    const nuevaFecha=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(new Date(currentYear,currentMonth,0).getDate()).padStart(2,'0')}`;
+    const mesAntNombre=getNombreMes(currentMonth===1?12:currentMonth-1);
     const {error}=await sb.from('pipeline_vendedor').insert({
-      usuario_id:r.usuario_id,
+      usuario_id:currentUser.id,
       anio:currentYear,
       mes:currentMonth,
-      tipo_servicio:r.tipo_servicio,
-      producto:r.producto,
-      cliente:r.cliente,
-      vendedor_asignado:r.vendedor_asignado,
-      monto_total:r.monto_total,
-      subtotal:r.subtotal,
-      probabilidad:r.probabilidad,
-      estatus:'Negociando',
-      notas:(r.notas?r.notas+'\n':'')+'📋 Traspasado de '+getNombreMes(currentMonth===1?12:currentMonth-1),
+      tipo_servicio:r.tipo_servicio||'',
+      producto:r.producto||'',
+      cliente:r.cliente||'',
+      monto_total:r.monto_total||0,
+      subtotal:r.subtotal||0,
+      probabilidad:r.probabilidad||50,
       fecha_prevista:nuevaFecha,
+      estatus:'Negociando',
+      objecion:(r.objecion?r.objecion+' | ':'')+'📋 Traspasado de '+mesAntNombre,
+      updated_at:new Date().toISOString(),
     });
-    if(error) err++;
+    if(error){console.error('Error traspaso:',error.message);err++;}
     else ok++;
   }
   document.getElementById('bannerTraspaso')?.remove();
   if(err>0) alert(`⚠️ ${ok} traspasados, ${err} con error.`);
-  // Recargar pipeline del mes actual
   const {data:rows}=await sb.from('pipeline_vendedor')
     .select('*').eq('usuario_id',currentUser.id)
     .eq('anio',currentYear).eq('mes',currentMonth);
