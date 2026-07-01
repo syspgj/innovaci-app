@@ -336,6 +336,11 @@ function aplicarAjusteComision(comisionBase, tasaBase, ventas, ajuste){
 function fmt(n){return '$'+Math.round(n).toLocaleString('es-MX');}
 function fmtFecha(iso){if(!iso)return null;const[y,m,d]=iso.split('-');return`${d}/${m}/${y}`;}
 function fmtK(n){return n>=1000?'$'+(n/1000).toFixed(0)+'K':'$'+Math.round(n);}
+// Fecha local del dispositivo (evita bug UTC que cambia la fecha a las 6 PM en México)
+function todayLocal(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+function localDateStr(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+// Últimos N días en orden descendente (hoy primero)
+function ultimosDias(n){const dias=[];const hoy=new Date();for(let i=0;i<n;i++){const d=new Date(hoy);d.setDate(hoy.getDate()-i);dias.push(localDateStr(d));}return dias;}
 function pcol(p){return p>=1?'#27AE60':p>=0.8?'#F5A623':'#E84040';}
 function pbadge(p){const pct=Math.round(p*100),cls=p>=1?'bg':p>=0.8?'bo':'br',i=p>=1?'✓':p>=0.8?'→':'↓';return `<span class="badge ${cls}">${i} ${pct}%</span>`;}
 
@@ -813,7 +818,7 @@ async function renderVendorMiMes(){
     return `<div class="sc"><div class="sc-icon">${icons[k.kpi_key]||'📌'}</div><div class="sc-val" style="color:${c};">${k.tipo==='$'?fmtK(v):v}</div><div class="sc-name">${k.kpi_nombre}</div><div class="sc-sub"><span class="badge ${cls}">${Math.round(Math.min(p,1)*100)}%</span></div></div>`;
   }).join('');
   // Daily table
-  const today=new Date().toISOString().split('T')[0];
+  const today=todayLocal();
   document.getElementById('dailyBody').innerHTML=registros.length?registros.map(r=>{
     const isT=r.fecha===today;
     return `<tr class="${isT?'today-row':''}"><td style="color:var(--text3);font-family:'JetBrains Mono',monospace;font-size:11px;">${r.fecha.slice(5)}${isT?' 🔵':''}</td>
@@ -849,15 +854,27 @@ function updSim(v,meta){
 }
 
 // ─── REGISTRO FORM ────────────────────────────────────────────────────────────
-async function renderRegistroForm(){
-  const today=new Date().toISOString().split('T')[0];
-  // Buscar si ya hay registro hoy
-  const {data:existing}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).eq('fecha',today).single();
+async function renderRegistroForm(fechaSel){
+  const today=todayLocal();
+  const fecha=fechaSel||today;
+  // Buscar si ya hay registro para la fecha seleccionada
+  const {data:existing}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).eq('fecha',fecha).single();
   const r=existing||{};
+  const dias=ultimosDias(7);
+  const selectorDias=dias.map(d=>{
+    const label=d===today?'Hoy':fmtFecha(d);
+    const activo=d===fecha;
+    return `<button onclick="renderRegistroForm('${d}')" style="padding:5px 12px;border-radius:20px;border:1.5px solid ${activo?'var(--teal)':'var(--border)'};background:${activo?'var(--teal)':'transparent'};color:${activo?'#fff':'var(--text3)'};font-size:11px;font-weight:${activo?'700':'400'};cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">${label}</button>`;
+  }).join('');
   document.getElementById('mainContent').innerHTML=`
   <div class="reg-form">
-    <div class="form-title">📝 Registro del día — <span style="color:var(--teal);">${today}</span>
-      ${existing?'<span class="badge bg">Editando registro existente</span>':'<span class="badge bt">Nuevo registro</span>'}
+    <div style="margin-bottom:14px;">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Selecciona el día a registrar</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${selectorDias}</div>
+    </div>
+    <div class="form-title">📝 Registro del día — <span style="color:var(--teal);">${fmtFecha(fecha)}</span>
+      ${existing?'<span class="badge bg">Editando</span>':'<span class="badge bt">Nuevo</span>'}
+      ${fecha!==today?'<span style="font-size:10px;background:#fff3cd;color:#856404;border:1px solid #ffc107;border-radius:4px;padding:2px 7px;margin-left:4px;">Día pasado</span>':''}
     </div>
     <div style="margin-bottom:16px;font-size:13px;color:var(--text2);">Ingresa tus ventas y actividades de hoy.</div>
     <div class="shead">Ventas</div>
@@ -929,7 +946,7 @@ async function renderRegistroForm(){
     </div>
 
     <div class="form-actions">
-      <button class="btn-save" id="btnSave" onclick="saveRegistro('${today}','${existing?.id||''}')">💾 Guardar registro</button>
+      <button class="btn-save" id="btnSave" onclick="saveRegistro('${fecha}','${existing?.id||''}')">💾 Guardar registro</button>
     </div>
     <div class="save-msg" id="saveMsg"></div>
   </div>`;
@@ -939,6 +956,16 @@ async function saveRegistro(fecha,existingId){
   const btn=document.getElementById('btnSave');
   const msg=document.getElementById('saveMsg');
   btn.disabled=true;btn.textContent='Guardando...';msg.textContent='';
+  const today=todayLocal();
+  const esEdicion=!!existingId;
+  const esDiaPasado=fecha!==today;
+  // Log de edición si modifica un día pasado o registro existente
+  let notasLog='';
+  if(esEdicion||esDiaPasado){
+    const ahora=new Date();
+    const hora=ahora.getHours()+':'+String(ahora.getMinutes()).padStart(2,'0');
+    notasLog=`✏️ Editado el ${fmtFecha(today)} a las ${hora}`;
+  }
   const payload={
     usuario_id:currentUser.id,fecha,
     svc:parseFloat(document.getElementById('fSvc').value)||0,
@@ -961,6 +988,7 @@ async function saveRegistro(fecha,existingId){
     neg_prospectos_monto:parseFloat(document.getElementById('fNegProsMonto').value)||0,
     updated_at:new Date().toISOString(),
   };
+  if(notasLog) payload.notas=notasLog;
   const {error}=await sb.from('registros_diarios').upsert(payload,{onConflict:'usuario_id,fecha'});
   btn.disabled=false;btn.textContent='💾 Guardar registro';
   if(error){msg.style.color='var(--red)';msg.textContent='Error al guardar: '+error.message;}
@@ -1078,7 +1106,7 @@ function filaPipe(r){
 }
 
 function agregarFilaPipe(){
-  const hoy=new Date().toISOString().split('T')[0];
+  const hoy=todayLocal();
   const modal=document.createElement('div');
   modal.id='modalPipe';
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -2931,7 +2959,7 @@ async function verRegistrosVendedor(userId, nombre){
 
 function filaAuditoria(r){
   const auditado=r.auditado;
-  const hoy=new Date().toISOString().split('T')[0];
+  const hoy=todayLocal();
   const esHoy=r.fecha===hoy;
   return `<tr id="arow_${r.id}" style="border-bottom:1px solid var(--border);background:${auditado?'rgba(39,174,96,0.04)':'transparent'};">
     <td style="padding:7px 10px;font-weight:500;white-space:nowrap;">
@@ -3981,7 +4009,7 @@ async function renderTele(){
     <table class="daily">
       <thead><tr><th>Fecha</th><th>Llamadas</th><th>Prospectos</th><th>Confirmaciones</th><th>Siigo</th><th>Seguimientos</th></tr></thead>
       <tbody>${rs.length?rs.map(r=>{
-        const isT=r.fecha===new Date().toISOString().split('T')[0];
+        const isT=r.fecha===todayLocal();
         return `<tr class="${isT?'today-row':''}">
           <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${r.fecha.slice(5)}${isT?' 🔵':''}</td>
           <td style="text-align:center;font-weight:500;">${r.llamadas_efectivas||0}</td>
@@ -3995,29 +4023,44 @@ async function renderTele(){
   </div>`;
 }
 
-async function renderTeleRegistro(){
-  const today=new Date().toISOString().split('T')[0];
-  const {data:existing}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).eq('fecha',today).maybeSingle();
+async function renderTeleRegistro(fechaSel){
+  const today=todayLocal();
+  const fecha=fechaSel||today;
+  const {data:existing}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).eq('fecha',fecha).maybeSingle();
   const r=existing||{};
 
-  // Llamadas efectivas de hoy — cuenta automática desde prospecto_llamadas
-  const {data:llamadasHoy}=await sb.from('prospecto_llamadas').select('id').eq('usuario_id',currentUser.id).eq('fecha',today);
-  const llamadasAuto=(llamadasHoy||[]).length;
+  // Llamadas efectivas — automático desde prospecto_llamadas (solo aplica para hoy)
+  const {data:llamadasHoy}=await sb.from('prospecto_llamadas').select('id').eq('usuario_id',currentUser.id).eq('fecha',fecha);
+  const llamadasAuto=fecha===today?(llamadasHoy||[]).length:(r.llamadas_efectivas||0);
 
-  // Llamadas a cartera de clientes hoy — cuenta automática desde llamadas_cartera
+  // Llamadas a cartera de clientes — automático desde llamadas_cartera (solo aplica para hoy)
   const {data:llamadasCartHoy}=await sb.from('llamadas_cartera')
     .select('id').eq('usuario_id',currentUser.id)
-    .gte('created_at',today+'T00:00:00').lte('created_at',today+'T23:59:59');
-  const llamadasCartAuto=(llamadasCartHoy||[]).length;
+    .gte('created_at',fecha+'T00:00:00').lte('created_at',fecha+'T23:59:59');
+  const llamadasCartAuto=fecha===today?(llamadasCartHoy||[]).length:(r.llamadas_cartera||0);
 
-  // Prospectos canalizados a ventas hoy — cuenta automática desde prospectos (aproximado por updated_at, mismo criterio que el dashboard)
+  // Prospectos canalizados — automático
   const {data:misProspectos}=await sb.from('prospectos').select('vendedor_asignado,updated_at').eq('asignado_a',currentUser.id).not('vendedor_asignado','is',null);
-  const canalizadosAuto=(misProspectos||[]).filter(p=>p.updated_at&&p.updated_at.slice(0,10)===today).length;
+  const canalizadosAuto=fecha===today
+    ?(misProspectos||[]).filter(p=>p.updated_at&&p.updated_at.slice(0,10)===fecha).length
+    :(r.prospectos_canalizados||0);
+
+  const dias=ultimosDias(7);
+  const selectorDias=dias.map(d=>{
+    const label=d===today?'Hoy':fmtFecha(d);
+    const activo=d===fecha;
+    return `<button onclick="renderTeleRegistro('${d}')" style="padding:5px 12px;border-radius:20px;border:1.5px solid ${activo?'var(--teal)':'var(--border)'};background:${activo?'var(--teal)':'transparent'};color:${activo?'#fff':'var(--text3)'};font-size:11px;font-weight:${activo?'700':'400'};cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">${label}</button>`;
+  }).join('');
 
   document.getElementById('mainContent').innerHTML=`
   <div class="reg-form">
-    <div class="form-title">📞 Registro del día — <span style="color:var(--teal);">${today}</span>
+    <div style="margin-bottom:14px;">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Selecciona el día a registrar</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${selectorDias}</div>
+    </div>
+    <div class="form-title">📞 Registro del día — <span style="color:var(--teal);">${fmtFecha(fecha)}</span>
       ${existing?'<span class="badge bg">Editando</span>':'<span class="badge bt">Nuevo</span>'}
+      ${fecha!==today?'<span style="font-size:10px;background:#fff3cd;color:#856404;border:1px solid #ffc107;border-radius:4px;padding:2px 7px;margin-left:4px;">Día pasado</span>':''}
     </div>
     <div class="shead">Telemarketing</div>
     <div class="form-grid fg3">
@@ -4043,7 +4086,7 @@ async function renderTeleRegistro(){
     </div>
     <div style="font-size:11px;color:var(--text3);margin:12px 0 14px 2px;padding-top:4px;border-top:1px solid var(--border);">Los campos marcados como "automático" se calculan a partir de tu actividad en Mis prospectos y no se pueden editar aquí.</div>
     <div class="form-actions">
-      <button class="btn-save" id="btnSave" onclick="saveTeleRegistro('${today}',${llamadasAuto},${canalizadosAuto},${llamadasCartAuto})">💾 Guardar registro</button>
+      <button class="btn-save" id="btnSave" onclick="saveTeleRegistro('${fecha}',${llamadasAuto},${canalizadosAuto},${llamadasCartAuto})">💾 Guardar registro</button>
     </div>
     <div class="save-msg" id="saveMsg"></div>
   </div>`;
@@ -4053,7 +4096,15 @@ async function saveTeleRegistro(fecha,llamadasAuto,canalizadosAuto,llamadasCartA
   const btn=document.getElementById('btnSave');
   const msg=document.getElementById('saveMsg');
   btn.disabled=true;btn.textContent='Guardando...';
-  // Venta de cursos automática: se mantiene el valor ya existente (alimentado por "Compró el taller 24/7"), no se sobreescribe desde aquí
+  const today=todayLocal();
+  const esDiaPasado=fecha!==today;
+  let notasLog='';
+  if(esDiaPasado){
+    const ahora=new Date();
+    const hora=ahora.getHours()+':'+String(ahora.getMinutes()).padStart(2,'0');
+    notasLog=`✏️ Editado el ${fmtFecha(today)} a las ${hora}`;
+  }
+  // Venta de cursos automática: se mantiene el valor ya existente
   const {data:existingVenta}=await sb.from('registros_diarios').select('venta_cursos_tele').eq('usuario_id',currentUser.id).eq('fecha',fecha).maybeSingle();
   const payload={
     usuario_id:currentUser.id,fecha,
@@ -4068,6 +4119,7 @@ async function saveTeleRegistro(fecha,llamadasAuto,canalizadosAuto,llamadasCartA
     crm_actualizaciones:parseInt(document.getElementById('fCrm')?document.getElementById('fCrm').value:0)||0,
     updated_at:new Date().toISOString(),
   };
+  if(notasLog) payload.notas=notasLog;
   const {error}=await sb.from('registros_diarios').upsert(payload,{onConflict:'usuario_id,fecha'});
   btn.disabled=false;btn.textContent='💾 Guardar registro';
   if(error){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}
@@ -4084,7 +4136,7 @@ async function autoRegistrarDiasCartera(registrosExistentes){
     if(d) diasConLlamadas[d]=(diasConLlamadas[d]||0)+1;
   });
   const fechasConRegistro=new Set((registrosExistentes||[]).map(r=>r.fecha));
-  const today=new Date().toISOString().slice(0,10);
+  const today=todayLocal();
   for(const [fecha,count] of Object.entries(diasConLlamadas)){
     if(fecha>=today) continue;
     if(fechasConRegistro.has(fecha)) continue;
@@ -4368,7 +4420,7 @@ function filtrarProspectos(){
 }
 
 async function actualizarEstatus(id, estatus){
-  const hoy=new Date().toISOString().split('T')[0];
+  const hoy=todayLocal();
   const {error}=await sb.from('prospectos').update({
     estatus, fecha_contacto:hoy, updated_at:new Date().toISOString()
   }).eq('id',id);
@@ -4836,7 +4888,7 @@ async function guardarYSiguiente(id){
 async function guardarProspecto(id){
   const estatus=document.getElementById('estatusModal')?.value;
   const notas=document.getElementById('notasModal')?.value||'';
-  const hoy=new Date().toISOString().split('T')[0];
+  const hoy=todayLocal();
   const upd={notas,updated_at:new Date().toISOString()};
   if(estatus) upd.estatus=estatus;
   if(estatus) upd.fecha_contacto=hoy;
@@ -5643,7 +5695,7 @@ async function renderVistaPromociones(){
 }
 
 function buildPromoVistaHtml(bySeccion){
-  const today=new Date().toISOString().slice(0,10);
+  const today=todayLocal();
   function vig(p){
     if(!p||!p.descuento)return'';
     if(p.permanente)return'<span style="font-size:10px;background:rgba(39,174,96,0.12);color:#27AE60;padding:1px 7px;border-radius:10px;font-weight:600;">Permanente</span>';
@@ -5790,7 +5842,7 @@ function renderPromoConfig(){
     grupos[s.grupo].items.push(s);
   });
 
-  const today=new Date().toISOString().slice(0,10);
+  const today=todayLocal();
 
   cont.innerHTML=`
   <div style="display:grid;gap:16px;">
@@ -6519,7 +6571,7 @@ async function renderFinEgresos(){
 }
 
 function abrirNuevoEgreso(){
-  const today=new Date().toISOString().slice(0,10);
+  const today=todayLocal();
   const form=document.createElement('div');
   form.id='formEgreso';
   form.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
@@ -7207,7 +7259,7 @@ function sel(id,opts,val=''){return `<select id="${id}" style="width:100%;paddin
 
 // ─── MODAL INGRESO NUEVO ─────────────────────────────────────────────────────
 function abrirNuevaFactIngreso(){
-  const today=new Date().toISOString().slice(0,10);
+  const today=todayLocal();
   const rubros=window._rubrosIng||['MEMBRESIA','TIMBRES','CLOUD','CLIENTES GB'];
   const html=`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
@@ -7352,7 +7404,7 @@ async function guardarEdicionIngreso(){
 
 // ─── MODAL EGRESO NUEVO ───────────────────────────────────────────────────────
 function abrirNuevaFactEgreso(){
-  const today=new Date().toISOString().slice(0,10);
+  const today=todayLocal();
   const rubros=window._rubrosEg||['IMSS','SAT','CLOUD','GASTOS OPERATIVOS'];
   const provs=(window._feRows||[]).map(r=>r.proveedor).filter(Boolean);
   const uProvs=[...new Set(provs)].sort();
@@ -7645,7 +7697,7 @@ async function renderFinImpuestos(){
 }
 
 function abrirNuevoImpuesto(){
-  const today=new Date().toISOString().slice(0,10);
+  const today=todayLocal();
   const form=document.createElement('div');
   form.id='formImpuesto';
   form.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
