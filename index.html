@@ -8277,21 +8277,193 @@ function buildAdminUI(){
     </div>
   </div>
   <div class="tabs"><div id="tabBar">
-    <div class="tab active" onclick="swAdminTab('admin')">📋 Administración</div>
+    <div class="tab active" id="tabAdminFin" onclick="swAdminTab('finanzas')">💰 Finanzas</div>
+    <div class="tab" id="tabAdminVend" onclick="swAdminTab('vendedores')">📊 Resumen Vendedores</div>
   </div></div>
   <div class="main-content"><div id="mainContent"></div></div>`;
   renderAdminActual();
 }
 
-let currentAdminMainTab='admin';
-function swAdminTab(id){currentAdminMainTab=id;renderAdminActual();}
+let currentAdminMainTab='finanzas';
+function swAdminTab(id){
+  currentAdminMainTab=id;
+  document.querySelectorAll('#tabBar .tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById(id==='finanzas'?'tabAdminFin':'tabAdminVend')?.classList.add('active');
+  renderAdminActual();
+}
 function renderAdminActual(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='';
-  currentFinTab='admin';
-  renderFinanzas();
+  if(currentAdminMainTab==='vendedores'){
+    renderAdminDashVendedores();
+  } else {
+    currentFinTab='admin';
+    renderFinanzas();
+  }
 }
 
+
+// ─── DASHBOARD VENDEDORES — vista Administración ──────────────────────────────
+async function renderAdminDashVendedores(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando resumen de vendedores...</div>';
+  const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const nomMes=meses[currentMonth];
+
+  // Cargar registros diarios de todos los vendedores del mes
+  const {data:regs}=await sb.from('registros_diarios')
+    .select('fecha,usuario_id,svc,aspel,it,diplomados,monto_cotizaciones,cotizaciones,clientes_nuevos,demos,valoraciones,cursos,siigo_fiscal,talleres_vivo')
+    .gte('fecha',`${currentYear}-${String(currentMonth).padStart(2,'0')}-01`)
+    .lte('fecha',`${currentYear}-${String(currentMonth).padStart(2,'0')}-31`);
+
+  // Cargar usuarios vendedores
+  const {data:usuarios}=await sb.from('usuarios').select('id,nombre,cuota_mensual,color').in('rol',['vendedor','director']);
+
+  // Cargar KPI config para cuotas
+  const {data:kpiConf}=await sb.from('kpi_config').select('usuario_id,meta').eq('anio',currentYear).eq('mes',currentMonth).eq('clave','svc');
+
+  const vendedores=(usuarios||[]).filter(u=>u.nombre!=='Director');
+  const cuotaMap={};
+  (kpiConf||[]).forEach(k=>{ cuotaMap[k.usuario_id]=k.meta; });
+
+  // Agrupar ventas por vendedor y por día
+  const ventasPorVend={};
+  const ventasPorDia={};
+  (regs||[]).forEach(r=>{
+    const uid=r.usuario_id;
+    const venta=(r.svc||0)+(r.aspel||0)+(r.it||0)+(r.diplomados||0)+(r.talleres_vivo||0);
+    if(!ventasPorVend[uid]) ventasPorVend[uid]=0;
+    ventasPorVend[uid]+=venta;
+    const d=parseInt((r.fecha||'').slice(8,10));
+    if(!ventasPorDia[d]) ventasPorDia[d]={};
+    ventasPorDia[d][uid]=(ventasPorDia[d][uid]||0)+venta;
+  });
+
+  const totalGeneral=Object.values(ventasPorVend).reduce((s,v)=>s+v,0);
+
+  // Colores por vendedor
+  const colores={'Dulce Solano':'#E91E8C','Manuel Peña':'#1B4D6E','Mireya Villegas':'#9C27B0'};
+
+  // Tarjetas resumen por vendedor
+  const tarjetas=vendedores.map(v=>{
+    const venta=ventasPorVend[v.id]||0;
+    const cuota=cuotaMap[v.id]||v.cuota_mensual||80000;
+    const pct=cuota>0?Math.round(venta/cuota*100):0;
+    const color=colores[v.nombre]||v.color||'var(--teal)';
+    return `<div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:16px 20px;">
+      <div style="font-size:12px;font-weight:700;color:${color};margin-bottom:6px;text-transform:uppercase;">${v.nombre}</div>
+      <div style="font-size:22px;font-weight:800;color:var(--navy);">${fmt(venta)}</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:2px;">de ${fmt(cuota)} meta</div>
+      <div style="height:6px;background:#eee;border-radius:3px;margin:8px 0;">
+        <div style="height:6px;border-radius:3px;width:${Math.min(pct,100)}%;background:${pct>=100?'#27AE60':pct>=70?color:'#F5A623'};"></div>
+      </div>
+      <div style="font-size:13px;font-weight:700;color:${pct>=100?'#27AE60':pct>=70?color:'#F5A623'};">${pct}%</div>
+    </div>`;
+  }).join('');
+
+  // Tabla de días
+  const diasDelMes=new Date(currentYear,currentMonth,0).getDate();
+  const filasTabla=[];
+  for(let d=1;d<=diasDelMes;d++){
+    const fecha=new Date(currentYear,currentMonth-1,d);
+    const diaSem=['D','L','M','MI','J','V','S'][fecha.getDay()];
+    if(diaSem==='D'||diaSem==='S') continue; // solo días hábiles
+    const diaVentas=ventasPorDia[d]||{};
+    const totalDia=Object.values(diaVentas).reduce((s,v)=>s+v,0);
+    filasTabla.push(`<tr style="border-bottom:1px solid #f0f0f0;${totalDia>0?'':'opacity:0.4'}">
+      <td style="padding:5px 8px;font-size:11px;color:var(--text3);text-align:center;">${diaSem}</td>
+      <td style="padding:5px 8px;font-size:11px;font-weight:600;text-align:center;">${d}</td>
+      ${vendedores.map(v=>{
+        const v2=diaVentas[v.id]||0;
+        const color=colores[v.nombre]||'var(--teal)';
+        return `<td style="padding:5px 8px;text-align:right;font-size:11px;font-weight:${v2>0?700:400};color:${v2>0?color:'var(--text3)'};">${v2>0?fmt(v2):'—'}</td>`;
+      }).join('')}
+      <td style="padding:5px 8px;text-align:right;font-size:11px;font-weight:700;color:${totalDia>0?'var(--navy)':'var(--text3)'};">${totalDia>0?fmt(totalDia):'—'}</td>
+    </tr>`);
+  }
+
+  // Ventas por semana
+  const semanas={1:[],2:[],3:[],4:[],5:[]};
+  for(let d=1;d<=diasDelMes;d++){
+    const s=Math.ceil(d/7)>4?5:Math.ceil(d/7);
+    semanas[s].push(Object.values(ventasPorDia[d]||{}).reduce((a,v)=>a+v,0));
+  }
+  const semResumen=Object.entries(semanas).map(([n,dias])=>{
+    const tot=dias.reduce((a,v)=>a+v,0);
+    const maxSem=Math.max(...Object.values(semanas).map(d=>d.reduce((a,v)=>a+v,0)));
+    return `<tr>
+      <td style="padding:5px 10px;font-size:12px;">${['1ª','2ª','3ª','4ª','5ª'][n-1]} semana</td>
+      <td style="padding:5px 10px;text-align:right;font-size:12px;font-weight:700;color:${tot===maxSem?'#27AE60':'var(--navy)'};">${fmt(tot)}</td>
+    </tr>`;
+  }).join('');
+
+  mc.innerHTML=`
+  <div style="max-width:1100px;padding:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <h2 style="margin:0;font-size:18px;color:var(--navy);">📊 Resumen de Ventas — ${nomMes} ${currentYear}</h2>
+      <div style="font-size:13px;color:var(--text3);">Total general: <strong style="color:var(--navy);font-size:16px;">${fmt(totalGeneral)}</strong></div>
+    </div>
+
+    <!-- Tarjetas vendedores -->
+    <div style="display:grid;grid-template-columns:repeat(${Math.min(vendedores.length,4)},1fr);gap:12px;margin-bottom:20px;">
+      ${tarjetas}
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 220px;gap:16px;">
+      <!-- Tabla por día -->
+      <div style="background:#fff;border:1px solid var(--border);border-radius:10px;overflow:hidden;">
+        <div style="padding:10px 14px;font-size:12px;font-weight:700;color:var(--navy);border-bottom:1px solid var(--border);">
+          ${nomMes} ${currentYear} — Venta de Servicios por día
+        </div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;">
+            <thead><tr style="background:var(--navy);color:#fff;">
+              <th style="padding:6px 8px;font-size:10px;text-align:center;"></th>
+              <th style="padding:6px 8px;font-size:10px;text-align:center;">Día</th>
+              ${vendedores.map(v=>`<th style="padding:6px 8px;font-size:10px;text-align:right;">${v.nombre.split(' ')[0]}</th>`).join('')}
+              <th style="padding:6px 8px;font-size:10px;text-align:right;">Total</th>
+            </tr></thead>
+            <tbody>${filasTabla.join('')}</tbody>
+            <tfoot><tr style="background:var(--navy);color:#fff;">
+              <td colspan="2" style="padding:7px 10px;font-size:11px;font-weight:700;">TOTAL</td>
+              ${vendedores.map(v=>`<td style="padding:7px 8px;text-align:right;font-size:11px;font-weight:700;">${fmt(ventasPorVend[v.id]||0)}</td>`).join('')}
+              <td style="padding:7px 8px;text-align:right;font-size:11px;font-weight:700;">${fmt(totalGeneral)}</td>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      <!-- Panel lateral -->
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <!-- Por semana -->
+        <div style="background:#fff;border:1px solid var(--border);border-radius:10px;overflow:hidden;">
+          <div style="padding:8px 14px;font-size:11px;font-weight:700;color:var(--navy);border-bottom:1px solid var(--border);">Ventas por semana</div>
+          <table style="width:100%;border-collapse:collapse;">${semResumen}</table>
+        </div>
+        <!-- Cumplimiento -->
+        <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 14px;">
+          <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:10px;">Cumplimiento por vendedor</div>
+          ${vendedores.map(v=>{
+            const venta=ventasPorVend[v.id]||0;
+            const cuota=cuotaMap[v.id]||v.cuota_mensual||80000;
+            const pct=cuota>0?Math.round(venta/cuota*100):0;
+            const color=colores[v.nombre]||'var(--teal)';
+            return `<div style="margin-bottom:10px;">
+              <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px;">
+                <span style="font-weight:600;color:${color};">${v.nombre.split(' ')[0]}</span>
+                <span style="font-weight:700;color:${pct>=100?'#27AE60':'var(--navy)'};">${pct}%</span>
+              </div>
+              <div style="height:8px;background:#eee;border-radius:4px;">
+                <div style="height:8px;border-radius:4px;width:${Math.min(pct,100)}%;background:${pct>=100?'#27AE60':pct>=70?color:'#F5A623'};"></div>
+              </div>
+              <div style="font-size:10px;color:var(--text3);margin-top:2px;">${fmt(venta)} / ${fmt(cuota)}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
 
 // ─── DIRECTOR CONFIG PANEL ───────────────────────────────────────────────────
 async function renderDirectorConfig(){
