@@ -7585,22 +7585,27 @@ function parsearCFDI(xmlStr){
   const cfdi=byLocal('Comprobante')[0]||xml.documentElement;
   const emisor=byLocal('Emisor')[0];
   const concepto=byLocal('Concepto')[0];
-  let ivaTras=0,ivaRet=0,isr=0;
-  byLocal('Traslado').forEach(el=>{
-    if(el.getAttribute('Impuesto')==='002') ivaTras+=parseFloat(el.getAttribute('Importe')||0);
-  });
-  byLocal('Retencion').forEach(el=>{
-    const imp=el.getAttribute('Impuesto');
-    const monto=parseFloat(el.getAttribute('Importe')||0);
-    if(imp==='002') ivaRet+=monto;
-    if(imp==='001') isr+=monto;
-  });
-  // Fallback a atributos del nodo Impuestos si no hay nodos de detalle
-  if(!ivaTras&&!ivaRet){
-    const impNode=byLocal('Impuestos')[0];
-    ivaTras=parseFloat(impNode?.getAttribute('TotalImpuestosTrasladados')||0);
-    ivaRet=parseFloat(impNode?.getAttribute('TotalImpuestosRetenidos')||0);
+
+  // ── Impuestos: solo del nodo raíz (hijo directo de Comprobante), NO de Conceptos
+  // El XML tiene Traslado/Retencion en dos niveles: dentro de Concepto (por ítem)
+  // y en cfdi:Impuestos raíz (totales). Solo queremos el raíz.
+  const impRaiz=Array.from(cfdi.childNodes).find(n=>n.localName==='Impuestos');
+  let ivaTras=parseFloat(impRaiz?.getAttribute('TotalImpuestosTrasladados')||0);
+  let ivaRet=parseFloat(impRaiz?.getAttribute('TotalImpuestosRetenidos')||0);
+  let isr=0;
+  // Detallar ISR desde Retenciones del raíz (TotalImpuestosRetenidos incluye IVA+ISR juntos)
+  if(impRaiz){
+    Array.from(impRaiz.getElementsByTagName('*')).forEach(el=>{
+      if(el.localName==='Retencion'){
+        const imp=el.getAttribute('Impuesto');
+        const monto=parseFloat(el.getAttribute('Importe')||0);
+        if(imp==='001') isr+=monto;
+        // Si TotalImpuestosRetenidos = ivaRet+isr, separar IVA ret
+        if(imp==='002') ivaRet=monto; // sobrescribir con el específico
+      }
+    });
   }
+
   return {
     fecha:(cfdi.getAttribute('Fecha')||'').slice(0,10),
     folio:(cfdi.getAttribute('Serie')||'')+(cfdi.getAttribute('Folio')||''),
