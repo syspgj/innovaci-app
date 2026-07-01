@@ -7437,16 +7437,30 @@ async function previsualizarXMLs(){
   const provs=[...new Set((window._feRows||[]).map(r=>r.proveedor).filter(Boolean))].sort();
   _xmlParsed=[];
   const area=document.getElementById('xmlPreviewArea');
-  area.innerHTML='<div style="text-align:center;padding:20px;color:var(--text3);">Leyendo archivos...</div>';
+  area.innerHTML='<div style="text-align:center;padding:20px;color:var(--text3);">Leyendo y verificando archivos...</div>';
   for(const file of files){
     const txt=await file.text();
     const d=parsearCFDI(txt);
-    d._file=file.name;
-    d._rubro='';
+    d._file=file.name; d._rubro=''; d._existe=false; d._existeId=null;
     _xmlParsed.push(d);
   }
+  // Verificar duplicados en Supabase por folio
+  const folios=_xmlParsed.map(d=>d.folio).filter(Boolean);
+  if(folios.length){
+    const {data:existentes}=await sb.from('fact_egresos').select('id,folio,proveedor,total').in('folio',folios);
+    (existentes||[]).forEach(e=>{
+      const d=_xmlParsed.find(x=>x.folio===e.folio);
+      if(d){d._existe=true;d._existeId=e.id;d._existeProv=e.proveedor;d._existeTotal=e.total;}
+    });
+  }
+  const nuevos=_xmlParsed.filter(d=>!d._existe).length;
+  const dups=_xmlParsed.filter(d=>d._existe).length;
   const INP2='width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;box-sizing:border-box;font-family:Inter,sans-serif;';
   area.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+      <span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(39,174,96,0.12);color:#27AE60;">✅ ${nuevos} nuevo${nuevos!==1?'s':''}</span>
+      ${dups>0?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(245,166,35,0.15);color:#b45309;">⚠️ ${dups} ya existe${dups!==1?'n':''} — se omitirán</span>`:''}
+    </div>
     <table style="width:100%;border-collapse:collapse;font-size:11px;">
       <thead><tr style="background:var(--navy);color:#fff;">
         <th style="padding:6px 8px;text-align:left;">Archivo</th>
@@ -7454,38 +7468,32 @@ async function previsualizarXMLs(){
         <th style="padding:6px 8px;">Folio</th>
         <th style="padding:6px 8px;text-align:left;">Proveedor</th>
         <th style="padding:6px 8px;text-align:right;">Subtotal</th>
-        <th style="padding:6px 8px;text-align:right;">IVA Ret.</th>
-        <th style="padding:6px 8px;text-align:right;">IVA Tras.</th>
-        <th style="padding:6px 8px;text-align:right;">ISR</th>
         <th style="padding:6px 8px;text-align:right;color:#5fe;">Total</th>
         <th style="padding:6px 8px;">Rubro</th>
+        <th style="padding:6px 8px;text-align:center;">Estado</th>
       </tr></thead>
       <tbody>
-        ${_xmlParsed.map((d,i)=>`<tr style="border-bottom:1px solid var(--border);background:${i%2===0?'#f9fafb':'#fff'};">
-          <td style="padding:4px 6px;color:var(--text3);font-size:10px;">${d._file.slice(0,22)}</td>
+        ${_xmlParsed.map((d,i)=>{
+          const rowBg=d._existe?(i%2===0?'#fffbeb':'#fef3c7'):(i%2===0?'#f9fafb':'#fff');
+          return`<tr style="border-bottom:1px solid var(--border);background:${rowBg};${d._existe?'opacity:0.65;':''}">
+          <td style="padding:4px 6px;color:var(--text3);font-size:10px;">${d._file.slice(0,20)}</td>
           <td style="padding:4px 6px;text-align:center;">${d.fecha}</td>
           <td style="padding:4px 6px;text-align:center;font-weight:700;color:var(--navy);">${d.folio||'—'}</td>
-          <td style="padding:4px 6px;max-width:160px;"><input type="text" value="${(d.proveedor||'').replace(/"/g,'&quot;')}" oninput="_xmlParsed[${i}].proveedor=this.value" style="${INP2}" list="xmlProvList"></td>
+          <td style="padding:4px 6px;max-width:150px;"><input type="text" value="${(d.proveedor||'').replace(/"/g,'&quot;')}" oninput="_xmlParsed[${i}].proveedor=this.value" style="${INP2}" list="xmlProvList" ${d._existe?'disabled':''}></td>
           <td style="padding:4px 6px;text-align:right;">${d.subtotal>0?'$'+d.subtotal.toLocaleString('es-MX',{minimumFractionDigits:2}):''}</td>
-          <td style="padding:4px 6px;text-align:right;color:var(--red);">${d.ivaRet>0?'$'+d.ivaRet.toLocaleString('es-MX',{minimumFractionDigits:2}):''}</td>
-          <td style="padding:4px 6px;text-align:right;color:#27AE60;">${d.ivaTras>0?'$'+d.ivaTras.toLocaleString('es-MX',{minimumFractionDigits:2}):''}</td>
-          <td style="padding:4px 6px;text-align:right;color:var(--red);">${d.isr>0?'$'+d.isr.toLocaleString('es-MX',{minimumFractionDigits:2}):''}</td>
           <td style="padding:4px 6px;text-align:right;font-weight:700;">$${d.total.toLocaleString('es-MX',{minimumFractionDigits:2})}</td>
-          <td style="padding:4px 6px;">
-            <select onchange="_xmlParsed[${i}]._rubro=this.value" style="${INP2}">
-              <option value="">-- Rubro --</option>
-              ${rubros.map(r=>`<option value="${r}">${r}</option>`).join('')}
-            </select>
-          </td>
-        </tr>`).join('')}
+          <td style="padding:4px 6px;">${d._existe?'<span style="font-size:10px;color:#b45309;font-style:italic;">ya registrado</span>':`<select onchange="_xmlParsed[${i}]._rubro=this.value" style="${INP2}"><option value="">-- Rubro --</option>${rubros.map(r=>`<option value="${r}">${r}</option>`).join('')}</select>`}</td>
+          <td style="padding:4px 6px;text-align:center;">${d._existe?'<span style="font-size:11px;font-weight:700;color:#b45309;">⚠️ OMITIR</span>':'<span style="font-size:11px;font-weight:700;color:#27AE60;">✅ NUEVO</span>'}</td>
+        </tr>`;
+        }).join('')}
       </tbody>
     </table>
     <datalist id="xmlProvList">${provs.map(p=>`<option value="${p}">`).join('')}</datalist>
     <div style="margin-top:10px;padding:8px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font-size:11px;color:#15803d;font-weight:600;">
-      ✅ ${_xmlParsed.length} archivo(s) listos. Revisa los datos, asigna el rubro a cada uno y da clic en "Guardar todos".
+      Se guardarán ${nuevos} archivo(s) nuevo(s). ${dups>0?`Los ${dups} duplicado(s) serán ignorados.`:''}
     </div>`;
   const btn=document.getElementById('btnXmlMasivoGuardar');
-  if(btn) btn.style.display='inline-block';
+  if(btn) btn.style.display=nuevos>0?'inline-block':'none';
 }
 
 async function guardarXMLsMasivo(){
@@ -7493,23 +7501,17 @@ async function guardarXMLsMasivo(){
   const msg=document.getElementById('xmlMasivoMsg');
   if(!_xmlParsed.length)return;
   btn.disabled=true; btn.textContent='Guardando...';
-  let ok=0,err=0;
+  let ok=0,err=0,omitidos=0;
   for(const d of _xmlParsed){
+    if(d._existe){omitidos++;continue;} // ya registrado, saltar
     const payload={
-      anio:currentYear, mes:currentMonth,
-      fecha_factura:d.fecha||null,
-      folio:d.folio||null,
-      proveedor:d.proveedor||null,
-      concepto:d.concepto||null,
-      rubro:d._rubro||null,
-      subtotal:d.subtotal||0,
-      iva_retenido:d.ivaRet||0,
-      iva_trasladado:d.ivaTras||0,
-      isr:d.isr||0,
-      total:d.total||0,
-      status:'PAGADO',
-      tiene_factura:true,
-      conciliado:false
+      anio:currentYear,mes:currentMonth,
+      fecha_factura:d.fecha||null,folio:d.folio||null,
+      proveedor:d.proveedor||null,concepto:d.concepto||null,
+      rubro:d._rubro||null,subtotal:d.subtotal||0,
+      iva_retenido:d.ivaRet||0,iva_trasladado:d.ivaTras||0,
+      isr:d.isr||0,total:d.total||0,
+      status:'PAGADO',tiene_factura:true,conciliado:false
     };
     const {error}=await sb.from('fact_egresos').insert(payload);
     if(error) err++;
@@ -7517,9 +7519,9 @@ async function guardarXMLsMasivo(){
   }
   btn.disabled=false; btn.textContent='💾 Guardar todos';
   msg.style.color=err?'var(--red)':'#15803d';
-  msg.textContent=`✅ ${ok} guardados${err?` | ⚠️ ${err} con error`:''}`;
+  msg.textContent=`✅ ${ok} guardados${omitidos?` | ⏭️ ${omitidos} omitidos (ya existían)`:''}${err?` | ⚠️ ${err} con error`:''}`;
   if(ok>0){
-    setTimeout(()=>{document.getElementById('modalXmlMasivo')?.remove();renderAdminEgresos();},1200);
+    setTimeout(()=>{document.getElementById('modalXmlMasivo')?.remove();renderAdminEgresos();},1500);
   }
 }
 
