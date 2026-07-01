@@ -3467,7 +3467,7 @@ async function renderTeleClientes(){
       const resColors={'Interesado':'#27AE60','No le interesa':'#E84040','Buzón':'#F5A623','No contestó':'var(--text3)','Volver a llamar':'#2980B9','Pendiente':'rgba(0,0,0,0.15)'};
       const resIconos={'Interesado':'✅','No le interesa':'❌','Buzón':'📵','No contestó':'📞','Volver a llamar':'🔄','Pendiente':'⏳'};
       const desgloseHtml=Object.entries(resultadoCount).sort((a,b)=>b[1]-a[1]).map(([k,v])=>
-        `<div style="display:flex;align-items:center;gap:6px;">
+        `<div onclick="filtrarTeleClientesPorResultado('${k}')" style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:4px 8px;border-radius:6px;transition:background 0.15s;" onmouseover="this.style.background='rgba(0,0,0,0.06)'" onmouseout="this.style.background='transparent'" id="badgeRes_${k.replace(/\s/g,'_')}">
           <span>${resIconos[k]||'•'}</span>
           <span style="font-size:11px;color:var(--text3);">${k}</span>
           <span style="font-size:12px;font-weight:700;color:${resColors[k]||'var(--text)'};">${v}</span>
@@ -3485,7 +3485,7 @@ async function renderTeleClientes(){
       const suscs=cl._suscripciones||[];
       const venceProximo=suscs.some(s=>s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000));
       const colRes=resultado==='Interesado'?'#27AE60':resultado==='No le interesa'?'var(--red)':resultado?'var(--text3)':null;
-      return `<div class="card" style="padding:14px;cursor:pointer;${venceProximo?'border-left:3px solid var(--red);':''}" onclick="abrirDetalleCuentaTele('${cl.id}','${campActiva.id}')" data-razon="${(cl.razon_social||'').toLowerCase()}">
+      return `<div class="card" style="padding:14px;cursor:pointer;${venceProximo?'border-left:3px solid var(--red);':''}" onclick="abrirDetalleCuentaTele('${cl.id}','${campActiva.id}')" data-razon="${(cl.razon_social||'').toLowerCase()}" data-resultado="${(resultado||'Pendiente').toLowerCase()}">
         <div style="display:flex;align-items:flex-start;gap:12px;">
           <div style="flex:1;min-width:0;">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -3515,10 +3515,31 @@ async function renderTeleClientes(){
   </div>`;
 }
 
+let _teleClientesFiltroResultado='';
+function filtrarTeleClientesPorResultado(resultado){
+  // Toggle: si ya está activo ese filtro, lo quita
+  if(_teleClientesFiltroResultado===resultado){
+    _teleClientesFiltroResultado='';
+  } else {
+    _teleClientesFiltroResultado=resultado;
+  }
+  // Actualizar estilo de badges
+  document.querySelectorAll('[id^="badgeRes_"]').forEach(el=>{
+    const esActivo=el.id==='badgeRes_'+_teleClientesFiltroResultado.replace(/\s/g,'_');
+    el.style.background=esActivo?'rgba(0,169,157,0.12)':'transparent';
+    el.style.outline=esActivo?'1.5px solid var(--teal)':'none';
+    el.style.borderRadius='6px';
+  });
+  filtrarTeleClientes();
+}
+
 function filtrarTeleClientes(){
   const q=(document.getElementById('teleClienteBuscar')?.value||'').toLowerCase();
+  const r=_teleClientesFiltroResultado.toLowerCase();
   document.querySelectorAll('#listaTeleClientes .card').forEach(el=>{
-    el.style.display=!q||el.dataset.razon?.includes(q)?'':'none';
+    const coincideTexto=!q||el.dataset.razon?.includes(q);
+    const coincideRes=!r||el.dataset.resultado===r;
+    el.style.display=(coincideTexto&&coincideRes)?'':'none';
   });
 }
 
