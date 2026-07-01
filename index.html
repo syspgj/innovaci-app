@@ -7417,15 +7417,7 @@ function abrirCargaMasivaXML(){
     </div>
     <div id="xmlPreviewArea" style="max-height:420px;overflow-y:auto;"></div>
     <div id="xmlMasivoMsg" style="margin-top:8px;font-size:12px;text-align:center;"></div>`;
-  mkModal('modalXmlMasivo','📎 Carga masiva de XMLs',html,null,undefined,true);
-  // Botón personalizado
-  const footer=document.querySelector('#modalXmlMasivo .modal-footer')||document.querySelector('#modalXmlMasivo [class*="footer"]');
-  const btnGuardar=document.createElement('button');
-  btnGuardar.id='btnXmlMasivoGuardar';
-  btnGuardar.textContent='💾 Guardar todos';
-  btnGuardar.style.cssText='background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 20px;font-size:13px;font-weight:600;cursor:pointer;font-family:Inter,sans-serif;display:none;';
-  btnGuardar.onclick=guardarXMLsMasivo;
-  if(footer) footer.prepend(btnGuardar);
+  mkModal('modalXmlMasivo','📎 Carga masiva de XMLs',html,'guardarXMLsMasivo','💾 Guardar',true);
 }
 
 let _xmlParsed=[];
@@ -7492,15 +7484,11 @@ async function previsualizarXMLs(){
     <div style="margin-top:10px;padding:8px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font-size:11px;color:#15803d;font-weight:600;">
       Se guardarán ${nuevos} archivo(s) nuevo(s). ${dups>0?`Los ${dups} duplicado(s) serán ignorados.`:''}
     </div>`;
-  const btn=document.getElementById('btnXmlMasivoGuardar');
-  if(btn) btn.style.display=nuevos>0?'inline-block':'none';
 }
 
 async function guardarXMLsMasivo(){
-  const btn=document.getElementById('btnXmlMasivoGuardar');
+  if(!_xmlParsed.length){alert('Primero selecciona archivos XML.');return;}
   const msg=document.getElementById('xmlMasivoMsg');
-  if(!_xmlParsed.length)return;
-  btn.disabled=true; btn.textContent='Guardando...';
   let ok=0,err=0,omitidos=0;
   for(const d of _xmlParsed){
     if(d._existe){omitidos++;continue;} // ya registrado, saltar
@@ -7517,9 +7505,8 @@ async function guardarXMLsMasivo(){
     if(error) err++;
     else ok++;
   }
-  btn.disabled=false; btn.textContent='💾 Guardar todos';
-  msg.style.color=err?'var(--red)':'#15803d';
-  msg.textContent=`✅ ${ok} guardados${omitidos?` | ⏭️ ${omitidos} omitidos (ya existían)`:''}${err?` | ⚠️ ${err} con error`:''}`;
+  if(msg){msg.style.color=err?'var(--red)':'#15803d';
+    msg.textContent=`✅ ${ok} guardados${omitidos?` | ⏭️ ${omitidos} omitidos (ya existían)`:''}${err?` | ⚠️ ${err} con error`:''}`;}
   if(ok>0){
     setTimeout(()=>{document.getElementById('modalXmlMasivo')?.remove();renderAdminEgresos();},1500);
   }
@@ -7781,14 +7768,17 @@ async function guardarEdicionEgreso(){
 
 async function toggleTieneFactura(id, val){
   await sb.from('fact_egresos').update({tiene_factura:val}).eq('id',id);
-  const row=(window._feRows||[]).find(r=>r.id===id);
+  const row=(window._feRows||[]).find(r=>String(r.id)===String(id));
   if(row) row.tiene_factura=val;
   renderEgresosTabla();
 }
 
 async function toggleConciliado(id,val){
-  await sb.from('fact_egresos').update({conciliado:val,fecha_conciliacion:val?new Date().toISOString().slice(0,10):null}).eq('id',id);
-  renderAdminEgresos();
+  const {error}=await sb.from('fact_egresos').update({conciliado:val}).eq('id',id);
+  if(error){alert('Error al conciliar: '+error.message);return;}
+  const row=(window._feRows||[]).find(r=>String(r.id)===String(id));
+  if(row) row.conciliado=val;
+  renderEgresosTabla();
 }
 
 async function eliminarFactEgreso(id){
