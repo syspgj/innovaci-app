@@ -334,6 +334,50 @@ function aplicarAjusteComision(comisionBase, tasaBase, ventas, ajuste){
   return {comisionFinal:ventas*tasaAjustada, tasaFinal:tasaAjustada, tieneAjuste:true, motivo:ajuste.motivo};
 }
 function fmt(n){return '$'+Math.round(n).toLocaleString('es-MX');}
+
+// ─── BONOS ADICIONALES (reglas de negocio Innovaci) ──────────────────────────
+// 1) Bono Siigo Fiscal: $450 por cada Siigo Fiscal.
+//    - Junio 2026: se entrega DIRECTO a todos (sin condición de depto).
+//    - Julio 2026+: solo si el depto alcanzó ≥80% de su meta general.
+const BONO_SF_UNITARIO=450;
+function calcBonoSiigoFiscal(cantidadSf, anio, mes, deptoPct){
+  const cant=cantidadSf||0;
+  if(cant<=0) return {monto:0, aplica:false, motivo:'Sin Siigo Fiscal vendidos'};
+  // Junio 2026 = directo
+  const esJunio2026=(anio===2026&&mes===6);
+  if(esJunio2026) return {monto:cant*BONO_SF_UNITARIO, aplica:true, motivo:`${cant} × $${BONO_SF_UNITARIO} (junio: directo)`};
+  // Julio+ : requiere depto ≥80%
+  if(deptoPct>=0.8) return {monto:cant*BONO_SF_UNITARIO, aplica:true, motivo:`${cant} × $${BONO_SF_UNITARIO} (depto ≥80%)`};
+  return {monto:0, aplica:false, motivo:`Depto <80% (${Math.round(deptoPct*100)}%) — bono SF retenido`};
+}
+
+// 2) Comisión de la mediocridad: 2% sobre servicios.
+//    Aplica cuando el DEPTO no llegó al 100% PERO el vendedor SÍ cumplió su meta individual.
+const TASA_MEDIOCRIDAD=0.02;
+function calcComisionMediocridad(svcVendido, svcMeta, deptoAlcanzo){
+  if(deptoAlcanzo) return {monto:0, aplica:false, motivo:'Depto cumplió — aplica comisión normal'};
+  if(svcVendido<svcMeta) return {monto:0, aplica:false, motivo:'Vendedor no llegó a su meta individual'};
+  return {monto:svcVendido*TASA_MEDIOCRIDAD, aplica:true, motivo:`2% sobre ${fmt(svcVendido)} (meta individual cumplida)`};
+}
+
+// 3) Bono trimestral: 0.5% sobre la SUMA de servicios de los 3 meses del trimestre,
+//    SOLO si el vendedor cumplió 100% de su meta individual en los 3 meses.
+const TASA_TRIMESTRAL=0.005;
+function trimestreDeMes(mes){return Math.ceil(mes/3);} // 1-3→1, 4-6→2, etc.
+function mesesDeTrimestre(trim){const base=(trim-1)*3;return [base+1,base+2,base+3];}
+function calcBonoTrimestral(svcPorMes, metaPorMes){
+  // svcPorMes/metaPorMes: {mes: valor} para los 3 meses del trimestre
+  const meses=Object.keys(svcPorMes);
+  if(meses.length<3) return {monto:0, aplica:false, motivo:'Trimestre incompleto', cumplidos:0};
+  let cumplidos=0, sumaSvc=0;
+  meses.forEach(m=>{
+    sumaSvc+=svcPorMes[m]||0;
+    if((svcPorMes[m]||0)>=(metaPorMes[m]||Infinity)) cumplidos++;
+  });
+  if(cumplidos<3) return {monto:0, aplica:false, motivo:`Solo cumplió ${cumplidos}/3 meses al 100%`, cumplidos, sumaSvc};
+  return {monto:sumaSvc*TASA_TRIMESTRAL, aplica:true, motivo:`0.5% sobre ${fmt(sumaSvc)} (3/3 meses cumplidos)`, cumplidos, sumaSvc};
+}
+
 function fmtFecha(iso){if(!iso)return null;const[y,m,d]=iso.split('-');return`${d}/${m}/${y}`;}
 function fmtK(n){return n>=1000?'$'+(n/1000).toFixed(0)+'K':'$'+Math.round(n);}
 // Fecha local del dispositivo (evita bug UTC que cambia la fecha a las 6 PM en México)
@@ -508,7 +552,7 @@ function buildVendorUI(){
   const _tabs=[{l:'Mi mes',v:'miMes',a:true}];
   if(esVendedor)_tabs.push({l:'Mi año',v:'anual',a:false});
   if(esVendedor)_tabs.push({l:'💼 Cartera',v:'cartera',a:false});
-  _tabs.push({l:'Registrar día',v:'registro',a:false},{l:'Proyección',v:'proyeccion',a:false},{l:'Histórico',v:'historico',a:false},{l:'🏷 Promociones',v:'promos',a:false});
+  _tabs.push({l:'Registrar día',v:'registro',a:false},{l:'Proyección',v:'proyeccion',a:false},{l:'Histórico',v:'historico',a:false},{l:'🏷 Promociones',v:'promos',a:false},{l:'📜 Reglas de comisión',v:'reglas',a:false});
   _tabs.forEach(t=>{
     const d=document.createElement('div');
     d.className='tab'+(t.a?' active':'');
@@ -523,7 +567,7 @@ let currentVendTab='miMes';
 function swV(id){
   currentVendTab=id;
   const esVendedor=userProfile.email.includes('dulce')||userProfile.email.includes('manuel');
-  const tabs=esVendedor?['miMes','anual','cartera','registro','proyeccion','historico','promos']:['miMes','registro','historico'];
+  const tabs=esVendedor?['miMes','anual','cartera','registro','proyeccion','historico','promos','reglas']:['miMes','registro','historico'];
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',tabs[i]===id));
   if(id==='miMes')renderVendorMiMes();
   else if(id==='anual')renderVendorAnual();
@@ -531,6 +575,7 @@ function swV(id){
   else if(id==='registro')renderRegistroForm();
   else if(id==='proyeccion')renderProyeccion();
   else if(id==='promos')renderVistaPromociones();
+  else if(id==='reglas')renderReglasComision();
   else renderHistorico();
 }
 
@@ -603,6 +648,29 @@ async function renderVendorMiMes(){
   const ajusteResult=aplicarAjusteComision(commissionAuto,rateConBono,tot.svc,ajusteRow);
   const commission=ajusteResult.comisionFinal;
   const rateMostrada=ajusteResult.tasaFinal;
+
+  // ── BONOS ADICIONALES ──────────────────────────────────────────────────────
+  const deptoPctReal=metaDepto>0?totalDeptoSvc/metaDepto:0;
+  // 1) Bono Siigo Fiscal
+  const bonoSF=calcBonoSiigoFiscal(tot.sf, currentYear, currentMonth, deptoPctReal);
+  // 2) Comisión de mediocridad (solo si depto NO cumplió pero vendedor sí)
+  const bonoMediocridad=calcComisionMediocridad(tot.svc, svcMeta, deptoAlcanzado);
+  // 3) Bono trimestral — requiere cargar los 3 meses del trimestre
+  const trimActual=trimestreDeMes(currentMonth);
+  const mesesTrim=mesesDeTrimestre(trimActual);
+  const svcPorMesTrim={}, metaPorMesTrim={};
+  // Cargar servicios de cada mes del trimestre
+  for(const mTrim of mesesTrim){
+    if(mTrim>currentMonth&&currentYear===new Date().getFullYear()) continue; // no incluir meses futuros
+    const dTrim=`${currentYear}-${String(mTrim).padStart(2,'0')}-01`;
+    const ldTrim=new Date(currentYear,mTrim,0).getDate();
+    const hTrim=`${currentYear}-${String(mTrim).padStart(2,'0')}-${String(ldTrim).padStart(2,'0')}`;
+    const {data:rTrim}=await sb.from('registros_diarios').select('svc').eq('usuario_id',currentUser.id).gte('fecha',dTrim).lte('fecha',hTrim);
+    svcPorMesTrim[mTrim]=(rTrim||[]).reduce((s,r)=>s+(r.svc||0),0);
+    metaPorMesTrim[mTrim]=svcMeta; // asume misma meta mensual; ajustable si cambia por mes
+  }
+  const bonoTrim=calcBonoTrimestral(svcPorMesTrim, metaPorMesTrim);
+  const totalBonos=bonoSF.monto+bonoMediocridad.monto+bonoTrim.monto;
   // Métricas del mes anterior para mostrar en Mi mes
   // Mes anterior al mes SELECCIONADO
   const mesAntNum=currentMonth===1?12:currentMonth-1;
@@ -734,6 +802,31 @@ async function renderVendorMiMes(){
     <div style="position:relative;height:140px;"><canvas id="trendC" role="img" aria-label="Progresión acumulada del mes">Acumulado diario.</canvas></div>
   </div>
   <div id="cierreProyectado" style="background:var(--surface-2,#f8f9fa);border:1px solid var(--border);border-radius:var(--radsm);padding:14px 16px;margin-bottom:4px;"></div>
+
+  <!-- BONOS ADICIONALES -->
+  <div class="shead">💰 Bonos adicionales — ${getNombreMes(currentMonth)} ${currentYear}</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:8px;">
+    <div class="card" style="padding:16px;${bonoSF.aplica?'border:1px solid rgba(39,174,96,0.3);':''}">
+      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">🧾 Bono Siigo Fiscal</div>
+      <div style="font-size:22px;font-weight:800;color:${bonoSF.aplica?'#27AE60':'var(--text3)'};">${fmt(bonoSF.monto)}</div>
+      <div style="font-size:11px;color:${bonoSF.aplica?'var(--text2)':'#E84040'};margin-top:4px;">${bonoSF.motivo}</div>
+    </div>
+    <div class="card" style="padding:16px;${bonoMediocridad.aplica?'border:1px solid rgba(245,166,35,0.4);':''}">
+      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">⭐ Comisión especial (2%)</div>
+      <div style="font-size:22px;font-weight:800;color:${bonoMediocridad.aplica?'#F5A623':'var(--text3)'};">${fmt(bonoMediocridad.monto)}</div>
+      <div style="font-size:11px;color:var(--text2);margin-top:4px;">${bonoMediocridad.motivo}</div>
+    </div>
+    <div class="card" style="padding:16px;${bonoTrim.aplica?'border:1px solid rgba(0,169,157,0.4);':''}">
+      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">📊 Bono trimestral (0.5%)</div>
+      <div style="font-size:22px;font-weight:800;color:${bonoTrim.aplica?'var(--teal)':'var(--text3)'};">${fmt(bonoTrim.monto)}</div>
+      <div style="font-size:11px;color:var(--text2);margin-top:4px;">${bonoTrim.motivo}</div>
+      ${!bonoTrim.aplica&&bonoTrim.cumplidos!==undefined?`<div style="margin-top:6px;display:flex;gap:4px;">${mesesTrim.map(m=>{const cumplido=(svcPorMesTrim[m]||0)>=(metaPorMesTrim[m]||Infinity);const tiene=svcPorMesTrim[m]!==undefined;return `<span style="font-size:9px;padding:2px 6px;border-radius:4px;background:${!tiene?'#eee':cumplido?'rgba(39,174,96,0.15)':'rgba(232,64,64,0.1)'};color:${!tiene?'var(--text3)':cumplido?'#27AE60':'#E84040'};">${['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][m]} ${!tiene?'—':cumplido?'✓':'✗'}</span>`;}).join('')}</div>`:''}
+    </div>
+  </div>
+  ${totalBonos>0?`<div style="background:var(--teal-bg);border:1px solid var(--teal-b);border-radius:var(--radsm);padding:12px 16px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;">
+    <span style="font-size:13px;font-weight:600;color:var(--teal);">Total de bonos adicionales este mes</span>
+    <span style="font-size:20px;font-weight:800;color:var(--teal);">${fmt(totalBonos)}</span>
+  </div>`:''}
   <div class="shead">KPIs principales</div>
   <div class="kpi-grid" id="mainKpis"></div>
   <div class="shead">KPIs secundarios y extras</div>
@@ -1135,6 +1228,48 @@ function mostrarCanalizadosDetalle(vendedorId, nombreVend){
   document.getElementById('modalCanalizados')?.remove();
   document.body.appendChild(modal);
   modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
+}
+
+async function renderReglasComision(){
+  const mc=document.getElementById('mainContent');
+  const card=(icono,titulo,contenido,color)=>`
+    <div class="card" style="padding:18px 22px;margin-bottom:14px;border-left:4px solid ${color};">
+      <div style="font-size:15px;font-weight:700;color:var(--navy);margin-bottom:10px;">${icono} ${titulo}</div>
+      <div style="font-size:13px;color:var(--text);line-height:1.8;">${contenido}</div>
+    </div>`;
+  mc.innerHTML=`
+  <div style="max-width:820px;">
+    <h2 style="font-size:20px;color:var(--navy);margin-bottom:6px;">📜 Reglas de Comisión y Bonos</h2>
+    <p style="font-size:13px;color:var(--text3);margin-bottom:20px;">Estas son las condiciones bajo las cuales se liberan comisiones y bonos en Grupo Innovaci.</p>
+
+    ${card('🎯','Comisión base sobre servicios',`
+      Tu comisión sobre ventas de servicios se libera <strong>solo cuando se cumplen dos condiciones</strong>:
+      <br>• <strong>1.</strong> El departamento de ventas llega al <strong>100%</strong> de su meta general.
+      <br>• <strong>2.</strong> Tú llegas al <strong>100%</strong> de tu meta individual.
+      <br><br>La tasa aumenta según qué tan por encima de tu meta llegues. Si cualquiera de las dos condiciones no se cumple, la comisión base es <strong>$0</strong> (salvo la excepción de abajo).`,'#00A99D')}
+
+    ${card('⭐','Comisión especial — 2% (\"de la mediocridad\")',`
+      Excepción a la regla anterior. Si el <strong>departamento NO llegó al 100%</strong> pero tú <strong>SÍ cumpliste tu meta individual</strong>, se te reconoce un <strong>2% sobre lo que vendiste en servicios</strong>.
+      <br><br>Es un reconocimiento a tu esfuerzo individual aunque el equipo no haya alcanzado la meta colectiva. No se suma a nada más — es en lugar de la comisión base bloqueada.`,'#F5A623')}
+
+    ${card('🧾','Bono Siigo Fiscal — $450 por unidad',`
+      Ganas <strong>$450 por cada Siigo Fiscal</strong> que cierres.
+      <br>• En <strong>junio 2026</strong>: se entrega directo, sin importar si el departamento llegó a meta.
+      <br>• De <strong>julio 2026 en adelante</strong>: se entrega solo si el departamento alcanza al menos el <strong>80%</strong> de su meta general.`,'#27AE60')}
+
+    ${card('📊','Bono trimestral — 0.5%',`
+      Si cumples el <strong>100% de tu meta individual durante los 3 meses</strong> de un trimestre, ganas un <strong>0.5% sobre la suma de tus servicios de esos 3 meses</strong>.
+      <br><br><em>Ejemplo:</em> si en el trimestre vendiste $143,389 + $99,891 + $89,385 = $332,665, tu bono trimestral sería <strong>$1,663</strong>.
+      <br><br>Si fallas aunque sea un mes, el bono no aplica ese trimestre.`,'#2980B9')}
+
+    ${card('💡','Resumen rápido',`
+      <table style="width:100%;font-size:12px;border-collapse:collapse;">
+        <tr style="border-bottom:1px solid var(--border);"><td style="padding:6px 0;"><strong>Comisión base</strong></td><td>Depto 100% + meta individual 100%</td></tr>
+        <tr style="border-bottom:1px solid var(--border);"><td style="padding:6px 0;"><strong>Comisión 2%</strong></td><td>Depto &lt;100% pero tú cumpliste tu meta</td></tr>
+        <tr style="border-bottom:1px solid var(--border);"><td style="padding:6px 0;"><strong>Bono Siigo Fiscal</strong></td><td>$450 c/u — jun directo, jul+ con depto ≥80%</td></tr>
+        <tr><td style="padding:6px 0;"><strong>Bono trimestral</strong></td><td>0.5% del trimestre si cumples 3/3 meses</td></tr>
+      </table>`,'#6B7280')}
+  </div>`;
 }
 
 async function renderProyeccion(){
