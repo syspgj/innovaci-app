@@ -617,6 +617,31 @@ async function renderVendorMiMes(){
   const facturasAnt=regsAntList.filter(r=>(r.svc||0)>0).length;
   const ticketAnt=cotizAnt>0?svcAnt/cotizAnt:0;
   const conversionAnt=cotizAnt>0?facturasAnt/cotizAnt:null;
+
+  // ── TASA DE CIERRE REAL: del histórico de pipeline (Ganado / (Ganado+Perdido)) ──
+  const {data:pipeHist}=await sb.from('pipeline_vendedor')
+    .select('estatus,monto_total,probabilidad')
+    .eq('usuario_id',currentUser.id)
+    .in('estatus',['Ganado','Perdido']);
+  const pipeHistList=pipeHist||[];
+  const ganados=pipeHistList.filter(p=>p.estatus==='Ganado');
+  const perdidos=pipeHistList.filter(p=>p.estatus==='Perdido');
+  const totalCerrados=ganados.length+perdidos.length;
+  const tasaCierreReal=totalCerrados>0?ganados.length/totalCerrados:null;
+  // Monto ganado vs perdido
+  const montoGanado=ganados.reduce((s,p)=>s+(p.monto_total||0),0);
+  const montoPerdido=perdidos.reduce((s,p)=>s+(p.monto_total||0),0);
+  // Pipeline abierto actual (Negociando) para proyección ponderada realista
+  const {data:pipeAbierto}=await sb.from('pipeline_vendedor')
+    .select('monto_total,probabilidad')
+    .eq('usuario_id',currentUser.id)
+    .eq('anio',currentYear).eq('mes',currentMonth)
+    .eq('estatus','Negociando');
+  const pipeAbiertoList=pipeAbierto||[];
+  const montoPipelineAbierto=pipeAbiertoList.reduce((s,p)=>s+(p.monto_total||0),0);
+  // Proyección declarada (con probabilidad del vendedor) vs ajustada (con tasa real)
+  const proyeccionDeclarada=pipeAbiertoList.reduce((s,p)=>s+((p.monto_total||0)*((p.probabilidad||0)/100)),0);
+  const proyeccionAjustada=tasaCierreReal!==null?montoPipelineAbierto*tasaCierreReal:proyeccionDeclarada;
   const MESES_N_MIMES=['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
   // Días
   const hoy=new Date();
@@ -705,9 +730,10 @@ async function renderVendorMiMes(){
   </div>
   <div class="chart-card">
     <div class="chart-head"><span class="chart-title">Acumulado diario vs ritmo ideal</span>
-    <div class="cleg"><span><span class="lsq" style="background:#00A99D;"></span>Real</span><span><span class="lsq" style="background:rgba(0,0,0,0.15);border:1px dashed #888;"></span>Ideal</span></div></div>
+    <div class="cleg"><span><span class="lsq" style="background:#00A99D;"></span>Real</span><span><span class="lsq" style="background:#F5A623;border:1px dashed #F5A623;"></span>Proyección</span><span><span class="lsq" style="background:rgba(0,0,0,0.15);border:1px dashed #888;"></span>Ideal</span></div></div>
     <div style="position:relative;height:140px;"><canvas id="trendC" role="img" aria-label="Progresión acumulada del mes">Acumulado diario.</canvas></div>
   </div>
+  <div id="cierreProyectado" style="background:var(--surface-2,#f8f9fa);border:1px solid var(--border);border-radius:var(--radsm);padding:14px 16px;margin-bottom:4px;"></div>
   <div class="shead">KPIs principales</div>
   <div class="kpi-grid" id="mainKpis"></div>
   <div class="shead">KPIs secundarios y extras</div>
@@ -742,6 +768,38 @@ async function renderVendorMiMes(){
       </div>
     </div>
   </div>
+
+  <!-- TASA DE CIERRE REAL DEL PIPELINE -->
+  <div class="shead">🎯 Tasa de cierre real (histórico de tu pipeline)</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;">
+    <div class="card" style="padding:16px;">
+      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Tu tasa de cierre real</div>
+      <div style="font-size:26px;font-weight:800;color:${tasaCierreReal!==null?(tasaCierreReal>=0.5?'#27AE60':tasaCierreReal>=0.3?'#F5A623':'#E84040'):'var(--text3)'};">
+        ${tasaCierreReal!==null?Math.round(tasaCierreReal*100)+'%':'—'}
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">
+        ${totalCerrados>0?`${ganados.length} ganados de ${totalCerrados} cerrados`:'Aún sin oportunidades cerradas'}
+      </div>
+    </div>
+    <div class="card" style="padding:16px;">
+      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Pipeline abierto este mes</div>
+      <div style="font-size:22px;font-weight:800;color:var(--navy);">${fmt(montoPipelineAbierto)}</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">${pipeAbiertoList.length} oportunidad${pipeAbiertoList.length!==1?'es':''} en negociación</div>
+    </div>
+    <div class="card" style="padding:16px;background:var(--teal-bg);border:1px solid var(--teal-b);">
+      <div style="font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Proyección realista</div>
+      <div style="font-size:22px;font-weight:800;color:var(--teal);">${fmt(Math.round(proyeccionAjustada))}</div>
+      <div style="font-size:11px;color:var(--text2);margin-top:4px;">
+        ${tasaCierreReal!==null?`Pipeline × tu tasa real (${Math.round(tasaCierreReal*100)}%)`:'Basado en probabilidad declarada'}
+      </div>
+    </div>
+  </div>
+  ${tasaCierreReal!==null&&pipeAbiertoList.length>0?`
+  <div style="background:var(--surface-2,#f8f9fa);border:1px solid var(--border);border-radius:var(--radsm);padding:12px 16px;margin-bottom:16px;font-size:12px;color:var(--text2);line-height:1.7;">
+    💡 Tú marcaste tus negociaciones abiertas con una probabilidad que proyecta <strong>${fmt(Math.round(proyeccionDeclarada))}</strong>.
+    Pero históricamente cierras el <strong>${Math.round(tasaCierreReal*100)}%</strong> de lo que negocias, así que la proyección realista es <strong style="color:var(--teal);">${fmt(Math.round(proyeccionAjustada))}</strong>.
+    ${proyeccionDeclarada>proyeccionAjustada?`Estás siendo <strong>optimista</strong> por ${fmt(Math.round(proyeccionDeclarada-proyeccionAjustada))}.`:proyeccionDeclarada<proyeccionAjustada?`Estás siendo <strong>conservador</strong> — podrías cerrar ${fmt(Math.round(proyeccionAjustada-proyeccionDeclarada))} más de lo que proyectas.`:''}
+  </div>`:''}
   <div class="bottom-grid">
     <div class="card">
       <div class="card-head"><span class="card-title">Actividad del mes</span><span class="badge bt">${registros.length} días registrados</span></div>
@@ -790,10 +848,58 @@ async function renderVendorMiMes(){
   const idealArr=Array.from({length:diasHabiles},(_,i)=>Math.round(idealPD*(i+1)));
   const acumPad=[...acum,...Array(Math.max(0,diasHabiles-acum.length)).fill(null)];
   const lbls=Array.from({length:diasHabiles},(_,i)=>'D'+(i+1));
+
+  // ── PROYECCIÓN DE CIERRE: extiende el ritmo real actual hasta fin de mes ──
+  const diasConDato=acum.length;
+  const ventaActual=acum.length?acum[acum.length-1]:0;
+  const ritmoDiarioReal=diasConDato>0?ventaActual/diasConDato:0;
+  const cierreProyectado=Math.round(ritmoDiarioReal*diasHabiles);
+  // Array de proyección: continúa desde el último punto real con el ritmo actual
+  let proyArr=Array(diasHabiles).fill(null);
+  if(esEsteMes&&diasConDato>0&&diasConDato<diasHabiles){
+    proyArr[diasConDato-1]=ventaActual; // ancla en el último real
+    for(let i=diasConDato;i<diasHabiles;i++){
+      proyArr[i]=Math.round(ritmoDiarioReal*(i+1));
+    }
+  }
+
   trendChart=new Chart(tCtx,{type:'line',data:{labels:lbls,datasets:[
     {label:'Real',data:acumPad,borderColor:'#00A99D',backgroundColor:'rgba(0,169,157,0.08)',fill:true,borderWidth:2,pointRadius:2,tension:0.3,spanGaps:false},
+    {label:'Proyección',data:proyArr,borderColor:'#F5A623',borderDash:[3,3],borderWidth:2,pointRadius:0,fill:false,spanGaps:true},
     {label:'Ideal',data:idealArr,borderColor:'rgba(0,0,0,0.2)',borderDash:[5,4],borderWidth:1.5,pointRadius:0,fill:false},
-  ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.parsed.y)}}},scales:{x:{ticks:{color:'#8BA0B8',font:{size:10},maxTicksLimit:11},grid:{display:false}},y:{ticks:{color:'#8BA0B8',font:{size:10},callback:v=>fmtK(v)},grid:{color:'rgba(13,34,64,0.05)'}}}}});
+  ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmt(c.parsed.y)}}},scales:{x:{ticks:{color:'#8BA0B8',font:{size:10},maxTicksLimit:11},grid:{display:false}},y:{ticks:{color:'#8BA0B8',font:{size:10},callback:v=>fmtK(v)},grid:{color:'rgba(13,34,64,0.05)'}}}}});
+
+  // Tarjeta de cierre proyectado (solo si es el mes en curso y hay datos)
+  const proyEl=document.getElementById('cierreProyectado');
+  if(proyEl){
+    if(esEsteMes&&diasConDato>0){
+      const pctProy=svcMeta>0?Math.round(cierreProyectado/svcMeta*100):0;
+      const alcanza=cierreProyectado>=svcMeta;
+      const colorProy=alcanza?'#27AE60':pctProy>=85?'#F5A623':'#E84040';
+      const faltante=svcMeta-cierreProyectado;
+      proyEl.innerHTML=`
+        <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:180px;">
+            <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px;">📈 Proyección de cierre — ${getNombreMes(currentMonth)}</div>
+            <div style="font-size:22px;font-weight:800;color:${colorProy};">${fmt(cierreProyectado)}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px;">
+              A tu ritmo actual (${fmt(Math.round(ritmoDiarioReal))}/día × ${diasHabiles} días hábiles)
+            </div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:26px;font-weight:800;color:${colorProy};">${pctProy}%</div>
+            <div style="font-size:11px;font-weight:600;color:${colorProy};">
+              ${alcanza?'✅ Vas a superar la meta':`▼ Faltarían ${fmt(faltante)}`}
+            </div>
+          </div>
+        </div>
+        ${!alcanza&&diasRest>0?`<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--text2);">
+          💡 Para alcanzar la meta necesitas <strong style="color:var(--navy);">${fmt(Math.round(faltante/diasRest))}/día</strong> en los ${diasRest} días restantes (vs ${fmt(Math.round(ritmoDiarioReal))}/día actual)
+        </div>`:''}`;
+    } else {
+      proyEl.innerHTML='';
+    }
+  }
   // Main KPIs — excluir filas con sufijo _m (configuración histórica de Mireya) si el
   // vendedor actual no es Mireya, para que Dulce/Manuel no vean sus tarjetas mezcladas.
   const esMireyaActual=isMireya(userProfile);
