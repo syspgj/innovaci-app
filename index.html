@@ -1757,9 +1757,26 @@ async function abrirFichaClienteModal(clienteId){
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
         <span style="font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--navy);">${s.numserie||'—'}</span>
         <span style="font-size:11px;color:var(--text3);">${s.producto||''}</span>
+        ${s.tipo_producto==='diplomado'?`<span style="font-size:9px;background:rgba(41,128,185,0.12);color:#2980B9;border-radius:4px;padding:2px 6px;font-weight:700;">DIPLOMADO</span>`:''}
         ${s.periodicidad?`<span style="font-size:10px;color:var(--text3);text-transform:capitalize;">${s.periodicidad}</span>`:''}
         ${s.monto?`<span style="font-size:11px;font-weight:600;color:var(--teal);">$${Math.round(s.monto).toLocaleString('es-MX')}</span>`:''}
       </div>
+      ${editable&&s.tipo_producto==='diplomado'?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;padding:8px;background:rgba(41,128,185,0.05);border-radius:6px;">
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Diplomado</label>
+          <input type="text" data-susc-id="${s.id}" data-field="producto" value="${(s.producto||'').replace(/"/g,'&quot;')}" placeholder="Ej: Diplomado COI 11.0"
+            style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;"></div>
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Acceso</label>
+          <select data-susc-id="${s.id}" data-field="acceso" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;">
+            <option value="">-- Seleccionar --</option>
+            ${['Esencial','Plus','Premium','247'].map(a=>`<option value="${a}" ${s.acceso===a?'selected':''}>${a}</option>`).join('')}
+          </select></div>
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Importe</label>
+          <input type="number" data-susc-id="${s.id}" data-field="monto" value="${s.monto||''}" step="0.01" placeholder="0.00"
+            style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;"></div>
+        <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Fecha de cierre</label>
+          <input type="date" data-susc-id="${s.id}" data-field="fecha_cierre" value="${s.fecha_cierre||''}"
+            style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;"></div>
+      </div>`:''}
       ${editable?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
         <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Última renovación</label>
           <input type="date" data-susc-id="${s.id}" data-field="fecha_ultima_renovacion" value="${s.fecha_ultima_renovacion||''}"
@@ -1831,6 +1848,11 @@ async function abrirFichaClienteModal(clienteId){
           </div>
           <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Escritorio de servicios</label>
             <input id="fcEscritorio" type="text" value="${cl.escritorio_servicios||''}" placeholder="usuario | contraseña" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;font-family:'JetBrains Mono',monospace;"></div>
+          <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">🔗 Link CRM <span style="font-weight:400;">(captura manual)</span></label>
+            <div style="display:flex;gap:4px;">
+              <input id="fcLinkCrm" type="text" value="${cl.link_crm||''}" placeholder="https://crm..." style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+              ${cl.link_crm?`<a href="${cl.link_crm}" target="_blank" style="padding:7px 10px;background:var(--teal);color:#fff;border-radius:var(--radsm);font-size:10px;text-decoration:none;white-space:nowrap;display:flex;align-items:center;">Abrir</a>`:''}
+            </div></div>
           <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Vendedor asignado</label>
             <select id="fcVendedor" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
               <option value="">Sin asignar</option>
@@ -1892,6 +1914,7 @@ async function guardarFichaClienteCompleta(id){
     telefono:document.getElementById('fcTel1')?.value.trim()||null,
     telefono2:document.getElementById('fcTel2')?.value.trim()||null,
     escritorio_servicios:document.getElementById('fcEscritorio')?.value.trim()||null,
+    link_crm:document.getElementById('fcLinkCrm')?.value.trim()||null,
     vendedor_asignado:document.getElementById('fcVendedor')?.value||null,
     cliente_padre_id:document.getElementById('fcPadreId')?.value||null,
     updated_at:new Date().toISOString()
@@ -1914,7 +1937,9 @@ async function guardarFichaClienteCompleta(id){
     const sId=inp.dataset.suscId;
     const field=inp.dataset.field;
     if(!suscUpdates[sId]) suscUpdates[sId]={};
-    suscUpdates[sId][field]=inp.tagName==='TEXTAREA'?inp.value:(inp.value||null);
+    let val=inp.tagName==='TEXTAREA'?inp.value:(inp.value||null);
+    if(field==='monto') val=parseFloat(inp.value)||0;
+    suscUpdates[sId][field]=val;
   });
   const promises=Object.entries(suscUpdates).map(([sId,upd])=>
     sb.from('suscripciones_cartera').update({...upd,updated_at:new Date().toISOString()}).eq('id',sId)
@@ -1953,6 +1978,7 @@ async function guardarFichaCliente(id){
     telefono:document.getElementById('fcTel1')?.value.trim()||null,
     telefono2:document.getElementById('fcTel2')?.value.trim()||null,
     escritorio_servicios:document.getElementById('fcEscritorio')?.value.trim()||null,
+    link_crm:document.getElementById('fcLinkCrm')?.value.trim()||null,
     vendedor_asignado:document.getElementById('fcVendedor')?.value||null,
     cliente_padre_id:document.getElementById('fcPadreId')?.value||null,
     updated_at:new Date().toISOString()
