@@ -6380,7 +6380,6 @@ async function renderPromoVistaDirInline(){
 let currentFinTab='nomina';
 const FIN_TABS=[
   {id:'nomina',    label:'👥 Nómina'},
-  {id:'egresos',   label:'📤 Egresos'},
   {id:'admin',     label:'📋 Administración'},
   {id:'impuestos', label:'🏛 Impuestos'},
   {id:'flujo',     label:'📊 Flujo de efectivo'},
@@ -6406,6 +6405,7 @@ function renderFinanzas(){
 }
 
 function swFin(id){
+  if(id==='egresos') id='admin';
   currentFinTab=id;
   FIN_TABS.forEach(t=>{
     const b=document.getElementById('ftab_'+t.id);
@@ -6418,8 +6418,8 @@ function swFin(id){
 }
 
 function dispatchFinTab(id){
+  if(id==='egresos') id='admin';
   if(id==='nomina')    renderFinNomina();
-  else if(id==='egresos')   renderFinEgresos();
   else if(id==='admin')     renderFinAdmin();
   else if(id==='impuestos') renderFinImpuestos();
   else if(id==='flujo')     renderFinFlujo();
@@ -8400,90 +8400,165 @@ async function eliminarImpuesto(id){
 }
 
 // ─── 5. FLUJO DE EFECTIVO ────────────────────────────────────────────────────
+let _flujoFiltro='total'; // 'total' | 'guillermo' | 'innovaci'
 async function renderFinFlujo(){
   finLoading();
   const meses=['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
-  // Cargar desde las tablas correctas
   const [{data:ingData},{data:egData}]=await Promise.all([
-    sb.from('fact_ingresos').select('mes,total,cobrado').eq('anio',currentYear),
-    sb.from('fact_egresos').select('mes,total,proveedor,folio,concepto').eq('anio',currentYear)
+    sb.from('fact_ingresos').select('mes,total,subtotal_final,cobrado,folio,vendedor,serie').eq('anio',currentYear),
+    sb.from('fact_egresos').select('mes,total,proveedor,folio,concepto,rubro').eq('anio',currentYear)
   ]);
 
-  const byMes=Array.from({length:13},(_,i)=>({mes:i,ing:0,egr:0,nom:0,imp:0,gb:0,res:0}));
+  const byMes=Array.from({length:13},(_,i)=>({
+    mes:i, ingTotal:0, ingGB:0, ingInno:0, subtotalGB:0,
+    egr:0, nom:0, imp:0, gb:0, res:0
+  }));
 
-  // Ingresos: solo cobrados
-  (ingData||[]).filter(r=>r.cobrado).forEach(r=>{byMes[r.mes].ing+=(r.total||0);});
+  // ── INGRESOS: separar Guillermo Blancas del resto ──
+  const esGuillermoIngreso=(r)=>{
+    const folio=(r.folio||'').toUpperCase();
+    const vend=(r.vendedor||'').toUpperCase();
+    const serie=(r.serie||'').toUpperCase();
+    return folio.startsWith('GB')||serie.startsWith('GB')||vend.includes('GUILLERMO');
+  };
+  (ingData||[]).filter(r=>r.cobrado&&r.mes).forEach(r=>{
+    const t=r.total||0;
+    byMes[r.mes].ingTotal+=t;
+    if(esGuillermoIngreso(r)){
+      byMes[r.mes].ingGB+=t;
+      byMes[r.mes].subtotalGB+=(r.subtotal_final||0);
+    } else {
+      byMes[r.mes].ingInno+=t;
+    }
+  });
 
-  // Clasificar egresos según patrones
+  // ── EGRESOS: clasificar ──
   (egData||[]).forEach(r=>{
     if(!r.mes) return;
     const prov=(r.proveedor||'').toUpperCase();
     const folio=(r.folio||'').toUpperCase();
     const conc=(r.concepto||'').toUpperCase();
+    const rubro=(r.rubro||'').toUpperCase();
     const total=r.total||0;
 
-    // Nómina: folio NOM/NNOM (factura tercero) + HH (Karen honorarios) + Mercado Pago con concepto NOM/NO (Manuel IMSS)
+    // GB operativos: por rubro (fuente de verdad) o proveedor Guillermo
+    if(rubro.includes('GB OPERATIVOS')||rubro==='PROVEEDOR GB'||prov.includes('GUILLERMO')){byMes[r.mes].gb+=total;return;}
+    // Nómina
     const esNomFolio=/^(NOM|NNOM)/.test(folio);
     const esHH=/^HH/.test(folio)||(prov==='MERCADO PAGO'&&(conc.endsWith('HH')||conc.endsWith('HH2')));
     const esManuelIMSS=prov==='MERCADO PAGO'&&(conc.endsWith('NOM')||conc.endsWith('NO'));
-    if(esNomFolio||esHH||esManuelIMSS){byMes[r.mes].nom+=total;return;}
-
-    // Impuestos: SAT, SAT/GUIA, IMSS cuotas
-    if(prov.startsWith('SAT')||prov==='IMSS'){byMes[r.mes].imp+=total;return;}
-
-    // GB operativos: Guillermo Blancas con folio GBE, GB, FF
-    if(prov.includes('GUILLERMO')){byMes[r.mes].gb+=total;return;}
-
-    // Violeta: ignorar hasta julio (mes > 6)
+    if(rubro==='NOMINA'||esNomFolio||esHH||esManuelIMSS){byMes[r.mes].nom+=total;return;}
+    // Impuestos
+    if(rubro==='IMSS'||rubro==='SAT'||prov.startsWith('SAT')||prov==='IMSS'){byMes[r.mes].imp+=total;return;}
+    // Violeta: ignorar hasta julio
     if(prov.includes('VIOLETA')&&r.mes<=6){return;}
-
-    // Resto: egresos generales
+    // Resto
     byMes[r.mes].egr+=total;
   });
 
-  // Saldo inicial enero
-  const SALDO_INICIAL=253480.54;
+  // ── ARRASTRE DE SALDO EN CASCADA ──
+  const SALDO_INICIAL_ENERO=253480.54;
+  const saldoInicialMes=Array(13).fill(0);
+  saldoInicialMes[1]=SALDO_INICIAL_ENERO;
   for(let i=1;i<=12;i++){
-    const si=i===1?SALDO_INICIAL:0;
-    byMes[i].res=si+byMes[i].ing-byMes[i].egr-byMes[i].nom-byMes[i].imp-byMes[i].gb;
+    const m=byMes[i];
+    // Resultado del mes = ingresos totales - todas las salidas
+    m.resMes=m.ingTotal-(m.egr+m.nom+m.imp+m.gb);
+    m.saldoInicial=saldoInicialMes[i];
+    m.saldoCierre=m.saldoInicial+m.resMes;
+    if(i<12) saldoInicialMes[i+1]=m.saldoCierre;
+    m.res=m.saldoCierre; // compat
   }
+
   const cur=byMes[currentMonth];
   const c=finCont();
+
+  // Cuadre Guillermo: ingresos GB vs egresos GB operativos
+  const gbDif=cur.ingGB-cur.gb;
+  const retencionGB=cur.subtotalGB*0.025;
+
   c.innerHTML=`
-  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px;">
-    <div class="thc"><div class="th-lbl">Ingresos cobrados</div><div class="th-val" style="color:#27AE60;">${fmt(cur.ing)}</div></div>
-    <div class="thc"><div class="th-lbl">Egresos generales</div><div class="th-val" style="color:var(--red);">${fmt(cur.egr)}</div></div>
-    <div class="thc"><div class="th-lbl">Nómina</div><div class="th-val" style="color:var(--red);">${fmt(cur.nom)}</div></div>
-    <div class="thc"><div class="th-lbl">Impuestos</div><div class="th-val" style="color:var(--red);">${fmt(cur.imp)}</div></div>
-    <div class="thc"><div class="th-lbl">Resultado mes</div><div class="th-val" style="color:${cur.res>=0?'#27AE60':'var(--red)'};">${fmt(cur.res)}</div></div>
+  <!-- FILTRO -->
+  <div style="display:flex;gap:8px;margin-bottom:16px;align-items:center;">
+    <span style="font-size:12px;color:var(--text3);font-weight:600;">Ver:</span>
+    ${[['total','Totales'],['innovaci','Solo Innovaci'],['guillermo','Solo Guillermo']].map(([v,l])=>
+      `<button onclick="_flujoFiltro='${v}';renderFinFlujo()" style="padding:5px 14px;border-radius:16px;border:1.5px solid ${_flujoFiltro===v?'var(--teal)':'var(--border)'};background:${_flujoFiltro===v?'var(--teal)':'transparent'};color:${_flujoFiltro===v?'#fff':'var(--text2)'};font-size:11px;font-weight:${_flujoFiltro===v?'700':'400'};cursor:pointer;font-family:'Inter',sans-serif;">${l}</button>`
+    ).join('')}
   </div>
+
+  ${_flujoFiltro==='guillermo'?`
+  <!-- BLOQUE GUILLERMO BLANCAS -->
+  <div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:18px 22px;margin-bottom:18px;">
+    <div style="font-size:14px;font-weight:700;color:var(--navy);margin-bottom:14px;">🔒 Círculo Guillermo Blancas — ${meses[currentMonth]} ${currentYear}</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px;">
+      <div class="thc"><div class="th-lbl">Ingresos GB cobrados</div><div class="th-val" style="color:#27AE60;">${fmt(cur.ingGB)}</div></div>
+      <div class="thc"><div class="th-lbl">Egresos GB operativos</div><div class="th-val" style="color:var(--red);">${fmt(cur.gb)}</div></div>
+      <div class="thc"><div class="th-lbl">2.5% retenido (informativo)</div><div class="th-val" style="color:#2980B9;">${fmt(retencionGB)}</div><div style="font-size:9px;color:var(--text3);">sobre subtotal ${fmt(cur.subtotalGB)}</div></div>
+      <div class="thc" style="${Math.abs(gbDif)<50?'border:1px solid rgba(39,174,96,0.4);':'border:1px solid rgba(232,64,64,0.4);'}"><div class="th-lbl">Diferencia (cuadre)</div><div class="th-val" style="color:${Math.abs(gbDif)<50?'#27AE60':'var(--red)'};">${fmt(gbDif)}</div><div style="font-size:9px;color:var(--text3);">${Math.abs(gbDif)<50?'✓ Cuadra':'⚠ Revisar'}</div></div>
+    </div>
+    <div style="font-size:11px;color:var(--text2);line-height:1.6;background:var(--surface-2,#f8f9fa);padding:10px 14px;border-radius:6px;">
+      Lo que Guillermo facturó a través de Innovaci (${fmt(cur.ingGB)}) debe empatar con lo que sale hacia él (GB operativos: ${fmt(cur.gb)}). La diferencia de ${fmt(gbDif)} ${Math.abs(gbDif)<50?'indica que el círculo cuadra.':'sugiere movimientos pendientes de registrar o transferir.'}
+    </div>
+  </div>`:''}
+
+  <!-- TARJETAS RESUMEN según filtro -->
+  ${(()=>{
+    if(_flujoFiltro==='guillermo') return '';
+    const totalEgr=cur.egr+cur.nom+cur.imp+cur.gb;
+    const ingMostrar=_flujoFiltro==='innovaci'?cur.ingInno:cur.ingTotal;
+    return `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:20px;">
+      <div class="thc"><div class="th-lbl">${_flujoFiltro==='innovaci'?'Ingresos Innovaci':'Ingresos cobrados'}</div><div class="th-val" style="color:#27AE60;">${fmt(ingMostrar)}</div></div>
+      <div class="thc"><div class="th-lbl">Egresos generales</div><div class="th-val" style="color:var(--red);">${fmt(cur.egr)}</div></div>
+      <div class="thc"><div class="th-lbl">Nómina</div><div class="th-val" style="color:var(--red);">${fmt(cur.nom)}</div></div>
+      <div class="thc"><div class="th-lbl">Impuestos</div><div class="th-val" style="color:var(--red);">${fmt(cur.imp)}</div></div>
+      <div class="thc"><div class="th-lbl">GB operativos</div><div class="th-val" style="color:var(--red);">${fmt(cur.gb)}</div></div>
+      <div class="thc"><div class="th-lbl">Resultado del mes</div><div class="th-val" style="color:${cur.resMes>=0?'#27AE60':'var(--red)'};">${fmt(cur.resMes)}</div></div>
+    </div>
+
+    <!-- RESUMEN GENERAL DEL MES -->
+    <div style="background:var(--navy);color:#fff;border-radius:10px;padding:18px 22px;margin-bottom:20px;">
+      <div style="font-size:13px;font-weight:700;margin-bottom:12px;opacity:0.9;">Resumen del mes — ${meses[currentMonth]} ${currentYear}</div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">
+        <div><div style="font-size:11px;opacity:0.7;">Saldo inicial del mes</div><div style="font-size:18px;font-weight:700;">${fmt(cur.saldoInicial)}</div></div>
+        <div><div style="font-size:11px;opacity:0.7;">Ingresos cobrados</div><div style="font-size:18px;font-weight:700;color:#5EEAD4;">${fmt(cur.ingTotal)}</div></div>
+        <div><div style="font-size:11px;opacity:0.7;">Total salidas</div><div style="font-size:18px;font-weight:700;color:#FCA5A5;">${fmt(totalEgr)}</div></div>
+        <div style="border-left:1px solid rgba(255,255,255,0.2);padding-left:16px;"><div style="font-size:11px;opacity:0.7;">Saldo al cierre</div><div style="font-size:20px;font-weight:800;color:${cur.saldoCierre>=0?'#5EEAD4':'#FCA5A5'};">${fmt(cur.saldoCierre)}</div></div>
+      </div>
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.15);font-size:12px;opacity:0.85;">
+        ${fmt(cur.saldoInicial)} (inicial) + ${fmt(cur.resMes)} (resultado del mes) = <strong>${fmt(cur.saldoCierre)}</strong> disponible para ${meses[currentMonth+1]||'el próximo año'}
+      </div>
+    </div>`;
+  })()}
+
+  <!-- TABLA MENSUAL -->
   <div style="overflow-x:auto;width:100%;">
-  <table style="font-size:12px;width:100%;border-collapse:collapse;min-width:700px;">
+  <table style="font-size:12px;width:100%;border-collapse:collapse;min-width:800px;">
     <thead><tr style="background:var(--navy);color:#fff;">
       <th style="padding:8px 10px;text-align:left;">Mes</th>
-      <th style="padding:8px 10px;text-align:right;">Ingresos cobrados</th>
+      <th style="padding:8px 10px;text-align:right;">Saldo inicial</th>
+      <th style="padding:8px 10px;text-align:right;">Ingresos</th>
       <th style="padding:8px 10px;text-align:right;">Egresos</th>
       <th style="padding:8px 10px;text-align:right;">Nómina</th>
       <th style="padding:8px 10px;text-align:right;">Impuestos</th>
-      <th style="padding:8px 10px;text-align:right;">GB operativos</th>
-      <th style="padding:8px 10px;text-align:right;background:rgba(0,0,0,0.15);font-weight:700;">Total egresos</th>
-      <th style="padding:8px 10px;text-align:right;font-weight:700;">Resultado</th>
+      <th style="padding:8px 10px;text-align:right;">GB oper.</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700;">Resultado mes</th>
+      <th style="padding:8px 10px;text-align:right;background:rgba(0,0,0,0.15);font-weight:700;">Saldo cierre</th>
     </tr></thead>
     <tbody>
       ${byMes.slice(1).map((r,i)=>{
         const m=i+1;
         const esActual=m===currentMonth;
-        const tot=r.egr+r.nom+r.imp+r.gb;
-        const saldo=m===1?SALDO_INICIAL:0;
+        const hayData=r.ingTotal>0||r.egr>0||r.nom>0||r.imp>0||r.gb>0;
         return`<tr style="border-bottom:1px solid var(--border);${esActual?'background:rgba(0,169,157,0.06);':''}">
           <td style="padding:7px 10px;font-weight:${esActual?700:400};">${meses[m]}${esActual?' ◀':''}</td>
-          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;">${r.ing>0?fmt(r.ing):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text3);">${fmt(r.saldoInicial)}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;">${r.ingTotal>0?fmt(r.ingTotal):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.egr>0?fmt(r.egr):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.nom>0?fmt(r.nom):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.imp>0?fmt(r.imp):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.gb>0?fmt(r.gb):'—'}</td>
-          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--red);background:rgba(232,64,64,0.04);">${tot>0?fmt(tot):'—'}</td>
-          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:${r.res>0?'#27AE60':r.res<0?'var(--red)':'var(--text3)'};">${(r.ing>0||tot>0||saldo>0)?fmt(r.res):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:${r.resMes>0?'#27AE60':r.resMes<0?'var(--red)':'var(--text3)'};">${hayData?fmt(r.resMes):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:${r.saldoCierre>=0?'#27AE60':'var(--red)'};background:rgba(0,169,157,0.04);">${(hayData||r.saldoInicial)?fmt(r.saldoCierre):'—'}</td>
         </tr>`;
       }).join('')}
     </tbody>
@@ -8574,7 +8649,70 @@ async function renderFinBalance(){
         <div style="display:flex;justify-content:space-between;margin-top:4px;"><span style="font-size:11px;font-weight:600;">vs Impuestos pagados</span><span style="font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:${totalRetGB-totalImp>=0?'#27AE60':'var(--red)'};">${fmt(totalRetGB-totalImp)}</span></div>
       </div>
     </div>
+  </div>
+
+  <!-- GRÁFICAS DEL BALANCE -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
+    <div class="card" style="padding:18px;">
+      <div style="font-size:13px;font-weight:600;color:var(--navy);margin-bottom:12px;">Distribución de egresos ${currentYear}</div>
+      <div style="position:relative;height:220px;"><canvas id="balPieChart"></canvas></div>
+    </div>
+    <div class="card" style="padding:18px;">
+      <div style="font-size:13px;font-weight:600;color:var(--navy);margin-bottom:12px;">Ingresos vs Egresos por mes</div>
+      <div style="position:relative;height:220px;"><canvas id="balBarChart"></canvas></div>
+    </div>
+  </div>
+  <div class="card" style="padding:18px;margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div style="font-size:13px;font-weight:600;color:var(--navy);">Resultado acumulado ${currentYear}</div>
+      <button onclick="window.print()" style="padding:6px 14px;background:var(--navy);color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🖨 Imprimir reporte</button>
+    </div>
+    <div style="position:relative;height:200px;"><canvas id="balLineChart"></canvas></div>
   </div>`;
+
+  // Dibujar gráficas
+  setTimeout(async()=>{
+    // Cargar datos mensuales para las gráficas
+    const [{data:ingM},{data:egM}]=await Promise.all([
+      sb.from('fact_ingresos').select('mes,total,cobrado').eq('anio',currentYear),
+      sb.from('fact_egresos').select('mes,total,proveedor,folio,concepto,rubro').eq('anio',currentYear)
+    ]);
+    const ingPorMes=Array(13).fill(0), egPorMes=Array(13).fill(0);
+    (ingM||[]).filter(r=>r.cobrado&&r.mes).forEach(r=>ingPorMes[r.mes]+=(r.total||0));
+    (egM||[]).forEach(r=>{if(r.mes)egPorMes[r.mes]+=(r.total||0);});
+    const mesesLbl=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+    // Pie: distribución de egresos
+    if(window._balPie)window._balPie.destroy();
+    window._balPie=new Chart(document.getElementById('balPieChart'),{
+      type:'doughnut',
+      data:{labels:['Generales','Nómina','Impuestos','GB operativos'],
+        datasets:[{data:[totalEgGen,totalNom,totalImp,totalGBOp],
+          backgroundColor:['#F5A623','#E84040','#9333EA','#2980B9'],borderWidth:0}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{font:{size:11},boxWidth:12}},tooltip:{callbacks:{label:c=>c.label+': '+fmt(c.parsed)}}}}
+    });
+
+    // Barras: ingresos vs egresos
+    if(window._balBar)window._balBar.destroy();
+    window._balBar=new Chart(document.getElementById('balBarChart'),{
+      type:'bar',
+      data:{labels:mesesLbl,datasets:[
+        {label:'Ingresos',data:ingPorMes.slice(1),backgroundColor:'#27AE60'},
+        {label:'Egresos',data:egPorMes.slice(1),backgroundColor:'#E84040'}
+      ]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{font:{size:11},boxWidth:12}},tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmt(c.parsed.y)}}},scales:{y:{ticks:{callback:v=>fmtK(v),font:{size:10}}},x:{ticks:{font:{size:10}}}}}
+    });
+
+    // Línea: resultado acumulado con saldo inicial
+    if(window._balLine)window._balLine.destroy();
+    let acum=saldoInicial; const acumArr=[];
+    for(let i=1;i<=12;i++){acum+=ingPorMes[i]-egPorMes[i];acumArr.push(Math.round(acum));}
+    window._balLine=new Chart(document.getElementById('balLineChart'),{
+      type:'line',
+      data:{labels:mesesLbl,datasets:[{label:'Saldo acumulado',data:acumArr,borderColor:'#00A99D',backgroundColor:'rgba(0,169,157,0.1)',fill:true,tension:0.3,borderWidth:2,pointRadius:3}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.parsed.y)}}},scales:{y:{ticks:{callback:v=>fmtK(v),font:{size:10}}},x:{ticks:{font:{size:10}}}}}
+    });
+  },100);
 }
 
 // ─── ADMIN UI (Alejandra) ─────────────────────────────────────────────────────
