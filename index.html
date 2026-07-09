@@ -1060,6 +1060,7 @@ async function renderRegistroForm(fechaSel){
   const {data:existing}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).eq('fecha',fecha).single();
   const r=existing||{};
   const dias=ultimosDias(7);
+  const cred=await verificarCreditosEdicion();
   const selectorDias=dias.map(d=>{
     const label=d===today?'Hoy':fmtFecha(d);
     const activo=d===fecha;
@@ -1068,7 +1069,10 @@ async function renderRegistroForm(fechaSel){
   document.getElementById('mainContent').innerHTML=`
   <div class="reg-form">
     <div style="margin-bottom:14px;">
-      <div style="font-size:11px;color:var(--text3);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Selecciona el día a registrar</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;flex-wrap:wrap;gap:6px;">
+        <div style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Selecciona el día a registrar</div>
+        <div style="font-size:11px;color:${cred.disponibles>0?'var(--text3)':'var(--red)'};">✏️ Modificaciones a días anteriores: <strong style="color:${cred.disponibles>0?'var(--teal)':'var(--red)'};">${cred.disponibles}/${cred.limite}</strong> restantes este mes</div>
+      </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">${selectorDias}</div>
     </div>
     <div class="form-title">📝 Registro del día — <span style="color:var(--teal);">${fmtFecha(fecha)}</span>
@@ -1154,10 +1158,22 @@ async function renderRegistroForm(fechaSel){
 async function saveRegistro(fecha,existingId){
   const btn=document.getElementById('btnSave');
   const msg=document.getElementById('saveMsg');
-  btn.disabled=true;btn.textContent='Guardando...';msg.textContent='';
   const today=todayLocal();
   const esEdicion=!!existingId;
   const esDiaPasado=fecha!==today;
+
+  // ── LÍMITE DE MODIFICACIONES A DÍAS PASADOS (3/mes) ──
+  if(esDiaPasado&&esEdicion){
+    const cr=await verificarCreditosEdicion();
+    if(!cr.puede){
+      msg.style.color='var(--red)';
+      msg.textContent=`⛔ Sin créditos de edición. Ya usaste tus ${cr.limite} modificaciones a días anteriores este mes. Pide apertura al director.`;
+      return;
+    }
+    if(!confirm(`Editar un día anterior consume 1 crédito. Te quedan ${cr.disponibles} de ${cr.limite} este mes.\n\n¿Continuar?`)) return;
+  }
+
+  btn.disabled=true;btn.textContent='Guardando...';msg.textContent='';
   // Log de edición si modifica un día pasado o registro existente
   let notasLog='';
   if(esEdicion||esDiaPasado){
@@ -1191,7 +1207,38 @@ async function saveRegistro(fecha,existingId){
   const {error}=await sb.from('registros_diarios').upsert(payload,{onConflict:'usuario_id,fecha'});
   btn.disabled=false;btn.textContent='💾 Guardar registro';
   if(error){msg.style.color='var(--red)';msg.textContent='Error al guardar: '+error.message;}
-  else{msg.style.color='var(--green)';msg.textContent='✓ Registro guardado correctamente';}
+  else{
+    if(esDiaPasado&&esEdicion){
+      await consumirCreditoEdicion();
+      const cr=await verificarCreditosEdicion();
+      msg.style.color='var(--green)';msg.textContent=`✓ Guardado. Te quedan ${cr.disponibles} de ${cr.limite} modificaciones este mes.`;
+    } else {
+      msg.style.color='var(--green)';msg.textContent='✓ Registro guardado correctamente';
+    }
+  }
+}
+
+// ─── CRÉDITOS DE EDICIÓN (3 por mes por vendedor) ─────────────────────────────
+const LIMITE_CREDITOS_BASE=3;
+async function verificarCreditosEdicion(){
+  const anio=new Date().getFullYear(), mes=new Date().getMonth()+1;
+  const {data}=await sb.from('creditos_edicion').select('*')
+    .eq('usuario_id',currentUser.id).eq('anio',anio).eq('mes',mes).maybeSingle();
+  const usados=data?.usados||0;
+  const extra=data?.extra||0;
+  const limite=LIMITE_CREDITOS_BASE+extra;
+  const disponibles=Math.max(0,limite-usados);
+  return {puede:disponibles>0, disponibles, limite, usados};
+}
+async function consumirCreditoEdicion(){
+  const anio=new Date().getFullYear(), mes=new Date().getMonth()+1;
+  const {data}=await sb.from('creditos_edicion').select('*')
+    .eq('usuario_id',currentUser.id).eq('anio',anio).eq('mes',mes).maybeSingle();
+  if(data){
+    await sb.from('creditos_edicion').update({usados:(data.usados||0)+1,updated_at:new Date().toISOString()}).eq('id',data.id);
+  } else {
+    await sb.from('creditos_edicion').insert({usuario_id:currentUser.id,anio,mes,usados:1});
+  }
 }
 
 // ── PROYECCIÓN DE VENTAS ──────────────────────────────────────────────────────
@@ -2776,13 +2823,16 @@ function renderHistoricoTabla(){
   <div class="card">
     <div class="card-head" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
       <div><span class="card-title">Todos los registros</span><span class="badge bt" style="margin-left:8px;">${rows.length} días</span></div>
-      <select onchange="histFiltroMes=this.value;renderHistoricoTabla()" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
-        <option value="">Todos los meses</option>
-        ${mesesUnicos.map(m=>`<option value="${m}" ${histFiltroMes===m?'selected':''}>${m}</option>`).join('')}
-      </select>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button onclick="window._histVistaCompleta=!window._histVistaCompleta;renderHistoricoTabla()" style="padding:6px 12px;border:1px solid var(--teal);border-radius:var(--radsm);background:${window._histVistaCompleta?'var(--teal)':'transparent'};color:${window._histVistaCompleta?'#fff':'var(--teal)'};font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${window._histVistaCompleta?'◀ Vista simple':'Vista completa ▶'}</button>
+        <select onchange="histFiltroMes=this.value;renderHistoricoTabla()" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+          <option value="">Todos los meses</option>
+          ${mesesUnicos.map(m=>`<option value="${m}" ${histFiltroMes===m?'selected':''}>${m}</option>`).join('')}
+        </select>
+      </div>
     </div>
-    <div style="font-size:11px;color:var(--text3);padding:8px 16px 0;">Clic en encabezado para ordenar · Clic en fila para ver detalle completo.</div>
-    <table class="daily">
+    <div style="font-size:11px;color:var(--text3);padding:8px 16px 0;">Clic en encabezado para ordenar · Clic en fila para ver detalle completo.${window._histVistaCompleta?' · Desliza horizontalmente para ver todas las columnas →':''}</div>
+    ${window._histVistaCompleta?renderHistTablaCompleta(rows,th):`<table class="daily">
       <thead><tr>
         <th></th>
         ${th('Fecha','fecha')}${th('Servicios','svc')}${th('Aspel','aspel')}${th('IT','it')}
@@ -2814,7 +2864,7 @@ function renderHistoricoTabla(){
         <td>${rows.reduce((s,r)=>s+(r.clientes_nuevos||0),0)||'—'}</td>
         <td>${rows.reduce((s,r)=>s+(r.valoraciones||0),0)||'—'}</td>
       </tr></tfoot>`:''}
-    </table>
+    </table>`}
   </div>`;
 }
 
@@ -2822,6 +2872,47 @@ function histSort(col){
   if(histSortCol===col) histSortDir*=-1;
   else{histSortCol=col;histSortDir=1;}
   renderHistoricoTabla();
+}
+
+function renderHistTablaCompleta(rows,th){
+  const col=(v,moneda,color)=>{const t=(v||0)>0;return `<td style="text-align:right;font-family:'JetBrains Mono',monospace;font-size:10px;color:${t?(color||'var(--text)'):'var(--text3)'};white-space:nowrap;">${t?(moneda?fmt(v):v):'—'}</td>`;};
+  const sum=(k)=>rows.reduce((s,r)=>s+(r[k]||0),0);
+  return `<div style="overflow-x:auto;width:100%;">
+    <table style="font-size:10px;border-collapse:collapse;min-width:1400px;width:100%;" class="daily">
+      <thead><tr style="background:var(--navy);color:#fff;white-space:nowrap;">
+        <th style="padding:6px 8px;">Fecha</th>
+        <th style="padding:6px 8px;">Servicios</th><th style="padding:6px 8px;">Aspel</th><th style="padding:6px 8px;">IT</th><th style="padding:6px 8px;">Diplom.</th>
+        <th style="padding:6px 8px;">$ Cotiz.</th><th style="padding:6px 8px;"># Cotiz.</th>
+        <th style="padding:6px 8px;">Cli.nuevos</th><th style="padding:6px 8px;">Demos</th><th style="padding:6px 8px;">Valor.</th><th style="padding:6px 8px;">Cursos</th>
+        <th style="padding:6px 8px;">Siigo F.</th><th style="padding:6px 8px;">Prosp.canal.</th>
+        <th style="padding:6px 8px;">Cursos vivo</th>
+        <th style="padding:6px 8px;">Ll.segui.</th><th style="padding:6px 8px;">Ll.prosp.</th>
+        <th style="padding:6px 8px;">Neg.cli #</th><th style="padding:6px 8px;">Neg.cli $</th><th style="padding:6px 8px;">Neg.pros #</th><th style="padding:6px 8px;">Neg.pros $</th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(r=>`<tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);white-space:nowrap;">${fmtFecha(r.fecha)||r.fecha}</td>
+          ${col(r.svc,true,'#00A99D')}${col(r.aspel,true)}${col(r.it,true)}${col(r.diplomados,true)}
+          ${col(r.monto_cotizaciones,true)}${col(r.cotizaciones,false)}
+          ${col(r.clientes_nuevos,false)}${col(r.demos,false)}${col(r.valoraciones,false)}${col(r.cursos,false)}
+          ${col(r.siigo_fiscal,false)}${col(r.prospectos_canalizados,false)}
+          ${col(r.talleres_vivo,true)}
+          ${col(r.llamadas_seguimiento,false)}${col(r.llamadas_prospeccion,false)}
+          ${col(r.neg_clientes_num,false)}${col(r.neg_clientes_monto,true)}${col(r.neg_prospectos_num,false)}${col(r.neg_prospectos_monto,true)}
+        </tr>`).join('')||'<tr><td colspan="20" style="text-align:center;padding:20px;color:var(--text3);">Sin registros</td></tr>'}
+      </tbody>
+      ${rows.length?`<tfoot><tr style="background:var(--navy);color:#fff;font-weight:700;white-space:nowrap;">
+        <td style="padding:7px 8px;">TOTAL</td>
+        ${col(sum('svc'),true,'#5ff')}${col(sum('aspel'),true,'#fff')}${col(sum('it'),true,'#fff')}${col(sum('diplomados'),true,'#fff')}
+        ${col(sum('monto_cotizaciones'),true,'#fff')}${col(sum('cotizaciones'),false,'#fff')}
+        ${col(sum('clientes_nuevos'),false,'#fff')}${col(sum('demos'),false,'#fff')}${col(sum('valoraciones'),false,'#fff')}${col(sum('cursos'),false,'#fff')}
+        ${col(sum('siigo_fiscal'),false,'#fff')}${col(sum('prospectos_canalizados'),false,'#fff')}
+        ${col(sum('talleres_vivo'),true,'#fff')}
+        ${col(sum('llamadas_seguimiento'),false,'#fff')}${col(sum('llamadas_prospeccion'),false,'#fff')}
+        ${col(sum('neg_clientes_num'),false,'#fff')}${col(sum('neg_clientes_monto'),true,'#fff')}${col(sum('neg_prospectos_num'),false,'#fff')}${col(sum('neg_prospectos_monto'),true,'#fff')}
+      </tr></tfoot>`:''}
+    </table>
+  </div>`;
 }
 
 function renderHistDetalleContenido(r){
@@ -4449,6 +4540,19 @@ async function renderTeleRegistro(fechaSel){
     ?(misProspectos||[]).filter(p=>p.updated_at&&p.updated_at.slice(0,10)===fecha).length
     :(r.prospectos_canalizados||0);
 
+  // Cargar campañas de ambas fuentes para el dropdown de llamadas CRM
+  const [{data:campProsp},{data:campCart},{data:crmExist},{data:vendB2B}]=await Promise.all([
+    sb.from('campanas').select('id,nombre').order('nombre'),
+    sb.from('campanas_cartera').select('id,nombre').order('nombre'),
+    sb.from('llamadas_crm_directas').select('*').eq('usuario_id',currentUser.id).eq('fecha',fecha).maybeSingle(),
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor')
+  ]);
+  const crm=crmExist||{};
+  const opcionesCamp=[
+    ...(campProsp||[]).map(c=>({tipo:'prospecto',id:c.id,nombre:c.nombre})),
+    ...(campCart||[]).map(c=>({tipo:'cartera',id:c.id,nombre:c.nombre}))
+  ];
+
   const dias=ultimosDias(7);
   const selectorDias=dias.map(d=>{
     const label=d===today?'Hoy':fmtFecha(d);
@@ -4488,6 +4592,37 @@ async function renderTeleRegistro(fechaSel){
     <div class="form-grid">
       <div class="form-field"><label>Actualización cuentas CRM</label><input type="number" id="fCrm" value="${r.crm_actualizaciones||''}" placeholder="0" min="0"></div>
     </div>
+    <div class="shead">📞 Llamadas directas de CRM</div>
+    <div style="font-size:11px;color:var(--text3);margin:-4px 0 10px 2px;">Registra la actividad de llamadas que hiciste directamente en el CRM (una campaña por día).</div>
+    <div class="form-grid">
+      <div class="form-field"><label>Campaña</label>
+        <select id="crmCampana" onchange="(function(){const o=document.getElementById('crmCampana').selectedOptions[0];document.getElementById('crmCampanaTipo').value=o?.dataset.tipo||'';document.getElementById('crmCampanaNombre').value=o?.textContent||'';})()">
+          <option value="">-- Selecciona campaña --</option>
+          ${opcionesCamp.map(c=>`<option value="${c.id}" data-tipo="${c.tipo}" ${crm.campana_id===c.id?'selected':''}>${c.nombre} (${c.tipo==='cartera'?'Cartera':'Tele'})</option>`).join('')}
+        </select>
+        <input type="hidden" id="crmCampanaTipo" value="${crm.campana_tipo||''}">
+        <input type="hidden" id="crmCampanaNombre" value="${crm.campana_nombre||''}">
+      </div>
+      <div class="form-field"><label>Total de llamadas realizadas</label><input type="number" id="crmTotal" value="${crm.total_llamadas||''}" placeholder="0" min="0"></div>
+    </div>
+    <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin:10px 0 6px 2px;">Desglose por resultado</div>
+    <div class="form-grid fg3">
+      <div class="form-field"><label>📞 No contestó</label><input type="number" id="crmNoContesto" value="${crm.no_contesto||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>📵 Buzón</label><input type="number" id="crmBuzon" value="${crm.buzon||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>✅ Interesado</label><input type="number" id="crmInteresado" value="${crm.interesado||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>❌ No le interesa</label><input type="number" id="crmNoInteresa" value="${crm.no_le_interesa||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>🔄 Volver a llamar</label><input type="number" id="crmVolver" value="${crm.volver_llamar||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>🎫 Registrado al taller</label><input type="number" id="crmRegTaller" value="${crm.registrado_taller||''}" placeholder="0" min="0"></div>
+    </div>
+    <div class="form-grid">
+      <div class="form-field"><label>💼 Canalizado a ventas</label>
+        <input type="number" id="crmCanalizado" value="${crm.canalizado_ventas||''}" placeholder="0" min="0"
+          oninput="document.getElementById('crmDesgloseVend').style.display=parseInt(this.value)>0?'grid':'none'"></div>
+    </div>
+    <div id="crmDesgloseVend" class="form-grid" style="display:${(crm.canalizado_ventas||0)>0?'grid':'none'};background:var(--teal-bg);border-radius:8px;padding:10px 12px;margin-bottom:10px;">
+      <div class="form-field"><label>→ Canalizadas a Dulce</label><input type="number" id="crmCanalizDulce" value="${crm.canaliz_dulce||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>→ Canalizadas a Manuel</label><input type="number" id="crmCanalizManuel" value="${crm.canaliz_manuel||''}" placeholder="0" min="0"></div>
+    </div>
     <div style="font-size:11px;color:var(--text3);margin:12px 0 14px 2px;padding-top:4px;border-top:1px solid var(--border);">Los campos marcados como "automático" se calculan a partir de tu actividad en Mis prospectos y no se pueden editar aquí.</div>
     <div class="form-actions">
       <button class="btn-save" id="btnSave" onclick="saveTeleRegistro('${fecha}',${llamadasAuto},${canalizadosAuto},${llamadasCartAuto})">💾 Guardar registro</button>
@@ -4525,6 +4660,29 @@ async function saveTeleRegistro(fecha,llamadasAuto,canalizadosAuto,llamadasCartA
   };
   if(notasLog) payload.notas=notasLog;
   const {error}=await sb.from('registros_diarios').upsert(payload,{onConflict:'usuario_id,fecha'});
+
+  // Guardar llamadas directas de CRM (solo si hay campaña seleccionada)
+  const crmCampanaId=document.getElementById('crmCampana')?.value;
+  if(crmCampanaId){
+    const crmPayload={
+      usuario_id:currentUser.id, fecha,
+      campana_tipo:document.getElementById('crmCampanaTipo')?.value||null,
+      campana_id:crmCampanaId,
+      campana_nombre:document.getElementById('crmCampanaNombre')?.value||null,
+      total_llamadas:parseInt(document.getElementById('crmTotal')?.value)||0,
+      no_contesto:parseInt(document.getElementById('crmNoContesto')?.value)||0,
+      buzon:parseInt(document.getElementById('crmBuzon')?.value)||0,
+      interesado:parseInt(document.getElementById('crmInteresado')?.value)||0,
+      no_le_interesa:parseInt(document.getElementById('crmNoInteresa')?.value)||0,
+      volver_llamar:parseInt(document.getElementById('crmVolver')?.value)||0,
+      registrado_taller:parseInt(document.getElementById('crmRegTaller')?.value)||0,
+      canalizado_ventas:parseInt(document.getElementById('crmCanalizado')?.value)||0,
+      canaliz_dulce:parseInt(document.getElementById('crmCanalizDulce')?.value)||0,
+      canaliz_manuel:parseInt(document.getElementById('crmCanalizManuel')?.value)||0,
+      updated_at:new Date().toISOString()
+    };
+    await sb.from('llamadas_crm_directas').upsert(crmPayload,{onConflict:'usuario_id,fecha'});
+  }
   btn.disabled=false;btn.textContent='💾 Guardar registro';
   if(error){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}
   else{msg.style.color='var(--green)';msg.textContent='✓ Registro guardado correctamente';}
@@ -9075,8 +9233,69 @@ async function renderDirectorConfig(){
       <button onclick="saveAjusteComision()" style="background:#F5A623;color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">⭐ Guardar ajuste</button>
       <span style="font-size:12px;margin-left:10px;" id="ajusteMsg"></span>
     </div>
+
+    <!-- CRÉDITOS DE EDICIÓN -->
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:16px 20px;margin-bottom:20px;">
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px;">✏️ Créditos de edición de registros</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">Cada vendedor tiene 3 modificaciones a días anteriores por mes. Aquí puedes ver su uso y darles créditos extra si lo justifican.</div>
+      <div id="creditosPanel" style="font-size:12px;color:var(--text3);">Cargando...</div>
+    </div>
   </div>`;
   await cargarAjustesUI();
+  await cargarCreditosPanel();
+}
+
+async function cargarCreditosPanel(){
+  const cont=document.getElementById('creditosPanel');
+  if(!cont) return;
+  const anio=new Date().getFullYear(), mes=new Date().getMonth()+1;
+  const [{data:vends},{data:creds}]=await Promise.all([
+    sb.from('usuarios').select('id,nombre').in('rol',['vendedor','telemarketing']),
+    sb.from('creditos_edicion').select('*').eq('anio',anio).eq('mes',mes)
+  ]);
+  const credMap={};(creds||[]).forEach(c=>credMap[c.usuario_id]=c);
+  cont.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="background:var(--navy);color:#fff;">
+      <th style="padding:6px 10px;text-align:left;">Vendedor</th>
+      <th style="padding:6px 10px;text-align:center;">Usados</th>
+      <th style="padding:6px 10px;text-align:center;">Extra</th>
+      <th style="padding:6px 10px;text-align:center;">Disponibles</th>
+      <th style="padding:6px 10px;text-align:center;">Acción</th>
+    </tr></thead>
+    <tbody>${(vends||[]).map(v=>{
+      const c=credMap[v.id]||{usados:0,extra:0};
+      const disp=Math.max(0,(3+(c.extra||0))-(c.usados||0));
+      return `<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px 10px;">${v.nombre}</td>
+        <td style="padding:6px 10px;text-align:center;">${c.usados||0}</td>
+        <td style="padding:6px 10px;text-align:center;">${c.extra||0}</td>
+        <td style="padding:6px 10px;text-align:center;font-weight:700;color:${disp>0?'#27AE60':'var(--red)'};">${disp}/${3+(c.extra||0)}</td>
+        <td style="padding:6px 10px;text-align:center;">
+          <button onclick="darCreditoExtra('${v.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:3px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">+1 crédito</button>
+          <button onclick="resetCreditos('${v.id}')" style="background:none;border:1px solid var(--border);border-radius:5px;padding:3px 10px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;margin-left:4px;">Reset</button>
+        </td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+}
+
+async function darCreditoExtra(usuarioId){
+  const anio=new Date().getFullYear(), mes=new Date().getMonth()+1;
+  const {data}=await sb.from('creditos_edicion').select('*').eq('usuario_id',usuarioId).eq('anio',anio).eq('mes',mes).maybeSingle();
+  if(data){
+    await sb.from('creditos_edicion').update({extra:(data.extra||0)+1,updated_at:new Date().toISOString()}).eq('id',data.id);
+  } else {
+    await sb.from('creditos_edicion').insert({usuario_id:usuarioId,anio,mes,usados:0,extra:1});
+  }
+  cargarCreditosPanel();
+}
+async function resetCreditos(usuarioId){
+  if(!confirm('¿Resetear los créditos de este vendedor (usados a 0, extra a 0)?'))return;
+  const anio=new Date().getFullYear(), mes=new Date().getMonth()+1;
+  const {data}=await sb.from('creditos_edicion').select('*').eq('usuario_id',usuarioId).eq('anio',anio).eq('mes',mes).maybeSingle();
+  if(data){
+    await sb.from('creditos_edicion').update({usados:0,extra:0,updated_at:new Date().toISOString()}).eq('id',data.id);
+  }
+  cargarCreditosPanel();
 }
 
 function toggleAjusteValorLabel(){
