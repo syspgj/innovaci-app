@@ -7585,9 +7585,15 @@ async function renderEgresosTabla(){
     <button onclick="abrirNuevaFactEgreso()" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">+ Registrar</button>
     <button onclick="abrirCargaMasivaXML()" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">📎 Cargar XMLs</button>
   </div>
+  <div id="feBarraSeleccion" style="display:none;align-items:center;gap:12px;background:rgba(232,64,64,0.08);border:1px solid rgba(232,64,64,0.25);border-radius:6px;padding:8px 14px;margin-bottom:10px;">
+    <span style="font-size:12px;font-weight:600;color:var(--red);"><span id="feCountSel">0</span> seleccionado(s)</span>
+    <button onclick="eliminarEgresosSeleccionados()" style="background:var(--red);color:#fff;border:none;border-radius:5px;padding:5px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🗑 Eliminar seleccionados</button>
+    <button onclick="toggleSelectAllEgresos(false);document.getElementById('feSelectAll').checked=false;" style="background:none;border:1px solid var(--border);border-radius:5px;padding:5px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;color:var(--text2);">Cancelar</button>
+  </div>
   <div style="width:100%;overflow-x:auto;">
   <table style="font-size:11px;border-collapse:collapse;min-width:1100px;width:100%;">
     <thead><tr style="background:var(--navy);color:#fff;">
+      <th style="padding:7px 8px;text-align:center;width:30px;"><input type="checkbox" id="feSelectAll" onclick="toggleSelectAllEgresos(this.checked)" style="cursor:pointer;width:14px;height:14px;"></th>
       ${thS('Fecha','fecha_factura')}${thS('Proveedor','proveedor')}${thS('Concepto','concepto')}
       <th style="padding:7px 8px;cursor:pointer;" onclick="window._feSort={col:'rubro',asc:window._feSort?.col==='rubro'?!window._feSort.asc:true};renderEgresosTabla();">Rubro ⇅</th>
       ${thS('Folio','folio')}${thS('Subtotal','subtotal','right')}
@@ -7596,11 +7602,12 @@ async function renderEgresosTabla(){
       ${thS('Estatus','status')}<th style="padding:7px 8px;text-align:center;">📎 Fac.</th><th style="padding:7px 8px;text-align:center;">Concil.</th><th style="padding:7px 8px;">Acc.</th>
     </tr></thead>
     <tbody>
-      ${rows.length===0?`<tr><td colspan="13" style="text-align:center;color:var(--text3);padding:24px;">Sin resultados</td></tr>`:''}
+      ${rows.length===0?`<tr><td colspan="14" style="text-align:center;color:var(--text3);padding:24px;">Sin resultados</td></tr>`:''}
       ${rows.map(r=>{
         const ce="outline:none;border:none;background:transparent;width:100%;font-size:11px;font-family:inherit;";
         const num=ce+"text-align:right;font-family:'JetBrains Mono',monospace;";
-        return`<tr style="border-bottom:1px solid var(--border);">
+        return`<tr style="border-bottom:1px solid var(--border);" id="feRow_${r.id}">
+        <td style="padding:4px 6px;text-align:center;"><input type="checkbox" class="feRowCheck" value="${r.id}" onchange="actualizarSeleccionEgresos()" style="cursor:pointer;width:14px;height:14px;"></td>
         <td style="padding:4px 6px;min-width:90px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','fecha_factura',this.textContent.trim())" style="${ce}white-space:nowrap;">${r.fecha_factura||''}</span></td>
         <td style="padding:4px 6px;max-width:130px;cursor:pointer;" onclick="editarEgresoModal('${r.id}')"><span style="font-weight:500;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:underline;text-decoration-style:dotted;color:var(--navy);">${r.proveedor||'(sin proveedor)'}</span></td>
         <td style="padding:4px 6px;max-width:150px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','concepto',this.textContent.trim())" style="${ce}color:var(--text3);font-size:10px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.concepto||''}</span></td>
@@ -8279,6 +8286,36 @@ async function eliminarFactEgreso(id){
   renderAdminEgresos();
 }
 
+// ─── SELECCIÓN MÚLTIPLE DE EGRESOS ───────────────────────────────────────────
+function toggleSelectAllEgresos(checked){
+  document.querySelectorAll('.feRowCheck').forEach(cb=>{cb.checked=checked;});
+  actualizarSeleccionEgresos();
+}
+function actualizarSeleccionEgresos(){
+  const sel=document.querySelectorAll('.feRowCheck:checked');
+  const barra=document.getElementById('feBarraSeleccion');
+  const count=document.getElementById('feCountSel');
+  if(count) count.textContent=sel.length;
+  if(barra) barra.style.display=sel.length>0?'flex':'none';
+  // Resaltar filas seleccionadas
+  document.querySelectorAll('.feRowCheck').forEach(cb=>{
+    const row=document.getElementById('feRow_'+cb.value);
+    if(row) row.style.background=cb.checked?'rgba(232,64,64,0.05)':'';
+  });
+  // Sincronizar el "seleccionar todos"
+  const all=document.getElementById('feSelectAll');
+  const total=document.querySelectorAll('.feRowCheck').length;
+  if(all) all.checked=(sel.length===total&&total>0);
+}
+async function eliminarEgresosSeleccionados(){
+  const ids=Array.from(document.querySelectorAll('.feRowCheck:checked')).map(cb=>cb.value);
+  if(ids.length===0)return;
+  if(!confirm(`¿Eliminar ${ids.length} egreso(s) seleccionado(s)? Esta acción no se puede deshacer.`))return;
+  const {error}=await sb.from('fact_egresos').delete().in('id',ids);
+  if(error){alert('Error al eliminar: '+error.message);return;}
+  window._feRows=(window._feRows||[]).filter(r=>!ids.includes(String(r.id)));
+  renderEgresosTabla();
+}
 // ─── 4. IMPUESTOS ────────────────────────────────────────────────────────────
 async function renderFinImpuestos(){
   finLoading();
