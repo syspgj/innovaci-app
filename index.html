@@ -7,6 +7,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap');
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
@@ -7742,6 +7743,7 @@ async function renderEgresosTabla(){
     </div>
     <button onclick="abrirNuevaFactEgreso()" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">+ Registrar</button>
     <button onclick="abrirCargaMasivaXML()" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">📎 Cargar XMLs</button>
+    <button onclick="abrirConciliacionBanco()" style="background:#2980B9;color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">🏦 Conciliar con banco</button>
   </div>
   <div id="feBarraSeleccion" style="display:none;align-items:center;gap:12px;background:rgba(232,64,64,0.08);border:1px solid rgba(232,64,64,0.25);border-radius:6px;padding:8px 14px;margin-bottom:10px;">
     <span style="font-size:12px;font-weight:600;color:var(--red);"><span id="feCountSel">0</span> seleccionado(s)</span>
@@ -8004,6 +8006,111 @@ async function guardarEdicionIngreso(){
 
 // ─── MODAL EGRESO NUEVO ───────────────────────────────────────────────────────
 // ─── CARGA MASIVA DE XMLs ─────────────────────────────────────────────────────
+// ─── CONCILIACIÓN BANCARIA (Excel BBVA) ──────────────────────────────────────
+function abrirConciliacionBanco(){
+  const html=`
+    <div style="margin-bottom:14px;padding:12px 16px;background:rgba(41,128,185,0.07);border:1px dashed #2980B9;border-radius:8px;">
+      <div style="font-size:12px;font-weight:600;color:#2980B9;margin-bottom:8px;">Sube el Excel del estado de cuenta BBVA (${['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'][currentMonth]} ${currentYear})</div>
+      <input type="file" id="bancoExcel" accept=".xlsx,.xls" onchange="procesarExcelBanco()" style="font-size:12px;width:100%;">
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;">Se compara contra los egresos registrados de este mes por monto. Solo lectura — no modifica nada automáticamente.</div>
+    </div>
+    <div id="bancoResumen"></div>
+    <div id="bancoDetalle" style="max-height:420px;overflow-y:auto;"></div>`;
+  mkModal('modalConcBanco','🏦 Conciliación con banco',html,null,'Cerrar',true);
+}
+
+async function procesarExcelBanco(){
+  const file=document.getElementById('bancoExcel')?.files?.[0];
+  if(!file)return;
+  const resumen=document.getElementById('bancoResumen');
+  const detalle=document.getElementById('bancoDetalle');
+  resumen.innerHTML='<div style="text-align:center;padding:16px;color:var(--text3);">Procesando estado de cuenta...</div>';
+
+  // Leer Excel
+  const buf=await file.arrayBuffer();
+  const wb=XLSX.read(buf,{type:'array'});
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:null});
+
+  // Reconstruir movimientos (formato BBVA: cada mov = 2 filas)
+  const movs=[]; let i=1; // saltar header
+  while(i<rows.length){
+    const r=rows[i]||[];
+    if(r[0]!=null&&String(r[0]).trim()){
+      const dia=r[0];
+      let conc=String(r[1]||'');
+      const cargo=parseFloat(r[2])||0;
+      const abono=parseFloat(r[3])||0;
+      const folio=String(r[4]||'');
+      // segunda línea del concepto
+      if(i+1<rows.length&&(rows[i+1][0]==null||!String(rows[i+1][0]).trim())){
+        conc+=' '+String(rows[i+1][1]||''); i+=2;
+      } else i+=1;
+      movs.push({dia,concepto:conc.trim(),cargo,abono,folio});
+    } else i+=1;
+  }
+  const cargosBanco=movs.filter(m=>m.cargo>0);
+  const totalBanco=cargosBanco.reduce((s,m)=>s+m.cargo,0);
+
+  // Egresos registrados del mes
+  const egRegistrados=(window._feRows||[]).map(r=>({...r,_usado:false}));
+  const totalRegistrado=egRegistrados.reduce((s,r)=>s+(r.total||0),0);
+
+  // Cruce por monto (tolerancia ±1 peso)
+  const enBancoNoSistema=[]; let cuadrados=0;
+  cargosBanco.forEach(mb=>{
+    const match=egRegistrados.find(r=>!r._usado&&Math.abs((r.total||0)-mb.cargo)<=1);
+    if(match){match._usado=true;cuadrados++;}
+    else enBancoNoSistema.push(mb);
+  });
+  const enSistemaNoBanco=egRegistrados.filter(r=>!r._usado);
+  const faltanteMonto=enBancoNoSistema.reduce((s,m)=>s+m.cargo,0);
+
+  resumen.innerHTML=`
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:12px 14px;">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700;">Movimientos banco</div>
+        <div style="font-size:18px;font-weight:800;color:#2980B9;">${cargosBanco.length}</div>
+        <div style="font-size:11px;color:var(--text3);">${fmt(totalBanco)}</div>
+      </div>
+      <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:12px 14px;">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700;">Registrados en sistema</div>
+        <div style="font-size:18px;font-weight:800;color:#27AE60;">${egRegistrados.length}</div>
+        <div style="font-size:11px;color:var(--text3);">${fmt(totalRegistrado)}</div>
+      </div>
+      <div style="background:${enBancoNoSistema.length>0?'#fef3c7':'#f0fdf4'};border:1px solid ${enBancoNoSistema.length>0?'#F5A623':'#27AE60'};border-radius:8px;padding:12px 14px;">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700;">Faltan por registrar</div>
+        <div style="font-size:18px;font-weight:800;color:${enBancoNoSistema.length>0?'#b45309':'#27AE60'};">${enBancoNoSistema.length}</div>
+        <div style="font-size:11px;color:${enBancoNoSistema.length>0?'#b45309':'#27AE60'};font-weight:600;">${fmt(faltanteMonto)}</div>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--text2);margin-bottom:12px;padding:8px 12px;background:var(--surface-2,#f8f9fa);border-radius:6px;">
+      ✅ ${cuadrados} cuadrados · ⚠️ ${enBancoNoSistema.length} en banco sin registrar · 🔵 ${enSistemaNoBanco.length} en sistema sin match en banco
+    </div>`;
+
+  detalle.innerHTML=`
+    ${enBancoNoSistema.length>0?`
+    <div style="font-size:12px;font-weight:700;color:#b45309;margin-bottom:8px;">⚠️ En banco pero NO registrados (${enBancoNoSistema.length}) — captura estos:</div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:16px;">
+      <thead><tr style="background:#fef3c7;"><th style="padding:6px 8px;text-align:center;">Día</th><th style="padding:6px 8px;text-align:right;">Monto</th><th style="padding:6px 8px;text-align:left;">Concepto</th></tr></thead>
+      <tbody>${enBancoNoSistema.map(m=>`<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:5px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${m.dia}</td>
+        <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--red);">${fmt(m.cargo)}</td>
+        <td style="padding:5px 8px;color:var(--text2);font-size:10px;">${m.concepto.slice(0,60)}</td>
+      </tr>`).join('')}</tbody>
+    </table>`:'<div style="padding:16px;text-align:center;color:#27AE60;font-weight:600;">✅ Todos los movimientos del banco están registrados.</div>'}
+    ${enSistemaNoBanco.length>0?`
+    <div style="font-size:12px;font-weight:700;color:#2980B9;margin-bottom:8px;">🔵 En sistema pero sin match en banco (${enSistemaNoBanco.length}) — posibles duplicados o fechas distintas:</div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <thead><tr style="background:rgba(41,128,185,0.08);"><th style="padding:6px 8px;text-align:left;">Proveedor</th><th style="padding:6px 8px;text-align:right;">Total</th><th style="padding:6px 8px;text-align:left;">Folio</th></tr></thead>
+      <tbody>${enSistemaNoBanco.map(r=>`<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:5px 8px;">${r.proveedor||'—'}</td>
+        <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(r.total||0)}</td>
+        <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">${r.folio||'—'}</td>
+      </tr>`).join('')}</tbody>
+    </table>`:''}`;
+}
+
 function abrirCargaMasivaXML(){
   const rubros=window._rubrosEg||['IMSS','SAT','CLOUD','NOMINA','GASTOS OPERATIVOS','GASTOS OFICINA','MARKETING','PROVEEDOR GB'];
   const html=`
