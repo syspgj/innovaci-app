@@ -334,7 +334,7 @@ function aplicarAjusteComision(comisionBase, tasaBase, ventas, ajuste){
   const tasaAjustada=tasaBase+(ajuste.valor/100);
   return {comisionFinal:ventas*tasaAjustada, tasaFinal:tasaAjustada, tieneAjuste:true, motivo:ajuste.motivo};
 }
-function fmt(n){return '$'+Math.round(n).toLocaleString('es-MX');}
+function fmt(n){return '$'+(Math.round((n||0)*100)/100).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2});}
 
 // ─── BONOS ADICIONALES (reglas de negocio Innovaci) ──────────────────────────
 // 1) Bono Siigo Fiscal: $450 por cada Siigo Fiscal.
@@ -1749,7 +1749,7 @@ function fichaClienteCartera(cl,sub){
           ${suscripciones.map(s=>{
             const vence=s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
             return `<span style="font-size:10px;padding:2px 8px;border-radius:4px;border:1px solid ${vence?'var(--red)':'var(--border)'};color:${vence?'var(--red)':'var(--text3)'};">
-              ${s.producto||'?'} ${s.monto?'$'+Math.round(s.monto).toLocaleString('es-MX'):''} ${s.fecha_proxima_renovacion?'· '+fmtFecha(s.fecha_proxima_renovacion):''}
+              ${s.producto||'?'} ${s.monto?''+fmt(s.monto):''} ${s.fecha_proxima_renovacion?'· '+fmtFecha(s.fecha_proxima_renovacion):''}
             </span>`;
           }).join('')}
         </div>`:'<div style="font-size:11px;color:var(--text3);margin-top:4px;font-style:italic;">Sin suscripciones registradas</div>'}
@@ -1807,7 +1807,7 @@ async function abrirFichaClienteModal(clienteId){
         <span style="font-size:11px;color:var(--text3);">${s.producto||''}</span>
         ${s.tipo_producto==='diplomado'?`<span style="font-size:9px;background:rgba(41,128,185,0.12);color:#2980B9;border-radius:4px;padding:2px 6px;font-weight:700;">DIPLOMADO</span>`:''}
         ${s.periodicidad?`<span style="font-size:10px;color:var(--text3);text-transform:capitalize;">${s.periodicidad}</span>`:''}
-        ${s.monto?`<span style="font-size:11px;font-weight:600;color:var(--teal);">$${Math.round(s.monto).toLocaleString('es-MX')}</span>`:''}
+        ${s.monto?`<span style="font-size:11px;font-weight:600;color:var(--teal);">${fmt(s.monto)}</span>`:''}
       </div>
       ${editable&&s.tipo_producto==='diplomado'?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;padding:8px;background:rgba(41,128,185,0.05);border-radius:6px;">
         <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Diplomado</label>
@@ -4102,7 +4102,7 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
             return `<div style="border:1px solid ${v?'var(--red)':'var(--border)'};border-radius:6px;padding:7px 10px;font-size:11px;display:flex;gap:8px;align-items:center;">
               <span style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--navy);">${s.numserie||'—'}</span>
               <span style="color:var(--text3);">${s.producto||''}</span>
-              ${s.monto?`<span style="color:var(--teal);font-weight:600;">$${Math.round(s.monto).toLocaleString('es-MX')}</span>`:''}
+              ${s.monto?`<span style="color:var(--teal);font-weight:600;">${fmt(s.monto)}</span>`:''}
               <span style="margin-left:auto;color:${v?'var(--red)':'var(--text3)'};">${s.fecha_proxima_renovacion?fmtFecha(s.fecha_proxima_renovacion):'Sin fecha'}</span>
             </div>`;}).join('')}
         </div>
@@ -7727,6 +7727,14 @@ async function renderEgresosTabla(){
     <div class="thc"><div class="th-lbl">Conciliados</div><div class="th-val" style="color:#27AE60;">${fmt(conciliados)}</div></div>
     <div class="thc"><div class="th-lbl">Por conciliar</div><div class="th-val" style="color:${pendConc>0?'#E84040':'var(--text3)'};">${fmt(pendConc)}</div></div>
   </div>
+  ${(window._concBanco&&window._concBanco.mes===currentMonth&&window._concBanco.anio===currentYear)?`
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:${window._concBanco.faltan>0?'#fffbeb':'#f0fdf4'};border:1px solid ${window._concBanco.faltan>0?'#F5A623':'#27AE60'};border-radius:8px;padding:10px 16px;margin-bottom:14px;">
+    <span style="font-size:12px;font-weight:700;color:${window._concBanco.faltan>0?'#b45309':'#15803d'};">🏦 Conciliación bancaria:</span>
+    <span style="font-size:12px;color:var(--text2);">Banco <strong>${window._concBanco.movBanco}</strong> mov · ${fmt(window._concBanco.totalBanco)}</span>
+    <span style="font-size:12px;color:var(--text2);">Sistema <strong>${window._concBanco.registrados}</strong> · ${fmt(window._concBanco.totalRegistrado)}</span>
+    <span style="font-size:12px;font-weight:700;color:${window._concBanco.faltan>0?'#b45309':'#15803d'};">${window._concBanco.faltan>0?`⚠️ Faltan ${window._concBanco.faltan} (${fmt(window._concBanco.faltanteMonto)})`:'✅ Todo conciliado'}</span>
+    <button onclick="abrirConciliacionBanco()" style="margin-left:auto;background:#2980B9;color:#fff;border:none;border-radius:5px;padding:4px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Ver detalle</button>
+  </div>`:''}
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
     <select onchange="window._feFilter.rubro=this.value;renderEgresosTabla()" style="${selStyle}">
       <option value="">Todos los rubros</option>
@@ -8066,6 +8074,20 @@ async function procesarExcelBanco(){
   const enSistemaNoBanco=egRegistrados.filter(r=>!r._usado);
   const faltanteMonto=enBancoNoSistema.reduce((s,m)=>s+m.cargo,0);
 
+  // Guardar para persistir en el dashboard
+  window._concBanco={
+    mes:currentMonth, anio:currentYear,
+    movBanco:cargosBanco.length, totalBanco,
+    registrados:egRegistrados.length, totalRegistrado,
+    faltan:enBancoNoSistema.length, faltanteMonto,
+    cuadrados, enSistemaNoBanco:enSistemaNoBanco.length,
+    fecha:new Date().toISOString()
+  };
+  window._concFaltantes=enBancoNoSistema;
+
+  // Rubros disponibles para el dropdown
+  const rubrosDisp=window._rubrosEg||['GASTOS OPERATIVOS','NOMINA','IMPUESTOS','CLOUD','SOFTWARE','SUSCRIPCIONES','COMISIONES','TRANSPORTE','GASTOS GENERALES','PROVEEDOR GB','POR CLASIFICAR'];
+
   resumen.innerHTML=`
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
       <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:12px 14px;">
@@ -8090,15 +8112,32 @@ async function procesarExcelBanco(){
 
   detalle.innerHTML=`
     ${enBancoNoSistema.length>0?`
-    <div style="font-size:12px;font-weight:700;color:#b45309;margin-bottom:8px;">⚠️ En banco pero NO registrados (${enBancoNoSistema.length}) — captura estos:</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+      <div style="font-size:12px;font-weight:700;color:#b45309;">⚠️ En banco pero NO registrados (${enBancoNoSistema.length})</div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <label style="font-size:10px;color:var(--text3);cursor:pointer;"><input type="checkbox" id="concSelectAll" onclick="document.querySelectorAll('.concCheck').forEach(c=>c.checked=this.checked)" style="vertical-align:middle;"> Seleccionar todos</label>
+        <button onclick="anadirMovsBanco()" style="background:#27AE60;color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">➕ Añadir seleccionados</button>
+      </div>
+    </div>
     <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:16px;">
-      <thead><tr style="background:#fef3c7;"><th style="padding:6px 8px;text-align:center;">Día</th><th style="padding:6px 8px;text-align:right;">Monto</th><th style="padding:6px 8px;text-align:left;">Concepto</th></tr></thead>
-      <tbody>${enBancoNoSistema.map(m=>`<tr style="border-bottom:1px solid var(--border);">
+      <thead><tr style="background:#fef3c7;">
+        <th style="padding:6px 8px;width:28px;"></th>
+        <th style="padding:6px 8px;text-align:center;">Día</th>
+        <th style="padding:6px 8px;text-align:right;">Monto</th>
+        <th style="padding:6px 8px;text-align:left;">Concepto (banco)</th>
+        <th style="padding:6px 8px;text-align:left;">Rubro a asignar</th>
+      </tr></thead>
+      <tbody>${enBancoNoSistema.map((m,idx)=>`<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:5px 8px;text-align:center;"><input type="checkbox" class="concCheck" data-idx="${idx}" style="cursor:pointer;"></td>
         <td style="padding:5px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${m.dia}</td>
         <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--red);">${fmt(m.cargo)}</td>
-        <td style="padding:5px 8px;color:var(--text2);font-size:10px;">${m.concepto.slice(0,60)}</td>
+        <td style="padding:5px 8px;color:var(--text2);font-size:10px;">${m.concepto.slice(0,50)}</td>
+        <td style="padding:5px 8px;"><select class="concRubro" data-idx="${idx}" style="font-size:10px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;width:100%;">
+          <option value="POR CLASIFICAR">POR CLASIFICAR</option>
+          ${rubrosDisp.filter(r=>r!=='POR CLASIFICAR').map(r=>`<option value="${r}">${r}</option>`).join('')}
+        </select></td>
       </tr>`).join('')}</tbody>
-    </table>`:'<div style="padding:16px;text-align:center;color:#27AE60;font-weight:600;">✅ Todos los movimientos del banco están registrados.</div>'}
+    </table>`:'<div style="padding:16px;text-align:center;color:#27AE60;font-weight:600;">✅ Todos los movimientos del banco están registrados. Nada pendiente.</div>'}
     ${enSistemaNoBanco.length>0?`
     <div style="font-size:12px;font-weight:700;color:#2980B9;margin-bottom:8px;">🔵 En sistema pero sin match en banco (${enSistemaNoBanco.length}) — posibles duplicados o fechas distintas:</div>
     <table style="width:100%;border-collapse:collapse;font-size:11px;">
@@ -8109,6 +8148,41 @@ async function procesarExcelBanco(){
         <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">${r.folio||'—'}</td>
       </tr>`).join('')}</tbody>
     </table>`:''}`;
+}
+
+async function anadirMovsBanco(){
+  const checks=Array.from(document.querySelectorAll('.concCheck:checked'));
+  if(checks.length===0){alert('Selecciona al menos un movimiento para añadir.');return;}
+  const faltantes=window._concFaltantes||[];
+  const nuevos=checks.map(chk=>{
+    const idx=parseInt(chk.dataset.idx);
+    const mov=faltantes[idx];
+    const rubroSel=document.querySelector(`.concRubro[data-idx="${idx}"]`)?.value||'POR CLASIFICAR';
+    // Reconstruir fecha del mes actual con el día del banco
+    const dia=String(mov.dia).padStart(2,'0');
+    const fecha=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${dia}`;
+    return {
+      anio:currentYear, mes:currentMonth,
+      fecha_factura:fecha,
+      folio:null,
+      proveedor:mov.concepto.slice(0,60),
+      concepto:mov.concepto.slice(0,120),
+      rubro:rubroSel,
+      subtotal:mov.cargo, iva_retenido:0, iva_trasladado:0, isr:0,
+      total:mov.cargo,
+      status:'PAGADO',
+      tiene_factura:false,
+      conciliado:true  // viene del banco, ya está conciliado
+    };
+  });
+  if(!confirm(`¿Añadir ${nuevos.length} movimiento(s) al registro de egresos?\n\nSe registrarán con el rubro asignado, marcados como conciliados y sin factura. Podrás editarlos después para agregar folio/IVA.`))return;
+  const {error}=await sb.from('fact_egresos').insert(nuevos);
+  if(error){alert('Error al añadir: '+error.message);return;}
+  // Recargar egresos y reconciliar
+  alert(`✅ ${nuevos.length} movimiento(s) añadido(s) correctamente.`);
+  document.getElementById('modalConcBanco')?.remove();
+  window._concBanco=null; // forzar recálculo al volver a subir
+  await renderAdminEgresos();
 }
 
 function abrirCargaMasivaXML(){
