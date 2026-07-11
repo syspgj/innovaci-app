@@ -8082,9 +8082,20 @@ async function procesarExcelBanco(){
   const egRegistrados=(window._feRows||[]).map(r=>({...r,_usado:false}));
   const totalRegistrado=egRegistrados.reduce((s,r)=>s+(r.total||0),0);
 
+  // Cargar movimientos ya agrupados en facturas (para no marcarlos como faltantes)
+  const {data:agrupados}=await sb.from('conciliacion_agrupada')
+    .select('dia_banco,monto,concepto_banco').eq('anio',currentYear).eq('mes',currentMonth);
+  const yaAgrupados=(agrupados||[]).map(a=>({dia:String(a.dia_banco),monto:Math.round(a.monto*100)}));
+  const estaAgrupado=(mb)=>{
+    const idx=yaAgrupados.findIndex(a=>a.dia===String(mb.dia)&&Math.abs(a.monto-Math.round(mb.cargo*100))<=200);
+    if(idx>=0){yaAgrupados.splice(idx,1);return true;}
+    return false;
+  };
+
   // Cruce por monto (tolerancia ±1 peso)
-  const enBancoNoSistema=[]; let cuadrados=0;
+  const enBancoNoSistema=[]; let cuadrados=0; let agrupadosCount=0;
   cargosBanco.forEach(mb=>{
+    if(estaAgrupado(mb)){agrupadosCount++;cuadrados++;return;} // ya conciliado vía agrupación
     const match=egRegistrados.find(r=>!r._usado&&Math.abs((r.total||0)-mb.cargo)<=1);
     if(match){match._usado=true;cuadrados++;}
     else enBancoNoSistema.push(mb);
@@ -8128,7 +8139,7 @@ async function procesarExcelBanco(){
       </div>
     </div>
     <div style="font-size:11px;color:var(--text2);margin-bottom:12px;padding:8px 12px;background:var(--surface-2,#f8f9fa);border-radius:6px;">
-      ✅ ${cuadrados} cuadrados · ⚠️ ${enBancoNoSistema.length} en banco sin registrar · 🔵 ${enSistemaNoBanco.length} en sistema sin match en banco
+      ✅ ${cuadrados} cuadrados${agrupadosCount>0?` (${agrupadosCount} agrupados en facturas)`:''} · ⚠️ ${enBancoNoSistema.length} en banco sin registrar · 🔵 ${enSistemaNoBanco.length} en sistema sin match en banco
     </div>`;
 
   detalle.innerHTML=`
@@ -8138,6 +8149,7 @@ async function procesarExcelBanco(){
       <div style="display:flex;gap:6px;align-items:center;">
         <label style="font-size:10px;color:var(--text3);cursor:pointer;"><input type="checkbox" id="concSelectAll" onclick="document.querySelectorAll('.concCheck').forEach(c=>c.checked=this.checked)" style="vertical-align:middle;"> Seleccionar todos</label>
         <button onclick="anadirMovsBanco()" style="background:#27AE60;color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">➕ Añadir seleccionados</button>
+        <button onclick="abrirAgruparFactura()" style="background:#8B5CF6;color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Agrupar en factura</button>
       </div>
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:16px;">
@@ -8215,6 +8227,89 @@ async function anadirMovsBanco(){
     msg.insertBefore(aviso,msg.firstChild);
     setTimeout(()=>aviso.remove(),3000);
   }
+}
+
+// ─── AGRUPAR MOVIMIENTOS BANCARIOS EN UNA FACTURA ────────────────────────────
+async function abrirAgruparFactura(){
+  const checks=Array.from(document.querySelectorAll('.concCheck:checked'));
+  if(checks.length===0){alert('Selecciona los movimientos del banco que corresponden a una misma factura.');return;}
+  const faltantes=window._concFaltantes||[];
+  const seleccionados=checks.map(chk=>faltantes[parseInt(chk.dataset.idx)]);
+  const sumaSel=seleccionados.reduce((s,m)=>s+m.cargo,0);
+
+  // Facturas del sistema para elegir (las que no están conciliadas primero)
+  const facturas=[...(window._feRows||[])].sort((a,b)=>(a.conciliado?1:0)-(b.conciliado?1:0)||(b.total||0)-(a.total||0));
+
+  const html=`
+    <div style="margin-bottom:12px;padding:10px 14px;background:rgba(139,92,246,0.08);border:1px solid #8B5CF6;border-radius:8px;">
+      <div style="font-size:12px;font-weight:700;color:#8B5CF6;margin-bottom:4px;">Movimientos seleccionados (${seleccionados.length})</div>
+      <div style="font-size:11px;color:var(--text2);">${seleccionados.map(m=>`Día ${m.dia} · ${fmt(m.cargo)}`).join(' + ')}</div>
+      <div style="font-size:14px;font-weight:800;color:#8B5CF6;margin-top:6px;">Suma: ${fmt(sumaSel)}</div>
+    </div>
+    <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px;">Selecciona la factura del sistema con la que se agrupan:</div>
+    <select id="agrFacturaSel" onchange="validarCuadreAgrupacion(${sumaSel})" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;margin-bottom:10px;">
+      <option value="">-- Selecciona factura --</option>
+      ${facturas.map(f=>`<option value="${f.id}" data-total="${f.total||0}">${f.proveedor||'(sin proveedor)'} · ${f.folio||'sin folio'} · ${fmt(f.total||0)} ${f.conciliado?'(ya conciliada)':''}</option>`).join('')}
+    </select>
+    <div id="agrCuadre" style="font-size:12px;padding:10px 12px;border-radius:6px;background:var(--surface-2,#f8f9fa);color:var(--text3);">Selecciona una factura para validar el cuadre.</div>`;
+
+  // Modal secundario
+  const m=document.createElement('div');
+  m.id='modalAgrupar';
+  m.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  m.innerHTML=`<div style="background:#fff;border-radius:12px;padding:22px;width:520px;max-width:96vw;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div style="font-size:15px;font-weight:700;color:#8B5CF6;">🔗 Agrupar movimientos en factura</div>
+      <button onclick="document.getElementById('modalAgrupar').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);">✕</button>
+    </div>
+    ${html}
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+      <button onclick="document.getElementById('modalAgrupar').remove()" style="padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-size:12px;font-family:'Inter',sans-serif;">Cancelar</button>
+      <button id="agrConfirmBtn" onclick="confirmarAgrupacion()" disabled style="padding:8px 18px;background:#8B5CF6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;opacity:0.5;">Confirmar agrupación</button>
+    </div>
+  </div>`;
+  document.body.appendChild(m);
+  window._agrSeleccionados=seleccionados;
+  window._agrSuma=sumaSel;
+}
+
+function validarCuadreAgrupacion(sumaSel){
+  const sel=document.getElementById('agrFacturaSel');
+  const opt=sel.selectedOptions[0];
+  const cuadre=document.getElementById('agrCuadre');
+  const btn=document.getElementById('agrConfirmBtn');
+  if(!opt||!opt.value){cuadre.textContent='Selecciona una factura para validar el cuadre.';btn.disabled=true;btn.style.opacity='0.5';return;}
+  const totalFactura=parseFloat(opt.dataset.total)||0;
+  const dif=Math.abs(totalFactura-sumaSel);
+  const cuadra=dif<=2; // tolerancia 2 pesos
+  cuadre.style.background=cuadra?'#f0fdf4':'#fef2f2';
+  cuadre.style.color=cuadra?'#15803d':'#dc2626';
+  cuadre.innerHTML=`Factura: <strong>${fmt(totalFactura)}</strong> · Suma movimientos: <strong>${fmt(sumaSel)}</strong> · Diferencia: <strong>${fmt(dif)}</strong><br>${cuadra?'✅ Cuadra — puedes confirmar la agrupación.':'⚠️ No cuadra. Revisa que hayas seleccionado los movimientos correctos (¿incluiste algún duplicado?).'}`;
+  btn.disabled=!cuadra;
+  btn.style.opacity=cuadra?'1':'0.5';
+}
+
+async function confirmarAgrupacion(){
+  const sel=document.getElementById('agrFacturaSel');
+  const facturaId=sel.value;
+  if(!facturaId)return;
+  const movs=window._agrSeleccionados||[];
+  // Guardar trazabilidad
+  const filas=movs.map(m=>({
+    factura_id:facturaId, anio:currentYear, mes:currentMonth,
+    dia_banco:String(m.dia), monto:m.cargo, concepto_banco:m.concepto.slice(0,120)
+  }));
+  const {error:errTraz}=await sb.from('conciliacion_agrupada').insert(filas);
+  if(errTraz){alert('Error al guardar trazabilidad: '+errTraz.message);return;}
+  // Marcar la factura como conciliada
+  await sb.from('fact_egresos').update({conciliado:true}).eq('id',facturaId);
+  const row=(window._feRows||[]).find(r=>String(r.id)===String(facturaId));
+  if(row) row.conciliado=true;
+  document.getElementById('modalAgrupar').remove();
+  alert(`✅ ${movs.length} movimiento(s) agrupados en la factura y marcada como conciliada.`);
+  // Re-procesar conciliación en vivo
+  const fileInput=document.getElementById('bancoExcel');
+  if(fileInput&&fileInput.files.length) await procesarExcelBanco();
 }
 
 function abrirCargaMasivaXML(){
