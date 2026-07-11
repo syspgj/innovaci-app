@@ -8312,6 +8312,17 @@ async function confirmarAgrupacion(){
   if(fileInput&&fileInput.files.length) await procesarExcelBanco();
 }
 
+async function desagruparFactura(facturaId){
+  if(!confirm('¿Deshacer la agrupación? Los movimientos volverán a aparecer como pendientes y la factura se marcará como no conciliada.'))return;
+  await sb.from('conciliacion_agrupada').delete().eq('factura_id',facturaId);
+  await sb.from('fact_egresos').update({conciliado:false}).eq('id',facturaId);
+  const row=(window._feRows||[]).find(r=>String(r.id)===String(facturaId));
+  if(row) row.conciliado=false;
+  document.getElementById('modalEgEdit')?.remove();
+  alert('✅ Agrupación deshecha.');
+  renderAdminEgresos();
+}
+
 function abrirCargaMasivaXML(){
   const rubros=window._rubrosEg||['IMSS','SAT','CLOUD','NOMINA','GASTOS OPERATIVOS','GASTOS OFICINA','MARKETING','PROVEEDOR GB'];
   const html=`
@@ -8559,13 +8570,16 @@ async function guardarFactEgreso(){
 }
 
 // ─── MODAL EDICIÓN EGRESO ─────────────────────────────────────────────────────
-function editarEgresoModal(id){
+async function editarEgresoModal(id){
   const r=(window._feRows||[]).find(x=>x.id===id);
   if(!r)return;
   const rubros=window._rubrosEg||['IMSS','SAT','CLOUD','NOMINA','GASTOS OPERATIVOS','GASTOS OFICINA','MARKETING','PROVEEDOR GB'];
   const uProvs=[...new Set((window._feRows||[]).map(x=>x.proveedor).filter(Boolean))].sort();
   const provActual=r.proveedor||'';
   const provEnLista=uProvs.includes(provActual);
+  // Cargar movimientos bancarios agrupados en esta factura (trazabilidad)
+  const {data:movsAgrupados}=await sb.from('conciliacion_agrupada').select('*').eq('factura_id',id).order('dia_banco');
+  const tieneAgrupados=(movsAgrupados||[]).length>0;
   const html=`
     <div style="background:rgba(0,169,157,0.06);border:1px dashed var(--teal);border-radius:8px;padding:10px 12px;margin-bottom:12px;display:flex;align-items:center;gap:10px;">
       <span style="font-size:12px;font-weight:600;color:var(--teal);">📎 Re-cargar desde XML SAT</span>
@@ -8602,6 +8616,28 @@ function editarEgresoModal(id){
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
       ${fld('Fecha de pago',inp('eeFechaPago','date','',r.fecha_pago||''))}
     </div>
+    ${tieneAgrupados?`
+    <div style="margin-top:14px;background:rgba(139,92,246,0.06);border:1px solid #8B5CF6;border-radius:8px;padding:12px 14px;">
+      <div style="font-size:12px;font-weight:700;color:#8B5CF6;margin-bottom:8px;">🔗 Movimientos bancarios agrupados (${movsAgrupados.length})</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Esta factura se pagó en varios movimientos del banco:</div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead><tr style="border-bottom:1px solid rgba(139,92,246,0.2);">
+          <th style="padding:4px 8px;text-align:center;color:#8B5CF6;">Día</th>
+          <th style="padding:4px 8px;text-align:right;color:#8B5CF6;">Monto</th>
+          <th style="padding:4px 8px;text-align:left;color:#8B5CF6;">Concepto banco</th>
+        </tr></thead>
+        <tbody>${movsAgrupados.map(m=>`<tr style="border-bottom:1px solid rgba(139,92,246,0.1);">
+          <td style="padding:4px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${m.dia_banco}</td>
+          <td style="padding:4px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:600;">${fmt(m.monto)}</td>
+          <td style="padding:4px 8px;color:var(--text2);font-size:10px;">${(m.concepto_banco||'').slice(0,45)}</td>
+        </tr>`).join('')}</tbody>
+        <tfoot><tr style="border-top:2px solid #8B5CF6;">
+          <td style="padding:5px 8px;font-weight:700;color:#8B5CF6;">Total</td>
+          <td style="padding:5px 8px;text-align:right;font-weight:800;color:#8B5CF6;font-family:'JetBrains Mono',monospace;">${fmt(movsAgrupados.reduce((s,m)=>s+(m.monto||0),0))}</td>
+          <td style="padding:5px 8px;"><button onclick="desagruparFactura('${id}')" style="background:none;border:1px solid var(--red);color:var(--red);border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">Desagrupar</button></td>
+        </tr></tfoot>
+      </table>
+    </div>`:''}
     <input type="hidden" id="eeId" value="${id}">`;
   // Modal con botones personalizados: Eliminar | Guardar y siguiente | Guardar
   document.getElementById('modalEgEdit')?.remove();
