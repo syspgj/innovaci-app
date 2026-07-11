@@ -8107,6 +8107,9 @@ async function procesarExcelBanco(){
   const rubrosDisp=window._rubrosEg||['GASTOS OPERATIVOS','NOMINA','IMPUESTOS','CLOUD','SOFTWARE','SUSCRIPCIONES','COMISIONES','TRANSPORTE','GASTOS GENERALES','PROVEEDOR GB','POR CLASIFICAR'];
 
   resumen.innerHTML=`
+    <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+      <button onclick="document.getElementById('modalConcBanco').remove();renderAdminEgresos();" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">✅ Guardar y ver en dashboard</button>
+    </div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
       <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:12px 14px;">
         <div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700;">Movimientos banco</div>
@@ -8194,13 +8197,24 @@ async function anadirMovsBanco(){
     };
   });
   if(!confirm(`¿Añadir ${nuevos.length} movimiento(s) al registro de egresos?\n\nSe registrarán con el rubro asignado, marcados como conciliados y sin factura. Podrás editarlos después para agregar folio/IVA.`))return;
-  const {error}=await sb.from('fact_egresos').insert(nuevos);
+  const {data:insertados,error}=await sb.from('fact_egresos').insert(nuevos).select();
   if(error){alert('Error al añadir: '+error.message);return;}
-  // Recargar egresos y reconciliar
-  alert(`✅ ${nuevos.length} movimiento(s) añadido(s) correctamente.`);
-  document.getElementById('modalConcBanco')?.remove();
-  window._concBanco=null; // forzar recálculo al volver a subir
-  await renderAdminEgresos();
+  // Agregar al cache local de egresos para que el re-cruce los reconozca
+  if(insertados) window._feRows=[...(window._feRows||[]),...insertados];
+  // Re-procesar la conciliación con el Excel que sigue cargado (el faltante baja en vivo)
+  const fileInput=document.getElementById('bancoExcel');
+  if(fileInput&&fileInput.files.length){
+    await procesarExcelBanco();
+  }
+  // Mensaje breve
+  const msg=document.getElementById('bancoResumen');
+  if(msg){
+    const aviso=document.createElement('div');
+    aviso.style.cssText='background:#f0fdf4;border:1px solid #27AE60;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:#15803d;font-weight:600;';
+    aviso.textContent=`✅ ${nuevos.length} movimiento(s) añadido(s). Estado actualizado.`;
+    msg.insertBefore(aviso,msg.firstChild);
+    setTimeout(()=>aviso.remove(),3000);
+  }
 }
 
 function abrirCargaMasivaXML(){
