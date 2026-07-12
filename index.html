@@ -7483,12 +7483,38 @@ function renderIngresosTabla(){
   const selStyle='padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:11px;font-family:\'Inter\',sans-serif;';
 
   ac.innerHTML=`
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;">
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:${(window._concBancoIng&&window._concBancoIng.mes===currentMonth&&window._concBancoIng.anio===currentYear)?'10':'14'}px;">
     <div class="thc"><div class="th-lbl">Total facturado</div><div class="th-val">${fmt(totalFact)}</div></div>
     <div class="thc"><div class="th-lbl">IVA cobrado</div><div class="th-val" style="color:#27AE60;">${fmt(totalIvaCob)}</div></div>
     <div class="thc"><div class="th-lbl">Cobrado</div><div class="th-val" style="color:#27AE60;">${fmt(totalCob)}</div></div>
     <div class="thc"><div class="th-lbl">Por cobrar</div><div class="th-val" style="color:${pendCob>0?'#E84040':'var(--text3)'};">${fmt(pendCob)}</div></div>
   </div>
+  ${(window._concBancoIng&&window._concBancoIng.mes===currentMonth&&window._concBancoIng.anio===currentYear)?(()=>{
+    const cb=window._concBancoIng;
+    const difFactBanco=totalFact-cb.totalBanco;
+    return `
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px;">
+    <div class="thc" style="border:1px solid rgba(39,174,96,0.3);">
+      <div class="th-lbl">🏦 Total ingresos bancarios</div>
+      <div class="th-val" style="color:#27AE60;">${fmt(cb.totalBanco)}</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;">según estado de cuenta BBVA</div>
+    </div>
+    <div class="thc" style="border:1px solid rgba(39,174,96,0.3);">
+      <div class="th-lbl">🏦 Movimientos bancarios</div>
+      <div class="th-val" style="color:#27AE60;">${cb.movBanco}</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;">${cb.registrados} registrados en sistema</div>
+    </div>
+    <div class="thc" style="border:1px solid ${cb.faltan>0?'rgba(245,166,35,0.4)':'rgba(39,174,96,0.4)'};">
+      <div class="th-lbl">Diferencia facturado vs banco</div>
+      <div class="th-val" style="color:${Math.abs(difFactBanco)<1?'#27AE60':difFactBanco<0?'#E84040':'#F5A623'};">${fmt(difFactBanco)}</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;">${Math.abs(difFactBanco)<1?'✓ cuadra':difFactBanco<0?'▼ entró más de lo facturado':'▲ facturado más que banco'}${cb.faltan>0?` · ${cb.faltan} entrada(s) sin registrar`:''}</div>
+    </div>
+  </div>
+  <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:${cb.faltan>0?'#fffbeb':'#f0fdf4'};border:1px solid ${cb.faltan>0?'#F5A623':'#27AE60'};border-radius:8px;padding:9px 16px;margin-bottom:14px;">
+    <span style="font-size:12px;font-weight:700;color:${cb.faltan>0?'#b45309':'#15803d'};">${cb.faltan>0?`⚠️ ${cb.faltan} entrada(s) del banco sin registrar (${fmt(cb.faltanteMonto)}) — posibles ingresos sin facturar`:'✅ Todas las entradas del banco están registradas'}</span>
+    <button onclick="abrirConciliacionBancoIng()" style="margin-left:auto;background:#27AE60;color:#fff;border:none;border-radius:5px;padding:4px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Ver detalle</button>
+  </div>`;
+  })():''}
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
     <select onchange="window._fiFilter.rubro=this.value;renderIngresosTabla()" style="${selStyle}">
       <option value="">Todos los rubros</option>
@@ -7508,6 +7534,7 @@ function renderIngresosTabla(){
       <button onclick="window._fiFilter.texto='';renderIngresosTabla()" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:14px;">✕</button>
     </div>
     <button onclick="abrirNuevaFactIngreso()" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">+ Registrar</button>
+    <button onclick="abrirConciliacionBancoIng()" style="background:#27AE60;color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">🏦 Conciliar con banco</button>
   </div>
   <div style="width:100%;overflow-x:auto;">
   <table style="font-size:11px;border-collapse:collapse;min-width:1200px;width:100%;">
@@ -7689,9 +7716,9 @@ async function renderEgresosTabla(){
   const egNoFacturados=fe.filter(r=>!r.tiene_factura).reduce((s,r)=>s+(r.total||0),0);
   const numFacturados=fe.filter(r=>r.tiene_factura).length;
   const numNoFacturados=fe.filter(r=>!r.tiene_factura).length;
-  // Facturado sin salida de banco: tiene XML pero NO conciliado (pagado por fuera)
-  const facturadoSinSalida=fe.filter(r=>r.tiene_factura&&!r.conciliado).reduce((s,r)=>s+(r.total||0),0);
-  const numFactSinSalida=fe.filter(r=>r.tiene_factura&&!r.conciliado).length;
+  // Facturado sin salida de banco: marcado manual (pago_por_fuera) O con XML pero no conciliado
+  const facturadoSinSalida=fe.filter(r=>r.pago_por_fuera||(r.tiene_factura&&!r.conciliado)).reduce((s,r)=>s+(r.total||0),0);
+  const numFactSinSalida=fe.filter(r=>r.pago_por_fuera||(r.tiene_factura&&!r.conciliado)).length;
   // IVA acreditado: TODOS los que tienen factura/XML (salieron del banco o no)
   const ivaAcreditado=fe.filter(r=>r.tiene_factura).reduce((s,r)=>s+(r.iva_trasladado||0),0);
   // IVA cobrado de ingresos
@@ -8059,6 +8086,118 @@ async function guardarEdicionIngreso(){
 // ─── MODAL EGRESO NUEVO ───────────────────────────────────────────────────────
 // ─── CARGA MASIVA DE XMLs ─────────────────────────────────────────────────────
 // ─── CONCILIACIÓN BANCARIA (Excel BBVA) ──────────────────────────────────────
+// ─── CONCILIACIÓN BANCARIA DE INGRESOS (abonos del Excel BBVA) ───────────────
+function abrirConciliacionBancoIng(){
+  const html=`
+    <div style="margin-bottom:14px;padding:12px 16px;background:rgba(39,174,96,0.07);border:1px dashed #27AE60;border-radius:8px;">
+      <div style="font-size:12px;font-weight:600;color:#27AE60;margin-bottom:8px;">Sube el Excel del estado de cuenta BBVA (${['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'][currentMonth]} ${currentYear})</div>
+      <input type="file" id="bancoExcelIng" accept=".xlsx,.xls" onchange="procesarExcelBancoIng()" style="font-size:12px;width:100%;">
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;">Lee los ABONOS (entradas) y los cruza contra los ingresos registrados. Identifica entradas de dinero no facturadas.</div>
+    </div>
+    <div id="bancoIngResumen"></div>
+    <div id="bancoIngDetalle" style="max-height:420px;overflow-y:auto;"></div>`;
+  mkModal('modalConcBancoIng','🏦 Conciliación de ingresos con banco',html,null,'Cerrar',true);
+}
+
+async function procesarExcelBancoIng(){
+  const file=document.getElementById('bancoExcelIng')?.files?.[0];
+  if(!file)return;
+  const resumen=document.getElementById('bancoIngResumen');
+  const detalle=document.getElementById('bancoIngDetalle');
+  resumen.innerHTML='<div style="text-align:center;padding:16px;color:var(--text3);">Procesando estado de cuenta...</div>';
+
+  const buf=await file.arrayBuffer();
+  const wb=XLSX.read(buf,{type:'array'});
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:null});
+
+  // Reconstruir movimientos (2 filas c/u), tomar ABONOS
+  const movs=[]; let i=1;
+  while(i<rows.length){
+    const r=rows[i]||[];
+    if(r[0]!=null&&String(r[0]).trim()){
+      const dia=r[0];
+      let conc=String(r[1]||'');
+      const cargo=parseFloat(r[2])||0;
+      const abono=parseFloat(r[3])||0;
+      if(i+1<rows.length&&(rows[i+1][0]==null||!String(rows[i+1][0]).trim())){
+        conc+=' '+String(rows[i+1][1]||''); i+=2;
+      } else i+=1;
+      movs.push({dia,concepto:conc.trim(),cargo,abono});
+    } else i+=1;
+  }
+  const abonosBanco=movs.filter(m=>m.abono>0);
+  const totalBanco=abonosBanco.reduce((s,m)=>s+m.abono,0);
+
+  // Ingresos cobrados registrados del mes
+  const ingRegistrados=(window._fiRows||[]).filter(r=>r.cobrado).map(r=>({...r,_usado:false}));
+  const totalRegistrado=ingRegistrados.reduce((s,r)=>s+(r.total||0),0);
+
+  // Cruce por monto (±1 peso)
+  const enBancoNoSistema=[]; let cuadrados=0;
+  abonosBanco.forEach(mb=>{
+    const match=ingRegistrados.find(r=>!r._usado&&Math.abs((r.total||0)-mb.abono)<=1);
+    if(match){match._usado=true;cuadrados++;}
+    else enBancoNoSistema.push(mb);
+  });
+  const enSistemaNoBanco=ingRegistrados.filter(r=>!r._usado);
+  const faltanteMonto=enBancoNoSistema.reduce((s,m)=>s+m.abono,0);
+
+  window._concBancoIng={
+    mes:currentMonth, anio:currentYear,
+    movBanco:abonosBanco.length, totalBanco,
+    registrados:ingRegistrados.length, totalRegistrado,
+    faltan:enBancoNoSistema.length, faltanteMonto, cuadrados
+  };
+
+  resumen.innerHTML=`
+    <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+      <button onclick="document.getElementById('modalConcBancoIng').remove();renderAdminIngresos();" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">✅ Guardar y ver en dashboard</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
+      <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:12px 14px;">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700;">Entradas banco</div>
+        <div style="font-size:18px;font-weight:800;color:#27AE60;">${abonosBanco.length}</div>
+        <div style="font-size:11px;color:var(--text3);">${fmt(totalBanco)}</div>
+      </div>
+      <div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:12px 14px;">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700;">Cobrados registrados</div>
+        <div style="font-size:18px;font-weight:800;color:#2980B9;">${ingRegistrados.length}</div>
+        <div style="font-size:11px;color:var(--text3);">${fmt(totalRegistrado)}</div>
+      </div>
+      <div style="background:${enBancoNoSistema.length>0?'#fef3c7':'#f0fdf4'};border:1px solid ${enBancoNoSistema.length>0?'#F5A623':'#27AE60'};border-radius:8px;padding:12px 14px;">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700;">Entradas sin registrar</div>
+        <div style="font-size:18px;font-weight:800;color:${enBancoNoSistema.length>0?'#b45309':'#27AE60'};">${enBancoNoSistema.length}</div>
+        <div style="font-size:11px;color:${enBancoNoSistema.length>0?'#b45309':'#27AE60'};font-weight:600;">${fmt(faltanteMonto)}</div>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--text2);margin-bottom:12px;padding:8px 12px;background:var(--surface-2,#f8f9fa);border-radius:6px;">
+      ✅ ${cuadrados} cuadrados · ⚠️ ${enBancoNoSistema.length} entradas sin registrar · 🔵 ${enSistemaNoBanco.length} en sistema sin match
+    </div>`;
+
+  detalle.innerHTML=`
+    ${enBancoNoSistema.length>0?`
+    <div style="font-size:12px;font-weight:700;color:#b45309;margin-bottom:8px;">⚠️ Entradas de dinero en banco NO registradas (${enBancoNoSistema.length}) — posibles ingresos sin facturar:</div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:16px;">
+      <thead><tr style="background:#fef3c7;"><th style="padding:6px 8px;text-align:center;">Día</th><th style="padding:6px 8px;text-align:right;">Monto</th><th style="padding:6px 8px;text-align:left;">Concepto (banco)</th></tr></thead>
+      <tbody>${enBancoNoSistema.map(m=>`<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:5px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${m.dia}</td>
+        <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:#27AE60;">${fmt(m.abono)}</td>
+        <td style="padding:5px 8px;color:var(--text2);font-size:10px;">${m.concepto.slice(0,55)}</td>
+      </tr>`).join('')}</tbody>
+    </table>`:'<div style="padding:16px;text-align:center;color:#27AE60;font-weight:600;">✅ Todas las entradas del banco están registradas.</div>'}
+    ${enSistemaNoBanco.length>0?`
+    <div style="font-size:12px;font-weight:700;color:#2980B9;margin-bottom:8px;">🔵 Cobrados en sistema sin match en banco (${enSistemaNoBanco.length}):</div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <thead><tr style="background:rgba(41,128,185,0.08);"><th style="padding:6px 8px;text-align:left;">Cliente</th><th style="padding:6px 8px;text-align:right;">Total</th><th style="padding:6px 8px;text-align:left;">Folio</th></tr></thead>
+      <tbody>${enSistemaNoBanco.map(r=>`<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:5px 8px;">${r.cliente||'—'}</td>
+        <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(r.total||0)}</td>
+        <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">${r.folio||'—'}</td>
+      </tr>`).join('')}</tbody>
+    </table>`:''}`;
+}
+
 function abrirConciliacionBanco(){
   const html=`
     <div style="margin-bottom:14px;padding:12px 16px;background:rgba(41,128,185,0.07);border:1px dashed #2980B9;border-radius:8px;">
@@ -8618,6 +8757,11 @@ async function editarEgresoModal(id){
       <input type="checkbox" id="eeTieneFactura" ${r.tiene_factura?'checked':''} style="width:16px;height:16px;accent-color:var(--teal);cursor:pointer;">
       <label for="eeTieneFactura" style="font-size:13px;font-weight:600;color:${r.tiene_factura?'#27AE60':'var(--text3)'};cursor:pointer;">📎 Tiene factura (XML SAT)</label>
     </div>
+    <div style="margin-bottom:10px;display:flex;align-items:center;gap:10px;padding:8px 12px;background:${r.pago_por_fuera?'rgba(139,92,246,0.08)':'rgba(107,114,128,0.06)'};border:1px solid ${r.pago_por_fuera?'#8B5CF6':'var(--border)'};border-radius:8px;">
+      <input type="checkbox" id="eePagoPorFuera" ${r.pago_por_fuera?'checked':''} style="width:16px;height:16px;accent-color:#8B5CF6;cursor:pointer;">
+      <label for="eePagoPorFuera" style="font-size:13px;font-weight:600;color:${r.pago_por_fuera?'#8B5CF6':'var(--text3)'};cursor:pointer;">💳 Pagado por fuera (sin salida de banco)</label>
+      <span style="font-size:10px;color:var(--text3);margin-left:auto;">tarjeta personal, no cuadra con banco</span>
+    </div>
     <div style="margin-bottom:10px;">${fld('Proveedor',`
       <select id="eeProvSel" onchange="(function(){const v=document.getElementById('eeProvSel').value;const n=document.getElementById('eeProvNuevo');const h=document.getElementById('eeProv');if(v==='__nuevo__'){n.style.display='block';h.value='';}else{n.style.display='none';h.value=v;}})()" style="${INP}">
         <option value="">-- Seleccionar --</option>
@@ -8731,6 +8875,7 @@ async function guardarEdicionEgreso(yaSiguiente=false){
     fecha_factura:document.getElementById('eeFecha')?.value||null,
     folio:document.getElementById('eeFolio')?.value.trim()||null,
     tiene_factura:!!(document.getElementById('eeTieneFactura')?.checked)||(!!document.getElementById('eeFolio')?.value.trim()),
+    pago_por_fuera:!!(document.getElementById('eePagoPorFuera')?.checked),
     proveedor:prov||null,
     concepto:document.getElementById('eeConcepto')?.value.trim()||null,
     rubro:document.getElementById('eeRubro')?.value||null,
