@@ -7694,16 +7694,23 @@ async function renderEgresosTabla(){
   const ac=adminCont();if(!ac)return;
   const fe=window._feRows||[];
   const {col,asc}=window._feSort||{col:'fecha_factura',asc:true};
-  const {rubro,proveedor,texto}=window._feFilter||{};
+  const {rubro,proveedor,texto,estado}=window._feFilter||{};
 
   let rows=fe.filter(r=>{
     const t=(texto||'').toLowerCase();
     const tMatch=!t||(r.proveedor||'').toLowerCase().includes(t)||(r.concepto||'').toLowerCase().includes(t)||(r.folio||'').toLowerCase().includes(t);
-    return(!rubro||r.rubro===rubro)&&(!proveedor||r.proveedor===proveedor)&&tMatch;
+    // Filtro por estado (desde tarjetas clickeables)
+    let eMatch=true;
+    if(estado==='facturado') eMatch=!!r.tiene_factura;
+    else if(estado==='no_facturado') eMatch=!r.tiene_factura;
+    else if(estado==='sin_salida') eMatch=r.pago_por_fuera||(r.tiene_factura&&!r.conciliado);
+    else if(estado==='por_conciliar') eMatch=!r.conciliado;
+    return(!rubro||r.rubro===rubro)&&(!proveedor||r.proveedor===proveedor)&&tMatch&&eMatch;
   });
   rows=[...rows].sort((a,b)=>{
     let va=a[col]??'',vb=b[col]??'';
     if(['total','subtotal','iva_retenido','iva_trasladado','isr'].includes(col)){va=parseFloat(va)||0;vb=parseFloat(vb)||0;}
+    else if(['tiene_factura','conciliado','pago_por_fuera'].includes(col)){va=va?1:0;vb=vb?1:0;}
     return asc?(va>vb?1:va<vb?-1:0):(va<vb?1:va>vb?-1:0);
   });
 
@@ -7743,17 +7750,17 @@ async function renderEgresosTabla(){
 
   ac.innerHTML=`
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px;">
-    <div class="thc" style="border:1px solid rgba(13,34,64,0.15);">
+    <div class="thc" onclick="filtrarEgresosPorEstado('')" style="cursor:pointer;border:1px solid ${!estado?'var(--navy)':'rgba(13,34,64,0.15)'};">
       <div class="th-lbl">Total egresos</div>
       <div class="th-val">${fmt(totalEg)}</div>
       <div style="font-size:9px;color:var(--text3);margin-top:2px;">${fe.length} movimientos registrados</div>
     </div>
-    <div class="thc" style="border:1px solid rgba(39,174,96,0.25);">
+    <div class="thc" onclick="filtrarEgresosPorEstado('facturado')" style="cursor:pointer;border:1px solid ${estado==='facturado'?'#27AE60':'rgba(39,174,96,0.25)'};background:${estado==='facturado'?'rgba(39,174,96,0.06)':'#fff'};">
       <div class="th-lbl">Egresos facturados</div>
       <div class="th-val" style="color:#27AE60;">${fmt(egFacturados)}</div>
       <div style="font-size:9px;color:var(--text3);margin-top:2px;">${numFacturados} con XML · generan IVA</div>
     </div>
-    <div class="thc" style="border:1px solid rgba(245,166,35,0.3);">
+    <div class="thc" onclick="filtrarEgresosPorEstado('no_facturado')" style="cursor:pointer;border:1px solid ${estado==='no_facturado'?'#F5A623':'rgba(245,166,35,0.3)'};background:${estado==='no_facturado'?'rgba(245,166,35,0.06)':'#fff'};">
       <div class="th-lbl">Egresos no facturados</div>
       <div class="th-val" style="color:#F5A623;">${fmt(egNoFacturados)}</div>
       <div style="font-size:9px;color:var(--text3);margin-top:2px;">${numNoFacturados} sin XML · no acreditan</div>
@@ -7771,12 +7778,13 @@ async function renderEgresosTabla(){
       <div class="th-val" style="color:${difIva===null?'var(--text3)':difIva>=0?'#27AE60':'var(--red)'};">${difIva===null?'—':fmt(Math.abs(difIva))}</div>
       <div style="font-size:9px;color:var(--text3);margin-top:2px;">${difIva===null?'carga ingresos':difIva>=0?'▲ a favor':'▼ a pagar'}</div>
     </div>
-    <div class="thc" title="Facturas con XML que no cuadraron con el banco (pagadas por fuera)">
+    <div class="thc" onclick="filtrarEgresosPorEstado('sin_salida')" title="Facturas con XML que no cuadraron con el banco (pagadas por fuera)" style="cursor:pointer;border:1px solid ${estado==='sin_salida'?'#8B5CF6':'var(--border)'};background:${estado==='sin_salida'?'rgba(139,92,246,0.06)':'#fff'};">
       <div class="th-lbl">Facturado sin salida banco</div>
       <div class="th-val" style="color:#8B5CF6;">${fmt(facturadoSinSalida)}</div>
       <div style="font-size:9px;color:var(--text3);margin-top:2px;">${numFactSinSalida} pagadas por fuera</div>
     </div>
-    <div class="thc"><div class="th-lbl">Por conciliar</div><div class="th-val" style="color:${pendConc>0?'#E84040':'var(--text3)'};">${fmt(pendConc)}</div>
+    <div class="thc" onclick="filtrarEgresosPorEstado('por_conciliar')" style="cursor:pointer;border:1px solid ${estado==='por_conciliar'?'#E84040':'var(--border)'};background:${estado==='por_conciliar'?'rgba(232,64,64,0.06)':'#fff'};">
+      <div class="th-lbl">Por conciliar</div><div class="th-val" style="color:${pendConc>0?'#E84040':'var(--text3)'};">${fmt(pendConc)}</div>
       <div style="font-size:9px;color:var(--text3);margin-top:2px;">sin cuadrar con banco</div>
     </div>
   </div>
@@ -7838,7 +7846,7 @@ async function renderEgresosTabla(){
       ${thS('Folio','folio')}${thS('Subtotal','subtotal','right')}
       ${thS('IVA Ret.','iva_retenido','right')}${thS('IVA Tras.','iva_trasladado','right')}
       ${thS('ISR','isr','right')}${thS('Total','total','right')}
-      ${thS('Estatus','status')}<th style="padding:7px 8px;text-align:center;">📎 Fac.</th><th style="padding:7px 8px;text-align:center;">Concil.</th><th style="padding:7px 8px;">Acc.</th>
+      ${thS('Estatus','status')}${thS('📎 Fac.','tiene_factura','center')}${thS('Concil.','conciliado','center')}<th style="padding:7px 8px;">Acc.</th>
     </tr></thead>
     <tbody>
       ${rows.length===0?`<tr><td colspan="14" style="text-align:center;color:var(--text3);padding:24px;">Sin resultados</td></tr>`:''}
@@ -7916,6 +7924,13 @@ async function cargarRubros(){
     window._rubrosEg=data.filter(r=>r.tipo==='egreso').map(r=>r.nombre);
   }
 }
+function filtrarEgresosPorEstado(estado){
+  if(!window._feFilter) window._feFilter={rubro:'',proveedor:'',texto:'',estado:''};
+  // Toggle: si ya está ese filtro, lo quita
+  window._feFilter.estado=(window._feFilter.estado===estado)?'':estado;
+  renderEgresosTabla();
+}
+
 function mkModal(id,titulo,contenido,onSave,saveLabel='Guardar',wide=false){
   document.getElementById(id)?.remove();
   const m=document.createElement('div');
@@ -7928,8 +7943,9 @@ function mkModal(id,titulo,contenido,onSave,saveLabel='Guardar',wide=false){
     </div>
     ${contenido}
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
-      <button onclick="document.getElementById('${id}').remove()" style="padding:8px 18px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-size:12px;font-family:'Inter',sans-serif;">Cancelar</button>
-      <button onclick="${onSave}()" style="padding:8px 18px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">${saveLabel}</button>
+      ${onSave?`<button onclick="document.getElementById('${id}').remove()" style="padding:8px 18px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-size:12px;font-family:'Inter',sans-serif;">Cancelar</button>
+      <button onclick="${onSave}()" style="padding:8px 18px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">${saveLabel}</button>`
+      :`<button onclick="document.getElementById('${id}').remove()" style="padding:8px 18px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">${saveLabel}</button>`}
     </div>
   </div>`;
   document.body.appendChild(m);
@@ -8142,6 +8158,8 @@ async function procesarExcelBancoIng(){
   });
   const enSistemaNoBanco=ingRegistrados.filter(r=>!r._usado);
   const faltanteMonto=enBancoNoSistema.reduce((s,m)=>s+m.abono,0);
+  window._concFaltantesIng=enBancoNoSistema;
+  window._concSistemaNoBancoIng=enSistemaNoBanco;
 
   window._concBancoIng={
     mes:currentMonth, anio:currentYear,
@@ -8177,10 +8195,23 @@ async function procesarExcelBancoIng(){
 
   detalle.innerHTML=`
     ${enBancoNoSistema.length>0?`
-    <div style="font-size:12px;font-weight:700;color:#b45309;margin-bottom:8px;">⚠️ Entradas de dinero en banco NO registradas (${enBancoNoSistema.length}) — posibles ingresos sin facturar:</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+      <div style="font-size:12px;font-weight:700;color:#b45309;">⚠️ Entradas en banco NO registradas (${enBancoNoSistema.length})</div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <label style="font-size:10px;color:var(--text3);cursor:pointer;"><input type="checkbox" id="concIngSelectAll" onclick="document.querySelectorAll('.concIngCheck').forEach(c=>c.checked=this.checked)" style="vertical-align:middle;"> Todos</label>
+        <button onclick="anadirIngresosBanco()" style="background:#27AE60;color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">➕ Añadir como ingreso</button>
+        <button onclick="abrirLigarFacturas()" style="background:#8B5CF6;color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Ligar con facturas</button>
+      </div>
+    </div>
     <table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:16px;">
-      <thead><tr style="background:#fef3c7;"><th style="padding:6px 8px;text-align:center;">Día</th><th style="padding:6px 8px;text-align:right;">Monto</th><th style="padding:6px 8px;text-align:left;">Concepto (banco)</th></tr></thead>
-      <tbody>${enBancoNoSistema.map(m=>`<tr style="border-bottom:1px solid var(--border);">
+      <thead><tr style="background:#fef3c7;">
+        <th style="padding:6px 8px;width:28px;"></th>
+        <th style="padding:6px 8px;text-align:center;">Día</th>
+        <th style="padding:6px 8px;text-align:right;">Monto</th>
+        <th style="padding:6px 8px;text-align:left;">Concepto (banco)</th>
+      </tr></thead>
+      <tbody>${enBancoNoSistema.map((m,idx)=>`<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:5px 8px;text-align:center;"><input type="checkbox" class="concIngCheck" data-idx="${idx}" style="cursor:pointer;"></td>
         <td style="padding:5px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${m.dia}</td>
         <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:#27AE60;">${fmt(m.abono)}</td>
         <td style="padding:5px 8px;color:var(--text2);font-size:10px;">${m.concepto.slice(0,55)}</td>
@@ -8196,6 +8227,118 @@ async function procesarExcelBancoIng(){
         <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">${r.folio||'—'}</td>
       </tr>`).join('')}</tbody>
     </table>`:''}`;
+}
+
+async function anadirIngresosBanco(){
+  const checks=Array.from(document.querySelectorAll('.concIngCheck:checked'));
+  if(checks.length===0){alert('Selecciona al menos una entrada para añadir.');return;}
+  const faltantes=window._concFaltantesIng||[];
+  const nuevos=checks.map(chk=>{
+    const mov=faltantes[parseInt(chk.dataset.idx)];
+    const dia=String(mov.dia).padStart(2,'0');
+    const fecha=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${dia}`;
+    const subtotal=Math.round((mov.abono/1.16)*100)/100;
+    const iva=Math.round((mov.abono-subtotal)*100)/100;
+    return {
+      anio:currentYear, mes:currentMonth, fecha,
+      folio:null, cliente:mov.concepto.slice(0,60),
+      concepto:mov.concepto.slice(0,120), rubro:'POR CLASIFICAR',
+      subtotal_original:subtotal, descuento:0, subtotal_final:subtotal,
+      iva, total:mov.abono, forma_pago:'TRANSFERENCIA',
+      estatus:'PAGADA', cobrado:true, conciliado:true
+    };
+  });
+  if(!confirm(`¿Añadir ${nuevos.length} entrada(s) como ingreso?\n\nSe registran como cobradas y conciliadas, con IVA calculado al 16%. Podrás editarlas para asignar cliente/folio/rubro.`))return;
+  const {data:ins,error}=await sb.from('fact_ingresos').insert(nuevos).select();
+  if(error){alert('Error: '+error.message);return;}
+  if(ins) window._fiRows=[...(window._fiRows||[]),...ins];
+  const fileInput=document.getElementById('bancoExcelIng');
+  if(fileInput&&fileInput.files.length) await procesarExcelBancoIng();
+}
+
+// ─── LIGAR ABONOS BANCARIOS CON FACTURAS (Shopify/comisiones) ────────────────
+async function abrirLigarFacturas(){
+  const checks=Array.from(document.querySelectorAll('.concIngCheck:checked'));
+  if(checks.length===0){alert('Selecciona los abonos del banco que quieres ligar con facturas.');return;}
+  const faltantes=window._concFaltantesIng||[];
+  const abonosSel=checks.map(chk=>faltantes[parseInt(chk.dataset.idx)]);
+  const sumaAbonos=abonosSel.reduce((s,m)=>s+m.abono,0);
+  // Facturas cobradas sin match (las que sobran) + todas las del sistema
+  const facturas=[...(window._fiRows||[])].filter(r=>r.cobrado).sort((a,b)=>(b.total||0)-(a.total||0));
+
+  const html=`
+    <div style="margin-bottom:12px;padding:10px 14px;background:rgba(139,92,246,0.08);border:1px solid #8B5CF6;border-radius:8px;">
+      <div style="font-size:12px;font-weight:700;color:#8B5CF6;margin-bottom:4px;">Abonos del banco seleccionados (${abonosSel.length})</div>
+      <div style="font-size:11px;color:var(--text2);">${abonosSel.map(m=>`Día ${m.dia} · ${fmt(m.abono)}`).join(' + ')}</div>
+      <div style="font-size:14px;font-weight:800;color:#8B5CF6;margin-top:6px;">Suma abonos: ${fmt(sumaAbonos)}</div>
+    </div>
+    <div style="font-size:12px;font-weight:600;color:var(--text2);margin-bottom:6px;">Selecciona las factura(s) que corresponden a estos abonos:</div>
+    <div style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:10px;">
+      ${facturas.map(f=>`<label style="display:flex;align-items:center;gap:8px;padding:5px 6px;border-bottom:1px solid var(--border);font-size:11px;cursor:pointer;">
+        <input type="checkbox" class="ligarFactCheck" data-id="${f.id}" data-total="${f.total||0}" onchange="calcLigarDif(${sumaAbonos})" style="cursor:pointer;">
+        <span style="flex:1;">${f.cliente||'—'} · ${f.folio||'sin folio'}</span>
+        <span style="font-family:'JetBrains Mono',monospace;font-weight:600;">${fmt(f.total||0)}</span>
+      </label>`).join('')}
+    </div>
+    <div id="ligarResumen" style="font-size:12px;padding:10px 12px;border-radius:6px;background:var(--surface-2,#f8f9fa);color:var(--text3);">Selecciona facturas para ver el cuadre.</div>`;
+
+  const m=document.createElement('div');
+  m.id='modalLigar';
+  m.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:10000;display:flex;align-items:center;justify-content:center;padding:20px;';
+  m.innerHTML=`<div style="background:#fff;border-radius:12px;padding:22px;width:560px;max-width:96vw;max-height:90vh;overflow-y:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div style="font-size:15px;font-weight:700;color:#8B5CF6;">🔗 Ligar abonos con facturas</div>
+      <button onclick="document.getElementById('modalLigar').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);">✕</button>
+    </div>
+    ${html}
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+      <button onclick="document.getElementById('modalLigar').remove()" style="padding:8px 16px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-size:12px;font-family:'Inter',sans-serif;">Cancelar</button>
+      <button id="ligarConfirmBtn" onclick="confirmarLigado(${sumaAbonos})" disabled style="padding:8px 18px;background:#8B5CF6;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;opacity:0.5;">Confirmar ligado</button>
+    </div>
+  </div>`;
+  document.body.appendChild(m);
+  window._ligarAbonos=abonosSel;
+}
+
+function calcLigarDif(sumaAbonos){
+  const checks=Array.from(document.querySelectorAll('.ligarFactCheck:checked'));
+  const sumaFacturas=checks.reduce((s,c)=>s+(parseFloat(c.dataset.total)||0),0);
+  const resumen=document.getElementById('ligarResumen');
+  const btn=document.getElementById('ligarConfirmBtn');
+  if(checks.length===0){resumen.textContent='Selecciona facturas para ver el cuadre.';btn.disabled=true;btn.style.opacity='0.5';return;}
+  const comision=sumaFacturas-sumaAbonos; // lo facturado menos lo que entró = comisión retenida
+  const cuadraExacto=Math.abs(comision)<1;
+  resumen.style.background=comision>=0?'#f0fdf4':'#fef2f2';
+  resumen.style.color=comision>=0?'#15803d':'#dc2626';
+  resumen.innerHTML=`Facturado: <strong>${fmt(sumaFacturas)}</strong> · Entró al banco: <strong>${fmt(sumaAbonos)}</strong><br>
+    ${comision>=0?`Diferencia (comisión retenida por la plataforma): <strong>${fmt(comision)}</strong><br><span style="font-size:10px;">Esta comisión NO se registra como egreso aquí — la ligarás con la factura de comisión que te emitan (ej. Stripe Payments México).</span>`
+    :`⚠️ Entró más de lo facturado (${fmt(Math.abs(comision))}). Revisa la selección.`}`;
+  btn.disabled=false;btn.style.opacity='1';
+}
+
+async function confirmarLigado(sumaAbonos){
+  const checks=Array.from(document.querySelectorAll('.ligarFactCheck:checked'));
+  if(checks.length===0)return;
+  const abonos=window._ligarAbonos||[];
+  const facturaIds=checks.map(c=>c.dataset.id);
+  const sumaFacturas=checks.reduce((s,c)=>s+(parseFloat(c.dataset.total)||0),0);
+  const comision=sumaFacturas-sumaAbonos;
+  // Guardar trazabilidad por cada factura
+  const filas=[];
+  facturaIds.forEach(fid=>{
+    abonos.forEach(m=>{
+      filas.push({factura_id:fid, anio:currentYear, mes:currentMonth, dia_banco:String(m.dia), monto:m.abono, concepto_banco:m.concepto.slice(0,120)});
+    });
+  });
+  const {error:errT}=await sb.from('conciliacion_ingresos_agrupada').insert(filas);
+  if(errT){alert('Error al guardar: '+errT.message);return;}
+  // Marcar facturas como conciliadas
+  await sb.from('fact_ingresos').update({conciliado:true}).in('id',facturaIds);
+  (window._fiRows||[]).forEach(r=>{if(facturaIds.includes(String(r.id)))r.conciliado=true;});
+  document.getElementById('modalLigar').remove();
+  alert(`✅ ${facturaIds.length} factura(s) ligada(s) con ${abonos.length} abono(s).${comision>0?`\nComisión retenida: ${fmt(comision)} (recuerda ligarla con la factura de comisión).`:''}`);
+  const fileInput=document.getElementById('bancoExcelIng');
+  if(fileInput&&fileInput.files.length) await procesarExcelBancoIng();
 }
 
 function abrirConciliacionBanco(){
