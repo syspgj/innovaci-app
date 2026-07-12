@@ -7684,8 +7684,16 @@ async function renderEgresosTabla(){
   const conciliados=fe.filter(r=>r.conciliado).reduce((s,r)=>s+(r.total||0),0);
   const pendConc=fe.filter(r=>!r.conciliado).reduce((s,r)=>s+(r.total||0),0);
   const totalIvaRet=fe.reduce((s,r)=>s+(r.iva_retenido||0),0);
-  // IVA acreditado: solo registros con XML (tiene_factura=true) Y conciliados
-  const ivaAcreditado=fe.filter(r=>r.tiene_factura&&r.conciliado).reduce((s,r)=>s+(r.iva_trasladado||0),0);
+  // NUEVO MODELO: facturados (con XML) vs no facturados (sin XML)
+  const egFacturados=fe.filter(r=>r.tiene_factura).reduce((s,r)=>s+(r.total||0),0);
+  const egNoFacturados=fe.filter(r=>!r.tiene_factura).reduce((s,r)=>s+(r.total||0),0);
+  const numFacturados=fe.filter(r=>r.tiene_factura).length;
+  const numNoFacturados=fe.filter(r=>!r.tiene_factura).length;
+  // Facturado sin salida de banco: tiene XML pero NO conciliado (pagado por fuera)
+  const facturadoSinSalida=fe.filter(r=>r.tiene_factura&&!r.conciliado).reduce((s,r)=>s+(r.total||0),0);
+  const numFactSinSalida=fe.filter(r=>r.tiene_factura&&!r.conciliado).length;
+  // IVA acreditado: TODOS los que tienen factura/XML (salieron del banco o no)
+  const ivaAcreditado=fe.filter(r=>r.tiene_factura).reduce((s,r)=>s+(r.iva_trasladado||0),0);
   // IVA cobrado de ingresos
   let ivaIngesos=null;
   if(window._fiRows){
@@ -7707,25 +7715,43 @@ async function renderEgresosTabla(){
   const selStyle='padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:11px;font-family:\'Inter\',sans-serif;';
 
   ac.innerHTML=`
-  <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px;">
-    <div class="thc"><div class="th-lbl">Total egresos</div><div class="th-val">${fmt(totalEg)}</div></div>
-    <div class="thc"><div class="th-lbl">IVA retenido</div><div class="th-val" style="color:var(--red);">${fmt(totalIvaRet)}</div></div>
-    <div class="thc" title="IVA trasladado de egresos con XML y conciliados">
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px;">
+    <div class="thc" style="border:1px solid rgba(13,34,64,0.15);">
+      <div class="th-lbl">Total egresos</div>
+      <div class="th-val">${fmt(totalEg)}</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;">${fe.length} movimientos registrados</div>
+    </div>
+    <div class="thc" style="border:1px solid rgba(39,174,96,0.25);">
+      <div class="th-lbl">Egresos facturados</div>
+      <div class="th-val" style="color:#27AE60;">${fmt(egFacturados)}</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;">${numFacturados} con XML · generan IVA</div>
+    </div>
+    <div class="thc" style="border:1px solid rgba(245,166,35,0.3);">
+      <div class="th-lbl">Egresos no facturados</div>
+      <div class="th-val" style="color:#F5A623;">${fmt(egNoFacturados)}</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;">${numNoFacturados} sin XML · no acreditan</div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px;">
+    <div class="thc" title="IVA trasladado de TODOS los egresos con factura (XML)">
       <div class="th-lbl">IVA acreditado</div>
       <div class="th-val" style="color:#2980B9;">${fmt(ivaAcreditado)}</div>
-      <div style="font-size:9px;color:var(--text3);margin-top:2px;">XML + conciliado</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;">todos los que tienen XML</div>
     </div>
+    <div class="thc"><div class="th-lbl">IVA retenido</div><div class="th-val" style="color:var(--red);">${fmt(totalIvaRet)}</div></div>
     <div class="thc" title="IVA cobrado (ingresos) − IVA acreditado (egresos)">
       <div class="th-lbl">Diferencia IVA</div>
-      <div class="th-val" style="color:${difIva===null?'var(--text3)':difIva>=0?'#27AE60':'var(--red)'};">
-        ${difIva===null?'—':fmt(Math.abs(difIva))}
-      </div>
-      <div style="font-size:9px;color:var(--text3);margin-top:2px;">
-        ${difIva===null?'Carga ingresos primero':difIva>=0?'▲ a favor':'▼ a pagar'}
-      </div>
+      <div class="th-val" style="color:${difIva===null?'var(--text3)':difIva>=0?'#27AE60':'var(--red)'};">${difIva===null?'—':fmt(Math.abs(difIva))}</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;">${difIva===null?'carga ingresos':difIva>=0?'▲ a favor':'▼ a pagar'}</div>
     </div>
-    <div class="thc"><div class="th-lbl">Conciliados</div><div class="th-val" style="color:#27AE60;">${fmt(conciliados)}</div></div>
-    <div class="thc"><div class="th-lbl">Por conciliar</div><div class="th-val" style="color:${pendConc>0?'#E84040':'var(--text3)'};">${fmt(pendConc)}</div></div>
+    <div class="thc" title="Facturas con XML que no cuadraron con el banco (pagadas por fuera)">
+      <div class="th-lbl">Facturado sin salida banco</div>
+      <div class="th-val" style="color:#8B5CF6;">${fmt(facturadoSinSalida)}</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;">${numFactSinSalida} pagadas por fuera</div>
+    </div>
+    <div class="thc"><div class="th-lbl">Por conciliar</div><div class="th-val" style="color:${pendConc>0?'#E84040':'var(--text3)'};">${fmt(pendConc)}</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;">sin cuadrar con banco</div>
+    </div>
   </div>
   ${(window._concBanco&&window._concBanco.mes===currentMonth&&window._concBanco.anio===currentYear)?(()=>{
     const cb=window._concBanco;
