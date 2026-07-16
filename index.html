@@ -238,6 +238,12 @@ table.daily td{padding:8px 12px;vertical-align:middle;}
   .goal-strip{grid-template-columns:1fr;}
   .comm-num{font-size:36px;}
 }
+@media print {
+  .no-print, .tab, .tabs, nav, .topbar, header { display: none !important; }
+  body { background: #fff !important; }
+  .card, .thc { break-inside: avoid; }
+  #reporteAnual, #reporteComparativo { padding: 0 !important; }
+}
 </style>
 </head>
 <body>
@@ -3287,6 +3293,9 @@ async function renderDirectorVendedores(){
   const diasTrans=esEsteMes?getDiasTranscurridos(currentYear,currentMonth):diasHab;
   const diasRest=Math.max(diasHab-diasTrans,0);
   mc.innerHTML=`
+  <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+    <button onclick="reporteComparativoAnual()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📊 Comparativo anual del equipo</button>
+  </div>
   <div class="shead">Vendedores B2B</div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;">${vendedores.map(u=>{
     const tot=getTotals(allRegistros,u.id);
@@ -3334,10 +3343,14 @@ async function renderDirectorVendedores(){
           <div style="font-size:11px;color:var(--text3);">${diasRest} días restantes</div>
         </div>
       </div>
-      <div style="padding:10px 18px;border-top:1px solid var(--border);">
+      <div style="padding:10px 18px;border-top:1px solid var(--border);display:flex;gap:6px;">
         <button onclick="verRegistrosVendedor(this.dataset.uid,this.dataset.unm)" data-uid="${u.id}" data-unm="${u.nombre}"
-          style="width:100%;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
-          📋 Ver registros y auditar
+          style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+          📋 Ver y auditar
+        </button>
+        <button onclick="reporteAnualPersona(this.dataset.uid,this.dataset.unm,'vendedor')" data-uid="${u.id}" data-unm="${u.nombre}"
+          style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+          📊 Reporte anual
         </button>
       </div>
     </div>`;
@@ -3382,16 +3395,225 @@ async function renderDirectorVendedores(){
         +'<div style="font-size:11px;color:rgba(255,255,255,0.55);">'+tot.prospectos+' prospectos</div>'
         +'</div></div>'
         +'<div style="padding:12px 18px 0;">'+kpiRows+'</div>'
-        +'<div style="padding:10px 18px;border-top:1px solid var(--border);margin-top:8px;">'
-        +'<button style="width:100%;background:'+col+';color:#fff;border:none;border-radius:var(--radsm);padding:8px;font-size:12px;font-weight:600;cursor:pointer;" '
+        +'<div style="padding:10px 18px;border-top:1px solid var(--border);display:flex;gap:6px;">'
+        +'<button style="flex:1;background:'+col+';color:#fff;border:none;border-radius:var(--radsm);padding:8px;font-size:12px;font-weight:600;cursor:pointer;" '
         +'onclick="verRegistrosVendedor(this.dataset.uid,this.dataset.unm,\'telemarketing\')" data-uid="'+uid+'" data-unm="'+unm+'">'
-        +'📋 Ver registros y auditar</button>'
+        +'📋 Ver y auditar</button>'
+        +'<button style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px;font-size:12px;font-weight:600;cursor:pointer;" '
+        +'onclick="reporteAnualPersona(this.dataset.uid,this.dataset.unm,\'telemarketing\')" data-uid="'+uid+'" data-unm="'+unm+'">'
+        +'📊 Reporte anual</button>'
         +'</div></div>';
     }).join('');
     return '<div class="shead" style="margin-top:8px;">Telemarketing</div>'
       +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;">'+rows+'</div>';
   })()}
   `;
+}
+
+async function reporteAnualPersona(userId, nombre, rol){
+  const esTele=rol==='telemarketing';
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Generando reporte anual...</div>';
+  // Cargar todos los registros del año
+  const {data:regs}=await sb.from('registros_diarios').select('*')
+    .eq('usuario_id',userId)
+    .gte('fecha',`${currentYear}-01-01`).lte('fecha',`${currentYear}-12-31`)
+    .order('fecha',{ascending:true});
+  const rows=regs||[];
+  // Agrupar por mes
+  const porMes=Array.from({length:13},()=>({}));
+  const acum=(m,k,v)=>{porMes[m][k]=(porMes[m][k]||0)+(v||0);};
+  rows.forEach(r=>{
+    const m=parseInt(r.fecha.split('-')[1]);
+    if(esTele){
+      acum(m,'llEf',r.llamadas_efectivas); acum(m,'llPros',r.llamadas_prospeccion);
+      acum(m,'llSeg',r.llamadas_seguimiento); acum(m,'pros',r.prospectos_canalizados);
+      acum(m,'conf',r.confirmaciones_evento); acum(m,'segPost',r.seguimientos_post);
+      acum(m,'crm',r.crm_actualizaciones); acum(m,'curTele',r.venta_cursos_tele);
+      acum(m,'sf',r.siigo_fiscal);
+    } else {
+      acum(m,'svc',r.svc); acum(m,'aspel',r.aspel); acum(m,'it',r.it);
+      acum(m,'demos',r.demos); acum(m,'val',r.valoraciones); acum(m,'cn',r.clientes_nuevos);
+      acum(m,'sf',r.siigo_fiscal); acum(m,'cotiz',r.cotizaciones); acum(m,'montoCotiz',r.monto_cotizaciones);
+    }
+    acum(m,'dias',1);
+  });
+  // Métricas del año (totales)
+  const metricas=esTele?[
+    {h:'Llamadas efectivas',k:'llEf',money:false},
+    {h:'Llamadas prospección',k:'llPros',money:false},
+    {h:'Llamadas seguimiento',k:'llSeg',money:false},
+    {h:'Prospectos canalizados',k:'pros',money:false},
+    {h:'Confirmaciones evento',k:'conf',money:false},
+    {h:'Seguimientos post',k:'segPost',money:false},
+    {h:'Actualizaciones CRM',k:'crm',money:false},
+    {h:'Venta cursos 24/7',k:'curTele',money:true},
+    {h:'Siigo Fiscal',k:'sf',money:false},
+  ]:[
+    {h:'Servicios',k:'svc',money:true},{h:'Aspel',k:'aspel',money:true},{h:'IT',k:'it',money:true},
+    {h:'Demos',k:'demos',money:false},{h:'Valoraciones',k:'val',money:false},
+    {h:'Clientes nuevos',k:'cn',money:false},{h:'Siigo Fiscal',k:'sf',money:false},
+    {h:'Cotizaciones',k:'cotiz',money:false},{h:'Monto cotizado',k:'montoCotiz',money:true},
+  ];
+  const totalAnual={};
+  metricas.forEach(mt=>{totalAnual[mt.k]=porMes.reduce((s,mm)=>s+(mm[mt.k]||0),0);});
+  const MESN=['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  const mesesConDatos=porMes.map((m,i)=>i>0&&(m.dias>0)?i:null).filter(Boolean);
+
+  // Métrica principal para la gráfica
+  const metricaPrincipal=esTele?'llEf':'svc';
+  const nombreMetrica=esTele?'Llamadas efectivas':'Servicios';
+
+  mc.innerHTML=`
+  <div id="reporteAnual">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;" class="no-print">
+    <button onclick="renderDirectorVendedores()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:7px 14px;font-size:12px;cursor:pointer;color:var(--text2);font-family:'Inter',sans-serif;">← Volver</button>
+    <button onclick="exportarReportePDF('${nombre}')" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📄 Exportar PDF</button>
+  </div>
+
+  <div style="text-align:center;margin-bottom:20px;padding:20px;background:var(--navy);border-radius:12px;color:#fff;">
+    <div style="font-size:22px;font-weight:800;">${nombre}</div>
+    <div style="font-size:13px;opacity:0.8;margin-top:2px;">Reporte de rendimiento ${currentYear} · ${esTele?'Telemarketing':'Vendedor B2B'}</div>
+    <div style="font-size:11px;opacity:0.6;margin-top:6px;">${rows.length} días registrados en el año</div>
+  </div>
+
+  <!-- Tarjetas de totales anuales -->
+  <div class="shead">Totales del año</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-bottom:20px;">
+    ${metricas.map(mt=>`<div class="thc" style="border:1px solid var(--border);">
+      <div class="th-lbl">${mt.h}</div>
+      <div class="th-val" style="font-size:18px;color:${mt.money?'var(--teal)':'var(--navy)'};">${mt.money?fmt(totalAnual[mt.k]):totalAnual[mt.k].toLocaleString('es-MX')}</div>
+    </div>`).join('')}
+  </div>
+
+  <!-- Gráfica de evolución -->
+  <div class="shead">Evolución mensual — ${nombreMetrica}</div>
+  <div class="card" style="padding:18px;margin-bottom:20px;">
+    <div style="position:relative;height:240px;"><canvas id="repAnualChart"></canvas></div>
+  </div>
+
+  <!-- Tabla mensual -->
+  <div class="shead">Desglose mensual</div>
+  <div style="overflow-x:auto;margin-bottom:20px;">
+  <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:700px;">
+    <thead><tr style="background:var(--navy);color:#fff;">
+      <th style="padding:7px 8px;text-align:left;">Métrica</th>
+      ${mesesConDatos.map(m=>`<th style="padding:7px 8px;text-align:right;">${MESN[m]}</th>`).join('')}
+      <th style="padding:7px 8px;text-align:right;background:rgba(0,0,0,0.2);">Total</th>
+    </tr></thead>
+    <tbody>
+      ${metricas.map(mt=>`<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px 8px;font-weight:600;color:var(--text2);">${mt.h}</td>
+        ${mesesConDatos.map(m=>{const v=porMes[m][mt.k]||0;return `<td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:${v>0?'var(--text)':'var(--text3)'};">${v>0?(mt.money?fmt(v):v.toLocaleString('es-MX')):'—'}</td>`;}).join('')}
+        <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;background:rgba(0,169,157,0.05);">${mt.money?fmt(totalAnual[mt.k]):totalAnual[mt.k].toLocaleString('es-MX')}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>
+  </div>
+  </div>`;
+
+  // Gráfica
+  setTimeout(()=>{
+    const ctx=document.getElementById('repAnualChart');
+    if(!ctx)return;
+    if(window._repAnualChart)window._repAnualChart.destroy();
+    window._repAnualChart=new Chart(ctx,{
+      type:'bar',
+      data:{labels:mesesConDatos.map(m=>MESN[m]),datasets:[{
+        label:nombreMetrica,
+        data:mesesConDatos.map(m=>porMes[m][metricaPrincipal]||0),
+        backgroundColor:esTele?'#8B5CF6':'#00A99D',borderRadius:4
+      }]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>esTele?c.parsed.y.toLocaleString('es-MX'):fmt(c.parsed.y)}}},scales:{y:{ticks:{callback:v=>esTele?v:fmtK(v),font:{size:10}}},x:{ticks:{font:{size:10}}}}}
+    });
+  },100);
+}
+
+function exportarReportePDF(nombre){
+  window.print();
+}
+
+async function reporteComparativoAnual(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Generando comparativo...</div>';
+  const users=await loadDirectorData();
+  const vendedores=users.filter(u=>u.rol==='vendedor');
+  const {data:regs}=await sb.from('registros_diarios').select('*')
+    .gte('fecha',`${currentYear}-01-01`).lte('fecha',`${currentYear}-12-31`);
+  const MESN=['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  // Servicios por vendedor por mes
+  const dataVend={};
+  vendedores.forEach(u=>{dataVend[u.id]={nombre:u.nombre.split(' ')[0],svc:Array(13).fill(0),aspel:Array(13).fill(0),total:0};});
+  (regs||[]).forEach(r=>{
+    if(!dataVend[r.usuario_id])return;
+    const m=parseInt(r.fecha.split('-')[1]);
+    dataVend[r.usuario_id].svc[m]+=(r.svc||0);
+    dataVend[r.usuario_id].aspel[m]+=(r.aspel||0);
+    dataVend[r.usuario_id].total+=(r.svc||0);
+  });
+  const colores=['#00A99D','#0D2240','#F5A623','#8B5CF6','#E84040'];
+  const mesesConDatos=[];
+  for(let m=1;m<=12;m++){if(vendedores.some(u=>dataVend[u.id].svc[m]>0))mesesConDatos.push(m);}
+
+  mc.innerHTML=`
+  <div id="reporteComparativo">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;" class="no-print">
+    <button onclick="renderDirectorVendedores()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:7px 14px;font-size:12px;cursor:pointer;color:var(--text2);font-family:'Inter',sans-serif;">← Volver</button>
+    <button onclick="window.print()" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📄 Exportar PDF</button>
+  </div>
+  <div style="text-align:center;margin-bottom:20px;padding:20px;background:var(--navy);border-radius:12px;color:#fff;">
+    <div style="font-size:22px;font-weight:800;">Comparativo del equipo ${currentYear}</div>
+    <div style="font-size:13px;opacity:0.8;margin-top:2px;">Rendimiento anual de vendedores B2B</div>
+  </div>
+
+  <div class="shead">Servicios acumulados por vendedor</div>
+  <div class="card" style="padding:18px;margin-bottom:20px;">
+    <div style="position:relative;height:280px;"><canvas id="compChart"></canvas></div>
+  </div>
+
+  <div class="shead">Total anual por vendedor</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;margin-bottom:20px;">
+    ${vendedores.map((u,i)=>`<div class="card" style="padding:16px;border-left:4px solid ${colores[i%colores.length]};">
+      <div style="font-size:13px;font-weight:700;color:var(--navy);">${dataVend[u.id].nombre}</div>
+      <div style="font-size:22px;font-weight:800;color:${colores[i%colores.length]};margin-top:4px;">${fmt(dataVend[u.id].total)}</div>
+      <div style="font-size:10px;color:var(--text3);">en servicios el año</div>
+    </div>`).join('')}
+  </div>
+
+  <div class="shead">Servicios por mes</div>
+  <div style="overflow-x:auto;">
+  <table style="width:100%;border-collapse:collapse;font-size:11px;min-width:700px;">
+    <thead><tr style="background:var(--navy);color:#fff;">
+      <th style="padding:7px 8px;text-align:left;">Vendedor</th>
+      ${mesesConDatos.map(m=>`<th style="padding:7px 8px;text-align:right;">${MESN[m]}</th>`).join('')}
+      <th style="padding:7px 8px;text-align:right;background:rgba(0,0,0,0.2);">Total</th>
+    </tr></thead>
+    <tbody>
+      ${vendedores.map((u,i)=>`<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:6px 8px;font-weight:600;color:${colores[i%colores.length]};">${dataVend[u.id].nombre}</td>
+        ${mesesConDatos.map(m=>{const v=dataVend[u.id].svc[m];return `<td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;color:${v>0?'var(--text)':'var(--text3)'};">${v>0?fmt(v):'—'}</td>`;}).join('')}
+        <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;background:rgba(0,169,157,0.05);">${fmt(dataVend[u.id].total)}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>
+  </div>
+  </div>`;
+
+  setTimeout(()=>{
+    const ctx=document.getElementById('compChart');
+    if(!ctx)return;
+    if(window._compChart)window._compChart.destroy();
+    window._compChart=new Chart(ctx,{
+      type:'line',
+      data:{labels:mesesConDatos.map(m=>MESN[m]),datasets:vendedores.map((u,i)=>({
+        label:dataVend[u.id].nombre,
+        data:mesesConDatos.map(m=>dataVend[u.id].svc[m]),
+        borderColor:colores[i%colores.length],backgroundColor:colores[i%colores.length]+'22',
+        tension:0.3,borderWidth:2,pointRadius:3,fill:false
+      }))},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'top',labels:{font:{size:11},boxWidth:12}},tooltip:{callbacks:{label:c=>c.dataset.label+': '+fmt(c.parsed.y)}}},scales:{y:{ticks:{callback:v=>fmtK(v),font:{size:10}}},x:{ticks:{font:{size:10}}}}}
+    });
+  },100);
 }
 
 async function verRegistrosVendedor(userId, nombre, rol){
