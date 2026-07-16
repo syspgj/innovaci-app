@@ -3082,13 +3082,16 @@ async function renderDirectorResumen(){
     const ajusteRes=aplicarAjusteComision(cAuto,r,tot.svc,ajusteU);
     // Bono de mediocridad: depto NO cumplió pero el vendedor SÍ (2% sobre servicios)
     const bonoMed=calcComisionMediocridad(tot.svc,svcMeta,deptoAlcanzado);
-    return {u,tot,svcMeta,aspelMeta,rate:ajusteRes.tasaFinal,comm:ajusteRes.comisionFinal,tieneAjuste:ajusteRes.tieneAjuste,bonoMed};
+    const commTotal=ajusteRes.comisionFinal+(bonoMed.aplica?bonoMed.monto:0);
+    return {u,tot,svcMeta,aspelMeta,rate:ajusteRes.tasaFinal,comm:ajusteRes.comisionFinal,tieneAjuste:ajusteRes.tieneAjuste,bonoMed,commTotal};
   });
   const totalSvc=vData.reduce((s,v)=>s+v.tot.svc,0);
   const totalAspel=vData.reduce((s,v)=>s+v.tot.aspel,0);
   const metaSvc=vData.reduce((s,v)=>s+v.svcMeta,0);
   const metaAspel=vData.reduce((s,v)=>s+v.aspelMeta,0);
-  const totalComm=vData.reduce((s,v)=>s+v.comm,0);
+  const totalComm=vData.reduce((s,v)=>s+v.commTotal,0);
+  const totalCommBase=vData.reduce((s,v)=>s+v.comm,0);
+  const totalBonos=vData.reduce((s,v)=>s+(v.bonoMed?.aplica?v.bonoMed.monto:0),0);
   const hoy=new Date();
   const esEsteMes=hoy.getMonth()+1===currentMonth&&hoy.getFullYear()===currentYear;
   const diasHab=getDiasHabiles(currentYear,currentMonth);
@@ -3183,7 +3186,7 @@ async function renderDirectorResumen(){
     }).join('')}</div>
   </div>
   <div class="th4">${[
-    {lbl:'Comisiones totales',val:fmt(totalComm),sub:'Equipo este mes'},
+    {lbl:'Comisiones totales',val:fmt(totalComm),sub:totalBonos>0?`incluye ${fmt(totalBonos)} en bonos`:'Equipo este mes'},
     {lbl:'Servicios equipo',val:fmt(totalSvc),sub:`${Math.round(totalSvc/metaSvc*100)}% de meta`},
     {lbl:'Mejor servicio',val:vData.sort((a,b)=>b.tot.svc-a.tot.svc)[0]?.u.nombre.split(' ')[0]||'—',sub:fmt(vData[0]?.tot.svc||0)},
     {lbl:'Días restantes',val:diasRest,sub:`de ${diasHab} días hábiles`},
@@ -3219,7 +3222,7 @@ async function renderDirectorResumen(){
     const convColor=ma.conversion!==null?(ma.conversion>=0.5?'#27AE60':ma.conversion>=0.3?'#F5A623':'#E84040'):'var(--text3)';
     return `<div class="vc"><div class="vc-top"><div class="vc-head">
       <div style="display:flex;align-items:center;gap:10px;"><div class="vc-av" style="background:${col};">${ini}</div><div><div class="vc-name">${v.u.nombre}${v.tieneAjuste?' <span style="font-size:10px;background:rgba(245,166,35,0.15);color:#B8740A;padding:1px 7px;border-radius:10px;font-weight:600;">⭐ ajuste</span>':''}</div><div class="vc-role">Vendedor B2B</div></div></div>
-      <div class="vc-cr"><div class="vc-clbl">Comisión</div><div class="vc-cval" style="color:${cc};">${fmtK(v.comm)}</div><div class="vc-crate" style="color:${cc};">tasa ${(v.rate*100).toFixed(1)}%</div>${v.bonoMed?.aplica?`<div style="font-size:9px;color:#F5A623;font-weight:700;margin-top:3px;">+ ${fmt(v.bonoMed.monto)} bono 2%</div>`:''}</div>
+      <div class="vc-cr"><div class="vc-clbl">Comisión total</div><div class="vc-cval" style="color:${cc};">${fmt(v.commTotal)}</div><div class="vc-crate" style="color:${cc};">tasa ${(v.rate*100).toFixed(1)}%</div>${v.bonoMed?.aplica?`<div style="font-size:9px;color:var(--text3);margin-top:3px;">${fmt(v.comm)} + ${fmt(v.bonoMed.monto)} bono 2%</div>`:''}</div>
     </div><div>${bars}</div></div>
     <div style="padding:8px 14px;border-top:1px solid var(--border);display:flex;gap:16px;">
       <div style="flex:1;"><div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;">Ticket prom. anual</div>
@@ -3246,8 +3249,8 @@ async function renderDirectorResumen(){
   // We show current month data point
   const dSvc=vData.find(v=>v.u.email.toLowerCase().includes('dulce'))?.tot.svc||0;
   const mSvc=vData.find(v=>v.u.email.toLowerCase().includes('manuel'))?.tot.svc||0;
-  const dComm=vData.find(v=>v.u.email.toLowerCase().includes('dulce'))?.comm||0;
-  const mComm=vData.find(v=>v.u.email.toLowerCase().includes('manuel'))?.comm||0;
+  const dComm=vData.find(v=>v.u.email.toLowerCase().includes('dulce'))?.commTotal||0;
+  const mComm=vData.find(v=>v.u.email.toLowerCase().includes('manuel'))?.commTotal||0;
   if(hChart)hChart.destroy();
   const hCtx=document.getElementById('hChart').getContext('2d');
   hChart=new Chart(hCtx,{type:'bar',data:{labels:[getNombreMes(currentMonth)],datasets:[
@@ -3381,7 +3384,7 @@ async function renderDirectorVendedores(){
         +'<div style="padding:12px 18px 0;">'+kpiRows+'</div>'
         +'<div style="padding:10px 18px;border-top:1px solid var(--border);margin-top:8px;">'
         +'<button style="width:100%;background:'+col+';color:#fff;border:none;border-radius:var(--radsm);padding:8px;font-size:12px;font-weight:600;cursor:pointer;" '
-        +'onclick="verRegistrosVendedor(this.dataset.uid,this.dataset.unm)" data-uid="'+uid+'" data-unm="'+unm+'">'
+        +'onclick="verRegistrosVendedor(this.dataset.uid,this.dataset.unm,\'telemarketing\')" data-uid="'+uid+'" data-unm="'+unm+'">'
         +'📋 Ver registros y auditar</button>'
         +'</div></div>';
     }).join('');
@@ -3391,7 +3394,8 @@ async function renderDirectorVendedores(){
   `;
 }
 
-async function verRegistrosVendedor(userId, nombre){
+async function verRegistrosVendedor(userId, nombre, rol){
+  const esTele=rol==='telemarketing';
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando registros...</div>';
   const desde=`${currentYear}-${String(currentMonth).padStart(2,'0')}-01`;
@@ -3404,6 +3408,23 @@ async function verRegistrosVendedor(userId, nombre){
   const rows=regs||[];
   const auditados=rows.filter(r=>r.auditado).length;
   const pendientes=rows.length-auditados;
+  const cols=esTele?[
+    {h:'Ll. efectivas',k:'llamadas_efectivas',money:false},
+    {h:'Ll. prospección',k:'llamadas_prospeccion',money:false},
+    {h:'Ll. seguim.',k:'llamadas_seguimiento',money:false},
+    {h:'Prosp. canaliz.',k:'prospectos_canalizados',money:false},
+    {h:'Confirm.',k:'confirmaciones_evento',money:false},
+    {h:'Seguim. post',k:'seguimientos_post',money:false},
+    {h:'CRM',k:'crm_actualizaciones',money:false},
+    {h:'Cursos 24/7 ($)',k:'venta_cursos_tele',money:true},
+    {h:'Siigo F.',k:'siigo_fiscal',money:false},
+  ]:[
+    {h:'Servicios',k:'svc',money:true},{h:'Aspel',k:'aspel',money:true},{h:'IT',k:'it',money:true},
+    {h:'Demos',k:'demos',money:false},{h:'Val.',k:'valoraciones',money:false},
+    {h:'Clientes',k:'clientes_nuevos',money:false},{h:'Siigo',k:'siigo_fiscal',money:false},
+    {h:'Sus.',k:'suscripciones',money:false},{h:'Cursos Vivo',k:'talleres_vivo',money:true},
+  ];
+  window._auditCols=cols;
 
   mc.innerHTML=`
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
@@ -3419,35 +3440,20 @@ async function verRegistrosVendedor(userId, nombre){
     <thead>
       <tr style="background:var(--navy);color:#fff;font-size:11px;">
         <th style="padding:8px 10px;text-align:left;">Fecha</th>
-        <th style="padding:8px 10px;text-align:right;">Servicios</th>
-        <th style="padding:8px 10px;text-align:right;">Aspel</th>
-        <th style="padding:8px 10px;text-align:right;">IT</th>
-        <th style="padding:8px 10px;text-align:center;">Demos</th>
-        <th style="padding:8px 10px;text-align:center;">Val.</th>
-        <th style="padding:8px 10px;text-align:center;">Clientes</th>
-        <th style="padding:8px 10px;text-align:center;">Siigo</th>
-        <th style="padding:8px 10px;text-align:center;">Sus.</th>
-        <th style="padding:8px 10px;text-align:right;">Cursos Vivo</th>
+        <th style="padding:8px 10px;text-align:left;">Fecha</th>
+        ${cols.map(c=>`<th style="padding:8px 10px;text-align:${c.money?'right':'center'};">${c.h}</th>`).join('')}
         <th style="padding:8px 10px;text-align:center;">Auditoría</th>
         <th style="padding:8px 10px;text-align:center;">Acciones</th>
       </tr>
     </thead>
     <tbody id="auditBody">
-      ${rows.map(r=>filaAuditoria(r)).join('')}
-      ${rows.length===0?'<tr><td colspan="12" style="text-align:center;padding:24px;color:var(--text3);">Sin registros este mes</td></tr>':''}
+      ${rows.map(r=>filaAuditoria(r,cols)).join('')}
+      ${rows.length===0?`<tr><td colspan="${cols.length+3}" style="text-align:center;padding:24px;color:var(--text3);">Sin registros este mes</td></tr>`:''}
     </tbody>
     <tfoot>
       <tr style="background:var(--surface-2,#f4f6f8);font-weight:700;font-size:11px;">
         <td style="padding:8px 10px;color:var(--text);">TOTAL</td>
-        <td style="padding:8px 10px;text-align:right;color:var(--teal);">${fmt(rows.reduce((s,r)=>s+(r.svc||0),0))}</td>
-        <td style="padding:8px 10px;text-align:right;">${fmt(rows.reduce((s,r)=>s+(r.aspel||0),0))}</td>
-        <td style="padding:8px 10px;text-align:right;">${fmt(rows.reduce((s,r)=>s+(r.it||0),0))}</td>
-        <td style="padding:8px 10px;text-align:center;">${rows.reduce((s,r)=>s+(r.demos||0),0)}</td>
-        <td style="padding:8px 10px;text-align:center;">${rows.reduce((s,r)=>s+(r.valoraciones||0),0)}</td>
-        <td style="padding:8px 10px;text-align:center;">${rows.reduce((s,r)=>s+(r.clientes_nuevos||0),0)}</td>
-        <td style="padding:8px 10px;text-align:center;">${rows.reduce((s,r)=>s+(r.siigo_fiscal||0),0)}</td>
-        <td style="padding:8px 10px;text-align:center;">${rows.reduce((s,r)=>s+(r.suscripciones||0),0)}</td>
-        <td style="padding:8px 10px;text-align:right;">${fmt(rows.reduce((s,r)=>s+(r.talleres_vivo||0),0))}</td>
+        ${cols.map(c=>{const sum=rows.reduce((s,r)=>s+(r[c.k]||0),0);return `<td style="padding:8px 10px;text-align:${c.money?'right':'center'};color:${c.k==='svc'?'var(--teal)':'inherit'};">${c.money?fmt(sum):sum}</td>`;}).join('')}
         <td colspan="2"></td>
       </tr>
     </tfoot>
@@ -3455,7 +3461,7 @@ async function verRegistrosVendedor(userId, nombre){
   </div>`;
 }
 
-function filaAuditoria(r){
+function filaAuditoria(r,cols){cols=cols||window._auditCols||[];
   const auditado=r.auditado;
   const hoy=todayLocal();
   const esHoy=r.fecha===hoy;
@@ -3464,15 +3470,7 @@ function filaAuditoria(r){
       ${r.fecha}${esHoy?'<span style="font-size:10px;color:var(--teal);margin-left:4px;">HOY</span>':''}
       ${r.updated_at&&r.updated_at!==r.created_at?'<div style="font-size:9px;color:var(--text3);">✏️ editado</div>':''}
     </td>
-    <td style="padding:7px 10px;text-align:right;color:${(r.svc||0)>0?'var(--teal)':'var(--text3)'};">${(r.svc||0)>0?fmt(r.svc):'—'}</td>
-    <td style="padding:7px 10px;text-align:right;">${(r.aspel||0)>0?fmt(r.aspel):'—'}</td>
-    <td style="padding:7px 10px;text-align:right;">${(r.it||0)>0?fmt(r.it):'—'}</td>
-    <td style="padding:7px 10px;text-align:center;">${r.demos||'—'}</td>
-    <td style="padding:7px 10px;text-align:center;">${r.valoraciones||'—'}</td>
-    <td style="padding:7px 10px;text-align:center;">${r.clientes_nuevos||'—'}</td>
-    <td style="padding:7px 10px;text-align:center;">${r.siigo_fiscal||'—'}</td>
-    <td style="padding:7px 10px;text-align:center;">${r.suscripciones||'—'}</td>
-    <td style="padding:7px 10px;text-align:right;">${(r.talleres_vivo||0)>0?fmt(r.talleres_vivo):'—'}</td>
+    ${(cols||[]).map(c=>{const v=r[c.k]||0;return `<td style="padding:7px 10px;text-align:${c.money?'right':'center'};color:${v>0&&c.k==='svc'?'var(--teal)':v>0?'var(--text)':'var(--text3)'};">${v>0?(c.money?fmt(v):v):'—'}</td>`;}).join('')}
     <td style="padding:7px 10px;text-align:center;">
       ${auditado
         ?`<div style="font-size:10px;color:#27AE60;font-weight:600;">✅ Auditado</div>
@@ -3501,7 +3499,7 @@ async function toggleAuditado(registroId, esAuditado){
   const {data:r}=await sb.from('registros_diarios').select('*').eq('id',registroId).single();
   if(r){
     const row=document.getElementById('arow_'+registroId);
-    if(row) row.outerHTML=filaAuditoria(r);
+    if(row) row.outerHTML=filaAuditoria(r,window._auditCols);
   }
   // Update header counts
   const allRows=document.querySelectorAll('[id^="arow_"]');
@@ -3596,7 +3594,7 @@ async function guardarEdicionDir(){
   const {data:r}=await sb.from('registros_diarios').select('*').eq('id',id).single();
   if(r){
     const row=document.getElementById('arow_'+id);
-    if(row) row.outerHTML=filaAuditoria(r);
+    if(row) row.outerHTML=filaAuditoria(r,window._auditCols);
   }
 }
 
