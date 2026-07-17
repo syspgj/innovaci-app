@@ -3719,16 +3719,16 @@ async function verRegistrosVendedor(userId, nombre, rol){
   const auditados=rows.filter(r=>r.auditado).length;
   const pendientes=rows.length-auditados;
   const cols=esTele?[
-    {h:'Campaña',k:'_crmCampana',money:false,text:true},
-    {h:'Total llam.',k:'_crmTotal',money:false},
-    {h:'Efectivas',k:'_crmEfectivas',money:false},
+    {h:'Campaña',k:'_dCampana',money:false,text:true},
+    {h:'Total llam.',k:'_dTotal',money:false},
+    {h:'Efectivas',k:'_dEfectivas',money:false},
     {h:'% Efect.',k:'_pctEfect',money:false,pct:true},
-    {h:'No contestó',k:'_crmNoContesto',money:false},
-    {h:'Buzón',k:'_crmBuzon',money:false},
-    {h:'Interesado',k:'_crmInteresado',money:false},
-    {h:'Canaliz.',k:'_crmCanalizado',money:false},
-    {h:'→Dulce',k:'_crmDulce',money:false},
-    {h:'→Manuel',k:'_crmManuel',money:false},
+    {h:'No contestó',k:'_dNoContesto',money:false},
+    {h:'Buzón',k:'_dBuzon',money:false},
+    {h:'Interesado',k:'_dInteresado',money:false},
+    {h:'Canaliz.',k:'_dCanalizado',money:false},
+    {h:'→Dulce',k:'_dDulce',money:false},
+    {h:'→Manuel',k:'_dManuel',money:false},
     {h:'Cursos 24/7',k:'venta_cursos_tele',money:true},
   ]:[
     {h:'Servicios',k:'svc',money:true},{h:'Aspel',k:'aspel',money:true},{h:'IT',k:'it',money:true},
@@ -3736,8 +3736,22 @@ async function verRegistrosVendedor(userId, nombre, rol){
     {h:'Clientes',k:'clientes_nuevos',money:false},{h:'Siigo',k:'siigo_fiscal',money:false},
     {h:'Sus.',k:'suscripciones',money:false},{h:'Cursos Vivo',k:'talleres_vivo',money:true},
   ];
-  // Calcular % efectividad por fila
-  if(esTele){rows.forEach(r=>{r._pctEfect=(r._crmTotal>0)?Math.round((r._crmEfectivas/r._crmTotal)*100):0;});}
+  // Fallback + % efectividad por fila (CRM si hay, campos viejos si no)
+  if(esTele){rows.forEach(r=>{
+    const tieneCRM=(r._crmTotal||0)>0||(r._crmEfectivas||0)>0||r._crmCampana;
+    if(tieneCRM){
+      r._dTotal=r._crmTotal||0; r._dEfectivas=r._crmEfectivas||0;
+      r._dNoContesto=r._crmNoContesto||0; r._dBuzon=r._crmBuzon||0;
+      r._dInteresado=r._crmInteresado||0; r._dCanalizado=r._crmCanalizado||0;
+      r._dDulce=r._crmDulce||0; r._dManuel=r._crmManuel||0; r._dCampana=r._crmCampana||'';
+    } else {
+      r._dTotal=0; r._dEfectivas=r.llamadas_efectivas||0;
+      r._dNoContesto=0; r._dBuzon=0; r._dInteresado=0;
+      r._dCanalizado=r.prospectos_canalizados||0;
+      r._dDulce=0; r._dManuel=0; r._dCampana='';
+    }
+    r._pctEfect=(r._dTotal>0)?Math.round((r._dEfectivas/r._dTotal)*100):0;
+  });}
   window._auditCols=cols;
 
   mc.innerHTML=`
@@ -3770,7 +3784,7 @@ async function verRegistrosVendedor(userId, nombre, rol){
         <td style="padding:8px 10px;color:var(--text);">TOTAL</td>
         ${cols.map(c=>{
           if(c.text)return `<td style="padding:8px 10px;"></td>`;
-          if(c.pct){const totEf=rows.reduce((s,r)=>s+(r._crmEfectivas||0),0);const totTot=rows.reduce((s,r)=>s+(r._crmTotal||0),0);const p=totTot>0?Math.round(totEf/totTot*100):0;return `<td style="padding:8px 10px;text-align:center;font-weight:700;color:${p>=50?'#27AE60':p>=30?'#F5A623':'#E84040'};">${totTot>0?p+'%':'—'}</td>`;}
+          if(c.pct){const totEf=rows.reduce((s,r)=>s+(r._dEfectivas||0),0);const totTot=rows.reduce((s,r)=>s+(r._dTotal||0),0);const p=totTot>0?Math.round(totEf/totTot*100):0;return `<td style="padding:8px 10px;text-align:center;font-weight:700;color:${p>=50?'#27AE60':p>=30?'#F5A623':'#E84040'};">${totTot>0?p+'%':'—'}</td>`;}
           const sum=rows.reduce((s,r)=>s+(r[c.k]||0),0);return `<td style="padding:8px 10px;text-align:${c.money?'right':'center'};color:${c.k==='svc'?'var(--teal)':'inherit'};">${c.money?fmt(sum):sum}</td>`;
         }).join('')}
         <td colspan="2"></td>
@@ -3792,7 +3806,7 @@ function filaAuditoria(r,cols){cols=cols||window._auditCols||[];
     ${(cols||[]).map(c=>{
       if(c.text){const v=r[c.k]||'';return `<td style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text2);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${v||'—'}</td>`;}
       const v=r[c.k]||0;
-      if(c.pct){return `<td style="padding:7px 10px;text-align:center;font-family:'JetBrains Mono',monospace;color:${v>=50?'#27AE60':v>=30?'#F5A623':v>0?'#E84040':'var(--text3)'};font-weight:600;">${r._crmTotal>0?v+'%':'—'}</td>`;}
+      if(c.pct){return `<td style="padding:7px 10px;text-align:center;font-family:'JetBrains Mono',monospace;color:${v>=50?'#27AE60':v>=30?'#F5A623':v>0?'#E84040':'var(--text3)'};font-weight:600;">${r._dTotal>0?v+'%':'—'}</td>`;}
       return `<td style="padding:7px 10px;text-align:${c.money?'right':'center'};color:${v>0&&c.k==='svc'?'var(--teal)':v>0?'var(--text)':'var(--text3)'};">${v>0?(c.money?fmt(v):v):'—'}</td>`;
     }).join('')}
     <td style="padding:7px 10px;text-align:center;">
@@ -4203,6 +4217,9 @@ function buildTeleUI(){
 }
 function swT(id){
   currentTeleTab=id;
+  const mc=document.getElementById('mainContent');
+  if(id==='historico'||id==='miMes') mc.classList.add('full-width');
+  else mc.classList.remove('full-width');
   document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['miMes','prospectos','clientes','registro','historico','promos'][i]===id));
   if(id==='miMes')renderTele();
   else if(id==='prospectos')renderProspectos();
@@ -4872,19 +4889,29 @@ async function renderTele(){
         return fechas.map(f=>{
           const r=rs.find(x=>x.fecha===f)||{};
           const c=crmPorFecha[f]||{};
+          const tieneCRM=(c.total_llamadas||0)>0||c.campana_nombre;
           const ef=(c.interesado||0)+(c.no_le_interesa||0)+(c.volver_llamar||0)+(c.registrado_taller||0)+(c.canalizado_ventas||0);
+          // Fallback: si no hay CRM, usar campos viejos
+          const dTotal=tieneCRM?(c.total_llamadas||0):0;
+          const dEfect=tieneCRM?ef:(r.llamadas_efectivas||0);
+          const dNoContesto=tieneCRM?(c.no_contesto||0):0;
+          const dBuzon=tieneCRM?(c.buzon||0):0;
+          const dInteresado=tieneCRM?(c.interesado||0):0;
+          const dCanaliz=tieneCRM?(c.canalizado_ventas||0):(r.prospectos_canalizados||0);
+          const dDulce=tieneCRM?(c.canaliz_dulce||0):0;
+          const dManuel=tieneCRM?(c.canaliz_manuel||0):0;
           const isT=f===todayLocal();
-          const cell=(v,col)=>`<td style="text-align:center;${col?'color:'+col+';font-weight:600;':''}">${v>0?v:'—'}</td>`;
+          const cell=(v,col)=>`<td style="text-align:center;${col&&v>0?'color:'+col+';font-weight:600;':''}">${v>0?v:'—'}</td>`;
           return `<tr class="${isT?'today-row':''}">
             <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${f.slice(5)}${isT?' 🔵':''}</td>
-            ${cell(c.total_llamadas||0)}
-            ${cell(ef,'#27AE60')}
-            ${cell(c.no_contesto||0)}
-            ${cell(c.buzon||0)}
-            ${cell(c.interesado||0)}
-            ${cell(c.canalizado_ventas||0,'#00A99D')}
-            ${cell(c.canaliz_dulce||0)}
-            ${cell(c.canaliz_manuel||0)}
+            ${cell(dTotal)}
+            ${cell(dEfect,'#27AE60')}
+            ${cell(dNoContesto)}
+            ${cell(dBuzon)}
+            ${cell(dInteresado)}
+            ${cell(dCanaliz,'#00A99D')}
+            ${cell(dDulce)}
+            ${cell(dManuel)}
             <td style="text-align:center;">${(r.venta_cursos_tele||0)>0?fmt(r.venta_cursos_tele):'—'}</td>
           </tr>`;
         }).join('');
@@ -5123,6 +5150,23 @@ async function renderTeleHistorico(){
     }
   });
   merged.sort((a,b)=>a.fecha<b.fecha?1:-1);
+  // Lógica de fallback: columnas "display" que combinan CRM (si hay) o campos viejos
+  merged.forEach(r=>{
+    const tieneCRM=(r._crmTotal||0)>0||(r._crmEfectivas||0)>0||r._crmCampana;
+    if(tieneCRM){
+      r._dTotal=r._crmTotal||0; r._dEfectivas=r._crmEfectivas||0;
+      r._dNoContesto=r._crmNoContesto||0; r._dBuzon=r._crmBuzon||0;
+      r._dInteresado=r._crmInteresado||0; r._dCanalizado=r._crmCanalizado||0;
+      r._dDulce=r._crmDulce||0; r._dManuel=r._crmManuel||0; r._dCampana=r._crmCampana||'';
+    } else {
+      // Fallback a campos viejos de registros_diarios
+      r._dTotal=0; // el campo viejo no tenía total
+      r._dEfectivas=r.llamadas_efectivas||0;
+      r._dNoContesto=0; r._dBuzon=0; r._dInteresado=0;
+      r._dCanalizado=r.prospectos_canalizados||0;
+      r._dDulce=0; r._dManuel=0; r._dCampana='';
+    }
+  });
   window._teleHistRows=merged;
   renderTeleHistTabla();
 }
@@ -5167,15 +5211,15 @@ function renderTeleHistTabla(){
           return `<tr onclick="toggleTeleHistDetalle(${idx})" style="cursor:pointer;" id="teleHistRow_${idx}">
           <td style="width:18px;color:var(--text3);font-size:10px;" id="teleHistArrow_${idx}">▸</td>
           <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);white-space:nowrap;">${fmtFecha(r.fecha)||r.fecha}${r.notas&&r.notas.includes('automático')?'<span style="margin-left:5px;font-size:9px;background:#2980B9;color:#fff;border-radius:3px;padding:1px 4px;vertical-align:middle;">AUTO</span>':''}</td>
-          <td style="font-size:10px;color:var(--text2);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r._crmCampana||'—'}</td>
-          ${c(r._crmTotal||0)}
-          ${c(r._crmEfectivas||0,'#27AE60')}
-          ${c(r._crmNoContesto||0)}
-          ${c(r._crmBuzon||0)}
-          ${c(r._crmInteresado||0)}
-          ${c(r._crmCanalizado||0,'#00A99D')}
-          ${c(r._crmDulce||0)}
-          ${c(r._crmManuel||0)}
+          <td style="font-size:10px;color:var(--text2);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r._dCampana||'—'}</td>
+          ${c(r._dTotal||0)}
+          ${c(r._dEfectivas||0,'#27AE60')}
+          ${c(r._dNoContesto||0)}
+          ${c(r._dBuzon||0)}
+          ${c(r._dInteresado||0)}
+          ${c(r._dCanalizado||0,'#00A99D')}
+          ${c(r._dDulce||0)}
+          ${c(r._dManuel||0)}
           ${c(r.llamadas_cartera||0,'#2980B9')}
         </tr>
         <tr id="teleHistDetalle_${idx}" style="display:none;"><td colspan="12" style="padding:0;background:var(--surface-2,#f8f9fa);">
@@ -5184,14 +5228,14 @@ function renderTeleHistTabla(){
       </tbody>
       ${rows.length?`<tfoot><tr style="background:var(--navy);color:#fff;font-weight:700;">
         <td colspan="3" style="padding:8px 12px;font-size:12px;">TOTAL</td>
-        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._crmTotal||0),0)||'—'}</td>
-        <td style="text-align:center;color:#5ff;">${rows.reduce((s,r)=>s+(r._crmEfectivas||0),0)||'—'}</td>
-        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._crmNoContesto||0),0)||'—'}</td>
-        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._crmBuzon||0),0)||'—'}</td>
-        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._crmInteresado||0),0)||'—'}</td>
-        <td style="text-align:center;color:#5ff;">${rows.reduce((s,r)=>s+(r._crmCanalizado||0),0)||'—'}</td>
-        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._crmDulce||0),0)||'—'}</td>
-        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._crmManuel||0),0)||'—'}</td>
+        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._dTotal||0),0)||'—'}</td>
+        <td style="text-align:center;color:#5ff;">${rows.reduce((s,r)=>s+(r._dEfectivas||0),0)||'—'}</td>
+        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._dNoContesto||0),0)||'—'}</td>
+        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._dBuzon||0),0)||'—'}</td>
+        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._dInteresado||0),0)||'—'}</td>
+        <td style="text-align:center;color:#5ff;">${rows.reduce((s,r)=>s+(r._dCanalizado||0),0)||'—'}</td>
+        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._dDulce||0),0)||'—'}</td>
+        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._dManuel||0),0)||'—'}</td>
         <td style="text-align:center;color:#5bf;">${tot.cartera||'—'}</td>
       </tr></tfoot>`:''}
     </table>
