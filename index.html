@@ -3273,6 +3273,7 @@ async function renderDirectorResumen(){
 
 async function renderDirectorVendedores(){
   const mc=document.getElementById('mainContent');
+  mc.classList.remove('full-width');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
   const users=await loadDirectorData();
   const vendedores=users.filter(u=>u.rol==='vendedor');
@@ -3663,6 +3664,7 @@ async function reporteComparativoAnual(){
 async function verRegistrosVendedor(userId, nombre, rol){
   const esTele=rol==='telemarketing';
   const mc=document.getElementById('mainContent');
+  mc.classList.add('full-width');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando registros...</div>';
   const desde=`${currentYear}-${String(currentMonth).padStart(2,'0')}-01`;
   const lastDay=new Date(currentYear,currentMonth,0).getDate();
@@ -3672,11 +3674,14 @@ async function verRegistrosVendedor(userId, nombre, rol){
     .gte('fecha',desde).lte('fecha',hasta)
     .order('fecha',{ascending:true});
   let rows=regs||[];
+  let _crmCount=0, _crmErr=null;
   // Para telemarketing: cruzar con llamadas_crm_directas por fecha
   if(esTele){
-    const {data:crmData}=await sb.from('llamadas_crm_directas')
+    const {data:crmData,error:crmError}=await sb.from('llamadas_crm_directas')
       .select('*').eq('usuario_id',userId)
       .gte('fecha',desde).lte('fecha',hasta);
+    _crmCount=(crmData||[]).length;
+    _crmErr=crmError;
     const crmPorFecha={};
     (crmData||[]).forEach(c=>{crmPorFecha[c.fecha]=c;});
     // Merge: agregar campos CRM a cada registro (y crear filas para fechas que solo tienen CRM)
@@ -3741,6 +3746,7 @@ async function verRegistrosVendedor(userId, nombre, rol){
     <div>
       <div style="font-size:16px;font-weight:700;color:var(--text);">Registros de ${nombre} — ${getNombreMes(currentMonth)} ${currentYear}</div>
       <div style="font-size:12px;color:var(--text3);">${rows.length} días registrados · <span style="color:#27AE60;font-weight:600;">${auditados} auditados</span> · <span style="color:#F5A623;font-weight:600;">${pendientes} pendientes</span></div>
+      ${esTele?`<div style="font-size:10px;color:${_crmErr?'var(--red)':_crmCount>0?'#27AE60':'#F5A623'};margin-top:2px;">${_crmErr?'⚠️ Error al leer llamadas CRM: '+_crmErr.message:_crmCount>0?`✓ ${_crmCount} días con llamadas CRM cargadas`:'⚠️ 0 registros en llamadas_crm_directas (¿RLS o sin capturar?)'}</div>`:''}
     </div>
     ${pendientes===0&&rows.length>0?'<span style="background:rgba(39,174,96,0.1);color:#27AE60;border:1px solid rgba(39,174,96,0.3);border-radius:20px;padding:4px 12px;font-size:12px;font-weight:600;">✅ Mes completamente auditado</span>':''}
   </div>
@@ -4657,6 +4663,20 @@ async function renderTele(){
   const hasta=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
   const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).gte('fecha',desde).lte('fecha',hasta).order('fecha');
   const rs=regs||[];
+  // Cargar llamadas directas de CRM del mes
+  const {data:crmRs}=await sb.from('llamadas_crm_directas').select('*').eq('usuario_id',currentUser.id).gte('fecha',desde).lte('fecha',hasta);
+  const crmData=crmRs||[];
+  const crmPorFecha={};
+  crmData.forEach(c=>{crmPorFecha[c.fecha]=c;});
+  // Totales CRM del mes
+  const crmTot={total:0,noContesto:0,buzon:0,interesado:0,noInteresa:0,volver:0,regTaller:0,canalizado:0,dulce:0,manuel:0,efectivas:0};
+  crmData.forEach(c=>{
+    crmTot.total+=c.total_llamadas||0; crmTot.noContesto+=c.no_contesto||0; crmTot.buzon+=c.buzon||0;
+    crmTot.interesado+=c.interesado||0; crmTot.noInteresa+=c.no_le_interesa||0; crmTot.volver+=c.volver_llamar||0;
+    crmTot.regTaller+=c.registrado_taller||0; crmTot.canalizado+=c.canalizado_ventas||0;
+    crmTot.dulce+=c.canaliz_dulce||0; crmTot.manuel+=c.canaliz_manuel||0;
+    crmTot.efectivas+=(c.interesado||0)+(c.no_le_interesa||0)+(c.volver_llamar||0)+(c.registrado_taller||0)+(c.canalizado_ventas||0);
+  });
   // Totals
   const tot={llamadas:0,prospectos:0,confirmaciones:0,siigo:0,seguimientos:0,cursos:0,renovaciones:0,crm:0};
   for(const r of rs){
@@ -4669,6 +4689,9 @@ async function renderTele(){
     tot.renovaciones+=r.renovaciones||0;
     tot.crm+=r.crm_actualizaciones||0;
   }
+  // Sumar canalizados manuales (CRM directas) a prospectos, y llamadas efectivas del CRM
+  tot.prospectos+=crmTot.canalizado;
+  tot.llamadas+=crmTot.efectivas;
   // Bono prospectos
   const MINIMO=15;
   const bonoPros=tot.prospectos>=MINIMO?tot.prospectos*50:0;
@@ -4817,23 +4840,57 @@ async function renderTele(){
     </div>
   </div>
 
+  <!-- DESGLOSE LLAMADAS CRM DEL MES -->
+  ${crmTot.total>0?`
+  <div class="card" style="margin-bottom:14px;">
+    <div class="card-head"><span class="card-title">📞 Llamadas directas de CRM — ${meses[currentMonth]}</span><span class="badge bt">${crmData.length} días</span></div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:12px 16px;">
+      <div style="text-align:center;padding:8px;background:var(--surface-2,#f8f9fa);border-radius:8px;"><div style="font-size:20px;font-weight:800;color:var(--navy);">${crmTot.total}</div><div style="font-size:10px;color:var(--text3);">Total llamadas</div></div>
+      <div style="text-align:center;padding:8px;background:rgba(39,174,96,0.06);border-radius:8px;"><div style="font-size:20px;font-weight:800;color:#27AE60;">${crmTot.efectivas}</div><div style="font-size:10px;color:var(--text3);">Efectivas (${crmTot.total>0?Math.round(crmTot.efectivas/crmTot.total*100):0}%)</div></div>
+      <div style="text-align:center;padding:8px;background:rgba(232,64,64,0.05);border-radius:8px;"><div style="font-size:20px;font-weight:800;color:#E84040;">${crmTot.noContesto}</div><div style="font-size:10px;color:var(--text3);">No contestó</div></div>
+      <div style="text-align:center;padding:8px;background:rgba(245,166,35,0.06);border-radius:8px;"><div style="font-size:20px;font-weight:800;color:#F5A623;">${crmTot.buzon}</div><div style="font-size:10px;color:var(--text3);">Buzón</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;padding:0 16px 12px;">
+      <div style="text-align:center;"><div style="font-size:15px;font-weight:700;color:#27AE60;">${crmTot.interesado}</div><div style="font-size:9px;color:var(--text3);">Interesado</div></div>
+      <div style="text-align:center;"><div style="font-size:15px;font-weight:700;color:var(--text2);">${crmTot.noInteresa}</div><div style="font-size:9px;color:var(--text3);">No le interesa</div></div>
+      <div style="text-align:center;"><div style="font-size:15px;font-weight:700;color:#F5A623;">${crmTot.volver}</div><div style="font-size:9px;color:var(--text3);">Volver a llamar</div></div>
+      <div style="text-align:center;"><div style="font-size:15px;font-weight:700;color:#2980B9;">${crmTot.regTaller}</div><div style="font-size:9px;color:var(--text3);">Registrado taller</div></div>
+      <div style="text-align:center;"><div style="font-size:15px;font-weight:700;color:#00A99D;">${crmTot.canalizado}</div><div style="font-size:9px;color:var(--text3);">Canalizado</div></div>
+      <div style="text-align:center;background:rgba(0,169,157,0.06);border-radius:6px;padding:2px;"><div style="font-size:11px;font-weight:700;color:#00A99D;">→D ${crmTot.dulce} · →M ${crmTot.manuel}</div><div style="font-size:9px;color:var(--text3);">Canaliz. a</div></div>
+    </div>
+  </div>`:''}
+
   <!-- REGISTRO DIARIO TABLE -->
   <div class="card">
-    <div class="card-head"><span class="card-title">Actividad diaria</span><span class="badge bt">${rs.length} días registrados</span></div>
-    <table class="daily">
-      <thead><tr><th>Fecha</th><th>Llamadas</th><th>Prospectos</th><th>Confirmaciones</th><th>Siigo</th><th>Seguimientos</th></tr></thead>
-      <tbody>${rs.length?rs.map(r=>{
-        const isT=r.fecha===todayLocal();
-        return `<tr class="${isT?'today-row':''}">
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${r.fecha.slice(5)}${isT?' 🔵':''}</td>
-          <td style="text-align:center;font-weight:500;">${r.llamadas_efectivas||0}</td>
-          <td style="text-align:center;font-weight:600;color:${(r.prospectos_canalizados||0)>0?'#00A99D':'var(--text3)'};">${r.prospectos_canalizados||0}</td>
-          <td style="text-align:center;">${r.confirmaciones_evento||0}</td>
-          <td style="text-align:center;">${r.siigo_activaciones||0}</td>
-          <td style="text-align:center;">${r.seguimientos_post||0}</td>
-        </tr>`;
-      }).join(''):'<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--text3);font-size:12px;">Sin registros — usa Registrar día</td></tr>'}</tbody>
+    <div class="card-head"><span class="card-title">Actividad diaria</span><span class="badge bt">${(()=>{const fechas=new Set([...rs.map(r=>r.fecha),...crmData.map(c=>c.fecha)]);return fechas.size;})()} días registrados</span></div>
+    <div style="overflow-x:auto;">
+    <table class="daily" style="min-width:820px;">
+      <thead><tr><th>Fecha</th><th>Total llam.</th><th>Efectivas</th><th>No contestó</th><th>Buzón</th><th>Interesado</th><th>Canaliz.</th><th>→Dulce</th><th>→Manuel</th><th>Cursos 24/7</th></tr></thead>
+      <tbody>${(()=>{
+        const fechas=[...new Set([...rs.map(r=>r.fecha),...crmData.map(c=>c.fecha)])].sort();
+        if(!fechas.length) return '<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text3);font-size:12px;">Sin registros — usa Registrar día</td></tr>';
+        return fechas.map(f=>{
+          const r=rs.find(x=>x.fecha===f)||{};
+          const c=crmPorFecha[f]||{};
+          const ef=(c.interesado||0)+(c.no_le_interesa||0)+(c.volver_llamar||0)+(c.registrado_taller||0)+(c.canalizado_ventas||0);
+          const isT=f===todayLocal();
+          const cell=(v,col)=>`<td style="text-align:center;${col?'color:'+col+';font-weight:600;':''}">${v>0?v:'—'}</td>`;
+          return `<tr class="${isT?'today-row':''}">
+            <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${f.slice(5)}${isT?' 🔵':''}</td>
+            ${cell(c.total_llamadas||0)}
+            ${cell(ef,'#27AE60')}
+            ${cell(c.no_contesto||0)}
+            ${cell(c.buzon||0)}
+            ${cell(c.interesado||0)}
+            ${cell(c.canalizado_ventas||0,'#00A99D')}
+            ${cell(c.canaliz_dulce||0)}
+            ${cell(c.canaliz_manuel||0)}
+            <td style="text-align:center;">${(r.venta_cursos_tele||0)>0?fmt(r.venta_cursos_tele):'—'}</td>
+          </tr>`;
+        }).join('');
+      })()}</tbody>
     </table>
+    </div>
   </div>`;
 }
 
@@ -5037,7 +5094,36 @@ async function renderTeleHistorico(){
   const {data:regs}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).order('fecha',{ascending:false});
   await autoRegistrarDiasCartera(regs||[]);
   const {data:regs2}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).order('fecha',{ascending:false});
-  window._teleHistRows=regs2||[];
+  // Cargar llamadas CRM y fusionar por fecha
+  const {data:crmAll}=await sb.from('llamadas_crm_directas').select('*').eq('usuario_id',currentUser.id);
+  const crmMap={};
+  (crmAll||[]).forEach(c=>{crmMap[c.fecha]=c;});
+  const merged=[...(regs2||[])];
+  const fechasReg=new Set(merged.map(r=>r.fecha));
+  // Agregar campos CRM a registros existentes
+  merged.forEach(r=>{
+    const c=crmMap[r.fecha];
+    if(c){
+      r._crmTotal=c.total_llamadas||0; r._crmNoContesto=c.no_contesto||0; r._crmBuzon=c.buzon||0;
+      r._crmInteresado=c.interesado||0; r._crmNoInteresa=c.no_le_interesa||0; r._crmVolver=c.volver_llamar||0;
+      r._crmRegTaller=c.registrado_taller||0; r._crmCanalizado=c.canalizado_ventas||0;
+      r._crmDulce=c.canaliz_dulce||0; r._crmManuel=c.canaliz_manuel||0; r._crmCampana=c.campana_nombre||'';
+      r._crmEfectivas=(c.interesado||0)+(c.no_le_interesa||0)+(c.volver_llamar||0)+(c.registrado_taller||0)+(c.canalizado_ventas||0);
+    }
+  });
+  // Agregar fechas que solo tienen CRM
+  (crmAll||[]).forEach(c=>{
+    if(!fechasReg.has(c.fecha)){
+      merged.push({fecha:c.fecha,usuario_id:currentUser.id,_soloCRM:true,
+        _crmTotal:c.total_llamadas||0,_crmNoContesto:c.no_contesto||0,_crmBuzon:c.buzon||0,
+        _crmInteresado:c.interesado||0,_crmNoInteresa:c.no_le_interesa||0,_crmVolver:c.volver_llamar||0,
+        _crmRegTaller:c.registrado_taller||0,_crmCanalizado:c.canalizado_ventas||0,
+        _crmDulce:c.canaliz_dulce||0,_crmManuel:c.canaliz_manuel||0,_crmCampana:c.campana_nombre||'',
+        _crmEfectivas:(c.interesado||0)+(c.no_le_interesa||0)+(c.volver_llamar||0)+(c.registrado_taller||0)+(c.canalizado_ventas||0)});
+    }
+  });
+  merged.sort((a,b)=>a.fecha<b.fecha?1:-1);
+  window._teleHistRows=merged;
   renderTeleHistTabla();
 }
 
@@ -5069,38 +5155,47 @@ function renderTeleHistTabla(){
       </select>
     </div>
     <div style="font-size:11px;color:var(--text3);padding:8px 16px 0;">Haz clic en cualquier fila para ver el detalle completo del día.</div>
-    <table class="daily">
+    <div style="overflow-x:auto;">
+    <table class="daily" style="min-width:920px;">
       <thead><tr>
-        <th></th><th>Fecha</th><th>Llamadas</th><th>Cartera</th><th>Prospectos</th>
-        <th>Confirmaciones</th><th>Siigo</th><th>Seguimientos</th><th>Actualiz. CRM</th>
+        <th></th><th>Fecha</th><th>Campaña</th><th>Total llam.</th><th>Efectivas</th><th>No contestó</th>
+        <th>Buzón</th><th>Interesado</th><th>Canaliz.</th><th>→Dulce</th><th>→Manuel</th><th>Cartera</th>
       </tr></thead>
       <tbody>
-        ${rows.map((r,idx)=>`<tr onclick="toggleTeleHistDetalle(${idx})" style="cursor:pointer;" id="teleHistRow_${idx}">
+        ${rows.map((r,idx)=>{
+          const c=(v,col)=>`<td style="text-align:center;${col&&v>0?'color:'+col+';font-weight:600;':''}">${v>0?v:'—'}</td>`;
+          return `<tr onclick="toggleTeleHistDetalle(${idx})" style="cursor:pointer;" id="teleHistRow_${idx}">
           <td style="width:18px;color:var(--text3);font-size:10px;" id="teleHistArrow_${idx}">▸</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${fmtFecha(r.fecha)||r.fecha}${r.notas&&r.notas.includes('automático')?'<span style="margin-left:5px;font-size:9px;background:#2980B9;color:#fff;border-radius:3px;padding:1px 4px;vertical-align:middle;">AUTO</span>':''}</td>
-          <td style="text-align:center;">${r.llamadas_efectivas||0}</td>
-          <td style="text-align:center;font-weight:600;color:${(r.llamadas_cartera||0)>0?'#2980B9':'var(--text3)'};">${r.llamadas_cartera||0}</td>
-          <td style="text-align:center;font-weight:600;color:${(r.prospectos_canalizados||0)>0?'#00A99D':'var(--text3)'};">${r.prospectos_canalizados||0}</td>
-          <td style="text-align:center;">${r.confirmaciones_evento||0}</td>
-          <td style="text-align:center;">${r.siigo_activaciones||0}</td>
-          <td style="text-align:center;">${r.seguimientos_post||0}</td>
-          <td style="text-align:center;">${r.crm_actualizaciones||0}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);white-space:nowrap;">${fmtFecha(r.fecha)||r.fecha}${r.notas&&r.notas.includes('automático')?'<span style="margin-left:5px;font-size:9px;background:#2980B9;color:#fff;border-radius:3px;padding:1px 4px;vertical-align:middle;">AUTO</span>':''}</td>
+          <td style="font-size:10px;color:var(--text2);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r._crmCampana||'—'}</td>
+          ${c(r._crmTotal||0)}
+          ${c(r._crmEfectivas||0,'#27AE60')}
+          ${c(r._crmNoContesto||0)}
+          ${c(r._crmBuzon||0)}
+          ${c(r._crmInteresado||0)}
+          ${c(r._crmCanalizado||0,'#00A99D')}
+          ${c(r._crmDulce||0)}
+          ${c(r._crmManuel||0)}
+          ${c(r.llamadas_cartera||0,'#2980B9')}
         </tr>
-        <tr id="teleHistDetalle_${idx}" style="display:none;"><td colspan="9" style="padding:0;background:var(--surface-2,#f8f9fa);">
+        <tr id="teleHistDetalle_${idx}" style="display:none;"><td colspan="12" style="padding:0;background:var(--surface-2,#f8f9fa);">
           ${renderTeleHistDetalleContenido(r)}
-        </td></tr>`).join('')||'<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--text3);">Sin registros</td></tr>'}
+        </td></tr>`;}).join('')||'<tr><td colspan="12" style="text-align:center;padding:20px;color:var(--text3);">Sin registros</td></tr>'}
       </tbody>
       ${rows.length?`<tfoot><tr style="background:var(--navy);color:#fff;font-weight:700;">
-        <td colspan="2" style="padding:8px 12px;font-size:12px;">TOTAL</td>
-        <td style="text-align:center;">${tot.llamadas}</td>
+        <td colspan="3" style="padding:8px 12px;font-size:12px;">TOTAL</td>
+        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._crmTotal||0),0)||'—'}</td>
+        <td style="text-align:center;color:#5ff;">${rows.reduce((s,r)=>s+(r._crmEfectivas||0),0)||'—'}</td>
+        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._crmNoContesto||0),0)||'—'}</td>
+        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._crmBuzon||0),0)||'—'}</td>
+        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._crmInteresado||0),0)||'—'}</td>
+        <td style="text-align:center;color:#5ff;">${rows.reduce((s,r)=>s+(r._crmCanalizado||0),0)||'—'}</td>
+        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._crmDulce||0),0)||'—'}</td>
+        <td style="text-align:center;">${rows.reduce((s,r)=>s+(r._crmManuel||0),0)||'—'}</td>
         <td style="text-align:center;color:#5bf;">${tot.cartera||'—'}</td>
-        <td style="text-align:center;color:#5ff;">${tot.prospectos||'—'}</td>
-        <td style="text-align:center;">${tot.confirmaciones||'—'}</td>
-        <td style="text-align:center;">${tot.siigo||'—'}</td>
-        <td style="text-align:center;">${tot.seguimientos||'—'}</td>
-        <td style="text-align:center;">${tot.crm||'—'}</td>
       </tr></tfoot>`:''}
     </table>
+    </div>
   </div>`;
 }
 
@@ -5129,6 +5224,19 @@ function renderTeleHistDetalleContenido(r){
 
     <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.06em;margin:6px 0 -6px;">Gestión de cuentas</div>
     ${campo('Actualización cuentas CRM',r.crm_actualizaciones,false)}
+    ${(r._crmTotal||0)>0?`
+    <div style="grid-column:1/-1;font-size:10px;font-weight:700;color:#8B5CF6;text-transform:uppercase;letter-spacing:0.06em;margin:6px 0 -6px;">📞 Llamadas directas de CRM ${r._crmCampana?'· '+r._crmCampana:''}</div>
+    ${campo('Total llamadas',r._crmTotal,false)}
+    ${campo('Efectivas (contestadas)',r._crmEfectivas,false)}
+    ${campo('No contestó',r._crmNoContesto,false)}
+    ${campo('Buzón',r._crmBuzon,false)}
+    ${campo('Interesado',r._crmInteresado,false)}
+    ${campo('No le interesa',r._crmNoInteresa,false)}
+    ${campo('Volver a llamar',r._crmVolver,false)}
+    ${campo('Registrado al taller',r._crmRegTaller,false)}
+    ${campo('Canalizado a ventas',r._crmCanalizado,false)}
+    ${campo('→ Canalizadas a Dulce',r._crmDulce,false)}
+    ${campo('→ Canalizadas a Manuel',r._crmManuel,false)}`:''}
   </div>`;
 }
 
