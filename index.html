@@ -3736,20 +3736,17 @@ async function verRegistrosVendedor(userId, nombre, rol){
     {h:'Clientes',k:'clientes_nuevos',money:false},{h:'Siigo',k:'siigo_fiscal',money:false},
     {h:'Sus.',k:'suscripciones',money:false},{h:'Cursos Vivo',k:'talleres_vivo',money:true},
   ];
-  // Fallback + % efectividad por fila (CRM si hay, campos viejos si no)
+  // Columnas display: SUMAN CRM (nuevos) + campos viejos
   if(esTele){rows.forEach(r=>{
-    const tieneCRM=(r._crmTotal||0)>0||(r._crmEfectivas||0)>0||r._crmCampana;
-    if(tieneCRM){
-      r._dTotal=r._crmTotal||0; r._dEfectivas=r._crmEfectivas||0;
-      r._dNoContesto=r._crmNoContesto||0; r._dBuzon=r._crmBuzon||0;
-      r._dInteresado=r._crmInteresado||0; r._dCanalizado=r._crmCanalizado||0;
-      r._dDulce=r._crmDulce||0; r._dManuel=r._crmManuel||0; r._dCampana=r._crmCampana||'';
-    } else {
-      r._dTotal=0; r._dEfectivas=r.llamadas_efectivas||0;
-      r._dNoContesto=0; r._dBuzon=0; r._dInteresado=0;
-      r._dCanalizado=r.prospectos_canalizados||0;
-      r._dDulce=0; r._dManuel=0; r._dCampana='';
-    }
+    r._dTotal=(r._crmTotal||0);
+    r._dEfectivas=(r._crmEfectivas||0)+(r.llamadas_efectivas||0);
+    r._dNoContesto=(r._crmNoContesto||0);
+    r._dBuzon=(r._crmBuzon||0);
+    r._dInteresado=(r._crmInteresado||0);
+    r._dCanalizado=(r._crmCanalizado||0)+(r.prospectos_canalizados||0);
+    r._dDulce=(r._crmDulce||0);
+    r._dManuel=(r._crmManuel||0);
+    r._dCampana=r._crmCampana||'';
     r._pctEfect=(r._dTotal>0)?Math.round((r._dEfectivas/r._dTotal)*100):0;
   });}
   window._auditCols=cols;
@@ -4889,17 +4886,16 @@ async function renderTele(){
         return fechas.map(f=>{
           const r=rs.find(x=>x.fecha===f)||{};
           const c=crmPorFecha[f]||{};
-          const tieneCRM=(c.total_llamadas||0)>0||c.campana_nombre;
           const ef=(c.interesado||0)+(c.no_le_interesa||0)+(c.volver_llamar||0)+(c.registrado_taller||0)+(c.canalizado_ventas||0);
-          // Fallback: si no hay CRM, usar campos viejos
-          const dTotal=tieneCRM?(c.total_llamadas||0):0;
-          const dEfect=tieneCRM?ef:(r.llamadas_efectivas||0);
-          const dNoContesto=tieneCRM?(c.no_contesto||0):0;
-          const dBuzon=tieneCRM?(c.buzon||0):0;
-          const dInteresado=tieneCRM?(c.interesado||0):0;
-          const dCanaliz=tieneCRM?(c.canalizado_ventas||0):(r.prospectos_canalizados||0);
-          const dDulce=tieneCRM?(c.canaliz_dulce||0):0;
-          const dManuel=tieneCRM?(c.canaliz_manuel||0):0;
+          // SUMAR CRM + campos viejos
+          const dTotal=(c.total_llamadas||0);
+          const dEfect=ef+(r.llamadas_efectivas||0);
+          const dNoContesto=(c.no_contesto||0);
+          const dBuzon=(c.buzon||0);
+          const dInteresado=(c.interesado||0);
+          const dCanaliz=(c.canalizado_ventas||0)+(r.prospectos_canalizados||0);
+          const dDulce=(c.canaliz_dulce||0);
+          const dManuel=(c.canaliz_manuel||0);
           const isT=f===todayLocal();
           const cell=(v,col)=>`<td style="text-align:center;${col&&v>0?'color:'+col+';font-weight:600;':''}">${v>0?v:'—'}</td>`;
           return `<tr class="${isT?'today-row':''}">
@@ -5084,7 +5080,12 @@ async function saveTeleRegistro(fecha,llamadasAuto,canalizadosAuto,llamadasCartA
       canaliz_manuel:parseInt(document.getElementById('crmCanalizManuel')?.value)||0,
       updated_at:new Date().toISOString()
     };
-    await sb.from('llamadas_crm_directas').upsert(crmPayload,{onConflict:'usuario_id,fecha'});
+    const {error:crmError}=await sb.from('llamadas_crm_directas').upsert(crmPayload,{onConflict:'usuario_id,fecha'});
+    if(crmError){
+      btn.disabled=false;btn.textContent='💾 Guardar registro';
+      msg.style.color='var(--red)';msg.textContent='Error al guardar llamadas CRM: '+crmError.message;
+      return;
+    }
   }
   btn.disabled=false;btn.textContent='💾 Guardar registro';
   if(error){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}
@@ -5150,22 +5151,17 @@ async function renderTeleHistorico(){
     }
   });
   merged.sort((a,b)=>a.fecha<b.fecha?1:-1);
-  // Lógica de fallback: columnas "display" que combinan CRM (si hay) o campos viejos
+  // Columnas "display": SUMAN los datos CRM (nuevos) + campos viejos de registros_diarios
   merged.forEach(r=>{
-    const tieneCRM=(r._crmTotal||0)>0||(r._crmEfectivas||0)>0||r._crmCampana;
-    if(tieneCRM){
-      r._dTotal=r._crmTotal||0; r._dEfectivas=r._crmEfectivas||0;
-      r._dNoContesto=r._crmNoContesto||0; r._dBuzon=r._crmBuzon||0;
-      r._dInteresado=r._crmInteresado||0; r._dCanalizado=r._crmCanalizado||0;
-      r._dDulce=r._crmDulce||0; r._dManuel=r._crmManuel||0; r._dCampana=r._crmCampana||'';
-    } else {
-      // Fallback a campos viejos de registros_diarios
-      r._dTotal=0; // el campo viejo no tenía total
-      r._dEfectivas=r.llamadas_efectivas||0;
-      r._dNoContesto=0; r._dBuzon=0; r._dInteresado=0;
-      r._dCanalizado=r.prospectos_canalizados||0;
-      r._dDulce=0; r._dManuel=0; r._dCampana='';
-    }
+    r._dTotal=(r._crmTotal||0);
+    r._dEfectivas=(r._crmEfectivas||0)+(r.llamadas_efectivas||0);
+    r._dNoContesto=(r._crmNoContesto||0);
+    r._dBuzon=(r._crmBuzon||0);
+    r._dInteresado=(r._crmInteresado||0);
+    r._dCanalizado=(r._crmCanalizado||0)+(r.prospectos_canalizados||0);
+    r._dDulce=(r._crmDulce||0);
+    r._dManuel=(r._crmManuel||0);
+    r._dCampana=r._crmCampana||'';
   });
   window._teleHistRows=merged;
   renderTeleHistTabla();
