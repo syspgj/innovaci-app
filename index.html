@@ -3420,35 +3420,54 @@ async function reporteAnualPersona(userId, nombre, rol){
     .gte('fecha',`${currentYear}-01-01`).lte('fecha',`${currentYear}-12-31`)
     .order('fecha',{ascending:true});
   const rows=regs||[];
+  // Para telemarketing: cargar llamadas_crm_directas del año
+  let crmYear=[];
+  if(esTele){
+    const {data:crmData}=await sb.from('llamadas_crm_directas').select('*')
+      .eq('usuario_id',userId)
+      .gte('fecha',`${currentYear}-01-01`).lte('fecha',`${currentYear}-12-31`);
+    crmYear=crmData||[];
+  }
   // Agrupar por mes
   const porMes=Array.from({length:13},()=>({}));
   const acum=(m,k,v)=>{porMes[m][k]=(porMes[m][k]||0)+(v||0);};
-  rows.forEach(r=>{
-    const m=parseInt(r.fecha.split('-')[1]);
-    if(esTele){
-      acum(m,'llEf',r.llamadas_efectivas); acum(m,'llPros',r.llamadas_prospeccion);
-      acum(m,'llSeg',r.llamadas_seguimiento); acum(m,'pros',r.prospectos_canalizados);
-      acum(m,'conf',r.confirmaciones_evento); acum(m,'segPost',r.seguimientos_post);
-      acum(m,'crm',r.crm_actualizaciones); acum(m,'curTele',r.venta_cursos_tele);
-      acum(m,'sf',r.siigo_fiscal);
-    } else {
+  if(esTele){
+    // Días con actividad de llamadas (para promedios)
+    const diasCrmPorMes=Array.from({length:13},()=>new Set());
+    crmYear.forEach(c=>{
+      const m=parseInt(c.fecha.split('-')[1]);
+      const efectivas=(c.interesado||0)+(c.no_le_interesa||0)+(c.volver_llamar||0)+(c.registrado_taller||0)+(c.canalizado_ventas||0);
+      acum(m,'total',c.total_llamadas); acum(m,'efect',efectivas);
+      acum(m,'noContesto',c.no_contesto); acum(m,'buzon',c.buzon);
+      acum(m,'interesado',c.interesado); acum(m,'canalizado',c.canalizado_ventas);
+      acum(m,'dulce',c.canaliz_dulce); acum(m,'manuel',c.canaliz_manuel);
+      acum(m,'regTaller',c.registrado_taller);
+      if(c.total_llamadas>0) diasCrmPorMes[m].add(c.fecha);
+    });
+    // Cursos 24/7 y siigo de registros_diarios
+    rows.forEach(r=>{const m=parseInt(r.fecha.split('-')[1]);acum(m,'curTele',r.venta_cursos_tele);acum(m,'sf',r.siigo_fiscal);});
+    for(let m=1;m<=12;m++){porMes[m].diasAct=diasCrmPorMes[m].size;}
+  } else {
+    rows.forEach(r=>{
+      const m=parseInt(r.fecha.split('-')[1]);
       acum(m,'svc',r.svc); acum(m,'aspel',r.aspel); acum(m,'it',r.it);
       acum(m,'demos',r.demos); acum(m,'val',r.valoraciones); acum(m,'cn',r.clientes_nuevos);
       acum(m,'sf',r.siigo_fiscal); acum(m,'cotiz',r.cotizaciones); acum(m,'montoCotiz',r.monto_cotizaciones);
-    }
-    acum(m,'dias',1);
-  });
+      acum(m,'dias',1);
+    });
+  }
   // Métricas del año (totales)
   const metricas=esTele?[
-    {h:'Llamadas efectivas',k:'llEf',money:false},
-    {h:'Llamadas prospección',k:'llPros',money:false},
-    {h:'Llamadas seguimiento',k:'llSeg',money:false},
-    {h:'Prospectos canalizados',k:'pros',money:false},
-    {h:'Confirmaciones evento',k:'conf',money:false},
-    {h:'Seguimientos post',k:'segPost',money:false},
-    {h:'Actualizaciones CRM',k:'crm',money:false},
+    {h:'Total llamadas',k:'total',money:false},
+    {h:'Llamadas efectivas',k:'efect',money:false},
+    {h:'No contestó',k:'noContesto',money:false},
+    {h:'Buzón',k:'buzon',money:false},
+    {h:'Interesados',k:'interesado',money:false},
+    {h:'Registrados taller',k:'regTaller',money:false},
+    {h:'Canalizados',k:'canalizado',money:false},
+    {h:'→ Dulce',k:'dulce',money:false},
+    {h:'→ Manuel',k:'manuel',money:false},
     {h:'Venta cursos 24/7',k:'curTele',money:true},
-    {h:'Siigo Fiscal',k:'sf',money:false},
   ]:[
     {h:'Servicios',k:'svc',money:true},{h:'Aspel',k:'aspel',money:true},{h:'IT',k:'it',money:true},
     {h:'Demos',k:'demos',money:false},{h:'Valoraciones',k:'val',money:false},
@@ -3458,11 +3477,34 @@ async function reporteAnualPersona(userId, nombre, rol){
   const totalAnual={};
   metricas.forEach(mt=>{totalAnual[mt.k]=porMes.reduce((s,mm)=>s+(mm[mt.k]||0),0);});
   const MESN=['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
-  const mesesConDatos=porMes.map((m,i)=>i>0&&(m.dias>0)?i:null).filter(Boolean);
+  const mesesConDatos=porMes.map((m,i)=>i>0&&((esTele?m.diasAct:m.dias)>0)?i:null).filter(Boolean);
 
   // Métrica principal para la gráfica
-  const metricaPrincipal=esTele?'llEf':'svc';
-  const nombreMetrica=esTele?'Llamadas efectivas':'Servicios';
+  const metricaPrincipal=esTele?'total':'svc';
+  const nombreMetrica=esTele?'Total de llamadas':'Servicios';
+
+  // Métricas de rendimiento (solo telemarketing)
+  let panelRendimiento='';
+  if(esTele){
+    const totalDiasAct=porMes.reduce((s,m)=>s+(m.diasAct||0),0);
+    const totLlam=totalAnual.total, totEf=totalAnual.efect, totCanaliz=totalAnual.canalizado;
+    const promLlamDia=totalDiasAct>0?Math.round(totLlam/totalDiasAct):0;
+    const promEfDia=totalDiasAct>0?Math.round(totEf/totalDiasAct):0;
+    const pctEfect=totLlam>0?Math.round(totEf/totLlam*100):0;
+    const diasPorCanaliz=totCanaliz>0?(totalDiasAct/totCanaliz).toFixed(1):'—';
+    // Mejor mes por efectividad
+    let mejorMes='—',mejorPct=0;
+    for(let m=1;m<=12;m++){const t=porMes[m].total||0,e=porMes[m].efect||0;if(t>0){const p=e/t*100;if(p>mejorPct){mejorPct=p;mejorMes=MESN[m];}}}
+    panelRendimiento=`
+    <div class="shead">Indicadores de rendimiento</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:20px;">
+      <div class="thc" style="border:1px solid rgba(139,92,246,0.3);"><div class="th-lbl">Prom. llamadas/día</div><div class="th-val" style="color:#8B5CF6;">${promLlamDia}</div><div style="font-size:9px;color:var(--text3);">${totalDiasAct} días activos</div></div>
+      <div class="thc" style="border:1px solid rgba(39,174,96,0.3);"><div class="th-lbl">Prom. efectivas/día</div><div class="th-val" style="color:#27AE60;">${promEfDia}</div><div style="font-size:9px;color:var(--text3);">contestadas por día</div></div>
+      <div class="thc" style="border:1px solid rgba(0,169,157,0.3);"><div class="th-lbl">% Efectividad</div><div class="th-val" style="color:${pctEfect>=50?'#27AE60':pctEfect>=30?'#F5A623':'#E84040'};">${pctEfect}%</div><div style="font-size:9px;color:var(--text3);">efectivas / total</div></div>
+      <div class="thc" style="border:1px solid rgba(245,166,35,0.3);"><div class="th-lbl">Días por canalización</div><div class="th-val" style="color:#F5A623;">${diasPorCanaliz}</div><div style="font-size:9px;color:var(--text3);">1 canalizado cada X días</div></div>
+      <div class="thc"><div class="th-lbl">Mejor mes (efectividad)</div><div class="th-val" style="color:var(--navy);font-size:18px;">${mejorMes}</div><div style="font-size:9px;color:var(--text3);">${Math.round(mejorPct)}% efectivas</div></div>
+    </div>`;
+  }
 
   mc.innerHTML=`
   <div id="reporteAnual">
@@ -3485,6 +3527,8 @@ async function reporteAnualPersona(userId, nombre, rol){
       <div class="th-val" style="font-size:18px;color:${mt.money?'var(--teal)':'var(--navy)'};">${mt.money?fmt(totalAnual[mt.k]):totalAnual[mt.k].toLocaleString('es-MX')}</div>
     </div>`).join('')}
   </div>
+
+  ${panelRendimiento}
 
   <!-- Gráfica de evolución -->
   <div class="shead">Evolución mensual — ${nombreMetrica}</div>
@@ -3627,25 +3671,68 @@ async function verRegistrosVendedor(userId, nombre, rol){
     .select('*').eq('usuario_id',userId)
     .gte('fecha',desde).lte('fecha',hasta)
     .order('fecha',{ascending:true});
-  const rows=regs||[];
+  let rows=regs||[];
+  // Para telemarketing: cruzar con llamadas_crm_directas por fecha
+  if(esTele){
+    const {data:crmData}=await sb.from('llamadas_crm_directas')
+      .select('*').eq('usuario_id',userId)
+      .gte('fecha',desde).lte('fecha',hasta);
+    const crmPorFecha={};
+    (crmData||[]).forEach(c=>{crmPorFecha[c.fecha]=c;});
+    // Merge: agregar campos CRM a cada registro (y crear filas para fechas que solo tienen CRM)
+    const fechasReg=new Set(rows.map(r=>r.fecha));
+    rows.forEach(r=>{
+      const c=crmPorFecha[r.fecha];
+      if(c){
+        r._crmTotal=c.total_llamadas||0;
+        r._crmNoContesto=c.no_contesto||0; r._crmBuzon=c.buzon||0;
+        r._crmInteresado=c.interesado||0; r._crmNoInteresa=c.no_le_interesa||0;
+        r._crmVolver=c.volver_llamar||0; r._crmRegTaller=c.registrado_taller||0;
+        r._crmCanalizado=c.canalizado_ventas||0;
+        r._crmDulce=c.canaliz_dulce||0; r._crmManuel=c.canaliz_manuel||0;
+        r._crmCampana=c.campana_nombre||'';
+        // efectivas = contestadas (todo menos no contestó y buzón)
+        r._crmEfectivas=(c.interesado||0)+(c.no_le_interesa||0)+(c.volver_llamar||0)+(c.registrado_taller||0)+(c.canalizado_ventas||0);
+      }
+    });
+    // Fechas que solo tienen CRM (sin registro diario)
+    (crmData||[]).forEach(c=>{
+      if(!fechasReg.has(c.fecha)){
+        rows.push({
+          id:'crm_'+c.id, fecha:c.fecha, usuario_id:userId, auditado:false,
+          _crmTotal:c.total_llamadas||0, _crmNoContesto:c.no_contesto||0, _crmBuzon:c.buzon||0,
+          _crmInteresado:c.interesado||0, _crmNoInteresa:c.no_le_interesa||0, _crmVolver:c.volver_llamar||0,
+          _crmRegTaller:c.registrado_taller||0, _crmCanalizado:c.canalizado_ventas||0,
+          _crmDulce:c.canaliz_dulce||0, _crmManuel:c.canaliz_manuel||0, _crmCampana:c.campana_nombre||'',
+          _crmEfectivas:(c.interesado||0)+(c.no_le_interesa||0)+(c.volver_llamar||0)+(c.registrado_taller||0)+(c.canalizado_ventas||0),
+          _soloCRM:true
+        });
+      }
+    });
+    rows.sort((a,b)=>a.fecha<b.fecha?-1:1);
+  }
   const auditados=rows.filter(r=>r.auditado).length;
   const pendientes=rows.length-auditados;
   const cols=esTele?[
-    {h:'Ll. efectivas',k:'llamadas_efectivas',money:false},
-    {h:'Ll. prospección',k:'llamadas_prospeccion',money:false},
-    {h:'Ll. seguim.',k:'llamadas_seguimiento',money:false},
-    {h:'Prosp. canaliz.',k:'prospectos_canalizados',money:false},
-    {h:'Confirm.',k:'confirmaciones_evento',money:false},
-    {h:'Seguim. post',k:'seguimientos_post',money:false},
-    {h:'CRM',k:'crm_actualizaciones',money:false},
-    {h:'Cursos 24/7 ($)',k:'venta_cursos_tele',money:true},
-    {h:'Siigo F.',k:'siigo_fiscal',money:false},
+    {h:'Campaña',k:'_crmCampana',money:false,text:true},
+    {h:'Total llam.',k:'_crmTotal',money:false},
+    {h:'Efectivas',k:'_crmEfectivas',money:false},
+    {h:'% Efect.',k:'_pctEfect',money:false,pct:true},
+    {h:'No contestó',k:'_crmNoContesto',money:false},
+    {h:'Buzón',k:'_crmBuzon',money:false},
+    {h:'Interesado',k:'_crmInteresado',money:false},
+    {h:'Canaliz.',k:'_crmCanalizado',money:false},
+    {h:'→Dulce',k:'_crmDulce',money:false},
+    {h:'→Manuel',k:'_crmManuel',money:false},
+    {h:'Cursos 24/7',k:'venta_cursos_tele',money:true},
   ]:[
     {h:'Servicios',k:'svc',money:true},{h:'Aspel',k:'aspel',money:true},{h:'IT',k:'it',money:true},
     {h:'Demos',k:'demos',money:false},{h:'Val.',k:'valoraciones',money:false},
     {h:'Clientes',k:'clientes_nuevos',money:false},{h:'Siigo',k:'siigo_fiscal',money:false},
     {h:'Sus.',k:'suscripciones',money:false},{h:'Cursos Vivo',k:'talleres_vivo',money:true},
   ];
+  // Calcular % efectividad por fila
+  if(esTele){rows.forEach(r=>{r._pctEfect=(r._crmTotal>0)?Math.round((r._crmEfectivas/r._crmTotal)*100):0;});}
   window._auditCols=cols;
 
   mc.innerHTML=`
@@ -3675,7 +3762,11 @@ async function verRegistrosVendedor(userId, nombre, rol){
     <tfoot>
       <tr style="background:var(--surface-2,#f4f6f8);font-weight:700;font-size:11px;">
         <td style="padding:8px 10px;color:var(--text);">TOTAL</td>
-        ${cols.map(c=>{const sum=rows.reduce((s,r)=>s+(r[c.k]||0),0);return `<td style="padding:8px 10px;text-align:${c.money?'right':'center'};color:${c.k==='svc'?'var(--teal)':'inherit'};">${c.money?fmt(sum):sum}</td>`;}).join('')}
+        ${cols.map(c=>{
+          if(c.text)return `<td style="padding:8px 10px;"></td>`;
+          if(c.pct){const totEf=rows.reduce((s,r)=>s+(r._crmEfectivas||0),0);const totTot=rows.reduce((s,r)=>s+(r._crmTotal||0),0);const p=totTot>0?Math.round(totEf/totTot*100):0;return `<td style="padding:8px 10px;text-align:center;font-weight:700;color:${p>=50?'#27AE60':p>=30?'#F5A623':'#E84040'};">${totTot>0?p+'%':'—'}</td>`;}
+          const sum=rows.reduce((s,r)=>s+(r[c.k]||0),0);return `<td style="padding:8px 10px;text-align:${c.money?'right':'center'};color:${c.k==='svc'?'var(--teal)':'inherit'};">${c.money?fmt(sum):sum}</td>`;
+        }).join('')}
         <td colspan="2"></td>
       </tr>
     </tfoot>
@@ -3692,7 +3783,12 @@ function filaAuditoria(r,cols){cols=cols||window._auditCols||[];
       ${r.fecha}${esHoy?'<span style="font-size:10px;color:var(--teal);margin-left:4px;">HOY</span>':''}
       ${r.updated_at&&r.updated_at!==r.created_at?'<div style="font-size:9px;color:var(--text3);">✏️ editado</div>':''}
     </td>
-    ${(cols||[]).map(c=>{const v=r[c.k]||0;return `<td style="padding:7px 10px;text-align:${c.money?'right':'center'};color:${v>0&&c.k==='svc'?'var(--teal)':v>0?'var(--text)':'var(--text3)'};">${v>0?(c.money?fmt(v):v):'—'}</td>`;}).join('')}
+    ${(cols||[]).map(c=>{
+      if(c.text){const v=r[c.k]||'';return `<td style="padding:7px 10px;text-align:left;font-size:10px;color:var(--text2);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${v||'—'}</td>`;}
+      const v=r[c.k]||0;
+      if(c.pct){return `<td style="padding:7px 10px;text-align:center;font-family:'JetBrains Mono',monospace;color:${v>=50?'#27AE60':v>=30?'#F5A623':v>0?'#E84040':'var(--text3)'};font-weight:600;">${r._crmTotal>0?v+'%':'—'}</td>`;}
+      return `<td style="padding:7px 10px;text-align:${c.money?'right':'center'};color:${v>0&&c.k==='svc'?'var(--teal)':v>0?'var(--text)':'var(--text3)'};">${v>0?(c.money?fmt(v):v):'—'}</td>`;
+    }).join('')}
     <td style="padding:7px 10px;text-align:center;">
       ${auditado
         ?`<div style="font-size:10px;color:#27AE60;font-weight:600;">✅ Auditado</div>
@@ -3735,7 +3831,7 @@ async function editarRegistroDir(registroId, userId){
   modal.id='modalEditReg';
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;';
   modal.innerHTML=`
-  <div style="background:var(--surface);border-radius:var(--rad);padding:24px;max-width:520px;width:100%;max-height:90vh;overflow-y:auto;">
+  <div style="background:var(--surface);border-radius:var(--rad);padding:24px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
       <div>
         <div style="font-size:15px;font-weight:700;color:var(--text);">✏️ Editar registro</div>
@@ -3754,7 +3850,7 @@ async function editarRegistroDir(registroId, userId){
       <div class="form-field"><label>Cursos en Vivo ($)</label><div class="prefix"><input type="number" id="erCurVivo" value="${r.talleres_vivo||0}" step="0.01"></div></div>
     </div>
     <div class="shead">Actividades</div>
-    <div class="form-grid" style="margin-bottom:12px;">
+    <div class="form-grid fg3" style="margin-bottom:12px;">
       <div class="form-field"><label>Clientes nuevos</label><input type="number" id="erCn" value="${r.clientes_nuevos||0}"></div>
       <div class="form-field"><label>Demos</label><input type="number" id="erDemos" value="${r.demos||0}"></div>
       <div class="form-field"><label>Valoraciones</label><input type="number" id="erVal" value="${r.valoraciones||0}"></div>
@@ -3766,7 +3862,7 @@ async function editarRegistroDir(registroId, userId){
       <div class="form-field"><label>Monto cotizaciones ($)</label><div class="prefix"><input type="number" id="erCotM" value="${r.monto_cotizaciones||0}" step="0.01"></div></div>
     </div>
     <div class="shead">Negociaciones abiertas</div>
-    <div class="form-grid" style="margin-bottom:12px;">
+    <div class="form-grid fg3" style="margin-bottom:12px;">
       <div class="form-field"><label>Clientes # negs.</label><input type="number" id="erNegCN" value="${r.neg_clientes_num||0}"></div>
       <div class="form-field"><label>Clientes monto est.</label><div class="prefix"><input type="number" id="erNegCM" value="${r.neg_clientes_monto||0}" step="0.01"></div></div>
       <div class="form-field"><label>Prospectos # negs.</label><input type="number" id="erNegPN" value="${r.neg_prospectos_num||0}"></div>
