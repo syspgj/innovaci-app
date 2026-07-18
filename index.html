@@ -3750,6 +3750,10 @@ async function verRegistrosVendedor(userId, nombre, rol){
     r._pctEfect=(r._dTotal>0)?Math.round((r._dEfectivas/r._dTotal)*100):0;
   });}
   window._auditCols=cols;
+  window._auditEsTele=esTele;
+  window._auditUserId=userId;
+  window._auditNombre=nombre;
+  window._auditRol=rol;
 
   mc.innerHTML=`
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
@@ -3813,7 +3817,7 @@ function filaAuditoria(r,cols){cols=cols||window._auditCols||[];
         :`<span style="font-size:10px;color:#F5A623;font-weight:600;">⏳ Pendiente</span>`}
     </td>
     <td style="padding:7px 10px;text-align:center;white-space:nowrap;">
-      <button onclick="editarRegistroDir('${r.id}','${r.usuario_id}')"
+      <button onclick="editarRegistroDir('${r.id}','${r.usuario_id}','${r.fecha}')"
         style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:3px 8px;font-size:11px;cursor:pointer;color:var(--text2);margin-right:4px;">✏️</button>
       <button onclick="toggleAuditado('${r.id}',${auditado})"
         style="background:${auditado?'rgba(39,174,96,0.1)':'var(--navy)'};color:${auditado?'#27AE60':'#fff'};border:1px solid ${auditado?'rgba(39,174,96,0.3)':'transparent'};border-radius:var(--radsm);padding:3px 10px;font-size:11px;cursor:pointer;font-weight:600;">
@@ -3841,7 +3845,10 @@ async function toggleAuditado(registroId, esAuditado){
   // Simple approach: refresh the view
 }
 
-async function editarRegistroDir(registroId, userId){
+async function editarRegistroDir(registroId, userId, fecha){
+  if(window._auditEsTele){
+    return editarRegistroDirTele(userId, fecha);
+  }
   const {data:r}=await sb.from('registros_diarios').select('*').eq('id',registroId).single();
   if(!r) return;
   const modal=document.createElement('div');
@@ -3931,6 +3938,139 @@ async function guardarEdicionDir(){
     const row=document.getElementById('arow_'+id);
     if(row) row.outerHTML=filaAuditoria(r,window._auditCols);
   }
+}
+
+async function editarRegistroDirTele(userId, fecha){
+  const [{data:r},{data:crm},{data:campProsp},{data:campCart}]=await Promise.all([
+    sb.from('registros_diarios').select('*').eq('usuario_id',userId).eq('fecha',fecha).maybeSingle(),
+    sb.from('llamadas_crm_directas').select('*').eq('usuario_id',userId).eq('fecha',fecha).maybeSingle(),
+    sb.from('campanas').select('id,nombre').order('nombre'),
+    sb.from('campanas_cartera').select('id,nombre').order('nombre')
+  ]);
+  const reg=r||{};
+  const c=crm||{};
+  const opcionesCamp=[
+    ...(campProsp||[]).map(x=>({tipo:'prospecto',id:x.id,nombre:x.nombre})),
+    ...(campCart||[]).map(x=>({tipo:'cartera',id:x.id,nombre:x.nombre}))
+  ];
+  const modal=document.createElement('div');
+  modal.id='modalEditReg';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  modal.innerHTML=`
+  <div style="background:var(--surface);border-radius:var(--rad);padding:24px;max-width:900px;width:100%;max-height:90vh;overflow-y:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div>
+        <div style="font-size:15px;font-weight:700;color:var(--text);">✏️ Editar registro — ${window._auditNombre||''}</div>
+        <div style="font-size:12px;color:var(--text3);">${fecha}</div>
+      </div>
+      <button onclick="document.getElementById('modalEditReg').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);">✕</button>
+    </div>
+    <input type="hidden" id="erUserId" value="${userId}">
+    <input type="hidden" id="erFecha" value="${fecha}">
+    <div class="shead">Telemarketing</div>
+    <div class="form-grid fg3" style="margin-bottom:12px;">
+      <div class="form-field"><label>Llamadas efectivas</label><input type="number" id="erLlam" value="${reg.llamadas_efectivas||0}" min="0"></div>
+      <div class="form-field"><label>Prospectos canalizados a ventas</label><input type="number" id="erPros" value="${reg.prospectos_canalizados||0}" min="0"></div>
+      <div class="form-field"><label>Llamadas a cartera de clientes</label><input type="number" id="erLlamCart" value="${reg.llamadas_cartera||0}" min="0"></div>
+      <div class="form-field"><label>Confirmaciones a evento</label><input type="number" id="erConf" value="${reg.confirmaciones_evento||0}" min="0"></div>
+      <div class="form-field"><label>Seguimientos post-evento</label><input type="number" id="erSeg" value="${reg.seguimientos_post||0}" min="0"></div>
+    </div>
+    <div class="shead">Ventas directas</div>
+    <div class="form-grid fg3" style="margin-bottom:12px;">
+      <div class="form-field"><label>Venta Cursos 24/7 / Membresías ($)</label><div class="prefix"><input type="number" id="erCurTele" value="${reg.venta_cursos_tele||0}" step="0.01"></div></div>
+      <div class="form-field"><label>Siigo Fiscal cerrados</label><input type="number" id="erSiigo" value="${reg.siigo_activaciones||0}" min="0"></div>
+      <div class="form-field"><label>Renovaciones Aspel</label><input type="number" id="erRen" value="${reg.renovaciones||0}" min="0"></div>
+    </div>
+    <div class="shead">Gestión de cuentas</div>
+    <div class="form-grid" style="margin-bottom:12px;">
+      <div class="form-field"><label>Actualización cuentas CRM</label><input type="number" id="erCrm" value="${reg.crm_actualizaciones||0}" min="0"></div>
+    </div>
+    <div class="shead">📞 Llamadas directas de CRM</div>
+    <div style="font-size:11px;color:var(--text3);margin:-4px 0 10px 2px;">Una campaña por día.</div>
+    <div class="form-grid" style="margin-bottom:12px;">
+      <div class="form-field"><label>Campaña</label>
+        <select id="erCrmCampana" onchange="(function(){const o=document.getElementById('erCrmCampana').selectedOptions[0];document.getElementById('erCrmCampanaTipo').value=o?.dataset.tipo||'';document.getElementById('erCrmCampanaNombre').value=o?.textContent||'';})()">
+          <option value="">-- Selecciona campaña --</option>
+          ${opcionesCamp.map(x=>`<option value="${x.id}" data-tipo="${x.tipo}" ${c.campana_id===x.id?'selected':''}>${x.nombre} (${x.tipo==='cartera'?'Cartera':'Tele'})</option>`).join('')}
+        </select>
+        <input type="hidden" id="erCrmCampanaTipo" value="${c.campana_tipo||''}">
+        <input type="hidden" id="erCrmCampanaNombre" value="${c.campana_nombre||''}">
+      </div>
+      <div class="form-field"><label>Total de llamadas realizadas</label><input type="number" id="erCrmTotal" value="${c.total_llamadas||0}" min="0"></div>
+    </div>
+    <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;margin:10px 0 6px 2px;">Desglose por resultado</div>
+    <div class="form-grid fg3" style="margin-bottom:12px;">
+      <div class="form-field"><label>📞 No contestó</label><input type="number" id="erCrmNoContesto" value="${c.no_contesto||0}" min="0"></div>
+      <div class="form-field"><label>📵 Buzón</label><input type="number" id="erCrmBuzon" value="${c.buzon||0}" min="0"></div>
+      <div class="form-field"><label>✅ Interesado</label><input type="number" id="erCrmInteresado" value="${c.interesado||0}" min="0"></div>
+      <div class="form-field"><label>❌ No le interesa</label><input type="number" id="erCrmNoInteresa" value="${c.no_le_interesa||0}" min="0"></div>
+      <div class="form-field"><label>🔄 Volver a llamar</label><input type="number" id="erCrmVolver" value="${c.volver_llamar||0}" min="0"></div>
+      <div class="form-field"><label>🎫 Registrado al taller</label><input type="number" id="erCrmRegTaller" value="${c.registrado_taller||0}" min="0"></div>
+    </div>
+    <div class="form-grid" style="margin-bottom:12px;">
+      <div class="form-field"><label>💼 Canalizado a ventas</label><input type="number" id="erCrmCanalizado" value="${c.canalizado_ventas||0}" min="0"></div>
+    </div>
+    <div class="form-grid" style="background:var(--teal-bg);border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+      <div class="form-field"><label>→ Canalizadas a Dulce</label><input type="number" id="erCrmDulce" value="${c.canaliz_dulce||0}" min="0"></div>
+      <div class="form-field"><label>→ Canalizadas a Manuel</label><input type="number" id="erCrmManuel" value="${c.canaliz_manuel||0}" min="0"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:8px;">
+      <button onclick="guardarEdicionDirTele()" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💾 Guardar cambios</button>
+      <button onclick="document.getElementById('modalEditReg').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);">Cancelar</button>
+    </div>
+    <div class="save-msg" id="erMsg"></div>
+  </div>`;
+  document.getElementById('modalEditReg')?.remove();
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
+}
+
+async function guardarEdicionDirTele(){
+  const userId=document.getElementById('erUserId').value;
+  const fecha=document.getElementById('erFecha').value;
+  const msg=document.getElementById('erMsg');
+  const payload={
+    usuario_id:userId, fecha,
+    llamadas_efectivas:parseInt(document.getElementById('erLlam').value)||0,
+    prospectos_canalizados:parseInt(document.getElementById('erPros').value)||0,
+    llamadas_cartera:parseInt(document.getElementById('erLlamCart').value)||0,
+    confirmaciones_evento:parseInt(document.getElementById('erConf').value)||0,
+    seguimientos_post:parseInt(document.getElementById('erSeg').value)||0,
+    venta_cursos_tele:parseFloat(document.getElementById('erCurTele').value)||0,
+    siigo_activaciones:parseInt(document.getElementById('erSiigo').value)||0,
+    renovaciones:parseInt(document.getElementById('erRen').value)||0,
+    crm_actualizaciones:parseInt(document.getElementById('erCrm').value)||0,
+    updated_at:new Date().toISOString(),
+    auditado:false, auditado_por:null, auditado_at:null,
+  };
+  const {error}=await sb.from('registros_diarios').upsert(payload,{onConflict:'usuario_id,fecha'});
+  if(error){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;return;}
+
+  const crmCampanaId=document.getElementById('erCrmCampana')?.value;
+  if(crmCampanaId){
+    const crmPayload={
+      usuario_id:userId, fecha,
+      campana_tipo:document.getElementById('erCrmCampanaTipo')?.value||null,
+      campana_id:crmCampanaId,
+      campana_nombre:document.getElementById('erCrmCampanaNombre')?.value||null,
+      total_llamadas:parseInt(document.getElementById('erCrmTotal').value)||0,
+      no_contesto:parseInt(document.getElementById('erCrmNoContesto').value)||0,
+      buzon:parseInt(document.getElementById('erCrmBuzon').value)||0,
+      interesado:parseInt(document.getElementById('erCrmInteresado').value)||0,
+      no_le_interesa:parseInt(document.getElementById('erCrmNoInteresa').value)||0,
+      volver_llamar:parseInt(document.getElementById('erCrmVolver').value)||0,
+      registrado_taller:parseInt(document.getElementById('erCrmRegTaller').value)||0,
+      canalizado_ventas:parseInt(document.getElementById('erCrmCanalizado').value)||0,
+      canaliz_dulce:parseInt(document.getElementById('erCrmDulce').value)||0,
+      canaliz_manuel:parseInt(document.getElementById('erCrmManuel').value)||0,
+      updated_at:new Date().toISOString()
+    };
+    const {error:crmError}=await sb.from('llamadas_crm_directas').upsert(crmPayload,{onConflict:'usuario_id,fecha'});
+    if(crmError){msg.style.color='var(--red)';msg.textContent='Error al guardar llamadas CRM: '+crmError.message;return;}
+  }
+  document.getElementById('modalEditReg')?.remove();
+  // Refrescar toda la vista para recalcular columnas fusionadas (CRM + registros)
+  await verRegistrosVendedor(window._auditUserId, window._auditNombre, window._auditRol);
 }
 
 async function renderDirectorKpis(){
