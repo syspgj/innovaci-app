@@ -1090,9 +1090,11 @@ async function renderRegistroForm(fechaSel){
     <div class="shead">Ventas</div>
     <div class="form-grid fg3">
       <div class="form-field"><label>Servicios ($)</label><div class="prefix"><input type="number" id="fSvc" value="${r.svc||''}" placeholder="0.00" min="0" step="0.01"></div></div>
+      <div class="form-field"><label># Ventas de servicio cerradas</label><input type="number" id="fVentasSvc" value="${r.ventas_servicio_num||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Aspel ($)</label><div class="prefix"><input type="number" id="fAspel" value="${r.aspel||''}" placeholder="0.00" min="0" step="0.01"></div></div>
       <div class="form-field"><label>IT ($)</label><div class="prefix"><input type="number" id="fIt" value="${r.it||''}" placeholder="0.00" min="0" step="0.01"></div></div>
     </div>
+    <div style="font-size:11px;color:var(--text3);margin:4px 0 0 2px;">"# Ventas de servicio cerradas" solo cuenta cierres de <strong>servicios</strong> (no Aspel/IT) — se usa para calcular tu ticket promedio y tasa de conversión.</div>
     <div class="form-grid fg3" style="margin-top:10px;">
       <div class="form-field"><label>Diplomados ($)</label><div class="prefix"><input type="number" id="fDip" value="${r.diplomados||''}" placeholder="0.00" min="0" step="0.01"></div></div>
       <div class="form-field"><label>Monto cotizaciones ($)</label><div class="prefix"><input type="number" id="fCotMonto" value="${r.monto_cotizaciones||''}" placeholder="0.00" min="0" step="0.01"></div></div>
@@ -1191,6 +1193,7 @@ async function saveRegistro(fecha,existingId){
   const payload={
     usuario_id:currentUser.id,fecha,
     svc:Math.round(parseFloat(document.getElementById('fSvc').value)||0),
+    ventas_servicio_num:parseInt(document.getElementById('fVentasSvc').value)||0,
     aspel:Math.round(parseFloat(document.getElementById('fAspel').value)||0),
     it:Math.round(parseFloat(document.getElementById('fIt').value)||0),
     diplomados:Math.round(parseFloat(document.getElementById('fDip').value)||0),
@@ -3130,16 +3133,41 @@ async function renderDirectorResumen(){
     }
   });
   window._canalizadosDetalle=canalizadosDetalle;
+  // Sumar también las canalizaciones MANUALES que Joshua (telemarketing) registra
+  // en "Llamadas directas de CRM" (→Dulce / →Manuel), que no pasan por prospecto_llamadas
+  const desdeMesCanaliz=`${currentYear}-${String(currentMonth).padStart(2,'0')}-01`;
+  const lastDayCanaliz=new Date(currentYear,currentMonth,0).getDate();
+  const hastaMesCanaliz=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(lastDayCanaliz).padStart(2,'0')}`;
+  const {data:crmCanalizMes}=await sb.from('llamadas_crm_directas')
+    .select('fecha,canaliz_dulce,canaliz_manuel')
+    .gte('fecha',desdeMesCanaliz).lte('fecha',hastaMesCanaliz);
+  const dulceUser=vendedoresRes.find(u=>u.email.toLowerCase().includes('dulce'));
+  const manuelUser=vendedoresRes.find(u=>u.email.toLowerCase().includes('manuel'));
+  (crmCanalizMes||[]).forEach(c=>{
+    if((c.canaliz_dulce||0)>0&&dulceUser){
+      canalizadosPorVendedorMes[dulceUser.id]=(canalizadosPorVendedorMes[dulceUser.id]||0)+c.canaliz_dulce;
+      if(!canalizadosDetalle[dulceUser.id]) canalizadosDetalle[dulceUser.id]=[];
+      const [y,m,d]=c.fecha.split('-');
+      canalizadosDetalle[dulceUser.id].push({nombre:`📞 ${c.canaliz_dulce} canalización(es) manual(es) de Joshua (CRM)`,fecha:`${d}/${m}`});
+    }
+    if((c.canaliz_manuel||0)>0&&manuelUser){
+      canalizadosPorVendedorMes[manuelUser.id]=(canalizadosPorVendedorMes[manuelUser.id]||0)+c.canaliz_manuel;
+      if(!canalizadosDetalle[manuelUser.id]) canalizadosDetalle[manuelUser.id]=[];
+      const [y,m,d]=c.fecha.split('-');
+      canalizadosDetalle[manuelUser.id].push({nombre:`📞 ${c.canaliz_manuel} canalización(es) manual(es) de Joshua (CRM)`,fecha:`${d}/${m}`});
+    }
+  });
+  window._canalizadosDetalle=canalizadosDetalle;
   // ── MÉTRICAS ANUALES POR VENDEDOR ──────────────────────────
   const desdeAnio=`${currentYear}-01-01`, hastaAnio=`${currentYear}-12-31`;
-  const {data:regsAnioDir}=await sb.from('registros_diarios').select('usuario_id,svc,cotizaciones').gte('fecha',desdeAnio).lte('fecha',hastaAnio);
+  const {data:regsAnioDir}=await sb.from('registros_diarios').select('usuario_id,svc,cotizaciones,ventas_servicio_num').gte('fecha',desdeAnio).lte('fecha',hastaAnio);
   const metricasAnuales={};
   vendedoresRes.forEach(u=>{
     const regsU=(regsAnioDir||[]).filter(r=>r.usuario_id===u.id);
     const svcTot=regsU.reduce((s,r)=>s+(r.svc||0),0);
     const cotizTot=regsU.reduce((s,r)=>s+(r.cotizaciones||0),0);
-    const facturas=regsU.filter(r=>(r.svc||0)>0).length;
-    metricasAnuales[u.id]={ticket:cotizTot>0?svcTot/cotizTot:0,conversion:cotizTot>0?facturas/cotizTot:null,cotizTot,svcTot,facturas};
+    const ventasSvcTot=regsU.reduce((s,r)=>s+(r.ventas_servicio_num||0),0);
+    metricasAnuales[u.id]={ticket:ventasSvcTot>0?svcTot/ventasSvcTot:0,conversion:cotizTot>0?ventasSvcTot/cotizTot:null,cotizTot,svcTot,ventasSvcTot};
   });
   // ── CAMPAÑAS ACTIVAS ──────────────────────────────────────
   const [{data:campProspectos},{data:campCarteraList}]=await Promise.all([
@@ -3194,7 +3222,7 @@ async function renderDirectorResumen(){
   <div class="th4">${[
     {lbl:'Comisiones totales',val:fmt(totalComm),sub:totalBonos>0?`incluye ${fmt(totalBonos)} en bonos`:'Equipo este mes'},
     {lbl:'Servicios equipo',val:fmt(totalSvc),sub:`${Math.round(totalSvc/metaSvc*100)}% de meta`},
-    {lbl:'Mejor servicio',val:vData.sort((a,b)=>b.tot.svc-a.tot.svc)[0]?.u.nombre.split(' ')[0]||'—',sub:fmt(vData[0]?.tot.svc||0)},
+    {lbl:'Mejor vendedor(a)',val:vData.sort((a,b)=>b.tot.svc-a.tot.svc)[0]?.u.nombre.split(' ')[0]||'—',sub:fmt(vData[0]?.tot.svc||0)},
     {lbl:'Días restantes',val:diasRest,sub:`de ${diasHab} días hábiles`},
   ].map(c=>`<div class="thc"><div class="th-lbl">${c.lbl}</div><div class="th-val">${c.val}</div><div class="th-sub">${c.sub}</div></div>`).join('')}</div>
   ${vendedoresRes.length>0?`
@@ -3230,14 +3258,15 @@ async function renderDirectorResumen(){
       <div style="display:flex;align-items:center;gap:10px;"><div class="vc-av" style="background:${col};">${ini}</div><div><div class="vc-name">${v.u.nombre}${v.tieneAjuste?' <span style="font-size:10px;background:rgba(245,166,35,0.15);color:#B8740A;padding:1px 7px;border-radius:10px;font-weight:600;">⭐ ajuste</span>':''}</div><div class="vc-role">Vendedor B2B</div></div></div>
       <div class="vc-cr"><div class="vc-clbl">Comisión total</div><div class="vc-cval" style="color:${cc};">${fmt(v.commTotal)}</div><div class="vc-crate" style="color:${cc};">tasa ${(v.rate*100).toFixed(1)}%</div>${v.bonoMed?.aplica?`<div style="font-size:9px;color:var(--text3);margin-top:3px;">${fmt(v.comm)} + ${fmt(v.bonoMed.monto)} bono 2%</div>`:''}</div>
     </div><div>${bars}</div></div>
+    <div style="padding:8px 14px 0 14px;font-size:11px;color:var(--text3);">Servicios: <b style="color:var(--text);font-family:'JetBrains Mono',monospace;">${fmt(v.tot.svc)}</b> de meta <b>${fmt(v.svcMeta)}</b>${v.tot.svc<v.svcMeta?` · faltan <b style="color:#E84040;">${fmt(v.svcMeta-v.tot.svc)}</b>`:' · <span style="color:#27AE60;font-weight:600;">✅ meta cumplida</span>'}</div>
     <div style="padding:8px 14px;border-top:1px solid var(--border);display:flex;gap:16px;">
       <div style="flex:1;"><div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;">Ticket prom. anual</div>
         <div style="font-size:13px;font-weight:700;color:var(--teal);font-family:'JetBrains Mono',monospace;">${ma.ticket>0?fmt(ma.ticket):'—'}</div>
-        <div style="font-size:9px;color:var(--text3);">${ma.cotizTot} cotizaciones</div>
+        <div style="font-size:9px;color:var(--text3);">${ma.ventasSvcTot||0} ventas de servicio cerradas</div>
       </div>
       <div style="flex:1;"><div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;">Conversión anual</div>
         <div style="font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${convColor};">${ma.conversion!==null?Math.round(ma.conversion*100)+'%':'—'}</div>
-        <div style="font-size:9px;color:var(--text3);">${ma.facturas||0} facturas</div>
+        <div style="font-size:9px;color:var(--text3);">${ma.ventasSvcTot||0} de ${ma.cotizTot} cotizaciones</div>
       </div>
     </div>
     <div class="vc-bot">${pills}</div></div>`;
@@ -3868,6 +3897,7 @@ async function editarRegistroDir(registroId, userId, fecha){
     <div class="shead">Ventas</div>
     <div class="form-grid fg3" style="margin-bottom:12px;">
       <div class="form-field"><label>Servicios ($)</label><div class="prefix"><input type="number" id="erSvc" value="${r.svc||0}" step="0.01"></div></div>
+      <div class="form-field"><label># Ventas de servicio cerradas</label><input type="number" id="erVentasSvc" value="${r.ventas_servicio_num||0}"></div>
       <div class="form-field"><label>Aspel ($)</label><div class="prefix"><input type="number" id="erAspel" value="${r.aspel||0}" step="0.01"></div></div>
       <div class="form-field"><label>IT ($)</label><div class="prefix"><input type="number" id="erIt" value="${r.it||0}" step="0.01"></div></div>
       <div class="form-field"><label>Diplomados ($)</label><div class="prefix"><input type="number" id="erDip" value="${r.diplomados||0}" step="0.01"></div></div>
@@ -3907,6 +3937,7 @@ async function guardarEdicionDir(){
   const userId=document.getElementById('erUserId').value;
   const payload={
     svc:parseFloat(document.getElementById('erSvc').value)||0,
+    ventas_servicio_num:parseInt(document.getElementById('erVentasSvc').value)||0,
     aspel:parseFloat(document.getElementById('erAspel').value)||0,
     it:parseFloat(document.getElementById('erIt').value)||0,
     diplomados:parseFloat(document.getElementById('erDip').value)||0,
