@@ -685,13 +685,13 @@ async function renderVendorMiMes(){
   const desdeAnt=`${anioAnt}-${String(mesAntNum).padStart(2,'0')}-01`;
   const lastDayAnt=new Date(anioAnt,mesAntNum,0).getDate();
   const hastaAnt=`${anioAnt}-${String(mesAntNum).padStart(2,'0')}-${String(lastDayAnt).padStart(2,'0')}`;
-  const {data:regsAnt}=await sb.from('registros_diarios').select('svc,cotizaciones').eq('usuario_id',currentUser.id).gte('fecha',desdeAnt).lte('fecha',hastaAnt);
+  const {data:regsAnt}=await sb.from('registros_diarios').select('svc,cotizaciones,ventas_servicio_num').eq('usuario_id',currentUser.id).gte('fecha',desdeAnt).lte('fecha',hastaAnt);
   const regsAntList=regsAnt||[];
   const svcAnt=regsAntList.reduce((s,r)=>s+(r.svc||0),0);
   const cotizAnt=regsAntList.reduce((s,r)=>s+(r.cotizaciones||0),0);
-  const facturasAnt=regsAntList.filter(r=>(r.svc||0)>0).length;
-  const ticketAnt=cotizAnt>0?svcAnt/cotizAnt:0;
-  const conversionAnt=cotizAnt>0?facturasAnt/cotizAnt:null;
+  const ventasSvcAnt=regsAntList.reduce((s,r)=>s+(r.ventas_servicio_num||0),0);
+  const ticketAnt=ventasSvcAnt>0?svcAnt/ventasSvcAnt:0;
+  const conversionAnt=cotizAnt>0?ventasSvcAnt/cotizAnt:null;
 
   // ── TASA DE CIERRE REAL: del histórico de pipeline (Ganado / (Ganado+Perdido)) ──
   const {data:pipeHist}=await sb.from('pipeline_vendedor')
@@ -846,7 +846,7 @@ async function renderVendorMiMes(){
         <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Ticket promedio ${MESES_N_MIMES[mesAntNum]}</div>
         <div style="font-size:26px;font-weight:700;color:${ticketAnt>0?'var(--teal)':'var(--text3)'};font-family:'JetBrains Mono',monospace;">${ticketAnt>0?fmt(ticketAnt):'—'}</div>
         <div style="font-size:11px;color:var(--text3);margin-top:4px;">
-          ${cotizAnt>0?`${fmt(svcAnt)} svc ÷ ${cotizAnt} cot.`:`Sin cotizaciones en ${MESES_N_MIMES[mesAntNum]}`}
+          ${ventasSvcAnt>0?`${fmt(svcAnt)} svc ÷ ${ventasSvcAnt} ventas cerradas`:`Sin ventas de servicio cerradas en ${MESES_N_MIMES[mesAntNum]}`}
         </div>
       </div>
       <div style="width:1px;background:var(--border);align-self:stretch;"></div>
@@ -856,7 +856,7 @@ async function renderVendorMiMes(){
           ${conversionAnt!==null?Math.round(conversionAnt*100)+'%':'—'}
         </div>
         <div style="font-size:11px;color:var(--text3);margin-top:4px;">
-          ${cotizAnt>0?`${facturasAnt} facturas de ${cotizAnt} cotizaciones`:`Registra cotizaciones en "Registrar día"`}
+          ${cotizAnt>0?`${ventasSvcAnt} ventas de ${cotizAnt} cotizaciones`:`Registra cotizaciones en "Registrar día"`}
         </div>
       </div>
     </div>
@@ -1006,7 +1006,7 @@ async function renderVendorMiMes(){
   const mainK=kpiConfig.filter(k=>k.categoria==='principal'&&(esMireyaActual?/_m$/.test(k.kpi_key):!/_m$/.test(k.kpi_key)));
   const totMap=buildTotMap(tot);
   document.getElementById('mainKpis').innerHTML=mainK.map(k=>{
-    const v=totMap[k.kpi_key]||0,m=metas[k.kpi_key]?.m||1,p=Math.min(v/m,1),c=pcol(p),pp=Math.round(p*100);
+    const v=k.kpi_key==='meta_depto'?totalDeptoSvc:(totMap[k.kpi_key]||0),m=metas[k.kpi_key]?.m||1,p=Math.min(v/m,1),c=pcol(p),pp=Math.round(p*100);
     const vf=k.tipo==='$'?fmt(v):v,mf=k.tipo==='$'?fmtK(m):m;
     return `<div class="kc"><div class="kc-acc" style="background:${c};"></div>
       <div class="kc-name">${k.kpi_nombre}</div>
@@ -1066,6 +1066,8 @@ async function renderRegistroForm(fechaSel){
   // Buscar si ya hay registro para la fecha seleccionada
   const {data:existing}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).eq('fecha',fecha).single();
   const r=existing||{};
+  const {data:siigoDet}=await sb.from('siigo_fiscal_detalle').select('*').eq('usuario_id',currentUser.id).eq('fecha',fecha).order('idx');
+  window._siigoDetalleInicial=(siigoDet||[]).map(d=>({cliente:d.cliente_nombre||'',serie:d.numero_serie||'',rfc:d.rfc||''}));
   const dias=ultimosDias(7);
   const cred=await verificarCreditosEdicion();
   const selectorDias=dias.map(d=>{
@@ -1106,10 +1108,17 @@ async function renderRegistroForm(fechaSel){
       <div class="form-field"><label>Demos realizados</label><input type="number" id="fDemos" value="${r.demos||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Valoraciones</label><input type="number" id="fVal" value="${r.valoraciones||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Cursos 24/7 / Membresías</label><input type="number" id="fCur" value="${r.cursos||''}" placeholder="0" min="0"></div>
-      <div class="form-field"><label>Siigo Fiscal (cierres)</label><input type="number" id="fSf" value="${r.siigo_fiscal||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Siigo Fiscal (cierres)</label><input type="number" id="fSf" value="${r.siigo_fiscal||''}" placeholder="0" min="0" oninput="renderSiigoDetalle()"></div>
       <div class="form-field"><label>Prospectos canalizados</label><input type="number" id="fPros" value="${r.prospectos_canalizados||''}" placeholder="0" min="0"></div>
     </div>
     <div style="font-size:11px;color:var(--text3);margin:6px 0 0 2px;">"Suscripciones / Cambio distribuidor" y "Renovaciones Aspel" ya no se capturan aquí — se calculan automáticamente desde Cartera de Cuentas (altas y renovaciones marcadas este mes).</div>
+
+    <!-- DESGLOSE SIIGO FISCAL -->
+    <div id="siigoDetalleWrap" style="display:${(r.siigo_fiscal||0)>0?'block':'none'};margin-top:14px;">
+      <div class="shead">💼 Desglose de clientes Siigo Fiscal</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Por cada cierre de Siigo Fiscal, captura el cliente, número de serie y RFC.</div>
+      <div id="siigoDetalleContainer"></div>
+    </div>
 
     <!-- CURSOS EN VIVO -->
     <div class="shead" style="margin-top:16px;">🎙 Cursos en Vivo</div>
@@ -1162,6 +1171,47 @@ async function renderRegistroForm(fechaSel){
     </div>
     <div class="save-msg" id="saveMsg"></div>
   </div>`;
+  renderSiigoDetalle();
+}
+
+function renderSiigoDetalle(){
+  const fSf=document.getElementById('fSf');
+  const wrap=document.getElementById('siigoDetalleWrap');
+  const cont=document.getElementById('siigoDetalleContainer');
+  if(!fSf||!wrap||!cont) return;
+  const n=Math.min(parseInt(fSf.value)||0,50);
+  wrap.style.display=n>0?'block':'none';
+  if(n===0){cont.innerHTML='';return;}
+  // Preservar lo ya escrito antes de regenerar
+  const current=[];
+  for(let i=0;i<50;i++){
+    const cli=document.getElementById('siigoCli_'+i);
+    if(!cli) break;
+    current.push({cliente:cli.value,serie:document.getElementById('siigoSerie_'+i).value,rfc:document.getElementById('siigoRfc_'+i).value});
+  }
+  const inicial=window._siigoDetalleInicial||[];
+  const esc=s=>(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+  let html='';
+  for(let i=0;i<n;i++){
+    const d=current[i]||inicial[i]||{cliente:'',serie:'',rfc:''};
+    html+=`<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px;padding:10px;background:var(--surface-2,#f8f9fa);border-radius:8px;">
+      <div class="form-field" style="margin:0;"><label style="font-size:10px;">Cliente #${i+1}</label><input type="text" id="siigoCli_${i}" value="${esc(d.cliente)}" placeholder="Nombre del cliente"></div>
+      <div class="form-field" style="margin:0;"><label style="font-size:10px;">N° de serie</label><input type="text" id="siigoSerie_${i}" value="${esc(d.serie)}" placeholder="N° serie"></div>
+      <div class="form-field" style="margin:0;"><label style="font-size:10px;">RFC</label><input type="text" id="siigoRfc_${i}" value="${esc(d.rfc)}" placeholder="RFC" style="text-transform:uppercase;"></div>
+    </div>`;
+  }
+  cont.innerHTML=html;
+}
+
+function collectSiigoDetalle(){
+  const n=parseInt(document.getElementById('fSf')?.value)||0;
+  const out=[];
+  for(let i=0;i<n;i++){
+    const cli=document.getElementById('siigoCli_'+i);
+    if(!cli) break;
+    out.push({idx:i,cliente_nombre:cli.value||'',numero_serie:document.getElementById('siigoSerie_'+i)?.value||'',rfc:(document.getElementById('siigoRfc_'+i)?.value||'').toUpperCase()});
+  }
+  return out;
 }
 
 async function saveRegistro(fecha,existingId){
@@ -1215,6 +1265,14 @@ async function saveRegistro(fecha,existingId){
   };
   if(notasLog) payload.notas=notasLog;
   const {error}=await sb.from('registros_diarios').upsert(payload,{onConflict:'usuario_id,fecha'});
+  if(!error){
+    // Guardar desglose de clientes Siigo Fiscal: borra lo anterior de este día y reinserta
+    const detalle=collectSiigoDetalle();
+    await sb.from('siigo_fiscal_detalle').delete().eq('usuario_id',currentUser.id).eq('fecha',fecha);
+    if(detalle.length>0){
+      await sb.from('siigo_fiscal_detalle').insert(detalle.map(d=>({...d,usuario_id:currentUser.id,fecha})));
+    }
+  }
   btn.disabled=false;btn.textContent='💾 Guardar registro';
   if(error){msg.style.color='var(--red)';msg.textContent='Error al guardar: '+error.message;}
   else{
@@ -3760,10 +3818,16 @@ async function verRegistrosVendedor(userId, nombre, rol){
     {h:'→Manuel',k:'_dManuel',money:false},
     {h:'Cursos 24/7',k:'venta_cursos_tele',money:true},
   ]:[
-    {h:'Servicios',k:'svc',money:true},{h:'Aspel',k:'aspel',money:true},{h:'IT',k:'it',money:true},
-    {h:'Demos',k:'demos',money:false},{h:'Val.',k:'valoraciones',money:false},
-    {h:'Clientes',k:'clientes_nuevos',money:false},{h:'Siigo',k:'siigo_fiscal',money:false},
-    {h:'Sus.',k:'suscripciones',money:false},{h:'Cursos Vivo',k:'talleres_vivo',money:true},
+    {h:'Servicios',k:'svc',money:true},{h:'Vtas.Svc',k:'ventas_servicio_num',money:false},
+    {h:'Aspel',k:'aspel',money:true},{h:'IT',k:'it',money:true},{h:'Diplomados',k:'diplomados',money:true},
+    {h:'Monto Cotiz.',k:'monto_cotizaciones',money:true},{h:'# Cotiz.',k:'cotizaciones',money:false},
+    {h:'Clientes',k:'clientes_nuevos',money:false},{h:'Demos',k:'demos',money:false},{h:'Val.',k:'valoraciones',money:false},
+    {h:'Cursos 24/7',k:'cursos',money:false},{h:'Siigo',k:'siigo_fiscal',money:false},
+    {h:'Sus.',k:'suscripciones',money:false},
+    {h:'Prosp.Canaliz.',k:'prospectos_canalizados',money:false},{h:'Cursos Vivo',k:'talleres_vivo',money:true},
+    {h:'Llam.Segto',k:'llamadas_seguimiento',money:false},{h:'Llam.Prosp',k:'llamadas_prospeccion',money:false},
+    {h:'Neg.Cli #',k:'neg_clientes_num',money:false},{h:'Neg.Cli $',k:'neg_clientes_monto',money:true},
+    {h:'Neg.Pros #',k:'neg_prospectos_num',money:false},{h:'Neg.Pros $',k:'neg_prospectos_monto',money:true},
   ];
   // Columnas display: SUMAN CRM (nuevos) + campos viejos
   if(esTele){rows.forEach(r=>{
@@ -3914,6 +3978,12 @@ async function editarRegistroDir(registroId, userId, fecha){
       <div class="form-field"><label>Prospectos canalizados</label><input type="number" id="erPros" value="${r.prospectos_canalizados||0}"></div>
       <div class="form-field"><label>Cotizaciones</label><input type="number" id="erCot" value="${r.cotizaciones||0}"></div>
       <div class="form-field"><label>Monto cotizaciones ($)</label><div class="prefix"><input type="number" id="erCotM" value="${r.monto_cotizaciones||0}" step="0.01"></div></div>
+      <div class="form-field"><label>Cursos 24/7 / Membresías</label><input type="number" id="erCur" value="${r.cursos||0}"></div>
+    </div>
+    <div class="shead">Llamadas (informativo)</div>
+    <div class="form-grid fg3" style="margin-bottom:12px;">
+      <div class="form-field"><label>Llamadas seguimiento cartera</label><input type="number" id="erLlamSeg" value="${r.llamadas_seguimiento||0}"></div>
+      <div class="form-field"><label>Llamadas prospección</label><input type="number" id="erLlamPros" value="${r.llamadas_prospeccion||0}"></div>
     </div>
     <div class="shead">Negociaciones abiertas</div>
     <div class="form-grid fg3" style="margin-bottom:12px;">
@@ -3951,6 +4021,9 @@ async function guardarEdicionDir(){
     prospectos_canalizados:parseInt(document.getElementById('erPros').value)||0,
     cotizaciones:parseInt(document.getElementById('erCot').value)||0,
     monto_cotizaciones:parseFloat(document.getElementById('erCotM').value)||0,
+    cursos:parseInt(document.getElementById('erCur').value)||0,
+    llamadas_seguimiento:parseInt(document.getElementById('erLlamSeg').value)||0,
+    llamadas_prospeccion:parseInt(document.getElementById('erLlamPros').value)||0,
     neg_clientes_num:parseInt(document.getElementById('erNegCN').value)||0,
     neg_clientes_monto:parseFloat(document.getElementById('erNegCM').value)||0,
     neg_prospectos_num:parseInt(document.getElementById('erNegPN').value)||0,
@@ -8363,8 +8436,12 @@ async function renderEgresosTabla(){
   // Facturado sin salida de banco: marcado manual (pago_por_fuera) O con XML pero no conciliado
   const facturadoSinSalida=fe.filter(r=>r.pago_por_fuera||(r.tiene_factura&&!r.conciliado)).reduce((s,r)=>s+(r.total||0),0);
   const numFactSinSalida=fe.filter(r=>r.pago_por_fuera||(r.tiene_factura&&!r.conciliado)).length;
-  // IVA acreditado: TODOS los que tienen factura/XML (salieron del banco o no)
-  const ivaAcreditado=fe.filter(r=>r.tiene_factura).reduce((s,r)=>s+(r.iva_trasladado||0),0);
+  // IVA acreditado: TODOS los que tienen factura/XML (salieron del banco o no),
+  // EXCEPTO los marcados como "ya acreditados en mes anterior" (ej. PayPal con
+  // retraso en el estado de cuenta — la factura y su IVA ya se contabilizaron el mes pasado).
+  const ivaAcreditado=fe.filter(r=>r.tiene_factura&&!r.iva_acreditado_mes_anterior).reduce((s,r)=>s+(r.iva_trasladado||0),0);
+  const numIvaMesAnt=fe.filter(r=>r.tiene_factura&&r.iva_acreditado_mes_anterior).length;
+  const ivaExcluidoMesAnt=fe.filter(r=>r.tiene_factura&&r.iva_acreditado_mes_anterior).reduce((s,r)=>s+(r.iva_trasladado||0),0);
   // IVA cobrado de ingresos
   let ivaIngesos=null;
   if(window._fiRows){
@@ -8404,10 +8481,10 @@ async function renderEgresosTabla(){
     </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px;">
-    <div class="thc" title="IVA trasladado de TODOS los egresos con factura (XML)">
+    <div class="thc" title="IVA trasladado de TODOS los egresos con factura (XML), excepto los ya acreditados en un mes anterior">
       <div class="th-lbl">IVA acreditado</div>
       <div class="th-val" style="color:#2980B9;">${fmt(ivaAcreditado)}</div>
-      <div style="font-size:9px;color:var(--text3);margin-top:2px;">todos los que tienen XML</div>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;">${numIvaMesAnt>0?`excluye ${numIvaMesAnt} ya acred. mes ant. (${fmt(ivaExcluidoMesAnt)})`:'todos los que tienen XML'}</div>
     </div>
     <div class="thc"><div class="th-lbl">IVA retenido</div><div class="th-val" style="color:var(--red);">${fmt(totalIvaRet)}</div></div>
     <div class="thc" title="IVA cobrado (ingresos) − IVA acreditado (egresos)">
@@ -8493,7 +8570,7 @@ async function renderEgresosTabla(){
         return`<tr style="border-bottom:1px solid var(--border);" id="feRow_${r.id}">
         <td style="padding:4px 6px;text-align:center;"><input type="checkbox" class="feRowCheck" value="${r.id}" onchange="actualizarSeleccionEgresos()" style="cursor:pointer;width:14px;height:14px;"></td>
         <td style="padding:4px 6px;min-width:90px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','fecha_factura',this.textContent.trim())" style="${ce}white-space:nowrap;">${r.fecha_factura||''}</span></td>
-        <td style="padding:4px 6px;max-width:130px;cursor:pointer;" onclick="editarEgresoModal('${r.id}')"><span style="font-weight:500;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:underline;text-decoration-style:dotted;color:var(--navy);">${r.proveedor||'(sin proveedor)'}</span></td>
+        <td style="padding:4px 6px;max-width:130px;cursor:pointer;" onclick="editarEgresoModal('${r.id}')"><span style="font-weight:500;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:underline;text-decoration-style:dotted;color:var(--navy);">${r.iva_acreditado_mes_anterior?'<span title="IVA ya acreditado en mes anterior" style="margin-right:3px;">🔁</span>':''}${r.proveedor||'(sin proveedor)'}</span></td>
         <td style="padding:4px 6px;max-width:150px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','concepto',this.textContent.trim())" style="${ce}color:var(--text3);font-size:10px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.concepto||''}</span></td>
         <td style="padding:4px 6px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','rubro',this.textContent.trim())" style="display:inline-block;padding:1px 6px;border-radius:8px;background:rgba(0,0,0,0.06);font-size:10px;cursor:text;min-width:30px;outline:none;">${r.rubro||'—'}</span></td>
         <td style="padding:4px 6px;min-width:80px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','folio',this.textContent.trim())" style="${ce}font-family:'JetBrains Mono',monospace;font-size:10px;">${r.folio||''}</span></td>
@@ -9542,6 +9619,11 @@ async function editarEgresoModal(id){
       <label for="eePagoPorFuera" style="font-size:13px;font-weight:600;color:${r.pago_por_fuera?'#8B5CF6':'var(--text3)'};cursor:pointer;">💳 Pagado por fuera (sin salida de banco)</label>
       <span style="font-size:10px;color:var(--text3);margin-left:auto;">tarjeta personal, no cuadra con banco</span>
     </div>
+    <div style="margin-bottom:10px;display:flex;align-items:center;gap:10px;padding:8px 12px;background:${r.iva_acreditado_mes_anterior?'rgba(245,166,35,0.08)':'rgba(107,114,128,0.06)'};border:1px solid ${r.iva_acreditado_mes_anterior?'#F5A623':'var(--border)'};border-radius:8px;">
+      <input type="checkbox" id="eeIvaMesAnt" ${r.iva_acreditado_mes_anterior?'checked':''} style="width:16px;height:16px;accent-color:#F5A623;cursor:pointer;">
+      <label for="eeIvaMesAnt" style="font-size:13px;font-weight:600;color:${r.iva_acreditado_mes_anterior?'#B8740A':'var(--text3)'};cursor:pointer;">🔁 IVA ya acreditado en mes anterior</label>
+      <span style="font-size:10px;color:var(--text3);margin-left:auto;">factura/pago de otro mes, el banco lo registró tarde (ej. PayPal)</span>
+    </div>
     <div style="margin-bottom:10px;">${fld('Proveedor',`
       <select id="eeProvSel" onchange="(function(){const v=document.getElementById('eeProvSel').value;const n=document.getElementById('eeProvNuevo');const h=document.getElementById('eeProv');if(v==='__nuevo__'){n.style.display='block';h.value='';}else{n.style.display='none';h.value=v;}})()" style="${INP}">
         <option value="">-- Seleccionar --</option>
@@ -9656,6 +9738,7 @@ async function guardarEdicionEgreso(yaSiguiente=false){
     folio:document.getElementById('eeFolio')?.value.trim()||null,
     tiene_factura:!!(document.getElementById('eeTieneFactura')?.checked)||(!!document.getElementById('eeFolio')?.value.trim()),
     pago_por_fuera:!!(document.getElementById('eePagoPorFuera')?.checked),
+    iva_acreditado_mes_anterior:!!(document.getElementById('eeIvaMesAnt')?.checked),
     proveedor:prov||null,
     concepto:document.getElementById('eeConcepto')?.value.trim()||null,
     rubro:document.getElementById('eeRubro')?.value||null,
