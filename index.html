@@ -250,7 +250,7 @@ table.daily td{padding:8px 12px;vertical-align:middle;}
 
 <!-- LOGIN -->
 <div id="loginScreen">
-  <div class="login-card">
+  <div class="login-card" id="loginCardMain">
     <div class="login-logo">
       <div class="lm">IN</div>
       <span>Grupo Innovaci</span>
@@ -267,6 +267,17 @@ table.daily td{padding:8px 12px;vertical-align:middle;}
     </div>
     <button class="btn-primary" id="btnLogin" onclick="doLogin()">Entrar</button>
     <div class="login-err" id="loginErr"></div>
+  </div>
+  <div class="login-card" id="mfaCard" style="display:none;">
+    <div class="login-logo"><div class="lm">🔒</div><span>Verificación en dos pasos</span></div>
+    <div class="login-sub">Ingresa el código de 6 dígitos de tu app de autenticación.</div>
+    <div class="field">
+      <label>Código</label>
+      <input type="text" id="mfaCode" placeholder="000000" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
+    </div>
+    <button class="btn-primary" id="btnMfaVerify" onclick="verificarMfaLogin()">Verificar</button>
+    <div class="login-err" id="mfaErr"></div>
+    <button onclick="cancelarMfaLogin()" style="margin-top:10px;background:none;border:none;color:var(--text3,#888);font-size:12px;cursor:pointer;text-decoration:underline;">Cancelar e iniciar sesión de nuevo</button>
   </div>
 </div>
 
@@ -286,6 +297,7 @@ table.daily td{padding:8px 12px;vertical-align:middle;}
         <div class="uav" id="userAv">—</div>
         <span id="userName">—</span>
       </div>
+      <button class="btn-logout" onclick="abrirPanelSeguridad()" style="background:none;border:1px solid var(--border);margin-right:6px;">🔒 Seguridad</button>
       <button class="btn-logout" onclick="doLogout()">Salir</button>
     </div>
   </nav>
@@ -479,6 +491,29 @@ let kpiConfig=[], registros=[], allRegistros=[];
 let ringChart=null, trendChart=null, hChart=null, cChart=null;
 
 // ─── AUTH ────────────────────────────────────────────────────────────────────
+const LOGIN_MAX_INTENTOS=5, LOGIN_BLOQUEO_MIN=15;
+async function checkLoginLockout(email){
+  const {data}=await sb.from('login_intentos').select('*').eq('email',email.toLowerCase()).maybeSingle();
+  if(data&&data.bloqueado_hasta&&new Date(data.bloqueado_hasta)>new Date()){
+    const minutosRestantes=Math.ceil((new Date(data.bloqueado_hasta)-new Date())/60000);
+    return {bloqueado:true,minutosRestantes};
+  }
+  return {bloqueado:false};
+}
+async function registrarIntentoFallido(email){
+  const emailL=email.toLowerCase();
+  const {data}=await sb.from('login_intentos').select('*').eq('email',emailL).maybeSingle();
+  const intentos=(data?.intentos||0)+1;
+  const payload={email:emailL,intentos,updated_at:new Date().toISOString()};
+  if(intentos>=LOGIN_MAX_INTENTOS){
+    payload.bloqueado_hasta=new Date(Date.now()+LOGIN_BLOQUEO_MIN*60000).toISOString();
+  }
+  await sb.from('login_intentos').upsert(payload,{onConflict:'email'});
+}
+async function resetIntentos(email){
+  await sb.from('login_intentos').upsert({email:email.toLowerCase(),intentos:0,bloqueado_hasta:null,updated_at:new Date().toISOString()},{onConflict:'email'});
+}
+
 async function doLogin(){
   const email=document.getElementById('loginEmail').value.trim();
   const pass=document.getElementById('loginPass').value;
@@ -486,19 +521,162 @@ async function doLogin(){
   const err=document.getElementById('loginErr');
   err.textContent='';
   if(!email||!pass){err.textContent='Ingresa correo y contraseña.';return;}
+
+  const lock=await checkLoginLockout(email);
+  if(lock.bloqueado){
+    err.textContent=`⛔ Demasiados intentos fallidos. Intenta de nuevo en ${lock.minutosRestantes} min.`;
+    return;
+  }
+
   btn.disabled=true;btn.textContent='Entrando...';
   const {data,error}=await sb.auth.signInWithPassword({email,password:pass});
+  if(error){
+    btn.disabled=false;btn.textContent='Entrar';
+    err.textContent='Correo o contraseña incorrectos.';
+    await registrarIntentoFallido(email);
+    return;
+  }
+  await resetIntentos(email);
+
+  // ── ¿Requiere verificación en dos pasos? ──
+  const {data:aal}=await sb.auth.mfa.getAuthenticatorAssuranceLevel();
   btn.disabled=false;btn.textContent='Entrar';
-  if(error){err.textContent='Correo o contraseña incorrectos.';return;}
+  if(aal&&aal.nextLevel==='aal2'&&aal.nextLevel!==aal.currentLevel){
+    document.getElementById('loginCardMain').style.display='none';
+    document.getElementById('mfaCard').style.display='block';
+    document.getElementById('mfaCode').focus();
+    return;
+  }
   await initApp(data.user);
+  iniciarMonitorInactividad();
 }
+
+async function verificarMfaLogin(){
+  const code=document.getElementById('mfaCode').value.trim();
+  const errEl=document.getElementById('mfaErr');
+  const btn=document.getElementById('btnMfaVerify');
+  errEl.textContent='';
+  if(!/^\d{6}$/.test(code)){errEl.textContent='Ingresa los 6 dígitos del código.';return;}
+  btn.disabled=true;btn.textContent='Verificando...';
+  const {data:factors}=await sb.auth.mfa.listFactors();
+  const factor=(factors?.totp||[])[0];
+  if(!factor){errEl.textContent='No se encontró tu método de verificación.';btn.disabled=false;btn.textContent='Verificar';return;}
+  const {data:ch,error:chErr}=await sb.auth.mfa.challenge({factorId:factor.id});
+  if(chErr){errEl.textContent='Error: '+chErr.message;btn.disabled=false;btn.textContent='Verificar';return;}
+  const {error:verErr}=await sb.auth.mfa.verify({factorId:factor.id,challengeId:ch.id,code});
+  btn.disabled=false;btn.textContent='Verificar';
+  if(verErr){errEl.textContent='Código incorrecto. Intenta de nuevo.';return;}
+  document.getElementById('mfaCard').style.display='none';
+  document.getElementById('mfaCode').value='';
+  const {data:userData}=await sb.auth.getUser();
+  await initApp(userData.user);
+  iniciarMonitorInactividad();
+}
+
+async function cancelarMfaLogin(){
+  await sb.auth.signOut();
+  document.getElementById('mfaCard').style.display='none';
+  document.getElementById('loginCardMain').style.display='block';
+  document.getElementById('mfaCode').value='';
+  document.getElementById('mfaErr').textContent='';
+}
+
+// ─── PANEL DE SEGURIDAD (2FA) ──────────────────────────────────────────────
+async function abrirPanelSeguridad(){
+  const {data:factors}=await sb.auth.mfa.listFactors();
+  const totp=(factors?.totp||[]).find(f=>f.status==='verified');
+  document.getElementById('modalSeguridad')?.remove();
+  const modal=document.createElement('div');
+  modal.id='modalSeguridad';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  modal.innerHTML=`
+  <div style="background:#fff;border-radius:12px;padding:24px;max-width:420px;width:100%;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <div style="font-size:15px;font-weight:700;color:var(--navy);">🔒 Seguridad de tu cuenta</div>
+      <button onclick="document.getElementById('modalSeguridad').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);">✕</button>
+    </div>
+    <div id="segBody">
+      ${totp?`
+        <div style="background:rgba(39,174,96,0.08);border:1px solid rgba(39,174,96,0.3);border-radius:8px;padding:12px;margin-bottom:12px;">
+          <div style="font-size:13px;font-weight:600;color:#27AE60;">✅ Verificación en dos pasos activada</div>
+        </div>
+        <button onclick="desactivarMfa('${totp.id}')" style="background:none;border:1px solid var(--red);color:var(--red);border-radius:6px;padding:8px 14px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;">Desactivar 2FA</button>
+      `:`
+        <div style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.6;">Agrega una capa extra de seguridad: además de tu contraseña, se pedirá un código de tu app de autenticación (Google Authenticator, Authy, etc.) al iniciar sesión.</div>
+        <button onclick="iniciarEnrolamientoMfa()" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Activar verificación en dos pasos</button>
+      `}
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+async function iniciarEnrolamientoMfa(){
+  const body=document.getElementById('segBody');
+  body.innerHTML='<div style="text-align:center;padding:20px;color:var(--text3);">Generando código QR...</div>';
+  const {data,error}=await sb.auth.mfa.enroll({factorType:'totp'});
+  if(error){body.innerHTML=`<div style="color:var(--red);font-size:12px;">Error: ${error.message}</div>`;return;}
+  window._mfaEnrollFactorId=data.id;
+  body.innerHTML=`
+    <div style="font-size:12px;color:var(--text3);margin-bottom:10px;">1. Escanea este código con tu app de autenticación (Google Authenticator, Authy, etc.)</div>
+    <div style="text-align:center;margin-bottom:12px;"><img src="${data.totp.qr_code}" style="width:180px;height:180px;border:1px solid var(--border);border-radius:8px;padding:8px;"></div>
+    <div style="font-size:10px;color:var(--text3);text-align:center;margin-bottom:14px;word-break:break-all;">O ingresa manualmente: <code>${data.totp.secret}</code></div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:6px;">2. Ingresa el código de 6 dígitos que te muestra la app:</div>
+    <input type="text" id="mfaEnrollCode" placeholder="000000" inputmode="numeric" maxlength="6" style="width:100%;padding:9px;border:1px solid var(--border);border-radius:6px;font-size:16px;text-align:center;letter-spacing:4px;margin-bottom:10px;box-sizing:border-box;">
+    <div id="mfaEnrollErr" style="color:var(--red);font-size:11px;margin-bottom:8px;"></div>
+    <button onclick="confirmarEnrolamientoMfa()" style="width:100%;background:var(--teal);color:#fff;border:none;border-radius:6px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Confirmar y activar</button>
+  `;
+}
+
+async function confirmarEnrolamientoMfa(){
+  const code=document.getElementById('mfaEnrollCode').value.trim();
+  const errEl=document.getElementById('mfaEnrollErr');
+  if(!/^\d{6}$/.test(code)){errEl.textContent='Ingresa los 6 dígitos.';return;}
+  const factorId=window._mfaEnrollFactorId;
+  const {data:ch,error:chErr}=await sb.auth.mfa.challenge({factorId});
+  if(chErr){errEl.textContent=chErr.message;return;}
+  const {error:verErr}=await sb.auth.mfa.verify({factorId,challengeId:ch.id,code});
+  if(verErr){errEl.textContent='Código incorrecto, intenta de nuevo.';return;}
+  document.getElementById('modalSeguridad')?.remove();
+  alert('✅ Verificación en dos pasos activada correctamente. La próxima vez que inicies sesión te pedirá el código.');
+}
+
+async function desactivarMfa(factorId){
+  if(!confirm('¿Seguro que quieres desactivar la verificación en dos pasos?')) return;
+  const {error}=await sb.auth.mfa.unenroll({factorId});
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalSeguridad')?.remove();
+  alert('Verificación en dos pasos desactivada.');
+}
+
+// ─── CIERRE DE SESIÓN POR INACTIVIDAD ─────────────────────────────────────
+const INACTIVITY_LIMIT_MS=2*60*60*1000; // 2 horas
+let _lastActivity=Date.now(), _inactivityInterval=null, _inactivityListenersOn=false;
+function iniciarMonitorInactividad(){
+  _lastActivity=Date.now();
+  if(!_inactivityListenersOn){
+    ['mousedown','keydown','scroll','touchstart'].forEach(evt=>document.addEventListener(evt,()=>{_lastActivity=Date.now();},{passive:true}));
+    _inactivityListenersOn=true;
+  }
+  if(_inactivityInterval) clearInterval(_inactivityInterval);
+  _inactivityInterval=setInterval(()=>{
+    if(currentUser&&Date.now()-_lastActivity>INACTIVITY_LIMIT_MS){
+      clearInterval(_inactivityInterval);
+      doLogout();
+      alert('Tu sesión se cerró automáticamente por 2 horas de inactividad. Vuelve a iniciar sesión.');
+    }
+  },60000);
+}
+
 async function doLogout(){
   await sb.auth.signOut();
   document.getElementById('loginScreen').style.display='flex';
   document.getElementById('appScreen').style.display='none';
+  document.getElementById('loginCardMain').style.display='block';
+  document.getElementById('mfaCard').style.display='none';
   currentUser=null;userProfile=null;
 }
 document.getElementById('loginPass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+document.getElementById('mfaCode').addEventListener('keydown',e=>{if(e.key==='Enter')verificarMfaLogin();});
 
 // ─── INIT APP ────────────────────────────────────────────────────────────────
 async function initApp(user){
@@ -11252,7 +11430,7 @@ async function descargarReporteMensual(){
 
 // ─── AUTO-LOGIN CHECK ─────────────────────────────────────────────────────────
 sb.auth.getSession().then(({data:{session}})=>{
-  if(session) initApp(session.user);
+  if(session){ initApp(session.user); iniciarMonitorInactividad(); }
 });
 </script>
 </body>
