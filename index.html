@@ -10168,6 +10168,12 @@ async function eliminarImpuesto(id){
 }
 
 // ─── 5. FLUJO DE EFECTIVO ────────────────────────────────────────────────────
+async function guardarSaldoBanco(valor){
+  const saldo=parseFloat(String(valor).replace(/[^0-9.-]/g,''));
+  if(isNaN(saldo)) return;
+  await sb.from('flujo_saldo_banco').upsert({anio:currentYear,mes:currentMonth,saldo_banco:saldo,updated_at:new Date().toISOString()},{onConflict:'anio,mes'});
+  renderFinFlujo();
+}
 let _flujoFiltro='total'; // 'total' | 'guillermo' | 'innovaci'
 async function renderFinFlujo(){
   finLoading();
@@ -10181,6 +10187,10 @@ async function renderFinFlujo(){
     mes:i, ingTotal:0, ingGB:0, ingInno:0, subtotalGB:0,
     egr:0, nom:0, imp:0, gb:0, res:0
   }));
+
+  // Quita acentos para que "NOMINA" y "NÓMINA" (o cualquier variante con/sin
+  // acento, mayúsc./minúsc.) se traten como el mismo rubro.
+  const normRubro=s=>(s||'').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
 
   // ── INGRESOS: separar Guillermo Blancas del resto ──
   const esGuillermoIngreso=(r)=>{
@@ -10201,28 +10211,39 @@ async function renderFinFlujo(){
   });
 
   // ── EGRESOS: clasificar ──
+  // Prioridad: 1) rubro explícito (fuente de verdad, viene de Config. rubros) —
+  // 2) si no hay rubro claro, heurística por folio/proveedor como respaldo.
   (egData||[]).forEach(r=>{
     if(!r.mes) return;
     const prov=(r.proveedor||'').toUpperCase();
     const folio=(r.folio||'').toUpperCase();
     const conc=(r.concepto||'').toUpperCase();
-    const rubro=(r.rubro||'').toUpperCase();
+    const rubro=normRubro(r.rubro);
     const total=r.total||0;
 
-    // GB operativos: por rubro (fuente de verdad) o proveedor Guillermo
-    if(rubro.includes('GB OPERATIVOS')||rubro==='PROVEEDOR GB'||prov.includes('GUILLERMO')){byMes[r.mes].gb+=total;return;}
-    // Nómina
+    // Rubro explícito primero (ya normalizado, ignora acentos)
+    if(rubro==='NOMINA'){byMes[r.mes].nom+=total;return;}
+    if(rubro==='IMSS'||rubro==='SAT'||rubro==='IMPUESTOS'){byMes[r.mes].imp+=total;return;}
+    if(rubro==='GB OPERATIVOS'||rubro==='PROVEEDOR GB'){byMes[r.mes].gb+=total;return;}
+    if(prov.includes('GUILLERMO')){byMes[r.mes].gb+=total;return;}
+
+    // Respaldo por folio/proveedor solo si el rubro no lo definió ya
     const esNomFolio=/^(NOM|NNOM)/.test(folio);
     const esHH=/^HH/.test(folio)||(prov==='MERCADO PAGO'&&(conc.endsWith('HH')||conc.endsWith('HH2')));
     const esManuelIMSS=prov==='MERCADO PAGO'&&(conc.endsWith('NOM')||conc.endsWith('NO'));
-    if(rubro==='NOMINA'||esNomFolio||esHH||esManuelIMSS){byMes[r.mes].nom+=total;return;}
-    // Impuestos
-    if(rubro==='IMSS'||rubro==='SAT'||prov.startsWith('SAT')||prov==='IMSS'){byMes[r.mes].imp+=total;return;}
+    if(esNomFolio||esHH||esManuelIMSS){byMes[r.mes].nom+=total;return;}
+    if(prov.startsWith('SAT')||prov==='IMSS'){byMes[r.mes].imp+=total;return;}
+
     // Violeta: ignorar hasta julio
     if(prov.includes('VIOLETA')&&r.mes<=6){return;}
-    // Resto
+    // Resto → Gastos operativos Innovaci (todo lo que no sea nómina/impuestos/GB)
     byMes[r.mes].egr+=total;
   });
+
+  // ── SALDO EN CUENTA (banco real) por mes, editable ──
+  const {data:saldosBanco}=await sb.from('flujo_saldo_banco').select('*').eq('anio',currentYear);
+  const saldoBancoMes=Array(13).fill(null);
+  (saldosBanco||[]).forEach(s=>{saldoBancoMes[s.mes]=s.saldo_banco;});
 
   // ── ARRASTRE DE SALDO EN CASCADA ──
   const SALDO_INICIAL_ENERO=253480.54;
@@ -10234,6 +10255,7 @@ async function renderFinFlujo(){
     m.resMes=m.ingTotal-(m.egr+m.nom+m.imp+m.gb);
     m.saldoInicial=saldoInicialMes[i];
     m.saldoCierre=m.saldoInicial+m.resMes;
+    m.saldoBanco=saldoBancoMes[i];
     if(i<12) saldoInicialMes[i+1]=m.saldoCierre;
     m.res=m.saldoCierre; // compat
   }
@@ -10273,14 +10295,17 @@ async function renderFinFlujo(){
   ${(()=>{
     if(_flujoFiltro==='guillermo') return '';
     const totalEgr=cur.egr+cur.nom+cur.imp+cur.gb;
-    const ingMostrar=_flujoFiltro==='innovaci'?cur.ingInno:cur.ingTotal;
-    return `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:20px;">
-      <div class="thc"><div class="th-lbl">${_flujoFiltro==='innovaci'?'Ingresos Innovaci':'Ingresos cobrados'}</div><div class="th-val" style="color:#27AE60;">${fmt(ingMostrar)}</div></div>
-      <div class="thc"><div class="th-lbl">Egresos generales</div><div class="th-val" style="color:var(--red);">${fmt(cur.egr)}</div></div>
+    return `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px;">
+      <div class="thc"><div class="th-lbl">Ingresos Innovaci</div><div class="th-val" style="color:#27AE60;">${fmt(cur.ingInno)}</div></div>
+      <div class="thc"><div class="th-lbl">Ingresos Guillermo Blancas</div><div class="th-val" style="color:#27AE60;">${fmt(cur.ingGB)}</div></div>
+      <div class="thc" style="border:1px solid rgba(39,174,96,0.35);"><div class="th-lbl">Total ingresos</div><div class="th-val" style="color:#27AE60;">${fmt(cur.ingTotal)}</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px;">
       <div class="thc"><div class="th-lbl">Nómina</div><div class="th-val" style="color:var(--red);">${fmt(cur.nom)}</div></div>
       <div class="thc"><div class="th-lbl">Impuestos</div><div class="th-val" style="color:var(--red);">${fmt(cur.imp)}</div></div>
-      <div class="thc"><div class="th-lbl">GB operativos</div><div class="th-val" style="color:var(--red);">${fmt(cur.gb)}</div></div>
-      <div class="thc"><div class="th-lbl">Resultado del mes</div><div class="th-val" style="color:${cur.resMes>=0?'#27AE60':'var(--red)'};">${fmt(cur.resMes)}</div></div>
+      <div class="thc"><div class="th-lbl">Gastos operativos GB</div><div class="th-val" style="color:var(--red);">${fmt(cur.gb)}</div></div>
+      <div class="thc"><div class="th-lbl">Gastos operativos Innovaci</div><div class="th-val" style="color:var(--red);">${fmt(cur.egr)}</div></div>
+      <div class="thc" style="border:1px solid rgba(232,64,64,0.35);"><div class="th-lbl">Total egresos</div><div class="th-val" style="color:var(--red);">${fmt(totalEgr)}</div></div>
     </div>
 
     <!-- RESUMEN GENERAL DEL MES -->
@@ -10288,9 +10313,22 @@ async function renderFinFlujo(){
       <div style="font-size:13px;font-weight:700;margin-bottom:12px;opacity:0.9;">Resumen del mes — ${meses[currentMonth]} ${currentYear}</div>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px;">
         <div><div style="font-size:11px;opacity:0.7;">Saldo inicial del mes</div><div style="font-size:18px;font-weight:700;">${fmt(cur.saldoInicial)}</div></div>
-        <div><div style="font-size:11px;opacity:0.7;">Ingresos cobrados</div><div style="font-size:18px;font-weight:700;color:#5EEAD4;">${fmt(cur.ingTotal)}</div></div>
-        <div><div style="font-size:11px;opacity:0.7;">Total salidas</div><div style="font-size:18px;font-weight:700;color:#FCA5A5;">${fmt(totalEgr)}</div></div>
-        <div style="border-left:1px solid rgba(255,255,255,0.2);padding-left:16px;"><div style="font-size:11px;opacity:0.7;">Saldo al cierre</div><div style="font-size:20px;font-weight:800;color:${cur.saldoCierre>=0?'#5EEAD4':'#FCA5A5'};">${fmt(cur.saldoCierre)}</div></div>
+        <div><div style="font-size:11px;opacity:0.7;">Total ingresos</div><div style="font-size:18px;font-weight:700;color:#5EEAD4;">${fmt(cur.ingTotal)}</div></div>
+        <div><div style="font-size:11px;opacity:0.7;">Total egresos</div><div style="font-size:18px;font-weight:700;color:#FCA5A5;">${fmt(totalEgr)}</div></div>
+        <div style="border-left:1px solid rgba(255,255,255,0.2);padding-left:16px;"><div style="font-size:11px;opacity:0.7;">Resultado del mes</div><div style="font-size:20px;font-weight:800;color:${cur.resMes>=0?'#5EEAD4':'#FCA5A5'};">${fmt(cur.resMes)}</div></div>
+      </div>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.15);display:grid;grid-template-columns:repeat(2,1fr);gap:16px;">
+        <div>
+          <div style="font-size:11px;opacity:0.7;">Saldo en cuenta (banco real) — ${meses[currentMonth]}</div>
+          <input type="text" id="saldoBancoInput" value="${cur.saldoBanco!=null?cur.saldoBanco:''}" placeholder="Captura el saldo del estado de cuenta"
+            style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);border-radius:6px;padding:6px 10px;color:#fff;font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;width:70%;margin-top:2px;"
+            onblur="guardarSaldoBanco(this.value)">
+        </div>
+        <div>
+          <div style="font-size:11px;opacity:0.7;">Saldo al cierre (calculado)</div>
+          <div style="font-size:20px;font-weight:800;color:${cur.saldoCierre>=0?'#5EEAD4':'#FCA5A5'};">${fmt(cur.saldoCierre)}</div>
+          ${cur.saldoBanco!=null?(()=>{const dif=cur.saldoBanco-cur.saldoCierre;return `<div style="font-size:10px;margin-top:2px;color:${Math.abs(dif)<1?'#5EEAD4':'#FCA5A5'};">${Math.abs(dif)<1?'✓ cuadra con el banco':`⚠ diferencia de ${fmt(dif)} vs banco`}</div>`;})():''}
+        </div>
       </div>
       <div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.15);font-size:12px;opacity:0.85;">
         ${fmt(cur.saldoInicial)} (inicial) + ${fmt(cur.resMes)} (resultado del mes) = <strong>${fmt(cur.saldoCierre)}</strong> disponible para ${meses[currentMonth+1]||'el próximo año'}
@@ -10300,16 +10338,20 @@ async function renderFinFlujo(){
 
   <!-- TABLA MENSUAL -->
   <div style="overflow-x:auto;width:100%;">
-  <table style="font-size:12px;width:100%;border-collapse:collapse;min-width:800px;">
+  <table style="font-size:12px;width:100%;border-collapse:collapse;min-width:1300px;">
     <thead><tr style="background:var(--navy);color:#fff;">
       <th style="padding:8px 10px;text-align:left;">Mes</th>
       <th style="padding:8px 10px;text-align:right;">Saldo inicial</th>
-      <th style="padding:8px 10px;text-align:right;">Ingresos</th>
-      <th style="padding:8px 10px;text-align:right;">Egresos</th>
+      <th style="padding:8px 10px;text-align:right;">Ing. Innovaci</th>
+      <th style="padding:8px 10px;text-align:right;">Ing. Guillermo</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700;">Total ingresos</th>
       <th style="padding:8px 10px;text-align:right;">Nómina</th>
       <th style="padding:8px 10px;text-align:right;">Impuestos</th>
-      <th style="padding:8px 10px;text-align:right;">GB oper.</th>
+      <th style="padding:8px 10px;text-align:right;">Gtos. oper. GB</th>
+      <th style="padding:8px 10px;text-align:right;">Gtos. oper. Innovaci</th>
+      <th style="padding:8px 10px;text-align:right;font-weight:700;">Total egresos</th>
       <th style="padding:8px 10px;text-align:right;font-weight:700;">Resultado mes</th>
+      <th style="padding:8px 10px;text-align:right;background:rgba(0,0,0,0.15);">Saldo en cuenta</th>
       <th style="padding:8px 10px;text-align:right;background:rgba(0,0,0,0.15);font-weight:700;">Saldo cierre</th>
     </tr></thead>
     <tbody>
@@ -10317,15 +10359,23 @@ async function renderFinFlujo(){
         const m=i+1;
         const esActual=m===currentMonth;
         const hayData=r.ingTotal>0||r.egr>0||r.nom>0||r.imp>0||r.gb>0;
+        const totalEgrM=r.egr+r.nom+r.imp+r.gb;
+        const difBanco=r.saldoBanco!=null?(r.saldoBanco-r.saldoCierre):null;
         return`<tr style="border-bottom:1px solid var(--border);${esActual?'background:rgba(0,169,157,0.06);':''}">
           <td style="padding:7px 10px;font-weight:${esActual?700:400};">${meses[m]}${esActual?' ◀':''}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text3);">${fmt(r.saldoInicial)}</td>
-          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;">${r.ingTotal>0?fmt(r.ingTotal):'—'}</td>
-          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.egr>0?fmt(r.egr):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;">${r.ingInno>0?fmt(r.ingInno):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;">${r.ingGB>0?fmt(r.ingGB):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;font-weight:700;">${r.ingTotal>0?fmt(r.ingTotal):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.nom>0?fmt(r.nom):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.imp>0?fmt(r.imp):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.gb>0?fmt(r.gb):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.egr>0?fmt(r.egr):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);font-weight:700;">${totalEgrM>0?fmt(totalEgrM):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:${r.resMes>0?'#27AE60':r.resMes<0?'var(--red)':'var(--text3)'};">${hayData?fmt(r.resMes):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;background:rgba(0,0,0,0.02);">
+            ${r.saldoBanco!=null?`<span>${fmt(r.saldoBanco)}</span>${difBanco!=null&&Math.abs(difBanco)>=1?`<div style="font-size:9px;color:var(--red);">Δ ${fmt(difBanco)}</div>`:''}`:'<span style="color:var(--text3);">—</span>'}
+          </td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:${r.saldoCierre>=0?'#27AE60':'var(--red)'};background:rgba(0,169,157,0.04);">${(hayData||r.saldoInicial)?fmt(r.saldoCierre):'—'}</td>
         </tr>`;
       }).join('')}
