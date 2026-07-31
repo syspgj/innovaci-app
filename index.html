@@ -10187,7 +10187,7 @@ async function renderFinFlujo(){
 
   const byMes=Array.from({length:13},(_,i)=>({
     mes:i, ingTotal:0, ingGB:0, ingInno:0, subtotalGB:0,
-    egr:0, nom:0, imp:0, gb:0, res:0
+    egr:0, nom:0, imp:0, gb:0, sinRubro:0, res:0
   }));
 
   // Quita acentos para que "NOMINA" y "NÓMINA" (o cualquier variante con/sin
@@ -10213,32 +10213,25 @@ async function renderFinFlujo(){
   });
 
   // ── EGRESOS: clasificar ──
-  // Prioridad: 1) rubro explícito (fuente de verdad, viene de Config. rubros) —
-  // 2) si no hay rubro claro, heurística por folio/proveedor como respaldo.
+  // Se clasifica ÚNICAMENTE por el campo `rubro` explícito — exactamente igual
+  // que la vista Administración › Rubros — para que "Total egresos" aquí
+  // coincida siempre con esa vista. Los movimientos sin rubro asignado se
+  // suman aparte en "Egresos sin rubro" en vez de perderse en el catch-all.
   (egData||[]).forEach(r=>{
     if(!r.mes) return;
     const prov=(r.proveedor||'').toUpperCase();
-    const folio=(r.folio||'').toUpperCase();
-    const conc=(r.concepto||'').toUpperCase();
     const rubro=normRubro(r.rubro);
     const total=r.total||0;
 
-    // Rubro explícito primero (ya normalizado, ignora acentos)
+    // Violeta: ignorar hasta julio (regla de negocio, no de clasificación)
+    if(prov.includes('VIOLETA')&&r.mes<=6){return;}
+
+    if(!r.rubro||rubro===''||rubro==='POR CLASIFICAR'||rubro==='SIN RUBRO'){byMes[r.mes].sinRubro+=total;return;}
     if(rubro==='NOMINA'){byMes[r.mes].nom+=total;return;}
     if(rubro==='IMSS'||rubro==='SAT'||rubro==='IMPUESTOS'){byMes[r.mes].imp+=total;return;}
     if(rubro==='GB OPERATIVOS'||rubro==='PROVEEDOR GB'){byMes[r.mes].gb+=total;return;}
-    if(prov.includes('GUILLERMO')){byMes[r.mes].gb+=total;return;}
-
-    // Respaldo por folio/proveedor solo si el rubro no lo definió ya
-    const esNomFolio=/^(NOM|NNOM)/.test(folio);
-    const esHH=/^HH/.test(folio)||(prov==='MERCADO PAGO'&&(conc.endsWith('HH')||conc.endsWith('HH2')));
-    const esManuelIMSS=prov==='MERCADO PAGO'&&(conc.endsWith('NOM')||conc.endsWith('NO'));
-    if(esNomFolio||esHH||esManuelIMSS){byMes[r.mes].nom+=total;return;}
-    if(prov.startsWith('SAT')||prov==='IMSS'){byMes[r.mes].imp+=total;return;}
-
-    // Violeta: ignorar hasta julio
-    if(prov.includes('VIOLETA')&&r.mes<=6){return;}
-    // Resto → Gastos operativos Innovaci (todo lo que no sea nómina/impuestos/GB)
+    // Resto → Gastos operativos Innovaci (cualquier otro rubro explícito:
+    // GASTOS OPERATIVOS, CLOUD, MARKETING, SUSCRIPCIONES, etc.)
     byMes[r.mes].egr+=total;
   });
 
@@ -10253,11 +10246,21 @@ async function renderFinFlujo(){
   saldoInicialMes[1]=SALDO_INICIAL_ENERO;
   for(let i=1;i<=12;i++){
     const m=byMes[i];
-    // Resultado del mes = ingresos totales - todas las salidas
-    m.resMes=m.ingTotal-(m.egr+m.nom+m.imp+m.gb);
+    // Resultado del mes = ingresos totales - todas las salidas (incluye sin rubro)
+    m.resMes=m.ingTotal-(m.egr+m.nom+m.imp+m.gb+m.sinRubro);
     m.saldoInicial=saldoInicialMes[i];
-    m.saldoCierre=m.saldoInicial+m.resMes;
-    m.saldoBanco=saldoBancoMes[i];
+    // "Saldo en cuenta": si ya se capturó el real del banco para este mes, se
+    // usa ese (y se compara contra el saldo inicial calculado, para detectar
+    // descuadres). Si NO se ha capturado, se autocompleta con el saldo
+    // inicial calculado (= cierre del mes anterior), para que la columna
+    // nunca quede vacía y avance sola mes a mes.
+    m.saldoBancoManual=saldoBancoMes[i];
+    m.saldoBanco=saldoBancoMes[i]!=null?saldoBancoMes[i]:m.saldoInicial;
+    m.saldoBancoEsAuto=saldoBancoMes[i]==null;
+    // El cierre se calcula sobre el saldo en cuenta real (si ya se confirmó
+    // con el banco) para que cualquier corrección se arrastre automáticamente
+    // a los meses siguientes.
+    m.saldoCierre=m.saldoBanco+m.resMes;
     if(i<12) saldoInicialMes[i+1]=m.saldoCierre;
     m.res=m.saldoCierre; // compat
   }
@@ -10296,13 +10299,14 @@ async function renderFinFlujo(){
   <!-- TARJETAS RESUMEN según filtro -->
   ${(()=>{
     if(_flujoFiltro==='guillermo') return '';
-    const totalEgr=cur.egr+cur.nom+cur.imp+cur.gb;
+    const totalEgr=cur.egr+cur.nom+cur.imp+cur.gb+cur.sinRubro;
     return `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px;">
       <div class="thc"><div class="th-lbl">Ingresos Innovaci</div><div class="th-val" style="color:#27AE60;">${fmt(cur.ingInno)}</div></div>
       <div class="thc"><div class="th-lbl">Ingresos Guillermo Blancas</div><div class="th-val" style="color:#27AE60;">${fmt(cur.ingGB)}</div></div>
       <div class="thc" style="border:1px solid rgba(39,174,96,0.35);"><div class="th-lbl">Total ingresos</div><div class="th-val" style="color:#27AE60;">${fmt(cur.ingTotal)}</div></div>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px;">
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:20px;">
+      <div class="thc" style="${cur.sinRubro>0?'border:1px solid rgba(245,166,35,0.4);':''}"><div class="th-lbl">Egresos sin rubro</div><div class="th-val" style="color:${cur.sinRubro>0?'#F5A623':'var(--text3)'};">${fmt(cur.sinRubro)}</div>${cur.sinRubro>0?'<div style="font-size:9px;color:#F5A623;margin-top:2px;">clasifícalos en Administración</div>':''}</div>
       <div class="thc"><div class="th-lbl">Nómina</div><div class="th-val" style="color:var(--red);">${fmt(cur.nom)}</div></div>
       <div class="thc"><div class="th-lbl">Impuestos</div><div class="th-val" style="color:var(--red);">${fmt(cur.imp)}</div></div>
       <div class="thc"><div class="th-lbl">Gastos operativos GB</div><div class="th-val" style="color:var(--red);">${fmt(cur.gb)}</div></div>
@@ -10321,19 +10325,19 @@ async function renderFinFlujo(){
       </div>
       <div style="margin-top:14px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.15);display:grid;grid-template-columns:repeat(2,1fr);gap:16px;">
         <div>
-          <div style="font-size:11px;opacity:0.7;">Saldo en cuenta (banco real) — ${meses[currentMonth]}</div>
-          <input type="text" id="saldoBancoInput" value="${cur.saldoBanco!=null?cur.saldoBanco:''}" placeholder="Captura el saldo del estado de cuenta"
+          <div style="font-size:11px;opacity:0.7;">Saldo en cuenta (banco real) — ${meses[currentMonth]} ${cur.saldoBancoEsAuto?'<span style="opacity:0.6;">(auto, sin confirmar)</span>':''}</div>
+          <input type="text" id="saldoBancoInput" value="${cur.saldoBancoManual!=null?cur.saldoBancoManual:''}" placeholder="${fmt(cur.saldoInicial)} (auto)"
             style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.25);border-radius:6px;padding:6px 10px;color:#fff;font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;width:70%;margin-top:2px;"
             onblur="guardarSaldoBanco(this.value)">
+          ${cur.saldoBancoManual!=null?(()=>{const dif=cur.saldoBancoManual-cur.saldoInicial;return `<div style="font-size:10px;margin-top:2px;color:${Math.abs(dif)<1?'#5EEAD4':'#FCA5A5'};">${Math.abs(dif)<1?'✓ cuadra con lo calculado':`⚠ diferencia de ${fmt(dif)} vs el saldo inicial calculado (${fmt(cur.saldoInicial)})`}</div>`;})():'<div style="font-size:10px;margin-top:2px;opacity:0.6;">Sin confirmar aún — usando el saldo inicial calculado</div>'}
         </div>
         <div>
-          <div style="font-size:11px;opacity:0.7;">Saldo al cierre (calculado)</div>
+          <div style="font-size:11px;opacity:0.7;">Saldo al cierre</div>
           <div style="font-size:20px;font-weight:800;color:${cur.saldoCierre>=0?'#5EEAD4':'#FCA5A5'};">${fmt(cur.saldoCierre)}</div>
-          ${cur.saldoBanco!=null?(()=>{const dif=cur.saldoBanco-cur.saldoCierre;return `<div style="font-size:10px;margin-top:2px;color:${Math.abs(dif)<1?'#5EEAD4':'#FCA5A5'};">${Math.abs(dif)<1?'✓ cuadra con el banco':`⚠ diferencia de ${fmt(dif)} vs banco`}</div>`;})():''}
         </div>
       </div>
       <div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,0.15);font-size:12px;opacity:0.85;">
-        ${fmt(cur.saldoInicial)} (inicial) + ${fmt(cur.resMes)} (resultado del mes) = <strong>${fmt(cur.saldoCierre)}</strong> disponible para ${meses[currentMonth+1]||'el próximo año'}
+        ${fmt(cur.saldoBanco)} (saldo en cuenta) + ${fmt(cur.resMes)} (resultado del mes) = <strong>${fmt(cur.saldoCierre)}</strong> disponible para ${meses[currentMonth+1]||'el próximo año'}
       </div>
     </div>`;
   })()}
@@ -10347,6 +10351,7 @@ async function renderFinFlujo(){
       <th style="padding:8px 10px;text-align:right;">Ing. Innovaci</th>
       <th style="padding:8px 10px;text-align:right;">Ing. Guillermo</th>
       <th style="padding:8px 10px;text-align:right;font-weight:700;">Total ingresos</th>
+      <th style="padding:8px 10px;text-align:right;color:#F5A623;">Egresos sin rubro</th>
       <th style="padding:8px 10px;text-align:right;">Nómina</th>
       <th style="padding:8px 10px;text-align:right;">Impuestos</th>
       <th style="padding:8px 10px;text-align:right;">Gtos. oper. GB</th>
@@ -10360,23 +10365,24 @@ async function renderFinFlujo(){
       ${byMes.slice(1).map((r,i)=>{
         const m=i+1;
         const esActual=m===currentMonth;
-        const hayData=r.ingTotal>0||r.egr>0||r.nom>0||r.imp>0||r.gb>0;
-        const totalEgrM=r.egr+r.nom+r.imp+r.gb;
-        const difBanco=r.saldoBanco!=null?(r.saldoBanco-r.saldoCierre):null;
+        const hayData=r.ingTotal>0||r.egr>0||r.nom>0||r.imp>0||r.gb>0||r.sinRubro>0;
+        const totalEgrM=r.egr+r.nom+r.imp+r.gb+r.sinRubro;
+        const difBanco=r.saldoBancoManual!=null?(r.saldoBancoManual-r.saldoInicial):null;
         return`<tr style="border-bottom:1px solid var(--border);${esActual?'background:rgba(0,169,157,0.06);':''}">
           <td style="padding:7px 10px;font-weight:${esActual?700:400};">${meses[m]}${esActual?' ◀':''}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text3);">${fmt(r.saldoInicial)}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;">${r.ingInno>0?fmt(r.ingInno):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;">${r.ingGB>0?fmt(r.ingGB):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;font-weight:700;">${r.ingTotal>0?fmt(r.ingTotal):'—'}</td>
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:${r.sinRubro>0?'#F5A623':'var(--text3)'};">${r.sinRubro>0?fmt(r.sinRubro):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.nom>0?fmt(r.nom):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.imp>0?fmt(r.imp):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.gb>0?fmt(r.gb):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);">${r.egr>0?fmt(r.egr):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--red);font-weight:700;">${totalEgrM>0?fmt(totalEgrM):'—'}</td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:${r.resMes>0?'#27AE60':r.resMes<0?'var(--red)':'var(--text3)'};">${hayData?fmt(r.resMes):'—'}</td>
-          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;background:rgba(0,0,0,0.02);">
-            ${r.saldoBanco!=null?`<span>${fmt(r.saldoBanco)}</span>${difBanco!=null&&Math.abs(difBanco)>=1?`<div style="font-size:9px;color:var(--red);">Δ ${fmt(difBanco)}</div>`:''}`:'<span style="color:var(--text3);">—</span>'}
+          <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;background:rgba(0,0,0,0.02);${r.saldoBancoEsAuto?'font-style:italic;color:var(--text3);':''}">
+            <span>${fmt(r.saldoBanco)}</span>${r.saldoBancoEsAuto?' <span style="font-size:8px;">(auto)</span>':(difBanco!=null&&Math.abs(difBanco)>=1?`<div style="font-size:9px;color:var(--red);">Δ ${fmt(difBanco)}</div>`:'')}
           </td>
           <td style="padding:7px 10px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:${r.saldoCierre>=0?'#27AE60':'var(--red)'};background:rgba(0,169,157,0.04);">${(hayData||r.saldoInicial)?fmt(r.saldoCierre):'—'}</td>
         </tr>`;
