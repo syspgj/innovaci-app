@@ -9583,7 +9583,7 @@ async function previsualizarXMLs(){
     d._file=file.name; d._rubro=''; d._existe=false; d._existeId=null;
     _xmlParsed.push(d);
   }
-  // Verificar duplicados en Supabase por folio
+  // Verificar duplicados en Supabase por folio (ya tiene XML cargado)
   const folios=_xmlParsed.map(d=>d.folio).filter(Boolean);
   if(folios.length){
     const {data:existentes}=await sb.from('fact_egresos').select('id,folio,proveedor,total').in('folio',folios);
@@ -9592,13 +9592,43 @@ async function previsualizarXMLs(){
       if(d){d._existe=true;d._existeId=e.id;d._existeProv=e.proveedor;d._existeTotal=e.total;}
     });
   }
-  const nuevos=_xmlParsed.filter(d=>!d._existe).length;
-  const dups=_xmlParsed.filter(d=>d._existe).length;
+
+  // ── Buscar movimientos del banco YA registrados pero SIN factura todavía,
+  // para sugerir vincular en vez de duplicar ──
+  const {data:sinFactura}=await sb.from('fact_egresos').select('id,fecha_pago,proveedor,concepto,total')
+    .eq('anio',currentYear).eq('mes',currentMonth).eq('tiene_factura',false);
+  const candidatosDisponibles=[...(sinFactura||[])]; // se van "reservando" conforme se asignan
+  _xmlParsed.forEach(d=>{
+    if(d._existe){d._modo='existe';return;}
+    const dFecha=d.fecha?new Date(d.fecha+'T00:00:00'):null;
+    const candidatos=candidatosDisponibles
+      .filter(r=>Math.abs((r.total||0)-(d.total||0))<=1)
+      .map(r=>{
+        let dias=null;
+        if(dFecha&&r.fecha_pago) dias=Math.round(Math.abs((new Date(r.fecha_pago+'T00:00:00')-dFecha)/86400000));
+        return {...r,_dias:dias};
+      })
+      .sort((a,b)=>{const da=a._dias==null?999:a._dias,db=b._dias==null?999:b._dias;return da-db;});
+    d._candidatos=candidatos;
+    if(candidatos.length>0){
+      d._modo='vincular'; d._vincularId=candidatos[0].id;
+      // Reservar el mejor candidato para que otro XML no lo vuelva a sugerir
+      const idx=candidatosDisponibles.findIndex(c=>c.id===candidatos[0].id);
+      if(idx>=0) candidatosDisponibles.splice(idx,1);
+    } else {
+      d._modo='nuevo'; d._vincularId=null;
+    }
+  });
+
+  const nuevos=_xmlParsed.filter(d=>d._modo==='nuevo').length;
+  const vincular=_xmlParsed.filter(d=>d._modo==='vincular').length;
+  const dups=_xmlParsed.filter(d=>d._modo==='existe').length;
   const INP2='width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;box-sizing:border-box;font-family:Inter,sans-serif;';
   area.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+      <span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(41,128,185,0.12);color:#2980B9;">🔗 ${vincular} para vincular</span>
       <span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(39,174,96,0.12);color:#27AE60;">✅ ${nuevos} nuevo${nuevos!==1?'s':''}</span>
-      ${dups>0?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(245,166,35,0.15);color:#b45309;">⚠️ ${dups} ya existe${dups!==1?'n':''} — se omitirán</span>`:''}
+      ${dups>0?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(245,166,35,0.15);color:#b45309;">⚠️ ${dups} ya tiene${dups!==1?'n':''} XML — se omitirán</span>`:''}
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:11px;">
       <thead><tr style="background:var(--navy);color:#fff;">
@@ -9606,39 +9636,81 @@ async function previsualizarXMLs(){
         <th style="padding:6px 8px;">Fecha</th>
         <th style="padding:6px 8px;">Folio</th>
         <th style="padding:6px 8px;text-align:left;">Proveedor</th>
-        <th style="padding:6px 8px;text-align:right;">Subtotal</th>
-        <th style="padding:6px 8px;text-align:right;color:#5fe;">Total</th>
+        <th style="padding:6px 8px;text-align:right;">Total</th>
         <th style="padding:6px 8px;">Rubro</th>
-        <th style="padding:6px 8px;text-align:center;">Estado</th>
+        <th style="padding:6px 8px;text-align:left;">Acción</th>
       </tr></thead>
       <tbody>
         ${_xmlParsed.map((d,i)=>{
-          const rowBg=d._existe?(i%2===0?'#fffbeb':'#fef3c7'):(i%2===0?'#f9fafb':'#fff');
-          return`<tr style="border-bottom:1px solid var(--border);background:${rowBg};${d._existe?'opacity:0.65;':''}">
+          if(d._modo==='existe'){
+            return`<tr style="border-bottom:1px solid var(--border);background:#fef3c7;opacity:0.65;">
+            <td style="padding:4px 6px;color:var(--text3);font-size:10px;">${d._file.slice(0,20)}</td>
+            <td style="padding:4px 6px;text-align:center;">${d.fecha}</td>
+            <td style="padding:4px 6px;text-align:center;font-weight:700;color:var(--navy);">${d.folio||'—'}</td>
+            <td style="padding:4px 6px;">${d.proveedor||''}</td>
+            <td style="padding:4px 6px;text-align:right;font-weight:700;">$${d.total.toLocaleString('es-MX',{minimumFractionDigits:2})}</td>
+            <td colspan="2" style="padding:4px 6px;font-size:10px;color:#b45309;font-style:italic;">⚠️ ya tiene XML cargado — se omite</td>
+          </tr>`;
+          }
+          const rowBg=d._modo==='vincular'?'#eff6ff':(i%2===0?'#f9fafb':'#fff');
+          return`<tr style="border-bottom:1px solid var(--border);background:${rowBg};">
           <td style="padding:4px 6px;color:var(--text3);font-size:10px;">${d._file.slice(0,20)}</td>
           <td style="padding:4px 6px;text-align:center;">${d.fecha}</td>
           <td style="padding:4px 6px;text-align:center;font-weight:700;color:var(--navy);">${d.folio||'—'}</td>
-          <td style="padding:4px 6px;max-width:150px;"><input type="text" value="${(d.proveedor||'').replace(/"/g,'&quot;')}" oninput="_xmlParsed[${i}].proveedor=this.value" style="${INP2}" list="xmlProvList" ${d._existe?'disabled':''}></td>
-          <td style="padding:4px 6px;text-align:right;">${d.subtotal>0?'$'+d.subtotal.toLocaleString('es-MX',{minimumFractionDigits:2}):''}</td>
+          <td style="padding:4px 6px;max-width:130px;"><input type="text" value="${(d.proveedor||'').replace(/"/g,'&quot;')}" oninput="_xmlParsed[${i}].proveedor=this.value" style="${INP2}" list="xmlProvList"></td>
           <td style="padding:4px 6px;text-align:right;font-weight:700;">$${d.total.toLocaleString('es-MX',{minimumFractionDigits:2})}</td>
-          <td style="padding:4px 6px;">${d._existe?'<span style="font-size:10px;color:#b45309;font-style:italic;">ya registrado</span>':`<select onchange="_xmlParsed[${i}]._rubro=this.value" style="${INP2}"><option value="">-- Rubro --</option>${rubros.map(r=>`<option value="${r}">${r}</option>`).join('')}</select>`}</td>
-          <td style="padding:4px 6px;text-align:center;">${d._existe?'<span style="font-size:11px;font-weight:700;color:#b45309;">⚠️ OMITIR</span>':'<span style="font-size:11px;font-weight:700;color:#27AE60;">✅ NUEVO</span>'}</td>
+          <td style="padding:4px 6px;"><select onchange="_xmlParsed[${i}]._rubro=this.value" style="${INP2}"><option value="">-- Rubro --</option>${rubros.map(r=>`<option value="${r}">${r}</option>`).join('')}</select></td>
+          <td style="padding:4px 6px;min-width:210px;">
+            <select onchange="cambiarAccionXml(${i},this.value)" style="${INP2}${d._modo==='vincular'?'border-color:#2980B9;background:#eff6ff;':''}">
+              ${d._candidatos.map(c=>`<option value="vincular:${c.id}" ${d._vincularId===c.id?'selected':''}>🔗 Vincular: ${c.fecha_pago||'sin fecha'} · $${(c.total||0).toLocaleString('es-MX',{minimumFractionDigits:2})} · ${(c.proveedor||c.concepto||'').slice(0,22)}${c._dias!=null?` (±${c._dias}d)`:''}</option>`).join('')}
+              <option value="nuevo" ${d._modo==='nuevo'?'selected':''}>🆕 Registrar como nuevo</option>
+              <option value="ignorar" ${d._modo==='ignorar'?'selected':''}>🚫 Ignorar este XML</option>
+            </select>
+            ${d._candidatos.length===0?'<div style="font-size:9px;color:var(--text3);margin-top:2px;">Sin movimiento de banco con ese monto</div>':''}
+          </td>
         </tr>`;
         }).join('')}
       </tbody>
     </table>
     <datalist id="xmlProvList">${provs.map(p=>`<option value="${p}">`).join('')}</datalist>
     <div style="margin-top:10px;padding:8px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font-size:11px;color:#15803d;font-weight:600;">
-      Se guardarán ${nuevos} archivo(s) nuevo(s). ${dups>0?`Los ${dups} duplicado(s) serán ignorados.`:''}
+      Se vincularán ${vincular} con su movimiento de banco, se crearán ${nuevos} registro(s) nuevo(s). ${dups>0?`${dups} se omitirán (ya tenían XML).`:''}
     </div>`;
+}
+
+function cambiarAccionXml(i,valor){
+  const d=_xmlParsed[i];
+  if(valor==='nuevo'){d._modo='nuevo';d._vincularId=null;}
+  else if(valor==='ignorar'){d._modo='ignorar';d._vincularId=null;}
+  else if(valor.startsWith('vincular:')){d._modo='vincular';d._vincularId=valor.split(':')[1];}
 }
 
 async function guardarXMLsMasivo(){
   if(!_xmlParsed.length){alert('Primero selecciona archivos XML.');return;}
   const msg=document.getElementById('xmlMasivoMsg');
-  let ok=0,err=0,omitidos=0;
+  let vinculados=0,nuevos=0,ignorados=0,omitidos=0,err=0;
   for(const d of _xmlParsed){
-    if(d._existe){omitidos++;continue;} // ya registrado, saltar
+    if(d._modo==='existe'){omitidos++;continue;}
+    if(d._modo==='ignorar'){ignorados++;continue;}
+
+    if(d._modo==='vincular'&&d._vincularId){
+      // Vincula la factura con el movimiento del banco ya registrado:
+      // completa los datos de la factura, SIN tocar fecha_pago/total que
+      // ya vienen correctos del estado de cuenta.
+      const payload={
+        fecha_factura:d.fecha||null, folio:d.folio||null,
+        proveedor:d.proveedor||null, concepto:d.concepto||null,
+        subtotal:d.subtotal||0, iva_retenido:d.ivaRet||0,
+        iva_trasladado:d.ivaTras||0, isr:d.isr||0,
+        tiene_factura:true
+      };
+      if(d._rubro) payload.rubro=d._rubro;
+      const {error}=await sb.from('fact_egresos').update(payload).eq('id',d._vincularId);
+      if(error) err++; else vinculados++;
+      continue;
+    }
+
+    // Nuevo registro (no había movimiento de banco con ese monto)
     const payload={
       anio:currentYear,mes:currentMonth,
       fecha_factura:d.fecha||null,folio:d.folio||null,
@@ -9649,13 +9721,13 @@ async function guardarXMLsMasivo(){
       status:'PAGADO',tiene_factura:true,conciliado:false
     };
     const {error}=await sb.from('fact_egresos').insert(payload);
-    if(error) err++;
-    else ok++;
+    if(error) err++; else nuevos++;
   }
+  const ok=vinculados+nuevos;
   if(msg){msg.style.color=err?'var(--red)':'#15803d';
-    msg.textContent=`✅ ${ok} guardados${omitidos?` | ⏭️ ${omitidos} omitidos (ya existían)`:''}${err?` | ⚠️ ${err} con error`:''}`;}
+    msg.textContent=`✅ ${vinculados} vinculado(s) | ✅ ${nuevos} nuevo(s)${ignorados?` | 🚫 ${ignorados} ignorado(s)`:''}${omitidos?` | ⏭️ ${omitidos} omitidos (ya tenían XML)`:''}${err?` | ⚠️ ${err} con error`:''}`;}
   if(ok>0){
-    setTimeout(()=>{document.getElementById('modalXmlMasivo')?.remove();renderAdminEgresos();},1500);
+    setTimeout(()=>{document.getElementById('modalXmlMasivo')?.remove();renderAdminEgresos();},1800);
   }
 }
 
