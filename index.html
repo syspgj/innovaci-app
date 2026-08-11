@@ -3347,6 +3347,26 @@ async function renderDirectorResumen(){
   const diasTrans=esEsteMes?getDiasTranscurridos(currentYear,currentMonth):diasHab;
   const diasRest=Math.max(diasHab-diasTrans,0);
   const cerrado=!esEsteMes||diasRest===0;
+  // ── PROYECCIÓN DE CIERRE: ritmo diario actual proyectado al resto del mes,
+  // más las negociaciones abiertas (snapshot del registro más reciente de
+  // cada vendedor) como contexto de qué tan sólido/riesgoso es ese pronóstico.
+  vData.forEach(v=>{
+    const avgDaily=diasTrans>0?v.tot.svc/diasTrans:0;
+    v.projFin=v.tot.svc+avgDaily*diasRest;
+    v.projPct=v.svcMeta>0?v.projFin/v.svcMeta:0;
+    v.projStatus=v.projPct>=1?'ok':v.projPct>=0.85?'riesgo':'bajo';
+    const regsU=allRegistros.filter(r=>r.usuario_id===v.u.id).sort((a,b)=>a.fecha<b.fecha?1:-1);
+    const ultimo=regsU[0]||{};
+    v.negNum=(ultimo.neg_clientes_num||0)+(ultimo.neg_prospectos_num||0);
+    v.negMonto=(ultimo.neg_clientes_monto||0)+(ultimo.neg_prospectos_monto||0);
+  });
+  const projTeamFin=vData.reduce((s,v)=>s+v.projFin,0);
+  const projTeamPct=metaSvc>0?projTeamFin/metaSvc:0;
+  const projTeamStatus=projTeamPct>=1?'ok':projTeamPct>=0.85?'riesgo':'bajo';
+  const negTeamNum=vData.reduce((s,v)=>s+v.negNum,0);
+  const negTeamMonto=vData.reduce((s,v)=>s+v.negMonto,0);
+  const projColor={ok:'#27AE60',riesgo:'#F5A623',bajo:'#E84040'};
+  const projLabel={ok:'✅ Va en camino a cumplir la meta',riesgo:'⚠️ En riesgo — cerca pero no seguro',bajo:'🔴 Al ritmo actual NO alcanzaría la meta'};
   // Prospectos canalizados por vendedor este mes — fuente de verdad: estatus + llamada canalizada
   // Se cuenta por la fecha de la llamada 'Canalizado a ventas', no por updated_at
   const {data:llamadasCanaliz}=await sb.from('prospecto_llamadas')
@@ -3477,6 +3497,20 @@ async function renderDirectorResumen(){
     ${canalizadosSinVendedor>0?`<div style="margin-top:8px;font-size:11px;color:var(--red);">⚠️ ${canalizadosSinVendedor} prospecto(s) canalizados sin vendedor asignado — por eso no cuadran los totales. Haz clic para verlos.</div>`:''}
   </div>`:''}
   ${panelCampanias}
+  <div class="card" style="padding:16px;margin-bottom:16px;border-left:4px solid ${projColor[projTeamStatus]};">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+      <div style="font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;">📈 Proyección de cierre del mes</div>
+      <div style="font-size:12px;font-weight:700;color:${projColor[projTeamStatus]};">${projLabel[projTeamStatus]}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:${negTeamNum>0?'12px':'0'};">
+      <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Vendido hoy</div><div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;">${fmt(totalSvc)}</div></div>
+      <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Proyectado a fin de mes</div><div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${projColor[projTeamStatus]};">${fmt(projTeamFin)}</div></div>
+      <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Meta del equipo</div><div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;">${fmt(metaSvc)}</div></div>
+      <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">% proyectado</div><div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${projColor[projTeamStatus]};">${Math.round(projTeamPct*100)}%</div></div>
+    </div>
+    ${negTeamNum>0?`<div style="font-size:11px;color:var(--text3);padding-top:10px;border-top:1px solid var(--border);">💼 Además, el equipo tiene <b style="color:var(--text);">${negTeamNum} negociación(es) abiertas</b> por un estimado de <b style="color:var(--text);font-family:'JetBrains Mono',monospace;">${fmt(negTeamMonto)}</b> — no están incluidas en la proyección de arriba (solo cuenta ritmo ya cerrado), pero podrían ayudar a cerrar la brecha si avanzan este mes.</div>`:''}
+    <div style="font-size:10px;color:var(--text3);margin-top:8px;">Proyección basada en el ritmo diario de venta hasta hoy (${diasTrans} de ${diasHab} días hábiles), extrapolado a los ${diasRest} días restantes. No es una promesa — es una señal temprana para tomar acción si hace falta.</div>
+  </div>
   <div class="vgrid">${vData.map(v=>{
     const cc=v.rate>=0.10?'#27AE60':v.rate>=0.09?'#00A99D':v.rate>0?'#F5A623':'#E84040';
     const ini=v.u.nombre.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase();
@@ -3499,6 +3533,11 @@ async function renderDirectorResumen(){
       <div class="vc-cr"><div class="vc-clbl">Comisión total</div><div class="vc-cval" style="color:${cc};">${fmt(v.commTotal)}</div><div class="vc-crate" style="color:${cc};">tasa ${(v.rate*100).toFixed(1)}%</div>${v.bonoMed?.aplica?`<div style="font-size:9px;color:var(--text3);margin-top:3px;">${fmt(v.comm)} + ${fmt(v.bonoMed.monto)} bono 2%</div>`:''}</div>
     </div><div>${bars}</div></div>
     <div style="padding:8px 14px 0 14px;font-size:11px;color:var(--text3);">Servicios: <b style="color:var(--text);font-family:'JetBrains Mono',monospace;">${fmt(v.tot.svc)}</b> de meta <b>${fmt(v.svcMeta)}</b>${v.tot.svc<v.svcMeta?` · faltan <b style="color:#E84040;">${fmt(v.svcMeta-v.tot.svc)}</b>`:' · <span style="color:#27AE60;font-weight:600;">✅ meta cumplida</span>'}</div>
+    <div style="padding:6px 14px 0 14px;font-size:11px;color:var(--text3);display:flex;align-items:center;gap:6px;">
+      <span style="width:7px;height:7px;border-radius:50%;background:${projColor[v.projStatus]};flex-shrink:0;"></span>
+      📈 Proyección: <b style="color:${projColor[v.projStatus]};font-family:'JetBrains Mono',monospace;">${fmt(v.projFin)}</b> (${Math.round(v.projPct*100)}% de meta)
+      ${v.negNum>0?` · 💼 <b style="color:var(--text);">${v.negNum}</b> negociación(es) abiertas por <b style="color:var(--text);font-family:'JetBrains Mono',monospace;">${fmt(v.negMonto)}</b>`:''}
+    </div>
     <div style="padding:8px 14px;border-top:1px solid var(--border);display:flex;gap:16px;">
       <div style="flex:1;"><div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.05em;">Ticket prom. anual</div>
         <div style="font-size:13px;font-weight:700;color:var(--teal);font-family:'JetBrains Mono',monospace;">${ma.ticket>0?fmt(ma.ticket):'—'}</div>
