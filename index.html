@@ -7,6 +7,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap');
@@ -8469,6 +8470,7 @@ function renderIngresosTabla(){
       <button onclick="window._fiFilter.texto='';renderIngresosTabla()" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:14px;">✕</button>
     </div>
     <button onclick="abrirNuevaFactIngreso()" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">+ Registrar</button>
+    <button onclick="abrirCargaMasivaXMLIng()" style="background:#8B5CF6;color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">📎 Cargar XMLs</button>
     <button onclick="abrirConciliacionBancoIng()" style="background:#27AE60;color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">🏦 Conciliar con banco</button>
   </div>
   <div style="width:100%;overflow-x:auto;">
@@ -8509,7 +8511,13 @@ function renderIngresosTabla(){
           <td style="padding:4px 6px;min-width:90px;"><span contenteditable="true" onblur="editarFactIng('${r.id}','fecha_pago',this.textContent.trim())" style="${ce}white-space:nowrap;color:var(--text3);">${r.fecha_pago||''}</span></td>
           <td style="padding:4px 6px;text-align:center;"><button onclick="toggleCobrado('${r.id}',${!r.cobrado})" style="background:${r.cobrado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${r.cobrado?'#27AE60':'var(--red)'};border:1px solid ${r.cobrado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:10px;padding:2px 7px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">${r.cobrado?'✓':'○'}</button></td>
           <td style="padding:4px 6px;text-align:center;"><button onclick="toggleConciliadoIng('${r.id}',${!r.conciliado})" style="background:${r.conciliado?'rgba(13,34,64,0.08)':'none'};color:${r.conciliado?'var(--navy)':'var(--text3)'};border:1px solid ${r.conciliado?'rgba(13,34,64,0.2)':'var(--border)'};border-radius:10px;padding:2px 7px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">${r.conciliado?'✓':'○'}</button></td>
-          <td style="padding:4px 6px;"><button onclick="eliminarFactIngreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 6px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
+          <td style="padding:4px 6px;">
+            <div style="display:flex;gap:3px;">
+              ${r.xml_path?`<button onclick="verXMLGuardado('${r.xml_path}')" title="Ver/descargar XML" style="background:none;border:1px solid var(--border);color:var(--text3);border-radius:4px;padding:2px 5px;font-size:10px;cursor:pointer;">📄</button>
+              <button onclick="generarPDFDesdeStorage('${r.xml_path}')" title="Generar PDF" style="background:none;border:1px solid var(--border);color:var(--text3);border-radius:4px;padding:2px 5px;font-size:10px;cursor:pointer;">🖨️</button>`:''}
+              <button onclick="eliminarFactIngreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 6px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button>
+            </div>
+          </td>
         </tr>`;
       }).join('')}
     </tbody>
@@ -8828,7 +8836,13 @@ async function renderEgresosTabla(){
           <button onclick="toggleTieneFactura('${r.id}',${!r.tiene_factura})" title="${r.tiene_factura?'Con factura SAT':'Sin factura'}" style="background:${r.tiene_factura?'rgba(39,174,96,0.12)':'rgba(107,114,128,0.08)'};color:${r.tiene_factura?'#27AE60':'var(--text3)'};border:1px solid ${r.tiene_factura?'rgba(39,174,96,0.3)':'var(--border)'};border-radius:10px;padding:2px 8px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:700;">${r.tiene_factura?'✓ XML':'—'}</button>
         </td>
         <td style="padding:4px 6px;text-align:center;"><button onclick="toggleConciliado('${r.id}',${!r.conciliado})" style="background:${r.conciliado?'rgba(39,174,96,0.12)':'rgba(232,64,64,0.08)'};color:${r.conciliado?'#27AE60':'var(--red)'};border:1px solid ${r.conciliado?'rgba(39,174,96,0.3)':'rgba(232,64,64,0.2)'};border-radius:10px;padding:2px 7px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;font-weight:600;">${r.conciliado?'✓':'○'}</button></td>
-        <td style="padding:4px 6px;"><button onclick="eliminarFactEgreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 6px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button></td>
+        <td style="padding:4px 6px;">
+          <div style="display:flex;gap:3px;">
+            ${r.xml_path?`<button onclick="verXMLGuardado('${r.xml_path}')" title="Ver/descargar XML" style="background:none;border:1px solid var(--border);color:var(--text3);border-radius:4px;padding:2px 5px;font-size:10px;cursor:pointer;">📄</button>
+            <button onclick="generarPDFDesdeStorage('${r.xml_path}')" title="Generar PDF" style="background:none;border:1px solid var(--border);color:var(--text3);border-radius:4px;padding:2px 5px;font-size:10px;cursor:pointer;">🖨️</button>`:''}
+            <button onclick="eliminarFactEgreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 6px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button>
+          </div>
+        </td>
       </tr>`;}).join('')}
     </tbody>
   </table>
@@ -8917,6 +8931,10 @@ function abrirNuevaFactIngreso(){
   const today=todayLocal();
   const rubros=window._rubrosIng||['MEMBRESIA','TIMBRES','CLOUD','CLIENTES GB'];
   const html=`
+    <div style="background:rgba(0,169,157,0.06);border:1px dashed var(--teal);border-radius:8px;padding:10px 12px;margin-bottom:12px;display:flex;align-items:center;gap:10px;">
+      <span style="font-size:12px;font-weight:600;color:var(--teal);">📎 Cargar desde XML SAT</span>
+      <input type="file" id="fiXmlFile" accept=".xml" onchange="parsearXmlIngreso()" style="font-size:11px;flex:1;">
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha',inp('fiFecha','date','',today))}
       ${fld('Folio',inp('fiFolio','text','Ej. INN215'))}
@@ -8939,6 +8957,23 @@ function abrirNuevaFactIngreso(){
       ${fld('Fecha de pago',inp('fiFechaPago','date'))}
     </div>`;
   mkModal('modalIngNuevo','Nueva factura de ingreso',html,'guardarFactIngreso');
+}
+
+async function parsearXmlIngreso(){
+  const file=document.getElementById('fiXmlFile')?.files?.[0];
+  if(!file)return;
+  const txt=await file.text();
+  window._fiXmlText=txt;
+  const d=parsearCFDI(txt);
+  if(document.getElementById('fiFecha')) document.getElementById('fiFecha').value=d.fecha||todayLocal();
+  if(document.getElementById('fiFolio')) document.getElementById('fiFolio').value=d.folio||'';
+  if(document.getElementById('fiCliente')) document.getElementById('fiCliente').value=d.cliente||'';
+  if(document.getElementById('fiConcepto')) document.getElementById('fiConcepto').value=d.concepto||'';
+  if(document.getElementById('fiSubtotal')) document.getElementById('fiSubtotal').value=d.subtotal||0;
+  if(document.getElementById('fiDescuento')) document.getElementById('fiDescuento').value=0;
+  calcIngTotales();
+  if(document.getElementById('fiIva')) document.getElementById('fiIva').value=(d.ivaTras||0).toFixed(2);
+  if(document.getElementById('fiTotal')) document.getElementById('fiTotal').value=(d.total||0).toFixed(2);
 }
 
 function calcIngTotales(){
@@ -8979,6 +9014,11 @@ async function guardarFactIngreso(){
     subtotal_original,descuento,subtotal_final,iva,total,forma_pago,estatus,fecha_pago,cobrado,conciliado:false
   }).select().single();
   if(error){alert('Error: '+error.message);return;}
+  if(window._fiXmlText){
+    const path=await subirXMLStorage(window._fiXmlText,'ingresos',folio);
+    if(path) await sb.from('fact_ingresos').update({xml_path:path}).eq('id',newRow.id);
+    window._fiXmlText=null;
+  }
   // Retención GB automática
   if(serie==='GBE'&&subtotal_final>0){
     const ret=parseFloat((subtotal_final*0.025).toFixed(2));
@@ -8990,6 +9030,134 @@ async function guardarFactIngreso(){
   }
   document.getElementById('modalIngNuevo')?.remove();
   renderAdminIngresos();
+}
+
+// ─── CARGA MASIVA DE XML — INGRESOS ───────────────────────────────────────────
+function abrirCargaMasivaXMLIng(){
+  const html=`
+    <div style="margin-bottom:12px;padding:10px 14px;background:rgba(139,92,246,0.07);border:1px dashed #8B5CF6;border-radius:8px;">
+      <div style="font-size:12px;font-weight:600;color:#8B5CF6;margin-bottom:6px;">Selecciona uno o varios archivos XML de facturas emitidas (SAT)</div>
+      <input type="file" id="xmlMasivoIng" accept=".xml" multiple onchange="previsualizarXMLsIng()" style="font-size:12px;width:100%;">
+    </div>
+    <div id="xmlPreviewAreaIng" style="max-height:420px;overflow-y:auto;"></div>
+    <div id="xmlMasivoIngMsg" style="margin-top:8px;font-size:12px;text-align:center;"></div>`;
+  mkModal('modalXmlMasivoIng','📎 Carga masiva de XMLs — Ingresos',html,'guardarXMLsMasivoIng','💾 Guardar',true);
+}
+
+let _xmlParsedIng=[];
+
+async function previsualizarXMLsIng(){
+  const files=Array.from(document.getElementById('xmlMasivoIng')?.files||[]);
+  if(!files.length)return;
+  const rubros=window._rubrosIng||['MEMBRESIA','TIMBRES','CLOUD','CLIENTES GB'];
+  const vendedores=['','DULCE SOLANO','MANUEL PEÑA','MIREYA','EDUARDO','CARLOS','GUILLERMO BLANCAS'];
+  _xmlParsedIng=[];
+  const area=document.getElementById('xmlPreviewAreaIng');
+  area.innerHTML='<div style="text-align:center;padding:20px;color:var(--text3);">Leyendo y verificando archivos...</div>';
+  for(const file of files){
+    const txt=await file.text();
+    const d=parsearCFDI(txt);
+    d._file=file.name; d._xmlText=txt; d._rubro=''; d._vendedor=''; d._fechaPago=''; d._estatus='EMITIDA'; d._existe=false;
+    _xmlParsedIng.push(d);
+  }
+  const folios=_xmlParsedIng.map(d=>d.folio).filter(Boolean);
+  if(folios.length){
+    const {data:existentes}=await sb.from('fact_ingresos').select('id,folio').in('folio',folios);
+    (existentes||[]).forEach(e=>{
+      const d=_xmlParsedIng.find(x=>x.folio===e.folio);
+      if(d){d._existe=true;}
+    });
+  }
+  const nuevos=_xmlParsedIng.filter(d=>!d._existe).length;
+  const dups=_xmlParsedIng.filter(d=>d._existe).length;
+  const INP2='width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;box-sizing:border-box;font-family:Inter,sans-serif;';
+  area.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+      <span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(39,174,96,0.12);color:#27AE60;">✅ ${nuevos} nuevo${nuevos!==1?'s':''}</span>
+      ${dups>0?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(245,166,35,0.15);color:#b45309;">⚠️ ${dups} ya existe${dups!==1?'n':''} — se omitirán</span>`:''}
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <thead><tr style="background:var(--navy);color:#fff;">
+        <th style="padding:6px 8px;text-align:left;">Archivo</th>
+        <th style="padding:6px 8px;">Fecha</th>
+        <th style="padding:6px 8px;">Folio</th>
+        <th style="padding:6px 8px;text-align:left;">Cliente</th>
+        <th style="padding:6px 8px;text-align:right;">Total</th>
+        <th style="padding:6px 8px;">Vendedor</th>
+        <th style="padding:6px 8px;">Rubro</th>
+        <th style="padding:6px 8px;">Estatus</th>
+        <th style="padding:6px 8px;">Fecha de pago</th>
+      </tr></thead>
+      <tbody>
+        ${_xmlParsedIng.map((d,i)=>{
+          if(d._existe){
+            return`<tr style="border-bottom:1px solid var(--border);background:#fef3c7;opacity:0.65;">
+            <td style="padding:4px 6px;color:var(--text3);font-size:10px;">${d._file.slice(0,20)}</td>
+            <td style="padding:4px 6px;text-align:center;">${d.fecha}</td>
+            <td style="padding:4px 6px;text-align:center;font-weight:700;color:var(--navy);">${d.folio||'—'}</td>
+            <td style="padding:4px 6px;">${d.cliente||''}</td>
+            <td style="padding:4px 6px;text-align:right;font-weight:700;">$${d.total.toLocaleString('es-MX',{minimumFractionDigits:2})}</td>
+            <td colspan="4" style="padding:4px 6px;font-size:10px;color:#b45309;font-style:italic;">⚠️ ya registrado — se omite</td>
+          </tr>`;
+          }
+          return`<tr style="border-bottom:1px solid var(--border);background:${i%2===0?'#f9fafb':'#fff'};">
+          <td style="padding:4px 6px;color:var(--text3);font-size:10px;">${d._file.slice(0,20)}</td>
+          <td style="padding:4px 6px;text-align:center;">${d.fecha}</td>
+          <td style="padding:4px 6px;text-align:center;font-weight:700;color:var(--navy);">${d.folio||'—'}</td>
+          <td style="padding:4px 6px;max-width:130px;"><input type="text" value="${(d.cliente||'').replace(/"/g,'&quot;')}" oninput="_xmlParsedIng[${i}].cliente=this.value" style="${INP2}"></td>
+          <td style="padding:4px 6px;text-align:right;font-weight:700;">$${d.total.toLocaleString('es-MX',{minimumFractionDigits:2})}</td>
+          <td style="padding:4px 6px;"><select onchange="_xmlParsedIng[${i}]._vendedor=this.value" style="${INP2}">${vendedores.map(v=>`<option value="${v}">${v||'-- Vendedor --'}</option>`).join('')}</select></td>
+          <td style="padding:4px 6px;"><select onchange="_xmlParsedIng[${i}]._rubro=this.value" style="${INP2}"><option value="">-- Rubro --</option>${rubros.map(r=>`<option value="${r}">${r}</option>`).join('')}</select></td>
+          <td style="padding:4px 6px;"><select onchange="_xmlParsedIng[${i}]._estatus=this.value" style="${INP2}"><option value="EMITIDA">EMITIDA</option><option value="PAGADA">PAGADA</option></select></td>
+          <td style="padding:4px 6px;"><input type="date" onchange="_xmlParsedIng[${i}]._fechaPago=this.value" style="${INP2}"></td>
+        </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+    <div style="margin-top:10px;padding:8px 12px;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:6px;font-size:11px;color:#5b21b6;font-weight:600;">
+      Se guardarán ${nuevos} factura(s) nueva(s). ${dups>0?`${dups} duplicado(s) por folio serán ignorados.`:''} Revisa Vendedor y Rubro antes de guardar — no vienen en el XML.
+    </div>`;
+}
+
+async function guardarXMLsMasivoIng(){
+  if(!_xmlParsedIng.length){alert('Primero selecciona archivos XML.');return;}
+  const msg=document.getElementById('xmlMasivoIngMsg');
+  let ok=0,err=0,omitidos=0;
+  for(const d of _xmlParsedIng){
+    if(d._existe){omitidos++;continue;}
+    const vendedor=d._vendedor||null;
+    const serie=vendedor==='GUILLERMO BLANCAS'?'GBE':null;
+    const estatus=d._estatus||'EMITIDA';
+    const cobrado=estatus==='PAGADA';
+    const payload={
+      anio:currentYear,mes:currentMonth,fecha:d.fecha||null,folio:d.folio||null,
+      serie,cliente:d.cliente||null,vendedor,concepto:d.concepto||null,
+      rubro:d._rubro||null,subtotal_original:d.subtotal||0,descuento:0,
+      subtotal_final:d.subtotal||0,iva:d.ivaTras||0,total:d.total||0,
+      forma_pago:'TRANSFERENCIA',estatus,fecha_pago:d._fechaPago||null,
+      cobrado,conciliado:false
+    };
+    const {data:newRow,error}=await sb.from('fact_ingresos').insert(payload).select().single();
+    if(error){err++;continue;}
+    ok++;
+    if(d._xmlText){
+      const path=await subirXMLStorage(d._xmlText,'ingresos',d.folio);
+      if(path) await sb.from('fact_ingresos').update({xml_path:path}).eq('id',newRow.id);
+    }
+    if(serie==='GBE'&&payload.subtotal_final>0){
+      const ret=parseFloat((payload.subtotal_final*0.025).toFixed(2));
+      await sb.from('gb_retenciones').insert({
+        fact_ingreso_id:newRow.id,anio:currentYear,mes:currentMonth,
+        monto_factura:payload.subtotal_final,retencion_pct:2.50,monto_retencion:ret,
+        monto_transferir:parseFloat((payload.subtotal_final-ret).toFixed(2)),transferido:false
+      });
+    }
+  }
+  if(msg){msg.style.color=err?'var(--red)':'#15803d';
+    msg.textContent=`✅ ${ok} guardadas${omitidos?` | ⏭️ ${omitidos} omitidas (ya existían)`:''}${err?` | ⚠️ ${err} con error`:''}`;}
+  if(ok>0){
+    setTimeout(()=>{document.getElementById('modalXmlMasivoIng')?.remove();renderAdminIngresos();},1500);
+  }
 }
 
 // ─── MODAL EDICIÓN INGRESO ────────────────────────────────────────────────────
@@ -9627,7 +9795,7 @@ async function previsualizarXMLs(){
   for(const file of files){
     const txt=await file.text();
     const d=parsearCFDI(txt);
-    d._file=file.name; d._rubro=''; d._existe=false; d._existeId=null;
+    d._file=file.name; d._xmlText=txt; d._rubro=''; d._existe=false; d._existeId=null;
     _xmlParsed.push(d);
   }
   // Verificar duplicados en Supabase por folio (ya tiene XML cargado)
@@ -9753,7 +9921,12 @@ async function guardarXMLsMasivo(){
       };
       if(d._rubro) payload.rubro=d._rubro;
       const {error}=await sb.from('fact_egresos').update(payload).eq('id',d._vincularId);
-      if(error) err++; else vinculados++;
+      if(error){err++;continue;}
+      vinculados++;
+      if(d._xmlText){
+        const path=await subirXMLStorage(d._xmlText,'egresos',d.folio);
+        if(path) await sb.from('fact_egresos').update({xml_path:path}).eq('id',d._vincularId);
+      }
       continue;
     }
 
@@ -9767,8 +9940,13 @@ async function guardarXMLsMasivo(){
       isr:d.isr||0,total:d.total||0,
       status:'PAGADO',tiene_factura:true,conciliado:false
     };
-    const {error}=await sb.from('fact_egresos').insert(payload);
-    if(error) err++; else nuevos++;
+    const {data:newRow,error}=await sb.from('fact_egresos').insert(payload).select().single();
+    if(error){err++;continue;}
+    nuevos++;
+    if(d._xmlText){
+      const path=await subirXMLStorage(d._xmlText,'egresos',d.folio);
+      if(path) await sb.from('fact_egresos').update({xml_path:path}).eq('id',newRow.id);
+    }
   }
   const ok=vinculados+nuevos;
   if(msg){msg.style.color=err?'var(--red)':'#15803d';
@@ -9839,7 +10017,17 @@ function parsearCFDI(xmlStr){
   const byLocal=n=>all.filter(el=>el.localName===n);
   const cfdi=byLocal('Comprobante')[0]||xml.documentElement;
   const emisor=byLocal('Emisor')[0];
-  const concepto=byLocal('Concepto')[0];
+  const receptor=byLocal('Receptor')[0];
+  const conceptoNodos=byLocal('Concepto');
+  const concepto=conceptoNodos[0];
+  const timbre=byLocal('TimbreFiscalDigital')[0];
+  const conceptos=conceptoNodos.map(c=>({
+    cantidad:c.getAttribute('Cantidad')||'',
+    unidad:c.getAttribute('Unidad')||c.getAttribute('ClaveUnidad')||'',
+    descripcion:c.getAttribute('Descripcion')||'',
+    valorUnitario:parseFloat(c.getAttribute('ValorUnitario')||0),
+    importe:parseFloat(c.getAttribute('Importe')||0)
+  }));
 
   // ── Impuestos: solo del nodo raíz (hijo directo de Comprobante), NO de Conceptos
   // El XML tiene Traslado/Retencion en dos niveles: dentro de Concepto (por ítem)
@@ -9865,18 +10053,143 @@ function parsearCFDI(xmlStr){
     fecha:(cfdi.getAttribute('Fecha')||'').slice(0,10),
     folio:(cfdi.getAttribute('Serie')||'')+(cfdi.getAttribute('Folio')||''),
     subtotal:parseFloat(cfdi.getAttribute('SubTotal')||0),
+    descuento:parseFloat(cfdi.getAttribute('Descuento')||0),
     total:parseFloat(cfdi.getAttribute('Total')||0),
+    moneda:cfdi.getAttribute('Moneda')||'MXN',
+    formaPago:cfdi.getAttribute('FormaPago')||'',
+    metodoPago:cfdi.getAttribute('MetodoPago')||'',
+    lugarExpedicion:cfdi.getAttribute('LugarExpedicion')||'',
     ivaTras,ivaRet,isr,
     proveedor:emisor?.getAttribute('Nombre')||emisor?.getAttribute('nombre')||'',
     rfcEmisor:emisor?.getAttribute('Rfc')||emisor?.getAttribute('rfc')||'',
-    concepto:concepto?.getAttribute('Descripcion')||concepto?.getAttribute('descripcion')||''
+    regimenEmisor:emisor?.getAttribute('RegimenFiscal')||'',
+    cliente:receptor?.getAttribute('Nombre')||receptor?.getAttribute('nombre')||'',
+    rfcReceptor:receptor?.getAttribute('Rfc')||receptor?.getAttribute('rfc')||'',
+    usoCFDI:receptor?.getAttribute('UsoCFDI')||'',
+    concepto:concepto?.getAttribute('Descripcion')||concepto?.getAttribute('descripcion')||'',
+    conceptos,
+    uuid:timbre?.getAttribute('UUID')||'',
+    fechaTimbrado:timbre?.getAttribute('FechaTimbrado')||'',
+    selloSAT:timbre?.getAttribute('SelloSAT')||'',
+    noCertificadoSAT:timbre?.getAttribute('NoCertificadoSAT')||''
   };
+}
+
+async function subirXMLStorage(xmlText,tipo,folio){
+  try{
+    const nombreSeguro=(folio||'sinfolio').replace(/[^a-zA-Z0-9_-]/g,'')||'sinfolio';
+    const path=`${tipo}/${currentYear}/${currentMonth}/${nombreSeguro}_${Date.now()}.xml`;
+    const blob=new Blob([xmlText],{type:'application/xml'});
+    const {error}=await sb.storage.from('facturas-xml').upload(path,blob,{contentType:'application/xml',upsert:false});
+    if(error){console.error('Error subiendo XML:',error.message);return null;}
+    return path;
+  }catch(e){console.error('Error subiendo XML:',e);return null;}
+}
+
+async function verXMLGuardado(path){
+  if(!path){alert('Este registro no tiene XML guardado.');return;}
+  const {data,error}=await sb.storage.from('facturas-xml').createSignedUrl(path,300);
+  if(error||!data){alert('No se pudo obtener el XML: '+(error?.message||''));return;}
+  window.open(data.signedUrl,'_blank');
+}
+
+async function generarPDFDesdeStorage(path){
+  if(!path){alert('Este registro no tiene XML guardado — no se puede generar el PDF.');return;}
+  const {data,error}=await sb.storage.from('facturas-xml').download(path);
+  if(error||!data){alert('No se pudo leer el XML: '+(error?.message||''));return;}
+  const xmlText=await data.text();
+  generarPDFDesdeXML(xmlText);
+}
+
+function generarPDFDesdeXML(xmlText){
+  const d=parsearCFDI(xmlText);
+  const { jsPDF }=window.jspdf;
+  const doc=new jsPDF();
+  const pw=doc.internal.pageSize.getWidth();
+  let y=16;
+
+  doc.setFontSize(14); doc.setFont(undefined,'bold'); doc.setTextColor(20);
+  doc.text('Representación impresa de CFDI', 14, y);
+  doc.setFontSize(9); doc.setFont(undefined,'normal'); doc.setTextColor(120);
+  doc.text(`Folio fiscal (UUID): ${d.uuid||'—'}`, pw-14, y, {align:'right'});
+  y+=6;
+  doc.setDrawColor(0,169,157); doc.setLineWidth(0.5); doc.line(14,y,pw-14,y);
+  y+=8;
+
+  const colW=(pw-28)/2;
+  doc.setFontSize(9); doc.setFont(undefined,'bold'); doc.setTextColor(0,169,157);
+  doc.text('EMISOR', 14, y);
+  doc.text('RECEPTOR', 14+colW+6, y);
+  y+=5;
+  doc.setFont(undefined,'normal'); doc.setTextColor(30); doc.setFontSize(9);
+  doc.text(doc.splitTextToSize(d.proveedor||'—',colW), 14, y);
+  doc.text(doc.splitTextToSize(d.cliente||'—',colW), 14+colW+6, y);
+  y+=9;
+  doc.setTextColor(90);
+  doc.text(`RFC: ${d.rfcEmisor||'—'}`, 14, y);
+  doc.text(`RFC: ${d.rfcReceptor||'—'}`, 14+colW+6, y);
+  y+=5;
+  if(d.regimenEmisor) doc.text(`Régimen fiscal: ${d.regimenEmisor}`, 14, y);
+  if(d.usoCFDI) doc.text(`Uso CFDI: ${d.usoCFDI}`, 14+colW+6, y);
+  y+=9;
+
+  doc.setDrawColor(220); doc.line(14,y,pw-14,y); y+=7;
+  doc.setFontSize(9); doc.setTextColor(60);
+  doc.text(`Folio: ${d.folio||'—'}`, 14, y);
+  doc.text(`Fecha: ${d.fecha||'—'}`, 14+colW*0.7, y);
+  doc.text(`Moneda: ${d.moneda||'MXN'}`, 14+colW*1.4, y);
+  y+=6;
+  doc.text(`Forma de pago: ${d.formaPago||'—'}`, 14, y);
+  doc.text(`Método de pago: ${d.metodoPago||'—'}`, 14+colW*0.7, y);
+  doc.text(`Lugar expedición: ${d.lugarExpedicion||'—'}`, 14+colW*1.4, y);
+  y+=10;
+
+  const rows=(d.conceptos&&d.conceptos.length?d.conceptos:[{cantidad:'1',unidad:'',descripcion:d.concepto||'Servicio',valorUnitario:d.subtotal,importe:d.subtotal}])
+    .map(c=>[c.cantidad,c.unidad,c.descripcion,'$'+c.valorUnitario.toLocaleString('es-MX',{minimumFractionDigits:2}),'$'+c.importe.toLocaleString('es-MX',{minimumFractionDigits:2})]);
+  doc.autoTable({
+    startY:y, margin:{left:14,right:14},
+    head:[['Cant.','Unidad','Descripción','V. Unitario','Importe']],
+    body:rows,
+    headStyles:{fillColor:[13,34,64],fontSize:8,halign:'center'},
+    bodyStyles:{fontSize:8},
+    columnStyles:{0:{cellWidth:16,halign:'center'},1:{cellWidth:22,halign:'center'},3:{cellWidth:28,halign:'right'},4:{cellWidth:28,halign:'right'}}
+  });
+  y=doc.lastAutoTable.finalY+8;
+
+  const totX=pw-14-55;
+  doc.setFontSize(9); doc.setTextColor(60);
+  doc.text('Subtotal:', totX, y); doc.text('$'+d.subtotal.toLocaleString('es-MX',{minimumFractionDigits:2}), pw-14, y, {align:'right'});
+  y+=5;
+  if(d.descuento>0){doc.text('Descuento:', totX, y); doc.text('-$'+d.descuento.toLocaleString('es-MX',{minimumFractionDigits:2}), pw-14, y, {align:'right'}); y+=5;}
+  if(d.ivaTras>0){doc.text('IVA:', totX, y); doc.text('$'+d.ivaTras.toLocaleString('es-MX',{minimumFractionDigits:2}), pw-14, y, {align:'right'}); y+=5;}
+  if(d.ivaRet>0){doc.text('IVA Ret.:', totX, y); doc.text('-$'+d.ivaRet.toLocaleString('es-MX',{minimumFractionDigits:2}), pw-14, y, {align:'right'}); y+=5;}
+  if(d.isr>0){doc.text('ISR Ret.:', totX, y); doc.text('-$'+d.isr.toLocaleString('es-MX',{minimumFractionDigits:2}), pw-14, y, {align:'right'}); y+=5;}
+  doc.setFont(undefined,'bold'); doc.setFontSize(11); doc.setTextColor(13,34,64);
+  doc.text('TOTAL:', totX, y); doc.text('$'+d.total.toLocaleString('es-MX',{minimumFractionDigits:2}), pw-14, y, {align:'right'});
+  y+=12;
+
+  doc.setDrawColor(220); doc.line(14,y,pw-14,y); y+=6;
+  doc.setFont(undefined,'bold'); doc.setFontSize(8); doc.setTextColor(0,169,157);
+  doc.text('TIMBRE FISCAL DIGITAL', 14, y); y+=5;
+  doc.setFont(undefined,'normal'); doc.setTextColor(90); doc.setFontSize(7);
+  doc.text(`UUID: ${d.uuid||'—'}`, 14, y); y+=4;
+  doc.text(`Fecha timbrado: ${d.fechaTimbrado||'—'}`, 14, y); y+=4;
+  doc.text(`No. certificado SAT: ${d.noCertificadoSAT||'—'}`, 14, y); y+=4;
+  if(d.selloSAT){doc.text(doc.splitTextToSize(`Sello SAT: ${d.selloSAT}`,pw-28), 14, y); y+=8;}
+
+  y+=6;
+  doc.setFontSize(7); doc.setTextColor(140); doc.setFont(undefined,'italic');
+  doc.text(doc.splitTextToSize('Este documento es una representación impresa de un CFDI, generada automáticamente por el sistema interno de Grupo Innovaci a partir del XML timbrado por el SAT.',pw-28), 14, y);
+
+  doc.save(`${d.folio||'factura'}_${d.uuid?d.uuid.slice(0,8):''}.pdf`);
 }
 
 async function parsearXmlEgreso(){
   const file=document.getElementById('feXmlFile')?.files?.[0];
   if(!file)return;
-  const d=parsearCFDI(await file.text());
+  const txt=await file.text();
+  window._feXmlText=txt;
+  const d=parsearCFDI(txt);
   if(d.fecha) document.getElementById('feFecha').value=d.fecha;
   if(d.folio) document.getElementById('feFolio').value=d.folio;
   const chk=document.getElementById('feTieneFactura'); if(chk) chk.checked=true;
@@ -9909,13 +10222,18 @@ async function guardarFactEgreso(){
   const total=parseFloat(document.getElementById('feTotal')?.value)||subtotal;
   const fecha_pago=document.getElementById('feFechaPago')?.value||null;
   if(!prov){alert('El proveedor es obligatorio.');return;}
-  const {error}=await sb.from('fact_egresos').insert({
+  const {data:newRow,error}=await sb.from('fact_egresos').insert({
     anio:currentYear,mes:currentMonth,fecha_factura:fecha,folio,proveedor:prov,
     concepto,rubro,subtotal,iva_retenido,iva_trasladado,isr,total,status,fecha_pago,
     tiene_factura:!!(document.getElementById('feTieneFactura')?.checked)||(!!folio),
     conciliado:false
-  });
+  }).select().single();
   if(error){alert('Error: '+error.message);return;}
+  if(window._feXmlText){
+    const path=await subirXMLStorage(window._feXmlText,'egresos',folio);
+    if(path) await sb.from('fact_egresos').update({xml_path:path}).eq('id',newRow.id);
+    window._feXmlText=null;
+  }
   document.getElementById('modalEgNuevo')?.remove();
   renderAdminEgresos();
 }
@@ -10028,6 +10346,7 @@ function parsearXmlEgresoEdit(){
   if(!file)return;
   const r=new FileReader();
   r.onload=e=>{
+    window._eeXmlText=e.target.result;
     const d=parsearCFDI(e.target.result);
     if(d.fecha) document.getElementById('eeFecha').value=d.fecha;
     if(d.folio) document.getElementById('eeFolio').value=d.folio;
@@ -10081,6 +10400,11 @@ async function guardarEdicionEgreso(yaSiguiente=false){
   };
   const {error}=await sb.from('fact_egresos').update(payload).eq('id',id);
   if(error){alert('Error: '+error.message);return false;}
+  if(window._eeXmlText){
+    const path=await subirXMLStorage(window._eeXmlText,'egresos',payload.folio);
+    if(path){await sb.from('fact_egresos').update({xml_path:path}).eq('id',id);payload.xml_path=path;}
+    window._eeXmlText=null;
+  }
   const row=(window._feRows||[]).find(r=>String(r.id)===String(id));
   if(row) Object.assign(row,payload);
   if(!yaSiguiente){
