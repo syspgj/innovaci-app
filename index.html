@@ -3322,10 +3322,13 @@ async function renderDirectorResumen(){
     const svcMeta=svcM?svcM[metaKey]:80000;
     const aspelM=kpiConfig.find(k=>k.kpi_key==='aspel');
     const aspelMeta=aspelM?aspelM[metaKey]:45000;
-    const r=getRate(tot.svc,svcMeta,u);
-    const cAuto=tot.svc*r;
+    const rAuto=getRate(tot.svc,svcMeta,u);
+    const alcanceBono=calcAlcanceBono(kpiConfig,tot,metaKey,isMireya(u));
+    const pctExtra=getBonoKpiExtra(alcanceBono);
+    const rateConBono=Math.max(0,rAuto+pctExtra);
+    const cAuto=tot.svc*rateConBono;
     const ajusteU=ajustesPorUsuario[u.id]||null;
-    const ajusteRes=aplicarAjusteComision(cAuto,r,tot.svc,ajusteU);
+    const ajusteRes=aplicarAjusteComision(cAuto,rateConBono,tot.svc,ajusteU);
     // Bono de mediocridad: depto NO cumplió pero el vendedor SÍ (2% sobre servicios)
     const bonoMed=calcComisionMediocridad(tot.svc,svcMeta,deptoAlcanzado);
     const commTotal=ajusteRes.comisionFinal+(bonoMed.aplica?bonoMed.monto:0);
@@ -3569,7 +3572,10 @@ async function renderDirectorVendedores(){
     const metaKey=u.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
     const svcM=kpiConfig.find(k=>k.kpi_key==='svc');
     const svcMeta=svcM?svcM[metaKey]:80000;
-    const rAuto=getRate(tot.svc,svcMeta,u),cAuto=tot.svc*rAuto;
+    const rAuto0=getRate(tot.svc,svcMeta,u);
+    const alcanceBonoV=calcAlcanceBono(kpiConfig,tot,metaKey,isMireya(u));
+    const pctExtraV=getBonoKpiExtra(alcanceBonoV);
+    const rAuto=Math.max(0,rAuto0+pctExtraV),cAuto=tot.svc*rAuto;
     const ajusteUV=ajustesPorUsuarioV[u.id]||null;
     const ajResV=aplicarAjusteComision(cAuto,rAuto,tot.svc,ajusteUV);
     const r=ajResV.tasaFinal,c=ajResV.comisionFinal;
@@ -3581,7 +3587,7 @@ async function renderDirectorVendedores(){
     const projComm=getComm(projFin,svcMeta,userProfile);
     const allK=kpiConfig.filter(k=>!/_m$/.test(k.kpi_key)).map(k=>{
       const totMap=buildTotMap(tot);
-      const kv=totMap[k.kpi_key]||0,km=k[metaKey]||1,p=Math.min(kv/km,1),pc=pcol(p);
+      const kv=k.kpi_key==='meta_depto'?totalSvcPreliminarV:(totMap[k.kpi_key]||0),km=k.kpi_key==='meta_depto'?metaDepto:(k[metaKey]||1),p=Math.min(kv/km,1),pc=pcol(p);
       const vf=k.tipo==='$'?fmt(kv):kv,mf=k.tipo==='$'?fmt(km):km;
       const tag=k.categoria==='principal'?'<span class="badge bt" style="font-size:9px;padding:1px 5px;">p</span>':k.categoria==='extra'?'<span class="badge bo" style="font-size:9px;padding:1px 5px;">e</span>':'';
       return `<div style="padding:7px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;">
