@@ -8338,7 +8338,37 @@ async function renderAdminIngresos(){
     .eq('anio',currentYear).eq('mes',currentMonth).order('fecha',{ascending:true});
   window._fiRows=rows||[];
   window._fiSort={col:'fecha',asc:true};
-  window._fiFilter={rubro:'',vendedor:'',estatus:'',texto:''};
+  window._fiFilter={rubro:[],vendedor:'',estatus:'',texto:''};
+  renderIngresosTabla();
+}
+
+function toggleRubroMultiDropdown(){
+  window._rubroDropdownOpen=!window._rubroDropdownOpen;
+  const dd=document.getElementById('rubroMultiDropdown');
+  if(dd) dd.style.display=window._rubroDropdownOpen?'block':'none';
+  if(window._rubroDropdownOpen){
+    const closeOnOutside=(ev)=>{
+      const dd2=document.getElementById('rubroMultiDropdown');
+      if(dd2&&!dd2.contains(ev.target)&&!ev.target.closest('button')?.getAttribute('onclick')?.includes('toggleRubroMultiDropdown')){
+        window._rubroDropdownOpen=false;
+        dd2.style.display='none';
+        document.removeEventListener('click',closeOnOutside);
+      }
+    };
+    setTimeout(()=>document.addEventListener('click',closeOnOutside),0);
+  }
+}
+function toggleRubroMultiValor(rubro){
+  const cur=Array.isArray(window._fiFilter.rubro)?window._fiFilter.rubro:[];
+  const idx=cur.indexOf(rubro);
+  if(idx>=0) cur.splice(idx,1); else cur.push(rubro);
+  window._fiFilter.rubro=cur;
+  window._rubroDropdownOpen=true;
+  renderIngresosTabla();
+}
+function setRubroMultiTodos(lista){
+  window._fiFilter.rubro=[...lista];
+  window._rubroDropdownOpen=true;
   renderIngresosTabla();
 }
 
@@ -8347,11 +8377,12 @@ function renderIngresosTabla(){
   const fi=window._fiRows||[];
   const {col,asc}=window._fiSort||{col:'fecha',asc:true};
   const {rubro,vendedor,estatus,texto}=window._fiFilter||{};
+  const rubroSel=Array.isArray(rubro)?rubro:(rubro?[rubro]:[]);
 
   let rows=fi.filter(r=>{
     const t=(texto||'').toLowerCase();
     const tMatch=!t||(r.cliente||'').toLowerCase().includes(t)||(r.concepto||'').toLowerCase().includes(t)||(r.folio||'').toLowerCase().includes(t);
-    return(!rubro||r.rubro===rubro)&&(!vendedor||r.vendedor===vendedor)&&(!estatus||r.estatus===estatus)&&tMatch;
+    return(rubroSel.length===0||rubroSel.includes(r.rubro))&&(!vendedor||r.vendedor===vendedor)&&(!estatus||r.estatus===estatus)&&tMatch;
   });
   rows=[...rows].sort((a,b)=>{
     let va=a[col]??'',vb=b[col]??'';
@@ -8408,10 +8439,22 @@ function renderIngresosTabla(){
   </div>`;
   })():''}
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
-    <select onchange="window._fiFilter.rubro=this.value;renderIngresosTabla()" style="${selStyle}">
-      <option value="">Todos los rubros</option>
-      ${rubros.map(r=>`<option value="${r}" ${rubro===r?'selected':''}>${r}</option>`).join('')}
-    </select>
+    <div style="position:relative;display:inline-block;">
+      <button onclick="toggleRubroMultiDropdown()" style="${selStyle}text-align:left;cursor:pointer;min-width:150px;display:flex;align-items:center;justify-content:space-between;gap:6px;background:${rubroSel.length?'rgba(0,169,157,0.08)':'#fff'};border-color:${rubroSel.length?'var(--teal)':'var(--border)'};">
+        <span>${rubroSel.length===0?'Todos los rubros':rubroSel.length===1?rubroSel[0]:`${rubroSel.length} rubros seleccionados`}</span>
+        <span style="font-size:9px;color:var(--text3);">▾</span>
+      </button>
+      <div id="rubroMultiDropdown" style="display:${window._rubroDropdownOpen?'block':'none'};position:absolute;top:100%;left:0;margin-top:4px;background:#fff;border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,0.12);z-index:50;min-width:220px;max-height:260px;overflow-y:auto;padding:6px;">
+        <div style="display:flex;gap:8px;padding:4px 6px;border-bottom:1px solid var(--border);margin-bottom:4px;">
+          <span onclick="setRubroMultiTodos(${JSON.stringify(rubros).replace(/"/g,'&quot;')})" style="font-size:10px;color:var(--teal);cursor:pointer;font-weight:600;">Todos</span>
+          <span onclick="setRubroMultiTodos([])" style="font-size:10px;color:var(--text3);cursor:pointer;font-weight:600;">Ninguno</span>
+        </div>
+        ${rubros.map(r=>`<label style="display:flex;align-items:center;gap:6px;padding:4px 6px;font-size:11px;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='rgba(0,169,157,0.06)'" onmouseout="this.style.background='transparent'">
+          <input type="checkbox" value="${r}" ${rubroSel.includes(r)?'checked':''} onchange="toggleRubroMultiValor('${r}')" style="cursor:pointer;">
+          <span>${r}</span>
+        </label>`).join('')}
+      </div>
+    </div>
     <select onchange="window._fiFilter.vendedor=this.value;renderIngresosTabla()" style="${selStyle}">
       <option value="">Todos los vendedores</option>
       ${vendedores.map(v=>`<option value="${v}" ${vendedor===v?'selected':''}>${v}</option>`).join('')}
@@ -8476,7 +8519,7 @@ function renderIngresosTabla(){
       const fSubtotalFinal=rows.reduce((s,r)=>s+(r.subtotal_final||0),0);
       const fIva=rows.reduce((s,r)=>s+(r.iva||0),0);
       const fTotal=rows.reduce((s,r)=>s+(r.total||0),0);
-      const hayFiltro=!!(rubro||vendedor||estatus||texto);
+      const hayFiltro=rubroSel.length>0||!!(vendedor||estatus||texto);
       return `<tfoot><tr style="background:${hayFiltro?'rgba(0,169,157,0.08)':'var(--bg2,#f5f6f8)'};border-top:2px solid var(--navy);font-weight:700;">
         <td colspan="6" style="padding:7px 8px;font-size:11px;color:var(--navy);">${hayFiltro?`Total filtrado (${rows.length} de ${fi.length})`:`Total (${rows.length})`}</td>
         <td style="padding:7px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(fSubtotalOrig)}</td>
