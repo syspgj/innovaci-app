@@ -3231,6 +3231,7 @@ function buildDirectorUI(){
     <div class="tab" onclick="swD('cartera')">💼 Cartera</div>
     <div class="tab" onclick="swD('proyecciondir')">📊 Proyección</div>
     <div class="tab" onclick="swD('promociones')">🏷 Promociones</div>
+    <div class="tab" onclick="swD('operaciones')">🛠 Operaciones</div>
     <div class="tab" onclick="swD('finanzas')">💰 Finanzas</div>
     <div class="tab" onclick="swD('config')" style="color:#F5A623;">⚙ Configuración</div>`;
   renderDirector();
@@ -3239,7 +3240,7 @@ let currentDirTab='resumen';
 function swD(id){
   if(id!=='finanzas') document.getElementById('mainContent').classList.remove('full-width');
   currentDirTab=id;
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['resumen','vendedores','anual','kpis','liberaciones','crm','campanas','cartera','proyecciondir','promociones','finanzas','config'][i]===id));
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['resumen','vendedores','anual','kpis','liberaciones','crm','campanas','cartera','proyecciondir','promociones','operaciones','finanzas','config'][i]===id));
   if(id==='resumen')renderDirectorResumen();
   else if(id==='vendedores')renderDirectorVendedores();
   else if(id==='anual')renderDirectorAnual();
@@ -3250,6 +3251,7 @@ function swD(id){
   else if(id==='cartera')renderDirectorCartera();
   else if(id==='proyecciondir')renderDirectorProyeccion();
   else if(id==='promociones')renderDirectorPromociones();
+  else if(id==='operaciones')renderDirectorOperaciones();
   else if(id==='finanzas')renderFinanzas();
   else if(id==='config')renderDirectorConfig();
 }
@@ -3264,6 +3266,7 @@ async function renderDirector(){
   else if(currentDirTab==='cartera')renderDirectorCartera();
   else if(currentDirTab==='proyecciondir')renderDirectorProyeccion();
   else if(currentDirTab==='promociones')renderDirectorPromociones();
+  else if(currentDirTab==='operaciones')renderDirectorOperaciones();
   else if(currentDirTab==='finanzas')renderFinanzas();
   else if(currentDirTab==='config')renderDirectorConfig();
   else renderDirectorResumen();
@@ -7295,7 +7298,178 @@ function buildPromoVistaHtml(bySeccion){
 
 // ─── PROMOCIONES DIRECTOR (config + vista) ────────────────────────────────────
 let currentPromoTab='vista';
+// ══════════════════════════════════════════════════════════════════════════════
+// OPERACIONES — Mesa de Control (Fase 1: catálogo de pólizas + banco de horas)
+// ══════════════════════════════════════════════════════════════════════════════
+let currentOpsTab='catalogo';
+function swOps(tab){ currentOpsTab=tab; renderDirectorOperaciones(); }
+
+async function renderDirectorOperaciones(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML=`
+  <div style="padding:20px;">
+    <div style="font-size:18px;font-weight:700;color:var(--navy);margin-bottom:4px;">🛠 Operaciones — Mesa de Control</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">Catálogo de pólizas, contratos de clientes y banco de horas.</div>
+    <div style="display:flex;gap:8px;margin-bottom:18px;border-bottom:1px solid var(--border);padding-bottom:10px;">
+      <button onclick="swOps('catalogo')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='catalogo'?'var(--navy)':'none'};color:${currentOpsTab==='catalogo'?'#fff':'var(--text2)'};">📋 Catálogo de pólizas</button>
+      <button onclick="swOps('contratos')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='contratos'?'var(--navy)':'none'};color:${currentOpsTab==='contratos'?'#fff':'var(--text2)'};">📁 Contratos y banco de horas</button>
+      <button onclick="swOps('tickets')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='tickets'?'var(--navy)':'none'};color:${currentOpsTab==='tickets'?'#fff':'var(--text2)'};">🎫 Servicios / tickets</button>
+    </div>
+    <div id="opsBody"><div class="loading"><div class="spinner"></div></div></div>
+  </div>`;
+  if(currentOpsTab==='catalogo') await renderOpsCatalogo();
+  else if(currentOpsTab==='contratos') await renderOpsContratos();
+  else await renderOpsTickets();
+}
+
+async function renderOpsCatalogo(){
+  const body=document.getElementById('opsBody');
+  const {data:polizas,error}=await sb.from('polizas_catalogo').select('*').eq('activo',true).order('categoria').order('precio');
+  if(error){body.innerHTML=`<div style="color:var(--red);">Error: ${error.message}. ¿Ya corriste el SQL de Operaciones Fase 1?</div>`;return;}
+  const cats=[['ASPEL','Pólizas Aspel','#00A99D'],['ALIADO','Pólizas Aliado','#8B5CF6'],['RESGUARDO','Pólizas de Resguardo','#E84040']];
+  body.innerHTML=cats.map(([cat,label,color])=>{
+    const rows=(polizas||[]).filter(p=>p.categoria===cat);
+    if(!rows.length) return '';
+    return `<div style="margin-bottom:24px;">
+      <div style="font-size:13px;font-weight:700;color:${color};text-transform:uppercase;letter-spacing:0.05em;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid ${color};">${label}</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;">
+        ${rows.map(p=>`<div style="border:1px solid var(--border);border-radius:10px;padding:14px;background:#fff;">
+          <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:8px;">
+            <div>
+              <div style="font-size:14px;font-weight:700;color:var(--navy);">${p.nombre}</div>
+              <div style="font-size:10px;color:var(--text3);">${p.modalidad}</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:15px;font-weight:800;color:${color};font-family:'JetBrains Mono',monospace;">${fmt(p.precio)}</div>
+              ${p.horas_incluidas?`<div style="font-size:10px;color:var(--text3);">${p.horas_incluidas} hrs</div>`:''}
+            </div>
+          </div>
+          ${p.prioridad_codigo?`<div style="font-size:10px;color:var(--text3);margin-bottom:4px;">🎯 ${p.prioridad_codigo} · ${p.prioridad_nombre} · resp. ${p.resp_horas_min}-${p.resp_horas_max}h hábiles</div>`:''}
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px;">📅 Vigencia: ${p.vigencia_meses} mes(es)</div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:4px;">🕐 ${p.horario_atencion}</div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:6px;">💾 ${p.resguardos_incluidos}</div>
+          <div style="font-size:10px;color:var(--text2);border-top:1px solid var(--border);padding-top:6px;margin-top:6px;line-height:1.5;">${p.beneficios||''}</div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function renderOpsContratos(){
+  const body=document.getElementById('opsBody');
+  const [{data:contratos},{data:polizas}]=await Promise.all([
+    sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,horas_incluidas)').order('fecha_vencimiento'),
+    sb.from('polizas_catalogo').select('id,categoria,nombre,modalidad,horas_incluidas,precio,vigencia_meses').eq('activo',true).order('categoria').order('precio')
+  ]);
+  window._opsPolizasCat=polizas||[];
+  const hoy=new Date();
+  body.innerHTML=`
+    <button onclick="abrirNuevoContratoPoliza()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;margin-bottom:14px;font-family:'Inter',sans-serif;">+ Nuevo contrato</button>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="background:var(--navy);color:#fff;">
+        <th style="padding:7px 8px;text-align:left;">Cliente</th><th style="padding:7px 8px;text-align:left;">Póliza</th>
+        <th style="padding:7px 8px;">Inicio</th><th style="padding:7px 8px;">Vencimiento</th>
+        <th style="padding:7px 8px;text-align:right;">Horas</th><th style="padding:7px 8px;">Consumidas</th>
+        <th style="padding:7px 8px;">Restantes</th><th style="padding:7px 8px;">Estatus</th>
+      </tr></thead>
+      <tbody>
+        ${(contratos||[]).length===0?'<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text3);">Sin contratos capturados todavía</td></tr>':''}
+        ${(contratos||[]).map(c=>{
+          const totales=c.horas_totales||0, consumidas=c.horas_consumidas||0, restantes=Math.max(totales-consumidas,0);
+          const vencida=new Date(c.fecha_vencimiento)<hoy;
+          const agotada=totales>0&&restantes<=0;
+          const estatusReal=agotada?'AGOTADA':vencida?'VENCIDA':'VIGENTE';
+          const color=estatusReal==='VIGENTE'?'#27AE60':estatusReal==='VENCIDA'?'#E84040':'#F5A623';
+          const diasParaVencer=Math.ceil((new Date(c.fecha_vencimiento)-hoy)/86400000);
+          return `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="editarContratoPoliza('${c.id}')">
+            <td style="padding:6px 8px;font-weight:600;">${c.cliente_nombre}</td>
+            <td style="padding:6px 8px;">${c.polizas_catalogo?.nombre||'—'}</td>
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${c.fecha_inicio}</td>
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${c.fecha_vencimiento}${!vencida&&diasParaVencer<=15?` <span style="color:#F5A623;font-size:9px;">(${diasParaVencer}d)</span>`:''}</td>
+            <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${totales?totales+'h':'—'}</td>
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${consumidas}h</td>
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;color:${restantes<=totales*0.15?'#E84040':'var(--text)'};">${totales?restantes+'h':'—'}</td>
+            <td style="padding:6px 8px;text-align:center;"><span style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${color}22;color:${color};">${estatusReal}</span></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+}
+
+function abrirNuevoContratoPoliza(){
+  const polizas=window._opsPolizasCat||[];
+  const today=todayLocal();
+  const html=`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Cliente',inp('cpCliente','text','Nombre del cliente'))}
+      ${fld('Vendedor',inp('cpVendedor','text','Quién lo vendió'))}
+    </div>
+    <div style="margin-bottom:10px;">${fld('Póliza',`<select id="cpPoliza" style="${INP}" onchange="actualizarHorasContrato()">
+      <option value="">-- Selecciona --</option>
+      ${polizas.map(p=>`<option value="${p.id}" data-horas="${p.horas_incluidas||0}" data-vigencia="${p.vigencia_meses}" data-precio="${p.precio}">${p.categoria} — ${p.nombre} (${p.modalidad}) — ${fmt(p.precio)}</option>`).join('')}
+    </select>`)}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Fecha de inicio',inp('cpFechaInicio','date','',today,'onchange="actualizarHorasContrato()"'))}
+      ${fld('Horas incluidas',inp('cpHoras','number','0'))}
+    </div>
+    <div style="margin-bottom:10px;">${fld('Personas autorizadas',inp('cpPersonas','text','Nombres de contacto autorizados'))}</div>
+    <div style="margin-bottom:10px;">${fld('Notas',inp('cpNotas','text','Opcional'))}</div>`;
+  mkModal('modalNuevoContrato','Nuevo contrato de póliza',html,'guardarContratoPoliza');
+}
+
+function actualizarHorasContrato(){
+  const sel=document.getElementById('cpPoliza');
+  const opt=sel?.selectedOptions[0];
+  if(!opt)return;
+  document.getElementById('cpHoras').value=opt.dataset.horas||0;
+  const vigMeses=parseInt(opt.dataset.vigencia||12);
+  const inicio=document.getElementById('cpFechaInicio').value;
+  if(inicio){
+    const d=new Date(inicio+'T00:00:00');
+    d.setMonth(d.getMonth()+vigMeses);
+    window._cpVencimiento=d.toISOString().slice(0,10);
+  }
+}
+
+async function guardarContratoPoliza(){
+  const cliente=document.getElementById('cpCliente')?.value.trim();
+  const polizaId=document.getElementById('cpPoliza')?.value;
+  const fechaInicio=document.getElementById('cpFechaInicio')?.value;
+  const horas=parseFloat(document.getElementById('cpHoras')?.value)||0;
+  if(!cliente||!polizaId||!fechaInicio){alert('Cliente, póliza y fecha de inicio son obligatorios.');return;}
+  const opt=document.getElementById('cpPoliza').selectedOptions[0];
+  const vigMeses=parseInt(opt.dataset.vigencia||12);
+  const precio=parseFloat(opt.dataset.precio||0);
+  const d=new Date(fechaInicio+'T00:00:00'); d.setMonth(d.getMonth()+vigMeses);
+  const fechaVenc=d.toISOString().slice(0,10);
+  const {error}=await sb.from('clientes_polizas').insert({
+    cliente_nombre:cliente, poliza_catalogo_id:polizaId, fecha_inicio:fechaInicio, fecha_vencimiento:fechaVenc,
+    horas_totales:horas, horas_consumidas:0, precio_contratado:precio,
+    personas_autorizadas:document.getElementById('cpPersonas')?.value||null,
+    vendedor:document.getElementById('cpVendedor')?.value||null,
+    notas:document.getElementById('cpNotas')?.value||null, estatus:'VIGENTE'
+  });
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalNuevoContrato')?.remove();
+  renderOpsContratos();
+}
+
+async function editarContratoPoliza(id){
+  // Fase 2: aquí irá el detalle completo del contrato + historial de tickets ligados.
+  alert('El detalle completo del contrato (con historial de servicios) llega en la Fase 2 de Mesa de Control.');
+}
+
+async function renderOpsTickets(){
+  document.getElementById('opsBody').innerHTML=`
+    <div style="text-align:center;padding:40px;color:var(--text3);">
+      <div style="font-size:32px;margin-bottom:10px;">🎫</div>
+      <div style="font-size:14px;font-weight:600;">Módulo de servicios y tickets — próximamente</div>
+      <div style="font-size:12px;margin-top:6px;">Aquí vivirá la asignación de servicios a asesores, el estatus de cada ticket y el dashboard del día. Es la Fase 2 de Mesa de Control.</div>
+    </div>`;
+}
+
 async function renderDirectorPromociones(){
+
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
   const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
