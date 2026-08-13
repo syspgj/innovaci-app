@@ -723,11 +723,39 @@ async function initApp(user){
   if(userProfile.rol==='director') buildDirectorUI();
   else if(userProfile.rol==='telemarketing') buildTeleUI();
   else if(userProfile.rol==='administracion') buildAdminUI();
+  else if(userProfile.rol==='mesa_control') buildMesaControlUI();
+  else if(userProfile.rol==='asesor') buildAsesorUI();
   else buildVendorUI();
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// MESA DE CONTROL VIEW — reutiliza el módulo de Operaciones del director
+// ══════════════════════════════════════════════════════════════════════════════
+function buildMesaControlUI(){
+  const _t2=document.getElementById('tabsBar2');
+  if(_t2){_t2.style.display='none';_t2.innerHTML='';}
+  document.getElementById('tabsBar').innerHTML=`<div class="tab active">🛠 Mesa de Control</div>`;
+  renderDirectorOperaciones();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ASESOR VIEW — placeholder hasta que se construya la Fase 2 (tickets/servicios)
+// ══════════════════════════════════════════════════════════════════════════════
+function buildAsesorUI(){
+  const _t2=document.getElementById('tabsBar2');
+  if(_t2){_t2.style.display='none';_t2.innerHTML='';}
+  document.getElementById('tabsBar').innerHTML=`<div class="tab active">Mis servicios</div>`;
+  document.getElementById('mainContent').innerHTML=`
+    <div style="padding:40px;text-align:center;color:var(--text3);">
+      <div style="font-size:32px;margin-bottom:10px;">🛠️</div>
+      <div style="font-size:15px;font-weight:600;color:var(--navy);">Hola, ${userProfile.nombre}</div>
+      <div style="font-size:13px;margin-top:8px;">Tu módulo de servicios asignados está en construcción — llega en la siguiente fase de Mesa de Control.</div>
+      <div style="font-size:12px;margin-top:4px;">Por ahora sigue usando Telegram y el calendario como de costumbre.</div>
+    </div>`;
+}
+
 // ─── MONTH SELECT ─────────────────────────────────────────────────────────────
-function setMonth(m){currentMonth=parseInt(m);if(userProfile.rol==='director')renderDirector();else if(userProfile.rol==='telemarketing')renderTeleActual();else if(userProfile.rol==='administracion')renderAdminActual();else renderVendor();}
+function setMonth(m){currentMonth=parseInt(m);if(userProfile.rol==='director')renderDirector();else if(userProfile.rol==='telemarketing')renderTeleActual();else if(userProfile.rol==='administracion')renderAdminActual();else if(userProfile.rol==='mesa_control')renderDirectorOperaciones();else if(userProfile.rol==='asesor'){/* sin dependencia de mes por ahora */}else renderVendor();}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // VENDOR VIEW
@@ -735,27 +763,49 @@ function setMonth(m){currentMonth=parseInt(m);if(userProfile.rol==='director')re
 function buildVendorUI(){
   const esVendedor=userProfile.email.includes('dulce')||userProfile.email.includes('manuel');
   const _t=document.getElementById('tabsBar');
+  const _t2=document.getElementById('tabsBar2');
   _t.innerHTML='';
-  const _tabs=[{l:'Mi mes',v:'miMes',a:true}];
-  if(esVendedor)_tabs.push({l:'Mi año',v:'anual',a:false});
-  if(esVendedor)_tabs.push({l:'💼 Cartera',v:'cartera',a:false});
-  _tabs.push({l:'Registrar día',v:'registro',a:false},{l:'Proyección',v:'proyeccion',a:false},{l:'Histórico',v:'historico',a:false},{l:'🏷 Promociones',v:'promos',a:false},{l:'📜 Reglas de comisión',v:'reglas',a:false});
-  _tabs.forEach(t=>{
+  // Fila 1 (uso diario): Mi mes, Mi año, Registrar día
+  const _tabsTop=[{l:'Mi mes',v:'miMes',a:true}];
+  if(esVendedor)_tabsTop.push({l:'Mi año',v:'anual',a:false});
+  _tabsTop.push({l:'Registrar día',v:'registro',a:false});
+  _tabsTop.forEach(t=>{
     const d=document.createElement('div');
     d.className='tab'+(t.a?' active':'');
     d.textContent=t.l;
     d.onclick=()=>swV(t.v);
     _t.appendChild(d);
   });
+  // Fila 2 (consulta/referencia): Cartera, Proyección, Histórico, Promociones, Reglas de comisión
+  const _tabsBottom=[];
+  if(esVendedor)_tabsBottom.push({l:'💼 Cartera',v:'cartera'});
+  _tabsBottom.push({l:'Proyección',v:'proyeccion'},{l:'Histórico',v:'historico'},{l:'🏷 Promociones',v:'promos'},{l:'📜 Reglas de comisión',v:'reglas'});
+  if(_tabsBottom.length){
+    _t2.style.display='flex';
+    _t2.innerHTML='';
+    _tabsBottom.forEach(t=>{
+      const d=document.createElement('div');
+      d.className='tab';
+      d.textContent=t.l;
+      d.onclick=()=>swV(t.v);
+      _t2.appendChild(d);
+    });
+  } else {
+    _t2.style.display='none';
+    _t2.innerHTML='';
+  }
+  window._vendTabsTop=_tabsTop.map(t=>t.v);
+  window._vendTabsBottom=_tabsBottom.map(t=>t.v);
   mostrarBotonesReporte();
   renderVendor();
 }
 let currentVendTab='miMes';
 function swV(id){
   currentVendTab=id;
-  const esVendedor=userProfile.email.includes('dulce')||userProfile.email.includes('manuel');
-  const tabs=esVendedor?['miMes','anual','cartera','registro','proyeccion','historico','promos','reglas']:['miMes','registro','historico'];
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',tabs[i]===id));
+  const top=window._vendTabsTop||['miMes','anual','registro'];
+  const bottom=window._vendTabsBottom||['cartera','proyeccion','historico','promos','reglas'];
+  document.querySelectorAll('#tabsBar .tab').forEach((t,i)=>t.classList.toggle('active',top[i]===id));
+  document.querySelectorAll('#tabsBar2 .tab').forEach((t,i)=>t.classList.toggle('active',bottom[i]===id));
   if(id==='miMes')renderVendorMiMes();
   else if(id==='anual')renderVendorAnual();
   else if(id==='cartera')renderCarteraVendedor();
@@ -4698,6 +4748,8 @@ const MO={1:{dias:22},2:{dias:20},3:{dias:22},4:{dias:20},5:{dias:20},6:{dias:22
 // TELEMARKETING VIEW
 // ══════════════════════════════════════════════════════════════════════════════
 function buildTeleUI(){
+  const _t2=document.getElementById('tabsBar2');
+  if(_t2){_t2.style.display='none';_t2.innerHTML='';}
   document.getElementById('tabsBar').innerHTML=`
     <div class="tab active" onclick="swT('miMes')">Mi actividad</div>
     <div class="tab" onclick="swT('prospectos')">Mis prospectos</div>
@@ -11241,6 +11293,8 @@ async function renderFinBalance(){
 function buildAdminUI(){
   // Usar el mismo patrón que buildDirectorUI y buildVendorUI:
   // solo rellenar #tabsBar, el topbar ya está en el HTML base
+  const _t2=document.getElementById('tabsBar2');
+  if(_t2){_t2.style.display='none';_t2.innerHTML='';}
   document.getElementById('tabsBar').innerHTML=`
     <div class="tab active" id="tabAdminFin" onclick="swAdminTab('finanzas')">💰 Finanzas</div>
     <div class="tab" id="tabAdminVend" onclick="swAdminTab('vendedores')">📊 Resumen Vendedores</div>`;
