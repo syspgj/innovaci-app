@@ -3275,6 +3275,7 @@ function buildDirectorUI(){
     <div class="tab" onclick="swDArea('ventas')">💼 Ventas</div>
     <div class="tab" onclick="swDArea('operaciones')">🛠 Operaciones</div>
     <div class="tab" onclick="swDArea('finanzas')">💰 Finanzas</div>
+    <div class="tab" onclick="swDArea('metaaspel')">🎯 Meta Aspel</div>
     <div class="tab" onclick="swDArea('config')" style="color:#F5A623;">⚙ Configuración</div>`;
   swDArea('ventas');
 }
@@ -3313,6 +3314,7 @@ function renderDirectorArea(){
     if(currentDirArea!=='finanzas') document.getElementById('mainContent').classList.remove('full-width');
     if(currentDirArea==='operaciones') renderDirectorOperaciones();
     else if(currentDirArea==='finanzas') renderFinanzas();
+    else if(currentDirArea==='metaaspel') renderDirectorMetaAspel();
     else if(currentDirArea==='config') renderDirectorConfig();
   }
 }
@@ -7375,6 +7377,221 @@ function buildPromoVistaHtml(bySeccion){
 
 // ─── PROMOCIONES DIRECTOR (config + vista) ────────────────────────────────────
 let currentPromoTab='vista';
+// ══════════════════════════════════════════════════════════════════════════════
+// META ASPEL — cumplimiento de cuota con la marca (ACV 75% + Renovaciones 25%)
+// ══════════════════════════════════════════════════════════════════════════════
+const MESES_CORTOS=['','Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+
+async function renderDirectorMetaAspel(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  const {data:rows,error}=await sb.from('meta_aspel_mensual').select('*').eq('anio',currentYear).order('mes');
+  if(error){mc.innerHTML=`<div style="padding:20px;color:var(--red);">Error: ${error.message}. ¿Ya corriste el SQL de Meta Aspel?</div>`;return;}
+
+  const porMes=Array(13).fill(null);
+  (rows||[]).forEach(r=>{porMes[r.mes]=r;});
+
+  const calc=r=>{
+    if(!r) return null;
+    const acvAlcance=r.cuota_acv>0?(r.real_acv/r.cuota_acv*100):0;
+    const renovAlcance=r.cuota_renov>0?(r.real_renov/r.cuota_renov*100):0;
+    const acvTotal=acvAlcance*0.75;
+    const renovTotal=renovAlcance*0.25;
+    return {...r, acvAlcance, renovAlcance, acvTotal, renovTotal, total:acvTotal+renovTotal};
+  };
+
+  const hoy=new Date();
+  const esEsteAnio=currentYear===hoy.getFullYear();
+  const mesActualReal=esEsteAnio?hoy.getMonth()+1:12;
+  const diasHab=getDiasHabiles(currentYear,mesActualReal);
+  const diasTrans=esEsteAnio?getDiasTranscurridos(currentYear,mesActualReal):diasHab;
+  const diasRest=Math.max(diasHab-diasTrans,0);
+
+  const mesEnCursoData=porMes[mesActualReal];
+  let proyMesActual=null;
+  if(mesEnCursoData&&!mesEnCursoData.cerrado&&diasTrans>0){
+    const factor=diasHab/diasTrans;
+    const acvProy=mesEnCursoData.real_acv*factor;
+    const renovProy=mesEnCursoData.real_renov*factor;
+    const acvAlcanceProy=mesEnCursoData.cuota_acv>0?(acvProy/mesEnCursoData.cuota_acv*100):0;
+    const renovAlcanceProy=mesEnCursoData.cuota_renov>0?(renovProy/mesEnCursoData.cuota_renov*100):0;
+    proyMesActual=acvAlcanceProy*0.75+renovAlcanceProy*0.25;
+  }
+
+  const cerrados=(rows||[]).filter(r=>r.cerrado).map(calc);
+  const promedioYTD=cerrados.length?cerrados.reduce((s,r)=>s+r.total,0)/cerrados.length:0;
+  const mejor=cerrados.length?cerrados.reduce((a,b)=>b.total>a.total?b:a):null;
+  const peor=cerrados.length?cerrados.reduce((a,b)=>b.total<a.total?b:a):null;
+
+  // Trimestres
+  const trims=[[1,2,3],[4,5,6],[7,8,9],[10,11,12]];
+  const trimData=trims.map((meses,i)=>{
+    const datos=meses.map(m=>porMes[m]).filter(Boolean);
+    const cuotaAcv=datos.reduce((s,r)=>s+(r.cuota_acv||0),0);
+    const realAcv=datos.reduce((s,r)=>s+(r.real_acv||0),0);
+    const cuotaRenov=datos.reduce((s,r)=>s+(r.cuota_renov||0),0);
+    const realRenov=datos.reduce((s,r)=>s+(r.real_renov||0),0);
+    const cerrado=datos.length===3&&datos.every(r=>r.cerrado);
+    const enCurso=datos.some(r=>!r.cerrado)&&datos.length>0;
+    let realAcvProy=realAcv, realRenovProy=realRenov;
+    if(enCurso&&mesEnCursoData&&meses.includes(mesActualReal)&&diasTrans>0){
+      const factor=diasHab/diasTrans;
+      realAcvProy=realAcv-mesEnCursoData.real_acv+mesEnCursoData.real_acv*factor;
+      realRenovProy=realRenov-mesEnCursoData.real_renov+mesEnCursoData.real_renov*factor;
+    }
+    const acvAlcance=cuotaAcv>0?(realAcvProy/cuotaAcv*100):0;
+    const renovAlcance=cuotaRenov>0?(realRenovProy/cuotaRenov*100):0;
+    const total=datos.length?(acvAlcance*0.75+renovAlcance*0.25):null;
+    return {idx:i+1, cuotaAcv,realAcv,cuotaRenov,realRenov, total, cerrado, enCurso, tieneDatos:datos.length>0};
+  });
+
+  // Alerta de renovaciones: caída >20 puntos vs mes anterior (solo meses cerrados)
+  let alertaRenov=null;
+  for(let m=2;m<=12;m++){
+    const actual=calc(porMes[m]), anterior=calc(porMes[m-1]);
+    if(actual&&anterior&&actual.cerrado&&anterior.cerrado){
+      const delta=actual.renovAlcance-anterior.renovAlcance;
+      if(delta<=-20){
+        if(!alertaRenov) alertaRenov=[];
+        alertaRenov.push(`Caída de ${Math.abs(delta).toFixed(1)} puntos en ${MESES_CORTOS[m]} (de ${anterior.renovAlcance.toFixed(1)}% en ${MESES_CORTOS[m-1]} a ${actual.renovAlcance.toFixed(1)}%)`);
+      }
+    }
+  }
+
+  const meses=[]; for(let m=1;m<=12;m++) if(porMes[m]) meses.push(m);
+  const labels=meses.map(m=>MESES_CORTOS[m]);
+  const totalArr=meses.map(m=>{const c=calc(porMes[m]);return c.cerrado?c.total:null;});
+  const totalProyArr=meses.map(m=>m===mesActualReal&&proyMesActual!=null?proyMesActual:null);
+  const acvArr=meses.map(m=>calc(porMes[m]).acvAlcance);
+  const renovArr=meses.map(m=>calc(porMes[m]).renovAlcance);
+
+  mc.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <div>
+        <div style="font-size:18px;font-weight:700;color:var(--navy);">🎯 Cumplimiento de meta — Siigo Aspel ${currentYear}</div>
+        <div style="font-size:12px;color:var(--text3);">Ponderación: 75% ACV (venta nueva + cruzada) · 25% Renovaciones</div>
+      </div>
+      <button onclick="abrirCapturaMetaAspel()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Capturar / editar mes</button>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
+      <div class="thc"><div class="th-lbl">${MESES_CORTOS[mesActualReal]} — avance real</div><div class="th-val" style="color:${mesEnCursoData&&mesEnCursoData.total>=100?'#27AE60':'var(--red)'};">${mesEnCursoData?calc(mesEnCursoData).total.toFixed(1)+'%':'—'}</div><div style="font-size:9px;color:var(--text3);">${diasTrans} de ${diasHab} días hábiles</div></div>
+      <div class="thc"><div class="th-lbl">${MESES_CORTOS[mesActualReal]} — proyectado</div><div class="th-val" style="color:${proyMesActual>=100?'#27AE60':proyMesActual>=85?'#F5A623':'var(--red)'};">${proyMesActual!=null?proyMesActual.toFixed(1)+'%':'—'}</div><div style="font-size:9px;color:var(--text3);">al ritmo actual</div></div>
+      <div class="thc"><div class="th-lbl">Q${trimData.findIndex(t=>t.enCurso)+1||Math.ceil(mesActualReal/3)} — proyectado</div><div class="th-val" style="color:#F5A623;">${(()=>{const t=trimData.find(t=>t.enCurso);return t&&t.total!=null?t.total.toFixed(1)+'%':'—';})()}</div><div style="font-size:9px;color:var(--text3);">trimestre en curso</div></div>
+      <div class="thc"><div class="th-lbl">Promedio ${currentYear} (meses cerrados)</div><div class="th-val" style="color:${promedioYTD>=100?'#27AE60':'var(--red)'};">${promedioYTD?promedioYTD.toFixed(1)+'%':'—'}</div><div style="font-size:9px;color:var(--text3);">${mejor?`mejor: ${MESES_CORTOS[mejor.mes]} ${mejor.total.toFixed(0)}%`:''}</div></div>
+    </div>
+
+    ${alertaRenov?.length?`<div style="background:rgba(245,166,35,0.1);border:1px solid #F5A623;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:flex-start;gap:10px;">
+      <span style="font-size:16px;">⚠️</span>
+      <div style="font-size:12px;color:var(--text);"><b>Alerta de renovaciones:</b> ${alertaRenov.join(' · ')}</div>
+    </div>`:''}
+
+    <div class="card" style="padding:16px;margin-bottom:16px;">
+      <div style="font-size:13px;font-weight:600;margin-bottom:10px;">Vista general — cumplimiento total mensual</div>
+      <div style="display:flex;gap:16px;margin-bottom:8px;font-size:11px;color:var(--text3);">
+        <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:2px;background:#0D2240;"></span>Real</span>
+        <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:2px;background:#c3c2c0;"></span>Proyectado</span>
+        <span style="display:flex;align-items:center;gap:4px;"><span style="width:14px;height:2px;background:#E84040;margin-top:5px;"></span>Meta 100%</span>
+      </div>
+      <div style="position:relative;width:100%;height:260px;"><canvas id="chartMetaTotal"></canvas></div>
+    </div>
+
+    <div style="font-size:14px;font-weight:600;margin-bottom:8px;">Acumulado trimestral</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">
+      ${trimData.map(t=>`<div class="thc" style="${t.enCurso?'border:1px solid #F5A623;':''}">
+        <div class="th-lbl">Q${t.idx} ${t.cerrado?'· cerrado':t.enCurso?'· en curso':''}</div>
+        <div class="th-val" style="color:${!t.tieneDatos?'var(--text3)':t.total>=100?'#27AE60':t.enCurso?'#F5A623':'var(--red)'};">${t.total!=null?t.total.toFixed(1)+(t.enCurso?'% proy.':'%'):'—'}</div>
+        <div style="font-size:9px;color:var(--text3);">${t.tieneDatos?`${fmt(t.realAcv+t.realRenov)} de ${fmt(t.cuotaAcv+t.cuotaRenov)}`:'sin datos'}</div>
+      </div>`).join('')}
+    </div>
+
+    <div style="font-size:14px;font-weight:600;margin-bottom:10px;">Desglose por factor</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+      <div class="card" style="padding:16px;">
+        <div style="font-size:12px;color:var(--text3);margin-bottom:8px;">ACV — venta nueva + cruzada (75% del peso)</div>
+        <div style="position:relative;width:100%;height:200px;"><canvas id="chartMetaAcv"></canvas></div>
+      </div>
+      <div class="card" style="padding:16px;">
+        <div style="font-size:12px;color:var(--text3);margin-bottom:8px;">Renovaciones (25% del peso)</div>
+        <div style="position:relative;width:100%;height:200px;"><canvas id="chartMetaRenov"></canvas></div>
+      </div>
+    </div>
+
+    <div style="margin-top:20px;overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead><tr style="background:var(--navy);color:#fff;">
+          <th style="padding:6px 8px;text-align:left;">Mes</th><th style="padding:6px 8px;">Cuota ACV</th><th style="padding:6px 8px;">Real ACV</th>
+          <th style="padding:6px 8px;">Alcance ACV</th><th style="padding:6px 8px;">Cuota Renov.</th><th style="padding:6px 8px;">Real Renov.</th>
+          <th style="padding:6px 8px;">Alcance Renov.</th><th style="padding:6px 8px;">Total</th><th style="padding:6px 8px;"></th>
+        </tr></thead>
+        <tbody>
+          ${meses.map(m=>{const c=calc(porMes[m]);return `<tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:5px 8px;font-weight:600;">${MESES_CORTOS[m]}${!c.cerrado?' <span style="color:#F5A623;font-size:9px;">(en curso)</span>':''}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(c.cuota_acv)}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(c.real_acv)}</td>
+            <td style="padding:5px 8px;text-align:center;font-family:'JetBrains Mono',monospace;color:${c.acvAlcance>=100?'#27AE60':'var(--red)'};">${c.acvAlcance.toFixed(1)}%</td>
+            <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(c.cuota_renov)}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(c.real_renov)}</td>
+            <td style="padding:5px 8px;text-align:center;font-family:'JetBrains Mono',monospace;color:${c.renovAlcance>=100?'#27AE60':'var(--red)'};">${c.renovAlcance.toFixed(1)}%</td>
+            <td style="padding:5px 8px;text-align:center;font-weight:700;font-family:'JetBrains Mono',monospace;color:${c.total>=100?'#27AE60':'var(--red)'};">${c.total.toFixed(1)}%</td>
+            <td style="padding:5px 8px;text-align:center;"><span onclick="abrirCapturaMetaAspel(${m})" style="cursor:pointer;color:var(--teal);">✏️</span></td>
+          </tr>`;}).join('')}
+        </tbody>
+      </table>
+    </div>`;
+
+  setTimeout(()=>{
+    const metaLinePlugin={id:'metaLine',afterDraw(chart){const{ctx,scales:{x,y}}=chart;const yPos=y.getPixelForValue(100);ctx.save();ctx.strokeStyle='#E84040';ctx.setLineDash([6,4]);ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(x.left,yPos);ctx.lineTo(x.right,yPos);ctx.stroke();ctx.restore();}};
+    new Chart(document.getElementById('chartMetaTotal'),{type:'bar',data:{labels,datasets:[
+      {label:'Real',data:totalArr,backgroundColor:'#0D2240',borderRadius:4,maxBarThickness:36},
+      {label:'Proyectado',data:totalProyArr,backgroundColor:'#c3c2c0',borderRadius:4,maxBarThickness:36}
+    ]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{ticks:{callback:v=>v+'%'}}},plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.dataset.label+': '+c.parsed.y.toFixed(1)+'%'}}}},plugins:[metaLinePlugin]});
+    new Chart(document.getElementById('chartMetaAcv'),{type:'line',data:{labels,datasets:[{data:acvArr,borderColor:'#00A99D',backgroundColor:'rgba(0,169,157,0.1)',fill:true,tension:0.3,pointRadius:4,borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{ticks:{callback:v=>v+'%'}}},plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y.toFixed(1)+'%'}}}},plugins:[metaLinePlugin]});
+    new Chart(document.getElementById('chartMetaRenov'),{type:'line',data:{labels,datasets:[{data:renovArr,borderColor:'#F5A623',backgroundColor:'rgba(245,166,35,0.1)',fill:true,tension:0.3,pointRadius:4,borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{ticks:{callback:v=>v+'%'}}},plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y.toFixed(1)+'%'}}}},plugins:[metaLinePlugin]});
+  },50);
+}
+
+function abrirCapturaMetaAspel(mesPrefill){
+  const m=mesPrefill||new Date().getMonth()+1;
+  sb.from('meta_aspel_mensual').select('*').eq('anio',currentYear).eq('mes',m).maybeSingle().then(({data:r})=>{
+    r=r||{};
+    const html=`
+      <div style="margin-bottom:10px;">${fld('Mes',`<select id="maMes" style="${INP}">${MESES_CORTOS.map((l,i)=>i>0?`<option value="${i}" ${i===m?'selected':''}>${l}</option>`:'').join('')}</select>`)}</div>
+      <div class="shead">ACV (venta nueva + cruzada)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+        ${fld('Cuota ACV',inp('maCuotaAcv','number','0',r.cuota_acv||''))}
+        ${fld('Real ACV',inp('maRealAcv','number','0',r.real_acv||''))}
+      </div>
+      <div class="shead">Renovaciones</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+        ${fld('Cuota renovaciones',inp('maCuotaRenov','number','0',r.cuota_renov||''))}
+        ${fld('Real renovaciones',inp('maRealRenov','number','0',r.real_renov||''))}
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+        <input type="checkbox" id="maCerrado" ${r.cerrado?'checked':''} style="width:16px;height:16px;">
+        <label for="maCerrado" style="font-size:12px;">Mes cerrado (desmarca si sigue en curso / es un avance parcial)</label>
+      </div>`;
+    mkModal('modalMetaAspel','Capturar cumplimiento mensual',html,'guardarCapturaMetaAspel');
+  });
+}
+
+async function guardarCapturaMetaAspel(){
+  const mes=parseInt(document.getElementById('maMes').value);
+  const payload={
+    anio:currentYear, mes,
+    cuota_acv:parseFloat(document.getElementById('maCuotaAcv').value)||0,
+    real_acv:parseFloat(document.getElementById('maRealAcv').value)||0,
+    cuota_renov:parseFloat(document.getElementById('maCuotaRenov').value)||0,
+    real_renov:parseFloat(document.getElementById('maRealRenov').value)||0,
+    cerrado:!!document.getElementById('maCerrado').checked,
+    updated_at:new Date().toISOString()
+  };
+  const {error}=await sb.from('meta_aspel_mensual').upsert(payload,{onConflict:'anio,mes'});
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalMetaAspel')?.remove();
+  renderDirectorMetaAspel();
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // OPERACIONES — Mesa de Control (Fase 1: catálogo de pólizas + banco de horas)
 // ══════════════════════════════════════════════════════════════════════════════
