@@ -744,14 +744,86 @@ function buildMesaControlUI(){
 function buildAsesorUI(){
   const _t2=document.getElementById('tabsBar2');
   if(_t2){_t2.style.display='none';_t2.innerHTML='';}
-  document.getElementById('tabsBar').innerHTML=`<div class="tab active">Mis servicios</div>`;
-  document.getElementById('mainContent').innerHTML=`
-    <div style="padding:40px;text-align:center;color:var(--text3);">
-      <div style="font-size:32px;margin-bottom:10px;">🛠️</div>
-      <div style="font-size:15px;font-weight:600;color:var(--navy);">Hola, ${userProfile.nombre}</div>
-      <div style="font-size:13px;margin-top:8px;">Tu módulo de servicios asignados está en construcción — llega en la siguiente fase de Mesa de Control.</div>
-      <div style="font-size:12px;margin-top:4px;">Por ahora sigue usando Telegram y el calendario como de costumbre.</div>
+  document.getElementById('tabsBar').innerHTML=`<div class="tab active">🎫 Mis servicios</div>`;
+  renderAsesorServicios();
+}
+
+async function renderAsesorServicios(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  const {data:tickets,error}=await sb.from('servicios_ejecutados').select('*').eq('asesor_id',currentUser.id).order('fecha_asignada',{ascending:true});
+  if(error){mc.innerHTML=`<div style="padding:20px;color:var(--red);">Error: ${error.message}</div>`;return;}
+  window._miTickets=tickets||[];
+  const pendientes=(tickets||[]).filter(t=>t.estatus==='ASIGNADO'||t.estatus==='EN_CURSO');
+  const hechos=(tickets||[]).filter(t=>['CONCLUIDO','NO_CONCLUIDO','CANCELADO_INASISTENCIA'].includes(t.estatus)).reverse();
+  mc.innerHTML=`
+    <div style="padding:16px;max-width:600px;margin:0 auto;">
+      <div style="font-size:16px;font-weight:700;color:var(--navy);margin-bottom:14px;">Hola, ${(userProfile.nombre||'').split(' ')[0]} 👋</div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px;">Por atender (${pendientes.length})</div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:24px;">
+        ${pendientes.length===0?'<div style="color:var(--text3);font-size:12px;">No tienes servicios pendientes 🎉</div>':''}
+        ${pendientes.map(t=>tarjetaTicketAsesor(t)).join('')}
+      </div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--text3);">Historial reciente</div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        ${hechos.length===0?'<div style="color:var(--text3);font-size:12px;">Todavía no tienes servicios registrados.</div>':''}
+        ${hechos.slice(0,15).map(t=>tarjetaTicketAsesor(t)).join('')}
+      </div>
     </div>`;
+}
+
+function tarjetaTicketAsesor(t){
+  const colorEstatus={ASIGNADO:'#2980B9',EN_CURSO:'#2980B9',CONCLUIDO:'#27AE60',NO_CONCLUIDO:'#E84040',CANCELADO_INASISTENCIA:'#94a3b8'};
+  return `<div onclick="abrirTicketAsesor('${t.id}')" style="border:1px solid var(--border);border-radius:8px;padding:12px;cursor:pointer;background:#fff;">
+    <div style="display:flex;justify-content:space-between;align-items:start;gap:8px;">
+      <div>
+        <div style="font-weight:700;font-size:13px;color:var(--navy);">${t.cliente_nombre}</div>
+        <div style="font-size:11px;color:var(--text3);">${t.descripcion_solicitud||'Sin descripción'}</div>
+      </div>
+      <span style="padding:2px 8px;border-radius:10px;font-size:9px;font-weight:700;background:${colorEstatus[t.estatus]}22;color:${colorEstatus[t.estatus]};white-space:nowrap;">${t.estatus}</span>
+    </div>
+    <div style="font-size:10px;color:var(--text3);margin-top:6px;">📅 ${t.fecha_asignada||'sin fecha'} · Folio ${t.folio_ticket}</div>
+  </div>`;
+}
+
+function abrirTicketAsesor(id){
+  const t=(window._miTickets||[]).find(x=>String(x.id)===String(id));
+  if(!t)return;
+  const html=`
+    <div style="font-size:12px;color:var(--text3);margin-bottom:10px;">Folio ${t.folio_ticket} · ${t.cliente_nombre}</div>
+    <div style="margin-bottom:10px;">${fld('Descripción de la solicitud',`<div style="font-size:12px;color:var(--text2);padding:8px;background:var(--bg2,#f5f6f8);border-radius:6px;">${t.descripcion_solicitud||'—'}</div>`)}</div>
+    <div style="margin-bottom:10px;">${fld('Estatus',`<select id="asEstatus" style="${INP}">
+      <option value="ASIGNADO" ${t.estatus==='ASIGNADO'?'selected':''}>Asignado</option>
+      <option value="EN_CURSO" ${t.estatus==='EN_CURSO'?'selected':''}>En curso</option>
+      <option value="CONCLUIDO" ${t.estatus==='CONCLUIDO'?'selected':''}>Concluido</option>
+      <option value="NO_CONCLUIDO" ${t.estatus==='NO_CONCLUIDO'?'selected':''}>No concluido (falta tiempo / reagendar)</option>
+      <option value="CANCELADO_INASISTENCIA" ${t.estatus==='CANCELADO_INASISTENCIA'?'selected':''}>Cliente no respondió (inasistencia)</option>
+    </select>`)}</div>
+    <div style="margin-bottom:10px;">${fld('Comentarios (¿ya contactaste? observaciones)',inp('asComentarios','text','',t.comentarios_asesor||''))}</div>
+    <div style="margin-bottom:10px;">${fld('¿Qué se realizó?',inp('asTrabajo','text','',t.trabajo_realizado||''))}</div>
+    <div style="margin-bottom:6px;">${fld('Tiempo consumido (minutos reales)',inp('asDuracion','number','',t.duracion_real_min||''))}</div>
+    <div style="font-size:10px;color:var(--text3);">El tiempo se redondea a bloques de 15 min automáticamente al guardar.</div>
+  `;
+  window._asTicketId=id;
+  mkModal('modalTicketAsesor','Actualizar servicio',html,'guardarTicketAsesor');
+}
+
+async function guardarTicketAsesor(){
+  const id=window._asTicketId;
+  const real=parseInt(document.getElementById('asDuracion')?.value)||0;
+  const fact=real>0?Math.ceil(real/15)*15:null;
+  const payload={
+    estatus:document.getElementById('asEstatus').value,
+    comentarios_asesor:document.getElementById('asComentarios')?.value||null,
+    trabajo_realizado:document.getElementById('asTrabajo')?.value||null,
+    duracion_real_min:real||null,
+    duracion_facturada_min:fact,
+    updated_at:new Date().toISOString()
+  };
+  const {error}=await sb.from('servicios_ejecutados').update(payload).eq('id',id);
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalTicketAsesor')?.remove();
+  renderAsesorServicios();
 }
 
 // ─── MONTH SELECT ─────────────────────────────────────────────────────────────
@@ -7754,12 +7826,209 @@ async function editarContratoPoliza(id){
 }
 
 async function renderOpsTickets(){
-  document.getElementById('opsBody').innerHTML=`
-    <div style="text-align:center;padding:40px;color:var(--text3);">
-      <div style="font-size:32px;margin-bottom:10px;">🎫</div>
-      <div style="font-size:14px;font-weight:600;">Módulo de servicios y tickets — próximamente</div>
-      <div style="font-size:12px;margin-top:6px;">Aquí vivirá la asignación de servicios a asesores, el estatus de cada ticket y el dashboard del día. Es la Fase 2 de Mesa de Control.</div>
+  const body=document.getElementById('opsBody');
+  body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  const today=todayLocal();
+  const [{data:tickets},{data:asesores}]=await Promise.all([
+    sb.from('servicios_ejecutados').select('*').order('fecha_asignada',{ascending:false}).order('created_at',{ascending:false}).limit(400),
+    sb.from('usuarios').select('id,nombre').eq('rol','asesor').order('nombre')
+  ]);
+  window._opsAsesores=asesores||[];
+  window._opsTickets=tickets||[];
+
+  const hoy=(tickets||[]).filter(t=>t.fecha_asignada===today);
+  const pendAsignar=(tickets||[]).filter(t=>t.estatus==='PENDIENTE');
+  const enCurso=(tickets||[]).filter(t=>t.estatus==='ASIGNADO'||t.estatus==='EN_CURSO');
+  const porCerrar=(tickets||[]).filter(t=>(t.estatus==='CONCLUIDO'||t.estatus==='NO_CONCLUIDO')&&!t.ticket_cerrado);
+  const noConcluidos=(tickets||[]).filter(t=>t.estatus==='NO_CONCLUIDO');
+
+  body.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
+      <div style="font-size:12px;color:var(--text3);">Hoy: <b>${hoy.length}</b> servicio(s) programado(s)</div>
+      <button onclick="abrirNuevoTicket()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Nueva solicitud</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:18px;">
+      <div class="thc" style="cursor:pointer;${window._opsTicketFiltro==='hoy'?'border:1px solid var(--teal);':''}" onclick="filtrarOpsTickets('hoy')"><div class="th-lbl">Hoy</div><div class="th-val">${hoy.length}</div></div>
+      <div class="thc" style="cursor:pointer;${window._opsTicketFiltro==='PENDIENTE'?'border:1px solid #F5A623;':''}" onclick="filtrarOpsTickets('PENDIENTE')"><div class="th-lbl">Sin asignar</div><div class="th-val" style="color:#F5A623;">${pendAsignar.length}</div></div>
+      <div class="thc" style="cursor:pointer;${window._opsTicketFiltro==='encurso'?'border:1px solid #2980B9;':''}" onclick="filtrarOpsTickets('encurso')"><div class="th-lbl">Asignados/en curso</div><div class="th-val" style="color:#2980B9;">${enCurso.length}</div></div>
+      <div class="thc" style="cursor:pointer;${window._opsTicketFiltro==='porcerrar'?'border:1px solid #8B5CF6;':''}" onclick="filtrarOpsTickets('porcerrar')"><div class="th-lbl">Por cerrar</div><div class="th-val" style="color:#8B5CF6;">${porCerrar.length}</div></div>
+      <div class="thc" style="cursor:pointer;${window._opsTicketFiltro==='NO_CONCLUIDO'?'border:1px solid var(--red);':''}" onclick="filtrarOpsTickets('NO_CONCLUIDO')"><div class="th-lbl">No concluidos</div><div class="th-val" style="color:var(--red);">${noConcluidos.length}</div></div>
+    </div>
+    <div id="opsTicketsTabla"></div>`;
+  renderOpsTicketsTabla();
+}
+
+function filtrarOpsTickets(f){
+  window._opsTicketFiltro=window._opsTicketFiltro===f?null:f;
+  renderOpsTicketsTabla();
+}
+
+function renderOpsTicketsTabla(){
+  const cont=document.getElementById('opsTicketsTabla');
+  const today=todayLocal();
+  let rows=window._opsTickets||[];
+  const f=window._opsTicketFiltro;
+  if(f==='hoy') rows=rows.filter(t=>t.fecha_asignada===today);
+  else if(f==='encurso') rows=rows.filter(t=>t.estatus==='ASIGNADO'||t.estatus==='EN_CURSO');
+  else if(f==='porcerrar') rows=rows.filter(t=>(t.estatus==='CONCLUIDO'||t.estatus==='NO_CONCLUIDO')&&!t.ticket_cerrado);
+  else if(f) rows=rows.filter(t=>t.estatus===f);
+
+  const colorEstatus={PENDIENTE:'#F5A623',ASIGNADO:'#2980B9',EN_CURSO:'#2980B9',CONCLUIDO:'#27AE60',NO_CONCLUIDO:'#E84040',CANCELADO_INASISTENCIA:'#94a3b8'};
+  const tipoLabel={SOPORTE_POLIZA:'Póliza',EVENTO:'Evento',CURSO_EMPRESARIAL:'Curso'};
+  cont.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="background:var(--navy);color:#fff;">
+      <th style="padding:6px 8px;text-align:left;">Folio</th><th style="padding:6px 8px;">Fecha</th>
+      <th style="padding:6px 8px;text-align:left;">Cliente</th><th style="padding:6px 8px;">Tipo</th>
+      <th style="padding:6px 8px;text-align:left;">Asesor</th><th style="padding:6px 8px;">Estatus</th>
+      <th style="padding:6px 8px;">Duración</th><th style="padding:6px 8px;"></th>
+    </tr></thead>
+    <tbody>
+      ${rows.length===0?'<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text3);">Sin servicios</td></tr>':''}
+      ${rows.map(t=>`<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="abrirDetalleTicket('${t.id}')">
+        <td style="padding:6px 8px;font-weight:600;color:var(--navy);">${t.folio_ticket||'—'}</td>
+        <td style="padding:6px 8px;text-align:center;">${t.fecha_asignada||'—'}</td>
+        <td style="padding:6px 8px;">${t.cliente_nombre}</td>
+        <td style="padding:6px 8px;text-align:center;font-size:10px;">${tipoLabel[t.tipo_servicio]||t.tipo_servicio}</td>
+        <td style="padding:6px 8px;">${t.asesor_nombre||'<span style="color:#F5A623;">Sin asignar</span>'}</td>
+        <td style="padding:6px 8px;text-align:center;"><span style="padding:2px 8px;border-radius:10px;font-size:9px;font-weight:700;background:${colorEstatus[t.estatus]}22;color:${colorEstatus[t.estatus]};">${t.estatus}</span></td>
+        <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${t.duracion_facturada_min?t.duracion_facturada_min+' min':'—'}</td>
+        <td style="padding:6px 8px;text-align:center;">${(t.estatus==='CONCLUIDO'||t.estatus==='NO_CONCLUIDO')&&!t.ticket_cerrado?'<span style="color:#8B5CF6;font-size:10px;">cerrar ▸</span>':''}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+async function abrirNuevoTicket(){
+  const asesores=window._opsAsesores||[];
+  const {data:contratos}=await sb.from('clientes_polizas').select('id,cliente_nombre,horas_totales,horas_consumidas').eq('estatus','VIGENTE').order('cliente_nombre');
+  const today=todayLocal();
+  const html=`
+    <div style="margin-bottom:10px;">${fld('Tipo de servicio',`<select id="tkTipo" style="${INP}" onchange="toggleTipoTicket()">
+      <option value="SOPORTE_POLIZA">Soporte de póliza (banco de horas)</option>
+      <option value="EVENTO">Servicio por evento</option>
+      <option value="CURSO_EMPRESARIAL">Curso empresarial</option>
+    </select>`)}</div>
+    <div id="tkContratoWrap" style="margin-bottom:10px;">${fld('Contrato con banco de horas',`<select id="tkContrato" style="${INP}" onchange="autollenarClienteTicket()">
+      <option value="">-- Selecciona --</option>
+      ${(contratos||[]).map(c=>`<option value="${c.id}" data-cliente="${(c.cliente_nombre||'').replace(/"/g,'&quot;')}">${c.cliente_nombre} (${Math.max((c.horas_totales||0)-(c.horas_consumidas||0),0)}h restantes)</option>`).join('')}
+    </select>`)}</div>
+    <div style="margin-bottom:10px;">${fld('Cliente',inp('tkCliente','text','Nombre del cliente'))}</div>
+    <div style="margin-bottom:10px;">${fld('Solicitado por',inp('tkSolicitante','text','Ej. Dulce (ventas), o el cliente directo'))}</div>
+    <div style="margin-bottom:10px;">${fld('Descripción de la solicitud',inp('tkDescripcion','text','Qué necesita el cliente'))}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Asesor',`<select id="tkAsesor" style="${INP}"><option value="">-- Sin asignar todavía --</option>${asesores.map(a=>`<option value="${a.id}" data-nombre="${a.nombre}">${a.nombre}</option>`).join('')}</select>`)}
+      ${fld('Fecha asignada',inp('tkFecha','date','',today))}
     </div>`;
+  mkModal('modalNuevoTicket','Nueva solicitud de servicio',html,'guardarNuevoTicket');
+  toggleTipoTicket();
+}
+function toggleTipoTicket(){
+  const tipo=document.getElementById('tkTipo')?.value;
+  const w=document.getElementById('tkContratoWrap');
+  if(w) w.style.display=tipo==='SOPORTE_POLIZA'?'block':'none';
+}
+function autollenarClienteTicket(){
+  const sel=document.getElementById('tkContrato');
+  const opt=sel?.selectedOptions[0];
+  if(opt&&opt.dataset.cliente) document.getElementById('tkCliente').value=opt.dataset.cliente;
+}
+
+async function guardarNuevoTicket(){
+  const cliente=document.getElementById('tkCliente')?.value.trim();
+  if(!cliente){alert('El cliente es obligatorio.');return;}
+  const asesorSel=document.getElementById('tkAsesor');
+  const asesorId=asesorSel?.value||null;
+  const asesorNombre=asesorId?asesorSel.selectedOptions[0].dataset.nombre:null;
+  const {count}=await sb.from('servicios_ejecutados').select('id',{count:'exact',head:true}).gte('created_at',`${currentYear}-01-01`);
+  const folio=`TCK-${currentYear}-${String((count||0)+1).padStart(5,'0')}`;
+  const payload={
+    folio_ticket:folio,
+    cliente_poliza_id:document.getElementById('tkContrato')?.value||null,
+    tipo_servicio:document.getElementById('tkTipo').value,
+    cliente_nombre:cliente,
+    solicitado_por:document.getElementById('tkSolicitante')?.value||null,
+    descripcion_solicitud:document.getElementById('tkDescripcion')?.value||null,
+    asesor_id:asesorId,
+    asesor_nombre:asesorNombre,
+    fecha_asignada:document.getElementById('tkFecha')?.value||null,
+    estatus:asesorId?'ASIGNADO':'PENDIENTE'
+  };
+  const {error}=await sb.from('servicios_ejecutados').insert(payload);
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalNuevoTicket')?.remove();
+  renderOpsTickets();
+}
+
+async function abrirDetalleTicket(id){
+  const {data:t}=await sb.from('servicios_ejecutados').select('*').eq('id',id).single();
+  if(!t)return;
+  const asesores=window._opsAsesores||[];
+  const html=`
+    <div style="font-size:12px;color:var(--text3);margin-bottom:10px;">Folio: <b>${t.folio_ticket}</b> · Solicitado por: ${t.solicitado_por||'—'}</div>
+    <div style="margin-bottom:10px;">${fld('Cliente',inp('tdCliente','text','',t.cliente_nombre))}</div>
+    <div style="margin-bottom:10px;">${fld('Descripción de la solicitud',inp('tdDescripcion','text','',t.descripcion_solicitud||''))}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Asesor',`<select id="tdAsesor" style="${INP}"><option value="">-- Sin asignar --</option>${asesores.map(a=>`<option value="${a.id}" data-nombre="${a.nombre}" ${a.id===t.asesor_id?'selected':''}>${a.nombre}</option>`).join('')}</select>`)}
+      ${fld('Fecha asignada',inp('tdFecha','date','',t.fecha_asignada||''))}
+    </div>
+    <div style="margin-bottom:10px;">${fld('Estatus',`<select id="tdEstatus" style="${INP}">${['PENDIENTE','ASIGNADO','EN_CURSO','CONCLUIDO','NO_CONCLUIDO','CANCELADO_INASISTENCIA'].map(e=>`<option value="${e}" ${e===t.estatus?'selected':''}>${e}</option>`).join('')}</select>`)}</div>
+    <div style="margin-bottom:10px;">${fld('Comentarios del asesor',inp('tdComentarios','text','',t.comentarios_asesor||''))}</div>
+    <div style="margin-bottom:10px;">${fld('Trabajo realizado',inp('tdTrabajo','text','',t.trabajo_realizado||''))}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:6px;">
+      ${fld('Duración real (min)',inp('tdDuracionReal','number','',t.duracion_real_min||''))}
+      ${fld('Duración facturada (min, bloques de 15)',inp('tdDuracionFact','number','',t.duracion_facturada_min||''))}
+    </div>
+    <button onclick="calcularDuracionFacturada()" type="button" style="font-size:11px;color:var(--teal);background:none;border:none;cursor:pointer;margin-bottom:10px;text-decoration:underline;padding:0;">↳ Redondear duración real a bloques de 15 min</button><br>
+    ${t.cliente_poliza_id?`<div style="margin-bottom:10px;padding:8px 12px;background:rgba(0,169,157,0.06);border-radius:6px;font-size:11px;">🔗 Ligado a un contrato con banco de horas — al cerrar el ticket se descuentan las horas automáticamente (solo una vez).</div>`:''}
+    ${(t.estatus==='CONCLUIDO'||t.estatus==='NO_CONCLUIDO')?`<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+      <input type="checkbox" id="tdCerrado" ${t.ticket_cerrado?'checked':''} style="width:16px;height:16px;">
+      <label for="tdCerrado" style="font-size:12px;">Ticket revisado y cerrado por Mesa de Control</label>
+    </div>`:''}
+  `;
+  window._tdTicketId=id;
+  mkModal('modalDetalleTicket',`Servicio — ${t.cliente_nombre}`,html,'guardarDetalleTicket');
+}
+
+function calcularDuracionFacturada(){
+  const real=parseInt(document.getElementById('tdDuracionReal')?.value)||0;
+  document.getElementById('tdDuracionFact').value=real>0?Math.ceil(real/15)*15:0;
+}
+
+async function guardarDetalleTicket(){
+  const id=window._tdTicketId;
+  const {data:tActual}=await sb.from('servicios_ejecutados').select('cliente_poliza_id,ticket_cerrado').eq('id',id).single();
+  const asesorSel=document.getElementById('tdAsesor');
+  const asesorId=asesorSel?.value||null;
+  const asesorNombre=asesorId?asesorSel.selectedOptions[0].dataset.nombre:null;
+  const estatus=document.getElementById('tdEstatus').value;
+  const duracionFact=parseInt(document.getElementById('tdDuracionFact')?.value)||0;
+  const cerradoAhora=!!document.getElementById('tdCerrado')?.checked;
+
+  const payload={
+    cliente_nombre:document.getElementById('tdCliente').value.trim(),
+    descripcion_solicitud:document.getElementById('tdDescripcion')?.value||null,
+    asesor_id:asesorId, asesor_nombre:asesorNombre,
+    fecha_asignada:document.getElementById('tdFecha')?.value||null,
+    estatus,
+    comentarios_asesor:document.getElementById('tdComentarios')?.value||null,
+    trabajo_realizado:document.getElementById('tdTrabajo')?.value||null,
+    duracion_real_min:parseInt(document.getElementById('tdDuracionReal')?.value)||null,
+    duracion_facturada_min:duracionFact||null,
+    ticket_cerrado:cerradoAhora,
+    updated_at:new Date().toISOString()
+  };
+  const {error}=await sb.from('servicios_ejecutados').update(payload).eq('id',id);
+  if(error){alert('Error: '+error.message);return;}
+
+  // Descontar horas del banco SOLO la primera vez que se marca cerrado (evita doble descuento)
+  if(cerradoAhora&&!tActual.ticket_cerrado&&tActual.cliente_poliza_id&&duracionFact>0){
+    const {data:cp}=await sb.from('clientes_polizas').select('horas_consumidas').eq('id',tActual.cliente_poliza_id).single();
+    const nuevasHoras=(cp?.horas_consumidas||0)+duracionFact/60;
+    await sb.from('clientes_polizas').update({horas_consumidas:nuevasHoras,updated_at:new Date().toISOString()}).eq('id',tActual.cliente_poliza_id);
+  }
+
+  document.getElementById('modalDetalleTicket')?.remove();
+  renderOpsTickets();
 }
 
 async function renderDirectorPromociones(){
