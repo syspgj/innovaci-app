@@ -37,7 +37,7 @@ on conflict do nothing;
 -- ── Firmantes (PLACEHOLDER del mockup — Jp debe confirmar antes de imprimir) ──
 insert into academia_firmantes (nombre, cargo, credenciales) values
   ('Karen Hernández', 'Instructora Certificada', 'EC0217.01 | EC0301'),
-  ('Josué Alcántara', 'Director General', null)
+  ('Josué Peña', 'Director General', null)
 on conflict do nothing;
 
 -- ══════════════════════════════════════════════════════════════════════════
