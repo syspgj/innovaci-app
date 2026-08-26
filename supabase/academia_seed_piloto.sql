@@ -52,7 +52,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -96,7 +96,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -140,7 +140,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -183,7 +183,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -227,7 +227,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -270,7 +270,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -313,7 +313,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -357,7 +357,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -400,7 +400,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -444,7 +444,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -487,7 +487,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -530,7 +530,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -574,7 +574,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -617,7 +617,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -660,7 +660,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -704,7 +704,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -747,7 +747,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -790,7 +790,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -833,7 +833,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -876,7 +876,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -919,7 +919,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -962,7 +962,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -1005,7 +1005,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -1048,7 +1048,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -1091,7 +1091,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -1135,7 +1135,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL NOI 2026' and g.clave='GMAY26';
 
@@ -1182,7 +1182,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1226,7 +1226,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1270,7 +1270,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1314,7 +1314,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1358,7 +1358,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1402,7 +1402,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1446,7 +1446,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1490,7 +1490,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1534,7 +1534,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1578,7 +1578,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1622,7 +1622,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1666,7 +1666,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1710,7 +1710,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1754,7 +1754,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1798,7 +1798,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1842,7 +1842,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1886,7 +1886,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1930,7 +1930,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -1974,7 +1974,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2018,7 +2018,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2062,7 +2062,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2106,7 +2106,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2150,7 +2150,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2189,7 +2189,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2233,7 +2233,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2277,7 +2277,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2321,7 +2321,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2365,7 +2365,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2409,7 +2409,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2453,7 +2453,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2497,7 +2497,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2541,7 +2541,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2585,7 +2585,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2629,7 +2629,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2673,7 +2673,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2712,7 +2712,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2756,7 +2756,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2800,7 +2800,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2839,7 +2839,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2878,7 +2878,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2917,7 +2917,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2956,7 +2956,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -2995,7 +2995,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -3034,7 +3034,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -3073,7 +3073,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -3112,7 +3112,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -3151,7 +3151,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -3190,7 +3190,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -3229,7 +3229,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -3268,7 +3268,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -3307,7 +3307,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -3346,7 +3346,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
@@ -3390,7 +3390,7 @@ declare
   v_inscripcion_id uuid;
   v_folio text;
 begin
-  select id into v_generacion_id from academia_generaciones g
+  select g.id into v_generacion_id from academia_generaciones g
     join academia_cursos c on c.id=g.curso_id
     where c.nombre='DIPLOMADO SIIGO ASPEL COI 2026' and g.clave='GMAY26';
 
