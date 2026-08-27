@@ -237,7 +237,7 @@ as $$
   select exists (
     select 1 from usuarios
     where id = auth.uid()
-      and rol in ('academia','director')
+      and rol in ('academia','director','administracion')
       and coalesce(activo, true) = true
   );
 $$;

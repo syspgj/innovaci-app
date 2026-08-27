@@ -752,18 +752,29 @@ let currentAcademiaTab='generaciones';
 let academiaGeneracionSel=null; // id de generación activa dentro de Generaciones/Prácticas
 window._academiaCache={};
 
+function academiaSubtabsHTML(){
+  return ACADEMIA_SUBTABS.map(s=>
+    `<div class="tab${s.id===currentAcademiaTab?' active':''}" data-atab="${s.id}" onclick="swAcademia('${s.id}')">${s.label}</div>`
+  ).join('');
+}
+// Rol dedicado 'academia' (ej. Violeta): Academia ocupa toda la barra superior.
 function buildAcademiaUI(){
   const t2=document.getElementById('tabsBar2');
-  if(t2){t2.style.display='flex';}
-  document.getElementById('tabsBar').innerHTML=ACADEMIA_SUBTABS.map((s,i)=>
-    `<div class="tab${s.id===currentAcademiaTab?' active':''}" onclick="swAcademia('${s.id}')">${s.label}</div>`
-  ).join('');
+  if(t2){t2.style.display='none';t2.innerHTML='';}
+  document.getElementById('tabsBar').innerHTML=academiaSubtabsHTML();
+  renderAcademiaTab();
+}
+// Embebido dentro de Director/Administración: Academia vive en la barra secundaria.
+function academiaEmbedEnTabsBar2(){
+  const t2=document.getElementById('tabsBar2');
+  t2.style.display='flex';
+  t2.innerHTML=academiaSubtabsHTML();
+  document.getElementById('mainContent').classList.remove('full-width');
   renderAcademiaTab();
 }
 function swAcademia(tab){
   currentAcademiaTab=tab;
-  document.querySelectorAll('#tabsBar .tab').forEach((t,i)=>t.classList.toggle('active',ACADEMIA_SUBTABS[i].id===tab));
-  document.getElementById('tabsBar2').innerHTML='';
+  document.querySelectorAll('[data-atab]').forEach(t=>t.classList.toggle('active',t.dataset.atab===tab));
   renderAcademiaTab();
 }
 function renderAcademiaTab(){
@@ -3784,6 +3795,7 @@ function buildDirectorUI(){
     <div class="tab" onclick="swDArea('operaciones')">🛠 Operaciones</div>
     <div class="tab" onclick="swDArea('finanzas')">💰 Finanzas</div>
     <div class="tab" onclick="swDArea('metaaspel')">🎯 Meta Aspel</div>
+    <div class="tab" onclick="swDArea('academia')">🎓 Academia</div>
     <div class="tab" onclick="swDArea('config')" style="color:#F5A623;">⚙ Configuración</div>`;
   swDArea('ventas');
 }
@@ -3805,7 +3817,7 @@ let currentDirTab='resumen';
 
 function swDArea(area){
   currentDirArea=area;
-  document.querySelectorAll('#tabsBar .tab').forEach((t,i)=>t.classList.toggle('active',['ventas','operaciones','finanzas','config'][i]===area));
+  document.querySelectorAll('#tabsBar .tab').forEach((t,i)=>t.classList.toggle('active',['ventas','operaciones','finanzas','metaaspel','academia','config'][i]===area));
   renderDirectorArea();
 }
 
@@ -3816,6 +3828,8 @@ function renderDirectorArea(){
     t2.innerHTML=VENTAS_SUBTABS.map(s=>`<div class="tab${s.id===currentDirTab?' active':''}" onclick="swD('${s.id}')">${s.label}</div>`).join('');
     document.getElementById('mainContent').classList.remove('full-width');
     renderDirectorTab();
+  } else if(currentDirArea==='academia'){
+    academiaEmbedEnTabsBar2();
   } else {
     t2.style.display='none';
     t2.innerHTML='';
@@ -12219,7 +12233,8 @@ function buildAdminUI(){
   if(_t2){_t2.style.display='none';_t2.innerHTML='';}
   document.getElementById('tabsBar').innerHTML=`
     <div class="tab active" id="tabAdminFin" onclick="swAdminTab('finanzas')">💰 Finanzas</div>
-    <div class="tab" id="tabAdminVend" onclick="swAdminTab('vendedores')">📊 Resumen Vendedores</div>`;
+    <div class="tab" id="tabAdminVend" onclick="swAdminTab('vendedores')">📊 Resumen Vendedores</div>
+    <div class="tab" id="tabAdminAcademia" onclick="swAdminTab('academia')">🎓 Academia</div>`;
   currentAdminMainTab='finanzas';
   renderAdminActual();
 }
@@ -12228,11 +12243,17 @@ let currentAdminMainTab='finanzas';
 function swAdminTab(id){
   currentAdminMainTab=id;
   document.querySelectorAll('#tabsBar .tab').forEach(t=>t.classList.remove('active'));
-  document.getElementById(id==='finanzas'?'tabAdminFin':'tabAdminVend')?.classList.add('active');
+  document.getElementById(id==='finanzas'?'tabAdminFin':id==='vendedores'?'tabAdminVend':'tabAdminAcademia')?.classList.add('active');
   renderAdminActual();
 }
 function renderAdminActual(){
   const mc=document.getElementById('mainContent');
+  if(currentAdminMainTab==='academia'){
+    academiaEmbedEnTabsBar2();
+    return;
+  }
+  const t2=document.getElementById('tabsBar2');
+  if(t2){t2.style.display='none';t2.innerHTML='';}
   mc.innerHTML='';
   if(currentAdminMainTab==='vendedores'){
     renderAdminDashVendedores();
