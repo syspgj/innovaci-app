@@ -1181,9 +1181,9 @@ async function academiaVerFicha(inscripcionId){
       <div style="margin-top:12px;">
         ${(constancias||[]).map(c=>`
           <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;">
-            <div><b>${c.tipo}</b> · ${c.folio} · ${c.fecha_emision} · ${c.estatus}</div>
+            <div><b>${c.tipo}</b> · ${c.folio} · ${c.fecha_emision} · ${c.estatus}${!c.pdf_path?' · <span style="color:#c0392b;">sin PDF</span>':''}</div>
             <div style="display:flex;gap:6px;">
-              <button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">Descargar PDF</button>
+              ${c.pdf_path?`<button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">Descargar PDF</button>`:`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaRegenerarPDF('${c.id}')">Regenerar PDF</button>`}
               ${esDirector?`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaEliminarConstancia('${c.id}','${inscripcionId}')">Eliminar</button>`:''}
             </div>
           </div>`).join('')||'<div style="font-size:12px;color:var(--text3);">Aún no se ha emitido ninguna constancia.</div>'}
@@ -1384,7 +1384,7 @@ async function renderAcademiaConstancias(){
           <td>${c.fecha_emision}</td>
           <td>${c.estatus}</td>
           <td style="text-align:right;white-space:nowrap;">
-            <button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">PDF</button>
+            ${c.pdf_path?`<button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">PDF</button>`:`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaRegenerarPDF('${c.id}')">Regenerar</button>`}
             ${esDirector?`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaEliminarConstancia('${c.id}','${c.inscripcion_id}')">Eliminar</button>`:''}
           </td>
         </tr>`).join('')||'<tr><td colspan="7" style="padding:16px;color:var(--text3);">Aún no hay constancias emitidas.</td></tr>'}
@@ -1442,8 +1442,31 @@ async function academiaGenerarConstancia(inscripcionId,tipo){
   }).select().single();
   if(errC){alert('Error al registrar la constancia (¿ya existe una con este folio?): '+errC.message);return;}
 
-  await academiaDibujarYSubirPDF(nuevaConstancia,insc,instructor,director,calificacion);
+  try{
+    await academiaDibujarYSubirPDF(nuevaConstancia,insc,instructor,director,calificacion);
+  }catch(e){
+    alert('La constancia quedó registrada (folio '+nuevaConstancia.folio+') pero ocurrió un error generando el PDF: '+(e?.message||e)+'. Puedes reintentar con el botón "Regenerar PDF" en la lista de constancias.');
+  }
   academiaVerFicha(inscripcionId);
+}
+
+async function academiaRegenerarPDF(constanciaId){
+  const {data:c,error}=await sb.from('academia_constancias').select('*').eq('id',constanciaId).single();
+  if(error||!c){alert('No se encontró la constancia: '+(error?.message||''));return;}
+  const {data:insc,error:errI}=await sb.from('academia_inscripciones')
+    .select('*,participante:participante_id(*),generacion:generacion_id(*,curso:curso_id(*,sistema:sistema_id(*)))')
+    .eq('id',c.inscripcion_id).single();
+  if(errI||!insc){alert('No se encontró la inscripción ligada a esta constancia: '+(errI?.message||''));return;}
+  const {data:firmantes}=await sb.from('academia_firmantes').select('*');
+  const instructor=(firmantes||[]).find(f=>f.id===c.firmante_instructor_id)||(firmantes||[]).find(f=>f.cargo?.toLowerCase().includes('instructor'));
+  const director=(firmantes||[]).find(f=>f.id===c.firmante_director_id)||(firmantes||[]).find(f=>f.cargo?.toLowerCase().includes('director'));
+  try{
+    await academiaDibujarYSubirPDF(c,insc,instructor,director,c.calificacion);
+    alert('PDF regenerado y subido correctamente.');
+  }catch(e){
+    alert('Seguimos sin poder subir el PDF: '+(e?.message||e)+'. Es probable que falte una política de Storage que permita subir archivos al bucket "constancias-pdf" (ver supabase/academia_fix_storage_policies.sql).');
+  }
+  if(c.inscripcion_id) academiaVerFicha(c.inscripcion_id); else renderAcademiaConstancias();
 }
 
 async function academiaEliminarConstancia(constanciaId,inscripcionId){
@@ -1528,8 +1551,12 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
   const blob=doc.output('blob');
   const path=`${constancia.folio}.pdf`;
   const {error:upErr}=await sb.storage.from('constancias-pdf').upload(path,blob,{upsert:true,contentType:'application/pdf'});
-  if(upErr){alert('La constancia se registró pero no se pudo subir el PDF a Storage: '+upErr.message+' (¿existe el bucket "constancias-pdf"?). Se descarga localmente en su lugar.');doc.save(`${constancia.folio}.pdf`);return;}
-  await sb.from('academia_constancias').update({pdf_path:path}).eq('id',constancia.id);
+  if(upErr){
+    doc.save(`${constancia.folio}.pdf`); // se descarga localmente al menos, aunque no se pudo guardar en Storage
+    throw new Error('No se pudo subir el PDF a Storage: '+upErr.message+' (¿existe el bucket "constancias-pdf" y tiene permiso de subida?). Se descargó una copia local.');
+  }
+  const {error:updErr}=await sb.from('academia_constancias').update({pdf_path:path}).eq('id',constancia.id);
+  if(updErr) throw new Error('El PDF se subió a Storage pero no se pudo guardar su ruta en la constancia: '+updErr.message);
   doc.save(`${constancia.folio}.pdf`);
 }
 
