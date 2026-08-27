@@ -752,7 +752,7 @@ let currentAcademiaTab='generaciones';
 let academiaGeneracionSel=null; // id de generación activa dentro de Generaciones/Prácticas
 let academiaGenFiltro={q:''};
 let academiaGenVista='grid'; // 'grid' | 'lista'
-let academiaPartFiltro={q:'',acceso:'',constancia:''};
+let academiaPartFiltro={q:'',acceso:'',constancia:'',vigencia:''};
 let academiaPartSort={col:'folio',dir:'asc'};
 window._academiaCache={};
 
@@ -799,13 +799,35 @@ function academiaBarraProgreso(pct,color){
   const p=Math.max(0,Math.min(100,Math.round((pct||0)*100)));
   return `<div style="height:6px;border-radius:3px;background:#eee;overflow:hidden;"><div style="height:100%;width:${p}%;background:${color||'var(--teal)'};transition:width .3s;"></div></div>`;
 }
+const ACADEMIA_VIGENCIA_ALERTA_DIAS=7; // días antes del vencimiento para marcar en rojo
+// Vigencia de prácticas: se captura por CURSO (ventana_practicas_dias / practicas_extension_dias
+// sobre la fecha de fin de la generación); quién goza de la extensión es por inscripción (checkbox).
+function academiaVigenciaInfo(gen,insc){
+  const ventana=gen?.curso?.ventana_practicas_dias;
+  if(!gen?.fecha_fin || !ventana) return null;
+  const dias=ventana+(insc?.practicas_extension?(gen?.curso?.practicas_extension_dias||0):0);
+  const base=new Date(gen.fecha_fin+'T00:00:00');
+  const venc=new Date(base.getTime()+dias*86400000);
+  const hoy=new Date(new Date().toDateString());
+  const diasRestantes=Math.round((venc-hoy)/86400000);
+  let estado='vigente';
+  if(diasRestantes<0) estado='vencido';
+  else if(diasRestantes<=ACADEMIA_VIGENCIA_ALERTA_DIAS) estado='por_vencer';
+  return {fecha:venc.toISOString().split('T')[0],diasRestantes,estado};
+}
+function academiaVigenciaBadge(info){
+  if(!info) return '<span style="color:var(--text3);">—</span>';
+  const colores={vigente:'var(--green)',por_vencer:'var(--red)',vencido:'var(--red)'};
+  const etiquetas={vigente:'Vigente',por_vencer:'Por vencer',vencido:'Vencido'};
+  return `<span style="color:${colores[info.estado]};font-weight:${info.estado==='vigente'?400:700};">${info.fecha} · ${etiquetas[info.estado]}</span>`;
+}
 
 // ── GENERACIONES ─────────────────────────────────────────────────────────────
 async function renderAcademiaGeneraciones(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando generaciones...</div>';
   const {data:generaciones,error}=await sb.from('academia_generaciones')
-    .select('*,curso:curso_id(id,nombre,tipo,modalidad,sistema:sistema_id(clave,nombre))')
+    .select('*,curso:curso_id(id,nombre,tipo,modalidad,ventana_practicas_dias,practicas_extension_dias,practicas_totales,sistema:sistema_id(clave,nombre))')
     .order('clave');
   if(error){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error cargando generaciones: ${error.message}</div>`;return;}
   window._academiaCache.generaciones=generaciones||[];
@@ -904,7 +926,7 @@ function academiaPintarGeneraciones(){
 
 async function academiaVerGeneracion(generacionId){
   academiaGeneracionSel=generacionId;
-  academiaPartFiltro={q:'',acceso:'',constancia:''};
+  academiaPartFiltro={q:'',acceso:'',constancia:'',vigencia:''};
   academiaPartSort={col:'folio',dir:'asc'};
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando participantes...</div>';
@@ -945,12 +967,14 @@ function academiaPintarParticipantes(){
     if(academiaPartFiltro.acceso && i.nivel_acceso!==academiaPartFiltro.acceso) return false;
     if(academiaPartFiltro.constancia==='si' && !conConstancia.has(i.id)) return false;
     if(academiaPartFiltro.constancia==='no' && conConstancia.has(i.id)) return false;
+    const vig=academiaVigenciaInfo(gen,i);
+    if(academiaPartFiltro.vigencia && (vig?.estado||'sin_vigencia')!==academiaPartFiltro.vigencia) return false;
     return true;
   }).map(i=>{
     const total=i.asistencias?.length||0;
     const presentes=(i.asistencias||[]).filter(a=>a.asistio).length;
     const pctAsist=total? presentes/total : null;
-    return {i,pctAsist,tieneConstancia:conConstancia.has(i.id)};
+    return {i,pctAsist,tieneConstancia:conConstancia.has(i.id),vig:academiaVigenciaInfo(gen,i)};
   });
 
   const {col,dir}=academiaPartSort;
@@ -962,6 +986,8 @@ function academiaPintarParticipantes(){
     else if(col==='acceso'){va=a.i.nivel_acceso||'';vb=b.i.nivel_acceso||'';}
     else if(col==='asistencia'){va=a.pctAsist??-1;vb=b.pctAsist??-1;}
     else if(col==='constancia'){va=a.tieneConstancia?1:0;vb=b.tieneConstancia?1:0;}
+    else if(col==='vigencia'){va=a.vig?.diasRestantes??9999;vb=b.vig?.diasRestantes??9999;}
+    else if(col==='extension'){va=a.i.practicas_extension?1:0;vb=b.i.practicas_extension?1:0;}
     if(typeof va==='string') return va.localeCompare(vb)*mult;
     return (va-vb)*mult;
   });
@@ -969,13 +995,15 @@ function academiaPintarParticipantes(){
   const flecha=c=>col===c?(dir==='asc'?' ▲':' ▼'):'';
   const thSort=(id,label)=>`<th style="padding:14px 12px;cursor:pointer;user-select:none;" onclick="academiaOrdenarParticipantes('${id}')">${label}${flecha(id)}</th>`;
 
-  const filasHtml=filas.map(({i,pctAsist,tieneConstancia})=>`
+  const filasHtml=filas.map(({i,pctAsist,tieneConstancia,vig})=>`
     <tr style="border-top:1px solid var(--border);">
       <td style="padding:14px 12px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3);">${i.folio}</td>
       <td style="padding:14px 12px;">${i.participante?.nombre||'—'}</td>
       <td style="padding:14px 12px;"><span class="cartera-subtab" style="cursor:default;padding:3px 10px;">${academiaAccesoLabel(i.nivel_acceso)}</span></td>
       <td style="padding:14px 12px;">${academiaPct(pctAsist)}</td>
       <td style="padding:14px 12px;">${tieneConstancia?'✅ Sí':'—'}</td>
+      <td style="padding:14px 12px;font-size:12px;">${academiaVigenciaBadge(vig)}</td>
+      <td style="padding:14px 12px;">${i.practicas_extension?'✅ Sí':'—'}</td>
       <td style="padding:14px 12px;text-align:right;">
         <button class="cartera-subtab" onclick="academiaVerFicha('${i.id}')">Ver ficha</button>
       </td>
@@ -1002,13 +1030,19 @@ function academiaPintarParticipantes(){
       <option value="si" ${academiaPartFiltro.constancia==='si'?'selected':''}>Con constancia</option>
       <option value="no" ${academiaPartFiltro.constancia==='no'?'selected':''}>Sin constancia</option>
     </select>
+    <select onchange="academiaPartFiltro.vigencia=this.value;academiaPintarParticipantes();" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+      <option value="" ${!academiaPartFiltro.vigencia?'selected':''}>Vigencia: todos</option>
+      <option value="vigente" ${academiaPartFiltro.vigencia==='vigente'?'selected':''}>Vigente</option>
+      <option value="por_vencer" ${academiaPartFiltro.vigencia==='por_vencer'?'selected':''}>Por vencer</option>
+      <option value="vencido" ${academiaPartFiltro.vigencia==='vencido'?'selected':''}>Vencido</option>
+    </select>
   </div>
   <div class="card" style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
       <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;">
-        ${thSort('folio','Folio')}${thSort('asistente','Asistente')}${thSort('acceso','Acceso')}${thSort('asistencia','Asistencia')}${thSort('constancia','Constancia')}<th></th>
+        ${thSort('folio','Folio')}${thSort('asistente','Asistente')}${thSort('acceso','Acceso')}${thSort('asistencia','Asistencia')}${thSort('constancia','Constancia')}${thSort('vigencia','Vigencia prácticas')}${thSort('extension','Extensión')}<th></th>
       </tr></thead>
-      <tbody>${filasHtml||'<tr><td colspan="6" style="padding:16px;color:var(--text3);">Sin participantes que coincidan con los filtros.</td></tr>'}</tbody>
+      <tbody>${filasHtml||'<tr><td colspan="8" style="padding:16px;color:var(--text3);">Sin participantes que coincidan con los filtros.</td></tr>'}</tbody>
     </table>
   </div>`;
 }
@@ -1023,7 +1057,7 @@ async function academiaVerFicha(inscripcionId){
     .eq('id',inscripcionId).single();
   if(error||!insc){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error: ${error?.message||'no encontrado'}</div>`;return;}
 
-  const {data:practicasReg}=await sb.from('academia_practicas_registro').select('*').eq('inscripcion_id',inscripcionId).order('fecha',{ascending:false});
+  const {data:practicasSes}=await sb.from('academia_practicas_sesiones').select('*').eq('inscripcion_id',inscripcionId);
   const {data:constancias}=await sb.from('academia_constancias').select('*').eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false});
   const {data:bitacora}=await sb.from('academia_bitacora').select('*,usuario:capturada_por(nombre)').eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false}).limit(20);
 
@@ -1032,14 +1066,19 @@ async function academiaVerFicha(inscripcionId){
   const presentes=sesiones.filter(s=>s.asistio).length;
   const pctAsistencia=totalSesiones? presentes/totalSesiones : 0;
 
-  const registrosConCalif=(practicasReg||[]).filter(r=>r.calificacion!=null);
-  const pctPracticas=registrosConCalif.length? (registrosConCalif.reduce((s,r)=>s+Number(r.calificacion),0)/registrosConCalif.length)/100 : null;
+  const totalPracticas=insc.generacion?.curso?.practicas_totales||0;
+  const aprobadasMap={}; (practicasSes||[]).forEach(p=>aprobadasMap[p.numero_practica]=p);
+  const aprobadas=(practicasSes||[]).filter(p=>p.aprobada).length;
+  const pctPracticas=totalPracticas? aprobadas/totalPracticas : null;
 
   const elegibleParaAcreditacion=(insc.nivel_acceso==='plus'||insc.nivel_acceso==='premium');
   const elegibleParticipacion=pctAsistencia>=0.8;
-  const elegibleAcreditacion=elegibleParaAcreditacion && registrosConCalif.length>0 && pctPracticas>=0.8;
+  const elegibleAcreditacion=elegibleParaAcreditacion && totalPracticas>0 && pctPracticas>=0.8;
 
   const ac=academiaAccent(insc.generacion?.curso?.sistema?.clave);
+  const telLimpio=(insc.participante?.telefono||'').replace(/[^0-9]/g,'');
+  const vig=academiaVigenciaInfo(insc.generacion,insc);
+  const esDirector=userProfile?.rol==='director';
 
   mc.innerHTML=`
   <button class="cartera-subtab" onclick="academiaVerGeneracion('${insc.generacion_id}')">← Volver</button>
@@ -1047,9 +1086,15 @@ async function academiaVerFicha(inscripcionId){
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
       <div>
         <div style="font-size:18px;font-weight:600;color:var(--navy);">${insc.participante?.nombre}</div>
-        <div style="font-size:12px;color:var(--text3);">${insc.participante?.mail||'—'} · ${insc.participante?.telefono||'—'}</div>
-        <div style="font-size:12px;color:var(--text2);margin-top:2px;">Cuenta principal: <b>${insc.participante?.cliente?.razon_social||'— sin ligar —'}</b>${insc.participante?.cliente?.num_cliente?' · '+insc.participante.cliente.num_cliente:''}</div>
-        <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:${ac.c};margin-top:4px;">Folio: ${insc.folio}</div>
+        <div style="font-size:12px;color:var(--text3);display:flex;align-items:center;gap:8px;">
+          <span>${insc.participante?.mail||'—'} · ${telLimpio||'—'}</span>
+          ${telLimpio?`<a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}" target="_blank" style="background:#25D366;color:#fff;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600;text-decoration:none;">WhatsApp</a>`:''}
+        </div>
+        <div style="font-size:12px;color:var(--text2);margin-top:2px;">
+          Cuenta principal: <b>${insc.participante?.cliente?.razon_social||'— sin ligar —'}</b>${insc.participante?.cliente?.num_cliente?' · Núm. cliente: '+insc.participante.cliente.num_cliente:''}
+          ${insc.participante?.cliente_cartera_id?` · <a href="#" onclick="event.preventDefault();abrirFichaClienteModal('${insc.participante.cliente_cartera_id}')">Ver en Cartera de Cuentas →</a>`:''}
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;color:${ac.c};margin-top:6px;">Folio: ${insc.folio}</div>
       </div>
       <div style="text-align:right;">
         <div style="font-size:12px;color:var(--text3);">${insc.generacion?.curso?.sistema?.clave} · ${insc.generacion?.clave}</div>
@@ -1078,23 +1123,31 @@ async function academiaVerFicha(inscripcionId){
       </div>
 
       <div>
-        <div style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Prácticas de laboratorio ${registrosConCalif.length?`(promedio ${academiaPct(pctPracticas)})`:''}</div>
-        <div style="margin-bottom:10px;">${academiaBarraProgreso(pctPracticas||0,ac.c)}</div>
-        <div style="display:flex;flex-direction:column;gap:6px;max-height:180px;overflow-y:auto;margin-bottom:10px;">
-          ${(practicasReg||[]).map(r=>`
-            <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;border-bottom:1px solid var(--border);padding-bottom:4px;">
-              <div><b>${r.fecha}</b> — ${r.descripcion}${r.evidencia_path?` <a href="#" onclick="event.preventDefault();academiaDescargarEvidencia('${r.evidencia_path}')">📎</a>`:''}</div>
-              <div style="white-space:nowrap;">${r.calificacion!=null?r.calificacion+'/100':'—'}</div>
-            </div>`).join('')||'<div style="font-size:12px;color:var(--text3);">Aún no hay prácticas registradas.</div>'}
+        <div style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Prácticas de laboratorio ${totalPracticas?`(${aprobadas}/${totalPracticas} — ${academiaPct(pctPracticas)})`:''}</div>
+        ${totalPracticas?`
+        <div style="margin-bottom:8px;">${academiaBarraProgreso(pctPracticas||0,ac.c)}</div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:6px;">Clic en el número para marcar/desmarcar la práctica como correcta (igual que asistencia).</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;">
+          ${Array.from({length:totalPracticas},(_,idx)=>{
+            const n=idx+1;
+            const on=aprobadasMap[n]?.aprobada;
+            return `<div title="Práctica ${n} — clic para marcar/desmarcar" onclick="academiaTogglePractica('${inscripcionId}',${n},${!on})" style="width:28px;height:28px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;background:${on?ac.c:'#eee'};color:${on?'#fff':'#999'};">${n}</div>`;
+          }).join('')}
         </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;background:var(--surf2);padding:8px;border-radius:8px;">
-          <input id="academiaPracFecha_${inscripcionId}" type="date" value="${new Date().toISOString().split('T')[0]}" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
-          <input id="academiaPracDesc_${inscripcionId}" placeholder="¿Qué práctica se realizó?" style="flex:1;min-width:140px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
-          <input id="academiaPracCalif_${inscripcionId}" type="number" min="0" max="100" placeholder="Calif." style="width:70px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;">
-          <input id="academiaPracEvidencia_${inscripcionId}" type="file" style="font-size:11px;max-width:130px;">
-          <button class="btn-primary" style="width:auto;padding:7px 14px;font-size:12px;" onclick="academiaAgregarPractica('${inscripcionId}')">Agregar</button>
+        `:`<div style="font-size:12px;color:var(--text3);margin-bottom:8px;">Este curso no tiene definido un número de prácticas (campo "practicas_totales" en el catálogo de cursos).</div>`}
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <label style="cursor:pointer;font-size:11px;">${insc.practicas_evidencia_path?`<a href="#" onclick="event.preventDefault();academiaDescargarEvidencia('${insc.practicas_evidencia_path}')">📎 Ver evidencia general</a>`:'📎 Adjuntar evidencia general'}<input type="file" style="display:none" onchange="academiaSubirEvidenciaPracticas('${inscripcionId}',this)"></input></label>
         </div>
-        <div style="font-size:11px;color:var(--text3);margin-top:6px;">${elegibleAcreditacion?'✅ Cumple 80% en prácticas (Acreditación)':(elegibleParaAcreditacion?'❌ No alcanza 80% de promedio en prácticas':'— Este nivel de acceso no evalúa prácticas')}</div>
+        <textarea id="academiaPracObs_${inscripcionId}" rows="2" placeholder="Observación general de las prácticas..." style="width:100%;margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:inherit;resize:vertical;">${insc.practicas_observaciones||''}</textarea>
+        <button class="cartera-subtab" style="margin-top:6px;" onclick="academiaGuardarObservacionPracticas('${inscripcionId}')">Guardar observación de prácticas</button>
+        <div style="margin-top:8px;">
+          <label style="font-size:11px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" ${insc.practicas_extension?'checked':''} onchange="academiaGuardarExtension('${inscripcionId}',this.checked)">
+            Adquirió extensión de prácticas
+          </label>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:6px;">Vigencia del período de prácticas: ${academiaVigenciaBadge(vig)}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px;">${elegibleAcreditacion?'✅ Cumple 80% en prácticas (Acreditación)':(elegibleParaAcreditacion?'❌ No alcanza 80% de prácticas':'— Este nivel de acceso no evalúa prácticas')}</div>
       </div>
     </div>
 
@@ -1102,6 +1155,21 @@ async function academiaVerFicha(inscripcionId){
       <div style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Observaciones</div>
       <textarea id="academiaObs_${inscripcionId}" rows="2" placeholder="Notas libres sobre este participante..." style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;resize:vertical;">${insc.observaciones||''}</textarea>
       <button class="cartera-subtab" style="margin-top:6px;" onclick="academiaGuardarObservacion('${inscripcionId}')">Guardar observación</button>
+    </div>
+
+    <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+        <div style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;">Datos de acceso al laboratorio virtual</div>
+        <button class="cartera-subtab" onclick="academiaToggleAccesoLab('${inscripcionId}')">Ver / ocultar</button>
+      </div>
+      <div id="academiaAccesoLab_${inscripcionId}" style="display:none;font-size:12px;color:var(--text2);line-height:1.8;">
+        <div><b>Servidor:</b> ${insc.servidor||'—'} · <b>Usuario RDP:</b> ${insc.usuario_rdp||'—'} · <b>Contraseña RDP:</b> ${insc.contrasena_rdp||'—'}</div>
+        <div><b>Empresa Aspel:</b> ${insc.empresa_aspel||'—'} · <b>Usuario Aspel:</b> ${insc.usuario_aspel||'—'} · <b>Contraseña Aspel:</b> ${insc.contrasena_aspel||'—'}</div>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+          ${telLimpio?`<a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}?text=${encodeURIComponent(academiaPlantillaAccesoLab(insc))}" target="_blank" style="background:#25D366;color:#fff;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;text-decoration:none;">Enviar por WhatsApp</a>`:''}
+          <button class="cartera-subtab" onclick="academiaCopiarPlantillaAccesoLab('${inscripcionId}')">Copiar plantilla</button>
+        </div>
+      </div>
     </div>
 
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
@@ -1114,7 +1182,10 @@ async function academiaVerFicha(inscripcionId){
         ${(constancias||[]).map(c=>`
           <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;">
             <div><b>${c.tipo}</b> · ${c.folio} · ${c.fecha_emision} · ${c.estatus}</div>
-            <button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">Descargar PDF</button>
+            <div style="display:flex;gap:6px;">
+              <button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">Descargar PDF</button>
+              ${esDirector?`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaEliminarConstancia('${c.id}','${inscripcionId}')">Eliminar</button>`:''}
+            </div>
           </div>`).join('')||'<div style="font-size:12px;color:var(--text3);">Aún no se ha emitido ninguna constancia.</div>'}
       </div>
     </div>
@@ -1126,6 +1197,22 @@ async function academiaVerFicha(inscripcionId){
       </div>
     </div>
   </div>`;
+}
+
+function academiaToggleAccesoLab(inscripcionId){
+  const el=document.getElementById(`academiaAccesoLab_${inscripcionId}`);
+  if(el) el.style.display=el.style.display==='none'?'block':'none';
+}
+function academiaPlantillaAccesoLab(insc){
+  return `Hola ${insc.participante?.nombre||''}, estos son tus datos de acceso al laboratorio virtual de ${insc.generacion?.curso?.nombre||''} (${insc.generacion?.clave||''}):\n`+
+    `Servidor: ${insc.servidor||'—'}\nUsuario RDP: ${insc.usuario_rdp||'—'}\nContraseña RDP: ${insc.contrasena_rdp||'—'}\n`+
+    `Empresa Aspel: ${insc.empresa_aspel||'—'}\nUsuario Aspel: ${insc.usuario_aspel||'—'}\nContraseña Aspel: ${insc.contrasena_aspel||'—'}\n\nGrupo Innovaci`;
+}
+async function academiaCopiarPlantillaAccesoLab(inscripcionId){
+  const {data:insc}=await sb.from('academia_inscripciones').select('*,participante:participante_id(nombre),generacion:generacion_id(clave,curso:curso_id(nombre))').eq('id',inscripcionId).single();
+  if(!insc) return;
+  try{ await navigator.clipboard.writeText(academiaPlantillaAccesoLab(insc)); alert('Plantilla copiada al portapapeles.'); }
+  catch(e){ alert('No se pudo copiar automáticamente. Copia manualmente los datos de la sección.'); }
 }
 
 async function academiaToggleAsistencia(inscripcionId,numeroSesion,nuevoValor){
@@ -1162,31 +1249,46 @@ async function academiaDescargarEvidencia(path){
   window.open(data.signedUrl,'_blank');
 }
 
-async function academiaAgregarPractica(inscripcionId){
-  const fecha=document.getElementById(`academiaPracFecha_${inscripcionId}`).value||new Date().toISOString().split('T')[0];
-  const descripcion=document.getElementById(`academiaPracDesc_${inscripcionId}`).value.trim();
-  const califRaw=document.getElementById(`academiaPracCalif_${inscripcionId}`).value;
-  const calificacion=califRaw===''?null:Number(califRaw);
-  const fileEl=document.getElementById(`academiaPracEvidencia_${inscripcionId}`);
-  const file=fileEl?.files?.[0];
-  if(!descripcion){alert('Describe brevemente qué práctica se realizó.');return;}
-
-  let evidencia_path=null;
-  if(file){
-    const path=`practicas/${inscripcionId}/${Date.now()}-${file.name}`;
-    const {error:upErr}=await sb.storage.from('academia-evidencias').upload(path,file,{upsert:true});
-    if(upErr){alert('No se pudo subir la evidencia: '+upErr.message+' (¿existe el bucket "academia-evidencias"?)');return;}
-    evidencia_path=path;
-  }
-
-  const {error}=await sb.from('academia_practicas_registro').insert({
-    inscripcion_id:inscripcionId,fecha,descripcion,calificacion,evidencia_path,
-    capturada_por:currentUser?.id||null
-  });
+async function academiaTogglePractica(inscripcionId,numeroPractica,nuevoValor){
+  const {error}=await sb.from('academia_practicas_sesiones').upsert({
+    inscripcion_id:inscripcionId,numero_practica:numeroPractica,aprobada:nuevoValor,
+    capturada_por:currentUser?.id||null,updated_at:new Date().toISOString()
+  },{onConflict:'inscripcion_id,numero_practica'});
   if(error){alert('Error guardando la práctica: '+error.message);return;}
   await sb.from('academia_bitacora').insert({
     inscripcion_id:inscripcionId,tipo:'practica',
-    detalle:`Práctica registrada: "${descripcion}"${calificacion!=null?' — calificación '+calificacion+'/100':''}`,
+    detalle:`Práctica ${numeroPractica} marcada como ${nuevoValor?'correcta':'incorrecta/no realizada'}`,
+    capturada_por:currentUser?.id||null
+  });
+  academiaVerFicha(inscripcionId);
+}
+
+async function academiaSubirEvidenciaPracticas(inscripcionId,inputEl){
+  const file=inputEl.files?.[0];
+  if(!file) return;
+  const path=`practicas/${inscripcionId}/general-${Date.now()}-${file.name}`;
+  const {error:upErr}=await sb.storage.from('academia-evidencias').upload(path,file,{upsert:true});
+  if(upErr){alert('No se pudo subir la evidencia: '+upErr.message+' (¿existe el bucket "academia-evidencias"?)');return;}
+  const {error}=await sb.from('academia_inscripciones').update({practicas_evidencia_path:path}).eq('id',inscripcionId);
+  if(error){alert('Error guardando la evidencia: '+error.message);return;}
+  await sb.from('academia_bitacora').insert({inscripcion_id:inscripcionId,tipo:'practica',detalle:'Evidencia general de prácticas actualizada',capturada_por:currentUser?.id||null});
+  academiaVerFicha(inscripcionId);
+}
+
+async function academiaGuardarObservacionPracticas(inscripcionId){
+  const val=document.getElementById(`academiaPracObs_${inscripcionId}`).value;
+  const {error}=await sb.from('academia_inscripciones').update({practicas_observaciones:val}).eq('id',inscripcionId);
+  if(error){alert('Error guardando la observación de prácticas: '+error.message);return;}
+  await sb.from('academia_bitacora').insert({inscripcion_id:inscripcionId,tipo:'practica',detalle:'Observación general de prácticas actualizada',capturada_por:currentUser?.id||null});
+  academiaVerFicha(inscripcionId);
+}
+
+async function academiaGuardarExtension(inscripcionId,checked){
+  const {error}=await sb.from('academia_inscripciones').update({practicas_extension:checked}).eq('id',inscripcionId);
+  if(error){alert('Error guardando la extensión: '+error.message);return;}
+  await sb.from('academia_bitacora').insert({
+    inscripcion_id:inscripcionId,tipo:'practica',
+    detalle:`Extensión de prácticas ${checked?'otorgada':'retirada'}`,
     capturada_por:currentUser?.id||null
   });
   academiaVerFicha(inscripcionId);
@@ -1203,15 +1305,15 @@ async function academiaGuardarObservacion(inscripcionId){
   academiaVerFicha(inscripcionId);
 }
 
-// ── PRÁCTICAS (bitácora de oversight por generación — el registro real se hace desde la ficha) ──
+// ── PRÁCTICAS (supervisión por generación — el registro real se hace desde la ficha) ──
 async function renderAcademiaPracticasHome(){
   const mc=document.getElementById('mainContent');
-  const gens=window._academiaCache.generaciones||(await sb.from('academia_generaciones').select('*,curso:curso_id(nombre,sistema:sistema_id(clave))')).data||[];
+  const gens=window._academiaCache.generaciones||(await sb.from('academia_generaciones').select('*,curso:curso_id(nombre,practicas_totales,sistema:sistema_id(clave))')).data||[];
   window._academiaCache.generaciones=gens;
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
     <div style="font-size:18px;font-weight:600;color:var(--text);">Prácticas registradas</div>
-    <div style="font-size:12px;color:var(--text3);">Las prácticas se capturan directo desde la ficha de cada participante (pestaña Generaciones). Aquí solo se muestra el registro consolidado por generación, a modo de supervisión.</div>
+    <div style="font-size:12px;color:var(--text3);">Las prácticas se marcan directo desde la ficha de cada participante (pestaña Generaciones), igual que la asistencia. Aquí solo se muestra el avance consolidado por generación, a modo de supervisión.</div>
   </div>
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
     ${gens.map(g=>`<button class="cartera-subtab" onclick="academiaPracticasDeGeneracion('${g.id}')">${g.curso?.sistema?.clave} ${g.clave}</button>`).join('')}
@@ -1223,26 +1325,30 @@ async function renderAcademiaPracticasHome(){
 async function academiaPracticasDeGeneracion(generacionId){
   const cont=document.getElementById('academiaPracticasList');
   cont.innerHTML='<div class="loading"><div class="spinner"></div></div>';
-  const {data:registros,error}=await sb.from('academia_practicas_registro')
-    .select('*,inscripcion:inscripcion_id!inner(generacion_id,folio,participante:participante_id(nombre))')
-    .eq('inscripcion.generacion_id',generacionId)
-    .order('fecha',{ascending:false});
+  const gen=(window._academiaCache.generaciones||[]).find(g=>g.id===generacionId);
+  const totalPracticas=gen?.curso?.practicas_totales||0;
+  const {data:inscripciones,error}=await sb.from('academia_inscripciones')
+    .select('id,folio,participante:participante_id(nombre),sesiones:academia_practicas_sesiones(numero_practica,aprobada)')
+    .eq('generacion_id',generacionId)
+    .order('folio');
   if(error){cont.innerHTML=`<div style="padding:16px;color:#c0392b;">Error: ${error.message}</div>`;return;}
   cont.innerHTML=`
   <div class="card" style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
       <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;">
-        <th style="padding:12px;">Fecha</th><th>Participante</th><th>Folio</th><th>Descripción</th><th>Calificación</th>
+        <th style="padding:12px;">Folio</th><th>Participante</th><th>Prácticas aprobadas</th><th>Promedio</th>
       </tr></thead>
       <tbody>
-        ${(registros||[]).map(r=>`
-        <tr style="border-top:1px solid var(--border);">
-          <td style="padding:12px;">${r.fecha}</td>
-          <td>${r.inscripcion?.participante?.nombre||'—'}</td>
-          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${r.inscripcion?.folio||''}</td>
-          <td>${r.descripcion}</td>
-          <td>${r.calificacion!=null?r.calificacion+'/100':'—'}</td>
-        </tr>`).join('')||'<tr><td colspan="5" style="padding:16px;color:var(--text3);">Sin prácticas registradas para esta generación todavía.</td></tr>'}
+        ${(inscripciones||[]).map(i=>{
+          const aprobadas=(i.sesiones||[]).filter(s=>s.aprobada).length;
+          const pct=totalPracticas? aprobadas/totalPracticas : null;
+          return `<tr style="border-top:1px solid var(--border);">
+            <td style="padding:12px;font-family:'JetBrains Mono',monospace;font-size:11px;">${i.folio}</td>
+            <td>${i.participante?.nombre||'—'}</td>
+            <td>${aprobadas}/${totalPracticas||'—'}</td>
+            <td>${academiaPct(pct)}</td>
+          </tr>`;
+        }).join('')||'<tr><td colspan="4" style="padding:16px;color:var(--text3);">Sin participantes en esta generación.</td></tr>'}
       </tbody>
     </table>
   </div>`;
@@ -1256,6 +1362,7 @@ async function renderAcademiaConstancias(){
     .select('*,inscripcion:inscripcion_id(folio,participante:participante_id(nombre),generacion:generacion_id(clave,curso:curso_id(nombre,sistema:sistema_id(clave))))')
     .order('created_at',{ascending:false});
   if(error){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error: ${error.message}</div>`;return;}
+  const esDirector=userProfile?.rol==='director';
 
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
@@ -1276,7 +1383,10 @@ async function renderAcademiaConstancias(){
           <td style="text-transform:capitalize;">${c.tipo}</td>
           <td>${c.fecha_emision}</td>
           <td>${c.estatus}</td>
-          <td style="text-align:right;"><button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">PDF</button></td>
+          <td style="text-align:right;white-space:nowrap;">
+            <button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">PDF</button>
+            ${esDirector?`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaEliminarConstancia('${c.id}','${c.inscripcion_id}')">Eliminar</button>`:''}
+          </td>
         </tr>`).join('')||'<tr><td colspan="7" style="padding:16px;color:var(--text3);">Aún no hay constancias emitidas.</td></tr>'}
       </tbody>
     </table>
@@ -1308,15 +1418,16 @@ async function academiaGenerarConstancia(inscripcionId,tipo){
   const instructor=(firmantes||[]).find(f=>f.cargo?.toLowerCase().includes('instructor'));
   const director=(firmantes||[]).find(f=>f.cargo?.toLowerCase().includes('director'));
 
-  // Calificación: % de asistencia, o promedio de calificación de prácticas registradas
+  // Calificación: % de asistencia, o % de prácticas aprobadas (grid tipo asistencia)
   const {data:asistencias}=await sb.from('academia_asistencias').select('*').eq('inscripcion_id',inscripcionId);
   const totalSesiones=insc.generacion?.sesiones_totales||asistencias?.length||0;
   const presentes=(asistencias||[]).filter(a=>a.asistio).length;
   const pctAsistencia=totalSesiones?Math.round((presentes/totalSesiones)*100):0;
 
-  const {data:registros}=await sb.from('academia_practicas_registro').select('*').eq('inscripcion_id',inscripcionId);
-  const registrosConCalif=(registros||[]).filter(r=>r.calificacion!=null);
-  const pctPracticas=registrosConCalif.length?Math.round(registrosConCalif.reduce((s,r)=>s+Number(r.calificacion),0)/registrosConCalif.length):0;
+  const {data:practicasSes}=await sb.from('academia_practicas_sesiones').select('*').eq('inscripcion_id',inscripcionId);
+  const totalPracticas=insc.generacion?.curso?.practicas_totales||0;
+  const aprobadas=(practicasSes||[]).filter(p=>p.aprobada).length;
+  const pctPracticas=totalPracticas?Math.round((aprobadas/totalPracticas)*100):0;
 
   const calificacion=tipo==='acreditacion'?pctPracticas:pctAsistencia;
 
@@ -1333,6 +1444,24 @@ async function academiaGenerarConstancia(inscripcionId,tipo){
 
   await academiaDibujarYSubirPDF(nuevaConstancia,insc,instructor,director,calificacion);
   academiaVerFicha(inscripcionId);
+}
+
+async function academiaEliminarConstancia(constanciaId,inscripcionId){
+  if(userProfile?.rol!=='director'){alert('Solo Dirección puede eliminar constancias.');return;}
+  if(!confirm('¿Eliminar esta constancia? Esta acción no se puede deshacer. Podrás volver a emitir una nueva desde la ficha del participante.')) return;
+  const {data:c}=await sb.from('academia_constancias').select('pdf_path,folio').eq('id',constanciaId).single();
+  if(c?.pdf_path){
+    const {error:delFileErr}=await sb.storage.from('constancias-pdf').remove([c.pdf_path]);
+    if(delFileErr){ /* seguimos aunque falle borrar el archivo — el registro es lo prioritario */ }
+  }
+  const {error}=await sb.from('academia_constancias').delete().eq('id',constanciaId);
+  if(error){alert('Error al eliminar la constancia: '+error.message);return;}
+  await sb.from('academia_bitacora').insert({
+    inscripcion_id:inscripcionId,tipo:'observacion',
+    detalle:`Constancia ${c?.folio||''} eliminada por ${userProfile?.nombre||'Dirección'}`,
+    capturada_por:currentUser?.id||null
+  });
+  if(inscripcionId) academiaVerFicha(inscripcionId); else renderAcademiaConstancias();
 }
 
 async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,calificacion){
