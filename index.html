@@ -1540,82 +1540,99 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
   const navy=[13,34,64], gray=[110,122,140];
   const accent=academiaColorAcento(insc.generacion?.curso?.sistema?.clave);
 
-  function drawStar(cx,cy,r,color){
-    // estrella de 5 puntas, dibujada como polígono con doc.lines (evita el
-    // glyph unicode ★ que Helvetica no puede renderizar en jsPDF)
-    const pts=[];
-    for(let i=0;i<10;i++){
-      const ang=(-90 + i*36) * Math.PI/180;
-      const rad = i%2===0 ? r : r*0.42;
-      pts.push([cx+rad*Math.cos(ang), cy+rad*Math.sin(ang)]);
-    }
-    const segs=[];
-    for(let i=1;i<pts.length;i++) segs.push([pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]]);
-    segs.push([pts[0][0]-pts[pts.length-1][0], pts[0][1]-pts[pts.length-1][1]]);
-    doc.setFillColor(...color);
-    doc.lines(segs, pts[0][0], pts[0][1], [1,1], 'F', true);
+  // Curva decorativa tipo "swoosh" en la esquina superior derecha (mezcla del
+  // mockup de Jp con el rediseño anterior — Jp, 2026-08-28): dos bandas curvas
+  // superpuestas (navy + acento) dibujadas con beziers reales vía doc.lines
+  // (un segmento de 6 valores = curva bezier, no solo líneas rectas).
+  // Confinada a ~26mm de alto para no encimarse con el título/nombre.
+  function drawSwoosh(){
+    doc.setFillColor(...navy);
+    doc.lines(
+      [[0,26],[-24,7,-52,4,-70,-6],[16,-20,38,-26,70,-28]],
+      pw-6, 6, [1,1], 'F', true
+    );
+    doc.setFillColor(...accent);
+    doc.lines(
+      [[0,16],[-14,5,-32,3,-46,-4],[10,-13,26,-17,46,-18]],
+      pw-6, 6, [1,1], 'F', true
+    );
+  }
+
+  // Ajusta el tamaño de fuente hacia abajo (con piso) hasta que el texto quepa
+  // en maxWidth — evita que un nombre o curso largo se salga de la página.
+  function fitFontSize(text,maxWidth,size,minSize){
+    doc.setFont(undefined,'bold');
+    let s=size;
+    doc.setFontSize(s);
+    while(doc.getTextWidth(text)>maxWidth && s>minSize){ s-=0.5; doc.setFontSize(s); }
+    return s;
   }
 
   // ── Fondo y marco exterior ────────────────────────────────────────────
   doc.setFillColor(255,255,255); doc.rect(0,0,pw,ph,'F');
   doc.setDrawColor(...accent); doc.setLineWidth(0.8);
   doc.rect(4,4,pw-8,ph-8);
-  doc.setDrawColor(...navy); doc.setLineWidth(0.3);
+  doc.setDrawColor(210,215,222); doc.setLineWidth(0.25);
   doc.rect(6,6,pw-12,ph-12);
 
-  // ── Encabezado navy con acento de color (según sistema: NOI naranja,
-  // COI azul, SAE rojo — Jp, 2026-08-28) ────────────────────────────────
-  const headerH=34;
-  doc.setFillColor(...navy); doc.rect(6,6,pw-12,headerH,'F');
-  doc.setFillColor(...accent); doc.rect(6,6+headerH,pw-12,1.4,'F');
+  // ── Swoosh decorativo esquina superior derecha ───────────────────────
+  drawSwoosh();
 
-  // Logo real de Grupo Innovaci (imagen, proporción original 896x131)
-  const logoW=48, logoH=logoW*131/896;
-  doc.addImage(ACADEMIA_LOGO_DATAURL,'PNG',14,6+(headerH-logoH)/2-2,logoW,logoH);
-  doc.setFontSize(8.5); doc.setFont(undefined,'normal'); doc.setTextColor(200,215,230);
-  doc.text('Capacitación que impulsa tu crecimiento', 14, 6+(headerH-logoH)/2-2+logoH+5);
-
-  // Ribbon superior derecho, color de acento
-  const ribbonW=60, ribbonX=pw-6-ribbonW-6, ribbonTopY=6;
-  doc.setFillColor(...accent);
-  doc.rect(ribbonX,ribbonTopY,ribbonW,19,'F');
-  doc.setFillColor(255,255,255);
-  doc.triangle(ribbonX,ribbonTopY+19, ribbonX+ribbonW/2,ribbonTopY+19, ribbonX,ribbonTopY+26,'F');
-  doc.triangle(ribbonX+ribbonW,ribbonTopY+19, ribbonX+ribbonW/2,ribbonTopY+19, ribbonX+ribbonW,ribbonTopY+26,'F');
-  doc.setFontSize(7.4); doc.setFont(undefined,'bold'); doc.setTextColor(255,255,255);
-  doc.text('CAPACITACIÓN QUE',ribbonX+ribbonW/2,ribbonTopY+8,{align:'center'});
-  doc.text('GENERA RESULTADOS',ribbonX+ribbonW/2,ribbonTopY+13,{align:'center'});
-  [-8,0,8].forEach(dx=>drawStar(ribbonX+ribbonW/2+dx, ribbonTopY+17, 1.6, [255,255,255]));
+  // ── Logo real de Grupo Innovaci (arriba a la izquierda, sin barra de
+  // header — el mockup de Jp no lleva encabezado navy sólido) ──────────
+  const logoW=50, logoH=logoW*131/896;
+  doc.addImage(ACADEMIA_LOGO_DATAURL,'PNG',16,14,logoW,logoH);
 
   // ── Título ────────────────────────────────────────────────────────────
-  let y=headerH+20;
-  doc.setFontSize(24); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
+  const marginXTitulo=26;
+  const anchoDisponible=pw-2*marginXTitulo;
+
+  let y=42;
+  doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
+  fitFontSize(ACADEMIA_TIPO_TITULO[constancia.tipo]||'CONSTANCIA', anchoDisponible, 23, 15);
   doc.text(ACADEMIA_TIPO_TITULO[constancia.tipo]||'CONSTANCIA', pw/2, y, {align:'center'});
 
-  y+=8;
-  doc.setDrawColor(...accent); doc.setLineWidth(0.6);
-  doc.line(pw/2-38,y,pw/2-6,y); doc.line(pw/2+6,y,pw/2+38,y);
-  doc.setFillColor(...accent); doc.circle(pw/2,y,1.1,'F');
-
-  y+=7.5;
-  doc.setFontSize(10.5); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
+  y+=13;
+  doc.setFontSize(11); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
   doc.text('Se otorga la presente a:', pw/2, y, {align:'center'});
 
-  y+=10;
-  doc.setFontSize(20); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
-  doc.text(insc.participante?.nombre||'', pw/2, y, {align:'center'});
+  y+=11;
+  doc.setTextColor(...navy);
+  const nombreParticipante=insc.participante?.nombre||'';
+  fitFontSize(nombreParticipante, anchoDisponible, 22, 14);
+  doc.text(nombreParticipante, pw/2, y, {align:'center'});
 
-  y+=8.5;
-  doc.setFontSize(10.5); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
-  const verbo=constancia.tipo==='acreditacion'?'Por haber acreditado satisfactoriamente el programa de capacitación:':(constancia.tipo==='aprobacion'?'Por haber aprobado el programa de capacitación:':'Por su participación en el programa de capacitación:');
+  y+=9.5;
+  doc.setFontSize(11); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
+  const verbo=constancia.tipo==='acreditacion'?'Por haber acreditado satisfactoriamente el diplomado en:':(constancia.tipo==='aprobacion'?'Por haber aprobado el diplomado en:':'Por haber participado el diplomado en:');
   doc.text(verbo, pw/2, y, {align:'center'});
 
-  y+=8;
-  doc.setFontSize(14); doc.setFont(undefined,'bold'); doc.setTextColor(...accent);
-  doc.text(insc.generacion?.curso?.nombre||'', pw/2, y, {align:'center'});
-
-  // ── Franja de datos (5 columnas con icono circular) ──────────────────
+  // Nombre del curso: solo la clave del sistema (ej. "NOI") va en color de
+  // acento, el resto en navy — igual que el mockup de Jp. Se ajusta el
+  // tamaño de letra si el nombre del curso es largo, para que nunca se
+  // salga de la página.
   y+=13;
+  const nombreCurso=insc.generacion?.curso?.nombre||'';
+  const claveSistema=insc.generacion?.curso?.sistema?.clave||'';
+  const cursoFontSize=fitFontSize(nombreCurso, anchoDisponible, 24, 13);
+  let partesCurso=[{t:nombreCurso, c:navy}];
+  if(claveSistema){
+    const idx=nombreCurso.toUpperCase().indexOf(claveSistema.toUpperCase());
+    if(idx>=0){
+      partesCurso=[
+        {t:nombreCurso.slice(0,idx), c:navy},
+        {t:nombreCurso.slice(idx,idx+claveSistema.length), c:accent},
+        {t:nombreCurso.slice(idx+claveSistema.length), c:navy},
+      ].filter(p=>p.t.length);
+    }
+  }
+  doc.setFontSize(cursoFontSize);
+  const anchoTotalCurso=partesCurso.reduce((w,p)=>w+doc.getTextWidth(p.t),0);
+  let ccx0=pw/2-anchoTotalCurso/2;
+  partesCurso.forEach(p=>{ doc.setTextColor(...p.c); doc.text(p.t, ccx0, y); ccx0+=doc.getTextWidth(p.t); });
+
+  // ── Franja de datos (5 columnas, iconos en color de acento) ──────────
+  y+=17;
   const stripY=y;
   const cols=[
     {label:'MODALIDAD', value: insc.generacion?.curso?.modalidad==='en_vivo'?'En vivo':(insc.generacion?.curso?.modalidad==='24_7'?'24/7':(insc.generacion?.curso?.modalidad||'—'))},
@@ -1624,15 +1641,14 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
     {label:'NIVEL DE ACCESO', value: academiaAccesoLabel(insc.nivel_acceso)},
     {label:constancia.tipo==='acreditacion'?'RESULTADO':'CALIFICACIÓN', value: constancia.tipo==='acreditacion'?'ACREDITADO':calificacion+'/100'},
   ];
-  const marginX=20, stripW=pw-2*marginX, colW=stripW/cols.length;
+  const marginX=22, stripW=pw-2*marginX, colW=stripW/cols.length;
   cols.forEach((c,i)=>{
-    const cx=marginX+colW*i+colW/2;
-    doc.setFillColor(...accent); doc.circle(cx,stripY,3.2,'F');
+    const ccx=marginX+colW*i+colW/2;
+    doc.setFillColor(...accent); doc.circle(ccx,stripY,3.4,'F');
     doc.setFontSize(7); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
-    doc.text(c.label, cx, stripY+8, {align:'center'});
-    doc.setFontSize(9.5); doc.setFont(undefined,'bold'); doc.setTextColor(...gray);
-    doc.text(String(c.value), cx, stripY+13.5, {align:'center'});
-    if(i>0){ doc.setDrawColor(220,225,232); doc.setLineWidth(0.2); doc.line(marginX+colW*i,stripY-4,marginX+colW*i,stripY+15); }
+    doc.text(c.label, ccx, stripY+8.5, {align:'center'});
+    doc.setFontSize(10); doc.setFont(undefined,'bold'); doc.setTextColor(...gray);
+    doc.text(String(c.value), ccx, stripY+14.5, {align:'center'});
   });
 
   // ── Firmas: alturas fijas para dejar espacio suficiente al panel de
@@ -1644,9 +1660,10 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
   const fiH=15, fiW=firmaInstructoraImg?fiH*firmaInstructoraImg.w/firmaInstructoraImg.h:0;
   const fdH=13, fdW=firmaDirectorImg?fdH*firmaDirectorImg.w/firmaDirectorImg.h:0;
 
-  // ── Panel de competencias desarrolladas (llena el espacio hasta las firmas) ──
+  // ── Panel de competencias desarrolladas (esto lo tenía el rediseño
+  // anterior y le faltaba al mockup de Jp — se conserva, llena el hueco) ──
   const competencias=insc.generacion?.curso?.competencias||[];
-  const panelY=stripY+20;
+  const panelY=stripY+21;
   const panelBottom=firmaY-Math.max(fiH,fdH,10)-1-2; // 2mm de margen antes de la firma
   if(competencias.length){
     doc.setFillColor(247,250,252);
@@ -1657,48 +1674,48 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
     const colGap=(pw-2*marginX-16)/2;
     competencias.slice(0,6).forEach((comp,i)=>{
       const col=i%2, row=Math.floor(i/2);
-      const cx=marginX+8+col*colGap;
+      const ccx=marginX+8+col*colGap;
       const cy=panelY+13.5+row*6.2;
-      doc.setFillColor(...accent); doc.circle(cx,cy-1.3,0.9,'F');
-      doc.text(comp, cx+4, cy);
+      doc.setFillColor(...accent); doc.circle(ccx,cy-1.3,0.9,'F');
+      doc.text(comp, ccx+4, cy);
     });
   }
 
   doc.setDrawColor(160); doc.setLineWidth(0.3);
-  doc.line(34,firmaY,112,firmaY); doc.line(pw-112,firmaY,pw-34,firmaY);
-  if(firmaInstructoraImg) doc.addImage(firmaInstructoraImg.url,'PNG',73-fiW/2,firmaY-fiH-1,fiW,fiH);
-  if(firmaDirectorImg) doc.addImage(firmaDirectorImg.url,'PNG',pw-73-fdW/2,firmaY-fdH-1,fdW,fdH);
+  doc.line(36,firmaY,114,firmaY); doc.line(pw-114,firmaY,pw-36,firmaY);
+  if(firmaInstructoraImg) doc.addImage(firmaInstructoraImg.url,'PNG',75-fiW/2,firmaY-fiH-1,fiW,fiH);
+  if(firmaDirectorImg) doc.addImage(firmaDirectorImg.url,'PNG',pw-75-fdW/2,firmaY-fdH-1,fdW,fdH);
   doc.setFontSize(10.5); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
-  doc.text(instructor?.nombre||'—', 73, firmaY+5.5, {align:'center'});
-  doc.text(director?.nombre||'—', pw-73, firmaY+5.5, {align:'center'});
+  doc.text(instructor?.nombre||'—', 75, firmaY+5.5, {align:'center'});
+  doc.text(director?.nombre||'—', pw-75, firmaY+5.5, {align:'center'});
   doc.setFontSize(8); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
-  doc.text(`${instructor?.cargo||''}${instructor?.credenciales?' · '+instructor.credenciales:''}`, 73, firmaY+10, {align:'center'});
-  doc.text(director?.cargo||'', pw-73, firmaY+10, {align:'center'});
+  doc.text(`${instructor?.cargo||''}${instructor?.credenciales?' · '+instructor.credenciales:''}`, 75, firmaY+10, {align:'center'});
+  doc.text(director?.cargo||'', pw-75, firmaY+10, {align:'center'});
+  doc.setFontSize(7.4);
+  doc.text('Grupo Innovaci', pw-75, firmaY+14, {align:'center'});
 
-  // ── Folio (debajo de firmas, banda propia — sin cruzarse con nada) ────
-  const folioY=firmaY+16;
+  // ── Folio + fecha + QR (sin footer navy pesado — más limpio, como el
+  // mockup de Jp) ───────────────────────────────────────────────────────
+  const folioY=firmaY+20;
   doc.setFontSize(9.5); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
   doc.text(`FOLIO: ${constancia.folio}`, marginX, folioY);
   doc.setFont(undefined,'normal'); doc.setFontSize(7.6); doc.setTextColor(...gray);
-  doc.text(`Fecha de emisión: ${constancia.fecha_emision}  ·  Verifica la autenticidad en:`, marginX, folioY+4.2);
+  doc.text(`Fecha de emisión: ${constancia.fecha_emision}  ·  Verifica la autenticidad en:`, marginX, folioY+4.5);
   doc.setFont(undefined,'bold'); doc.setTextColor(...accent);
-  doc.text(ACADEMIA_VERIFICAR_URL, marginX, folioY+8.2);
+  doc.text(ACADEMIA_VERIFICAR_URL, marginX, folioY+8.8);
 
-  // ── QR (caja alineada con la banda de firmas+folio, lado derecho) ────
-  const qrBoxW=26, qrBoxH=26, qrBoxX=pw-marginX-qrBoxW, qrBoxY=firmaY-8;
+  const qrBoxW=27, qrBoxH=27, qrBoxX=pw-marginX-qrBoxW, qrBoxY=firmaY-9;
   doc.setDrawColor(...accent); doc.setLineWidth(0.4);
   doc.roundedRect(qrBoxX,qrBoxY,qrBoxW,qrBoxH,2,2);
   doc.addImage(qrDataUrl,'PNG',qrBoxX+1.5,qrBoxY+1.5,qrBoxW-3,qrBoxH-3);
   doc.setFontSize(6.4); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
   doc.text('Escanea y verifica la autenticidad', qrBoxX+qrBoxW/2, qrBoxY+qrBoxH+4, {align:'center'});
 
-  // ── Pie navy ──────────────────────────────────────────────────────────
-  const footerH=11;
-  doc.setFillColor(...navy); doc.rect(6,ph-6-footerH,pw-12,footerH,'F');
-  doc.setFontSize(8); doc.setFont(undefined,'normal'); doc.setTextColor(255,255,255);
-  doc.text('Capacitación práctica, soluciones reales', 16, ph-6-footerH/2+1.2);
-  doc.setTextColor(...accent);
-  doc.text('innovaci.com.mx', pw-16, ph-6-footerH/2+1.2, {align:'right'});
+  // Línea fina de cierre + marca de agua discreta abajo, sin barra navy pesada
+  doc.setDrawColor(...accent); doc.setLineWidth(0.5);
+  doc.line(marginX, ph-14, pw-marginX, ph-14);
+  doc.setFontSize(7.5); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
+  doc.text('innovaci.com.mx', pw-marginX, ph-9, {align:'right'});
 
   const blob=doc.output('blob');
   const path=`${constancia.folio}.pdf`;
