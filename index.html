@@ -1514,60 +1514,158 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
   const { jsPDF }=window.jspdf;
   const doc=new jsPDF({orientation:'landscape',unit:'mm',format:'letter'});
   const pw=doc.internal.pageSize.getWidth(), ph=doc.internal.pageSize.getHeight();
-  const navy=[13,34,64], teal=[0,169,157];
+  const navy=[13,34,64], teal=[0,169,157], gray=[110,122,140];
 
-  // Marco
-  doc.setDrawColor(...teal); doc.setLineWidth(1.2); doc.rect(6,6,pw-12,ph-12);
+  function drawStar(cx,cy,r){
+    // estrella de 5 puntas, dibujada como polígono con doc.lines (evita el
+    // glyph unicode ★ que Helvetica no puede renderizar en jsPDF)
+    const pts=[];
+    for(let i=0;i<10;i++){
+      const ang=(-90 + i*36) * Math.PI/180;
+      const rad = i%2===0 ? r : r*0.42;
+      pts.push([cx+rad*Math.cos(ang), cy+rad*Math.sin(ang)]);
+    }
+    const segs=[];
+    for(let i=1;i<pts.length;i++) segs.push([pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]]);
+    segs.push([pts[0][0]-pts[pts.length-1][0], pts[0][1]-pts[pts.length-1][1]]);
+    doc.lines(segs, pts[0][0], pts[0][1], [1,1], 'F', true);
+  }
 
-  doc.setFontSize(22); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
-  doc.text('Grupo Innovaci', 16, 22);
-  doc.setFontSize(9); doc.setFont(undefined,'normal'); doc.setTextColor(...teal);
-  doc.text('Capacitación que impulsa tu crecimiento', 16, 28);
+  // ── Fondo y marco exterior ────────────────────────────────────────────
+  doc.setFillColor(255,255,255); doc.rect(0,0,pw,ph,'F');
+  doc.setDrawColor(...teal); doc.setLineWidth(0.8);
+  doc.rect(4,4,pw-8,ph-8);
+  doc.setDrawColor(...navy); doc.setLineWidth(0.3);
+  doc.rect(6,6,pw-12,ph-12);
 
-  doc.setFontSize(26); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
-  doc.text(ACADEMIA_TIPO_TITULO[constancia.tipo]||'CONSTANCIA', pw/2, 44, {align:'center'});
+  // ── Encabezado navy con acento teal ──────────────────────────────────
+  const headerH=34;
+  doc.setFillColor(...navy); doc.rect(6,6,pw-12,headerH,'F');
+  doc.setFillColor(...teal); doc.rect(6,6+headerH,pw-12,1.4,'F');
 
-  doc.setFontSize(11); doc.setFont(undefined,'normal'); doc.setTextColor(90);
-  doc.text('Se otorga la presente a:', pw/2, 54, {align:'center'});
+  doc.setFontSize(19); doc.setFont(undefined,'bold'); doc.setTextColor(255,255,255);
+  doc.text('Grupo', 14, 18);
+  const wGrupo=doc.getTextWidth('Grupo ');
+  doc.setTextColor(...teal);
+  doc.text('Innovaci', 14+wGrupo, 18);
+  doc.setFontSize(8.5); doc.setFont(undefined,'normal'); doc.setTextColor(200,215,230);
+  doc.text('Capacitación que impulsa tu crecimiento', 14, 24);
+
+  // Ribbon superior derecho
+  const ribbonW=60, ribbonX=pw-6-ribbonW-6, ribbonTopY=6;
+  doc.setFillColor(...teal);
+  doc.rect(ribbonX,ribbonTopY,ribbonW,19,'F');
+  doc.setFillColor(255,255,255);
+  doc.triangle(ribbonX,ribbonTopY+19, ribbonX+ribbonW/2,ribbonTopY+19, ribbonX,ribbonTopY+26,'F');
+  doc.triangle(ribbonX+ribbonW,ribbonTopY+19, ribbonX+ribbonW/2,ribbonTopY+19, ribbonX+ribbonW,ribbonTopY+26,'F');
+  doc.setFontSize(7.4); doc.setFont(undefined,'bold'); doc.setTextColor(255,255,255);
+  doc.text('CAPACITACIÓN QUE',ribbonX+ribbonW/2,ribbonTopY+8,{align:'center'});
+  doc.text('GENERA RESULTADOS',ribbonX+ribbonW/2,ribbonTopY+13,{align:'center'});
+  doc.setFillColor(255,255,255);
+  [-8,0,8].forEach(dx=>drawStar(ribbonX+ribbonW/2+dx, ribbonTopY+17, 1.6));
+
+  // ── Título ────────────────────────────────────────────────────────────
+  let y=headerH+20;
+  doc.setFontSize(24); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
+  doc.text(ACADEMIA_TIPO_TITULO[constancia.tipo]||'CONSTANCIA', pw/2, y, {align:'center'});
+
+  y+=8;
+  doc.setDrawColor(...teal); doc.setLineWidth(0.6);
+  doc.line(pw/2-38,y,pw/2-6,y); doc.line(pw/2+6,y,pw/2+38,y);
+  doc.setFillColor(...teal); doc.circle(pw/2,y,1.1,'F');
+
+  y+=7.5;
+  doc.setFontSize(10.5); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
+  doc.text('Se otorga la presente a:', pw/2, y, {align:'center'});
+
+  y+=10;
   doc.setFontSize(20); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
-  doc.text(insc.participante?.nombre||'', pw/2, 64, {align:'center'});
+  doc.text(insc.participante?.nombre||'', pw/2, y, {align:'center'});
 
-  doc.setFontSize(11); doc.setFont(undefined,'normal'); doc.setTextColor(90);
-  const verbo=constancia.tipo==='acreditacion'?'Por haber acreditado satisfactoriamente el programa de capacitación:':'Por su participación en el programa de capacitación:';
-  doc.text(verbo, pw/2, 74, {align:'center'});
-  doc.setFontSize(15); doc.setFont(undefined,'bold'); doc.setTextColor(...teal);
-  doc.text(insc.generacion?.curso?.nombre||'', pw/2, 83, {align:'center'});
+  y+=8.5;
+  doc.setFontSize(10.5); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
+  const verbo=constancia.tipo==='acreditacion'?'Por haber acreditado satisfactoriamente el programa de capacitación:':(constancia.tipo==='aprobacion'?'Por haber aprobado el programa de capacitación:':'Por su participación en el programa de capacitación:');
+  doc.text(verbo, pw/2, y, {align:'center'});
 
-  // Bloque de datos
-  let y=98;
-  doc.setFontSize(9); doc.setTextColor(90); doc.setFont(undefined,'normal');
-  const col1=16, col2=pw/2-40, col3=pw-90;
-  doc.text(`MODALIDAD: ${insc.generacion?.curso?.modalidad==='en_vivo'?'En vivo':(insc.generacion?.curso?.modalidad||'—')}`, col1, y);
-  doc.text(`GENERACIÓN: ${insc.generacion?.clave||''}`, col2, y);
-  doc.text(`NIVEL DE ACCESO: ${academiaAccesoLabel(insc.nivel_acceso)}`, col3, y);
-  y+=7;
-  doc.text(`SISTEMA: ${insc.generacion?.curso?.sistema?.nombre||''}`, col1, y);
-  doc.text(`CALIFICACIÓN: ${calificacion}/100`, col2, y);
-  doc.text(`CRITERIO MÍNIMO: 80/100`, col3, y);
+  y+=8;
+  doc.setFontSize(14); doc.setFont(undefined,'bold'); doc.setTextColor(...teal);
+  doc.text(insc.generacion?.curso?.nombre||'', pw/2, y, {align:'center'});
 
-  // Firmas
-  const firmaY=ph-42;
-  doc.setDrawColor(150); doc.setLineWidth(0.3);
-  doc.line(30,firmaY,110,firmaY); doc.line(pw-110,firmaY,pw-30,firmaY);
-  doc.setFontSize(10); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
-  doc.text(instructor?.nombre||'—', 70, firmaY+5, {align:'center'});
-  doc.text(director?.nombre||'—', pw-70, firmaY+5, {align:'center'});
-  doc.setFontSize(8); doc.setFont(undefined,'normal'); doc.setTextColor(120);
-  doc.text(`${instructor?.cargo||''}${instructor?.credenciales?' · '+instructor.credenciales:''}`, 70, firmaY+10, {align:'center'});
-  doc.text(director?.cargo||'', pw-70, firmaY+10, {align:'center'});
+  // ── Franja de datos (5 columnas con icono circular) ──────────────────
+  y+=13;
+  const stripY=y;
+  const cols=[
+    {label:'MODALIDAD', value: insc.generacion?.curso?.modalidad==='en_vivo'?'En vivo':(insc.generacion?.curso?.modalidad==='24_7'?'24/7':(insc.generacion?.curso?.modalidad||'—'))},
+    {label:'DURACIÓN', value: insc.generacion?.curso?.duracion_horas?insc.generacion.curso.duracion_horas+' horas':'—'},
+    {label:'GENERACIÓN', value: insc.generacion?.clave||'—'},
+    {label:'NIVEL DE ACCESO', value: academiaAccesoLabel(insc.nivel_acceso)},
+    {label:constancia.tipo==='acreditacion'?'RESULTADO':'CALIFICACIÓN', value: constancia.tipo==='acreditacion'?'ACREDITADO':calificacion+'/100'},
+  ];
+  const marginX=20, stripW=pw-2*marginX, colW=stripW/cols.length;
+  cols.forEach((c,i)=>{
+    const cx=marginX+colW*i+colW/2;
+    doc.setFillColor(...teal); doc.circle(cx,stripY,3.2,'F');
+    doc.setFontSize(7); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
+    doc.text(c.label, cx, stripY+8, {align:'center'});
+    doc.setFontSize(9.5); doc.setFont(undefined,'bold'); doc.setTextColor(...gray);
+    doc.text(String(c.value), cx, stripY+13.5, {align:'center'});
+    if(i>0){ doc.setDrawColor(220,225,232); doc.setLineWidth(0.2); doc.line(marginX+colW*i,stripY-4,marginX+colW*i,stripY+15); }
+  });
 
-  // Folio + QR
-  doc.setFontSize(9); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
-  doc.text(`FOLIO: ${constancia.folio}`, 16, ph-20);
-  doc.setFont(undefined,'normal'); doc.setFontSize(8); doc.setTextColor(120);
-  doc.text(`Emitida: ${constancia.fecha_emision}`, 16, ph-15);
-  doc.text('Verifica la autenticidad en: '+ACADEMIA_VERIFICAR_URL, 16, ph-10);
-  doc.addImage(qrDataUrl,'PNG',pw-42,ph-40,26,26);
+  // ── Panel de competencias desarrolladas (llena el espacio hasta las firmas) ──
+  const competencias=insc.generacion?.curso?.competencias||[];
+  const panelY=stripY+20;
+  const firmaY=ph-52;
+  if(competencias.length){
+    doc.setFillColor(247,250,252);
+    doc.roundedRect(marginX,panelY,pw-2*marginX,firmaY-panelY-8,2,2,'F');
+    doc.setFontSize(8.5); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
+    doc.text('COMPETENCIAS DESARROLLADAS', marginX+8, panelY+8);
+    doc.setFontSize(9); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
+    const colGap=(pw-2*marginX-16)/2;
+    competencias.slice(0,6).forEach((comp,i)=>{
+      const col=i%2, row=Math.floor(i/2);
+      const cx=marginX+8+col*colGap;
+      const cy=panelY+15+row*6.5;
+      doc.setFillColor(...teal); doc.circle(cx,cy-1.3,0.9,'F');
+      doc.text(comp, cx+4, cy);
+    });
+  }
+
+  // ── Firmas ────────────────────────────────────────────────────────────
+  doc.setDrawColor(160); doc.setLineWidth(0.3);
+  doc.line(34,firmaY,112,firmaY); doc.line(pw-112,firmaY,pw-34,firmaY);
+  doc.setFontSize(10.5); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
+  doc.text(instructor?.nombre||'—', 73, firmaY+5.5, {align:'center'});
+  doc.text(director?.nombre||'—', pw-73, firmaY+5.5, {align:'center'});
+  doc.setFontSize(8); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
+  doc.text(`${instructor?.cargo||''}${instructor?.credenciales?' · '+instructor.credenciales:''}`, 73, firmaY+10, {align:'center'});
+  doc.text(director?.cargo||'', pw-73, firmaY+10, {align:'center'});
+
+  // ── Folio (debajo de firmas, banda propia — sin cruzarse con nada) ────
+  const folioY=firmaY+21;
+  doc.setFontSize(9.5); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
+  doc.text(`FOLIO: ${constancia.folio}`, marginX, folioY);
+  doc.setFont(undefined,'normal'); doc.setFontSize(7.6); doc.setTextColor(...gray);
+  doc.text(`Fecha de emisión: ${constancia.fecha_emision}  ·  Verifica la autenticidad en:`, marginX, folioY+4.5);
+  doc.setFont(undefined,'bold'); doc.setTextColor(...teal);
+  doc.text(ACADEMIA_VERIFICAR_URL, marginX, folioY+9);
+
+  // ── QR (caja alineada con la banda de firmas+folio, lado derecho) ────
+  const qrBoxW=30, qrBoxH=30, qrBoxX=pw-marginX-qrBoxW, qrBoxY=firmaY-4;
+  doc.setDrawColor(...teal); doc.setLineWidth(0.4);
+  doc.roundedRect(qrBoxX,qrBoxY,qrBoxW,qrBoxH,2,2);
+  doc.addImage(qrDataUrl,'PNG',qrBoxX+2.5,qrBoxY+2.5,25,25);
+  doc.setFontSize(6.4); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
+  doc.text('Escanea y verifica la autenticidad', qrBoxX+qrBoxW/2, qrBoxY+qrBoxH+4, {align:'center'});
+
+  // ── Pie navy ──────────────────────────────────────────────────────────
+  const footerH=11;
+  doc.setFillColor(...navy); doc.rect(6,ph-6-footerH,pw-12,footerH,'F');
+  doc.setFontSize(8); doc.setFont(undefined,'normal'); doc.setTextColor(255,255,255);
+  doc.text('Capacitación práctica, soluciones reales', 16, ph-6-footerH/2+1.2);
+  doc.setTextColor(...teal);
+  doc.text('innovaci.com.mx', pw-16, ph-6-footerH/2+1.2, {align:'right'});
 
   const blob=doc.output('blob');
   const path=`${constancia.folio}.pdf`;
