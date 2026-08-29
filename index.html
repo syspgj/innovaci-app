@@ -1017,6 +1017,29 @@ async function academiaGuardarNuevaGeneracion(){
 }
 
 // ── EDITAR GENERACIÓN (y los datos del curso que se muestran en la constancia) ─
+// Listas cerradas (Jp, 2026-08-29: si se captura libre y alguien escribe mal
+// el texto, luego son vueltas y vueltas para corregir constancias ya emitidas)
+// para los 3 campos de texto de la constancia — en vez de un input libre, un
+// select con las opciones que ya cubren los 3 tipos de constancia.
+const ACADEMIA_OPCIONES_FORMATO=[
+  ['', '(automático según modalidad del curso)'],
+  ['Presencial · En vivo', 'Presencial · En vivo'],
+  ['24/7 · Bajo demanda', '24/7 · Bajo demanda'],
+  ['In company', 'In company'],
+];
+const ACADEMIA_OPCIONES_METODO=[
+  ['', '(automático según tipo de constancia)'],
+  ['Prácticas de laboratorio', 'Prácticas de laboratorio'],
+  ['Examen final', 'Examen final'],
+  ['Asistencia a sesiones', 'Asistencia a sesiones'],
+];
+const ACADEMIA_OPCIONES_CRITERIO=[
+  ['', '(automático según tipo de constancia)'],
+  ['Prácticas mínimas 80%', 'Prácticas mínimas 80%'],
+  ['Calificación mínima 80/100', 'Calificación mínima 80/100'],
+  ['Asistencia mínima 80%', 'Asistencia mínima 80%'],
+];
+
 async function academiaAbrirEditarGeneracion(generacionId){
   const {data:g,error}=await sb.from('academia_generaciones').select('*,curso:curso_id(*)').eq('id',generacionId).single();
   if(error||!g){alert('No se pudo cargar la generación: '+(error?.message||''));return;}
@@ -1040,9 +1063,9 @@ async function academiaAbrirEditarGeneracion(generacionId){
     </div>
     <div style="margin-bottom:10px;">${fld('Número de prácticas',inp('egPracticas','number','',g.practicas_totales??''))}</div>
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin:14px 0 8px;">TEXTOS DE LA CONSTANCIA (opcional — si se dejan vacíos, la constancia calcula un texto por default según el tipo de constancia)</div>
-    <div style="margin-bottom:10px;">${fld('Formato',inp('egFormato','text','Ej. Presencial · En vivo',g.formato_texto||''))}</div>
-    <div style="margin-bottom:10px;">${fld('Método de evaluación',inp('egMetodo','text','Ej. Prácticas de laboratorio',g.metodo_evaluacion||''))}</div>
-    <div style="margin-bottom:4px;">${fld('Criterio de acreditación',inp('egCriterio','text','Ej. Prácticas mínimas 80%',g.criterio_acreditacion||''))}</div>`;
+    <div style="margin-bottom:10px;">${fld('Formato',selPares('egFormato',ACADEMIA_OPCIONES_FORMATO,g.formato_texto||''))}</div>
+    <div style="margin-bottom:10px;">${fld('Método de evaluación',selPares('egMetodo',ACADEMIA_OPCIONES_METODO,g.metodo_evaluacion||''))}</div>
+    <div style="margin-bottom:4px;">${fld('Criterio de acreditación',selPares('egCriterio',ACADEMIA_OPCIONES_CRITERIO,g.criterio_acreditacion||''))}</div>`;
   mkModal('modalEditarGen','Editar generación',html,`academiaGuardarEditarGeneracion('${generacionId}','${c.id}')`);
 }
 
@@ -10961,6 +10984,10 @@ function mkModal(id,titulo,contenido,onSave,saveLabel='Guardar',wide=false){
 function fld(label,input){return `<div><div style="font-size:11px;color:var(--text3);margin-bottom:3px;font-weight:500;">${label}</div>${input}</div>`;}
 function inp(id,type='text',ph='',val='',extra=''){return `<input id="${id}" type="${type}" placeholder="${ph}" value="${val}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;" ${extra}>`;}
 function sel(id,opts,val=''){return `<select id="${id}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${opts.map(o=>`<option value="${o}" ${o===val?'selected':''}>${o}</option>`).join('')}</select>`;}
+// Como sel(), pero para cuando el texto guardado (value) no debe ser igual al
+// texto mostrado — ej. una opción vacía con una etiqueta descriptiva en vez de
+// dejarla en blanco. pares: array de [value,label].
+function selPares(id,pares,val=''){return `<select id="${id}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${pares.map(([v,l])=>`<option value="${v}" ${v===val?'selected':''}>${l}</option>`).join('')}</select>`;}
 
 // ─── MODAL INGRESO NUEVO ─────────────────────────────────────────────────────
 function abrirNuevaFactIngreso(){
