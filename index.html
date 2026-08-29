@@ -1649,7 +1649,7 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
     {label:'DURACIÓN', value: insc.generacion?.curso?.duracion_horas?insc.generacion.curso.duracion_horas+' horas':'—'},
     {label:'GENERACIÓN', value: insc.generacion?.clave||'—'},
     {label:'NIVEL DE ACCESO', value: academiaAccesoLabel(insc.nivel_acceso)},
-    {label:constancia.tipo==='acreditacion'?'RESULTADO':'CALIFICACIÓN', value: constancia.tipo==='acreditacion'?'ACREDITADO':calificacion+'/100'},
+    {label:constancia.tipo==='acreditacion'?'RESULTADO':'CALIFICACIÓN', value: constancia.tipo==='acreditacion'?'ACREDITADO':(constancia.tipo==='participacion'?'No aplica':calificacion+'/100')},
   ];
   const marginX=20, stripW=pw-2*marginX, colW=stripW/cols.length;
   cols.forEach((c,i)=>{
@@ -1694,36 +1694,42 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
     });
   }
 
+  // Orden de izquierda a derecha (Jp, 2026-08-29): FOLIO alineado a la
+  // izquierda (antes centrado y muy pegado a la firma de Karen) — luego la
+  // firma de la instructora (antes estaba pegada al folio, ahora al centro,
+  // con más aire de ambos lados) — luego la firma del Director — luego el QR.
+  const firmaInstructoraCx=pw/2, firmaDirectorCx=pw-75;
   doc.setDrawColor(160); doc.setLineWidth(0.3);
   const firmaLineHalfW=26;
-  doc.line(75-firmaLineHalfW,firmaLineY,75+firmaLineHalfW,firmaLineY);
-  doc.line(pw-75-firmaLineHalfW,firmaLineY,pw-75+firmaLineHalfW,firmaLineY);
-  if(firmaInstructoraImg) doc.addImage(firmaInstructoraImg.url,'PNG',75-fiW/2,firmaLineY-fiH-1,fiW,fiH);
-  if(firmaDirectorImg) doc.addImage(firmaDirectorImg.url,'PNG',pw-75-fdW/2,firmaLineY-fdH-1,fdW,fdH);
+  doc.line(firmaInstructoraCx-firmaLineHalfW,firmaLineY,firmaInstructoraCx+firmaLineHalfW,firmaLineY);
+  doc.line(firmaDirectorCx-firmaLineHalfW,firmaLineY,firmaDirectorCx+firmaLineHalfW,firmaLineY);
+  if(firmaInstructoraImg) doc.addImage(firmaInstructoraImg.url,'PNG',firmaInstructoraCx-fiW/2,firmaLineY-fiH-1,fiW,fiH);
+  if(firmaDirectorImg) doc.addImage(firmaDirectorImg.url,'PNG',firmaDirectorCx-fdW/2,firmaLineY-fdH-1,fdW,fdH);
 
   doc.setFontSize(10.5); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
-  doc.text(instructor?.nombre||'—', 75, firmaLineY+5.5, {align:'center'});
-  doc.text(director?.nombre||'—', pw-75, firmaLineY+5.5, {align:'center'});
+  doc.text(instructor?.nombre||'—', firmaInstructoraCx, firmaLineY+5.5, {align:'center'});
+  doc.text(director?.nombre||'—', firmaDirectorCx, firmaLineY+5.5, {align:'center'});
   doc.setFontSize(8); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
-  doc.text(`${instructor?.cargo||''}${instructor?.credenciales?' · '+instructor.credenciales:''}`, 75, firmaLineY+10, {align:'center'});
-  doc.text(director?.cargo||'', pw-75, firmaLineY+10, {align:'center'});
+  doc.text(`${instructor?.cargo||''}${instructor?.credenciales?' · '+instructor.credenciales:''}`, firmaInstructoraCx, firmaLineY+10, {align:'center'});
+  doc.text(director?.cargo||'', firmaDirectorCx, firmaLineY+10, {align:'center'});
 
-  // ── Folio + fecha + verificación: columna centrada entre las dos firmas ──
-  const folioCx=pw/2-6;
+  // ── Folio + fecha + verificación: alineado a la izquierda, en el espacio
+  // que antes ocupaba la firma de la instructora ──────────────────────────
+  const folioX=marginX+9;
   let fy=firmaLineY+6;
   doc.setFontSize(9.5); doc.setFont(undefined,'bold'); doc.setTextColor(...accent);
-  doc.text(`FOLIO: ${constancia.folio}`, folioCx, fy, {align:'center'});
+  doc.text(`FOLIO: ${constancia.folio}`, folioX, fy);
   doc.setDrawColor(...accent); doc.setLineWidth(0.2);
   const folioW=doc.getTextWidth(`FOLIO: ${constancia.folio}`);
-  doc.line(folioCx-folioW/2, fy+1, folioCx+folioW/2, fy+1);
+  doc.line(folioX, fy+1, folioX+folioW, fy+1);
   fy+=5.5;
   doc.setFont(undefined,'normal'); doc.setFontSize(7.8); doc.setTextColor(...gray);
-  doc.text(`Fecha de emisión: ${constancia.fecha_emision}`, folioCx, fy, {align:'center'});
+  doc.text(`Fecha de emisión: ${constancia.fecha_emision}`, folioX, fy);
   fy+=6.5;
-  doc.text('Verifica la autenticidad en:', folioCx, fy, {align:'center'});
+  doc.text('Verifica la autenticidad en:', folioX, fy);
   fy+=4.2;
   doc.setFont(undefined,'bold'); doc.setTextColor(...accent);
-  doc.text(ACADEMIA_VERIFICAR_URL, folioCx, fy, {align:'center'});
+  doc.text(ACADEMIA_VERIFICAR_URL, folioX, fy);
 
   // ── QR (columna propia, a la derecha de la firma del Director) ──────────
   const qrBoxW=22, qrBoxH=22, qrBoxX=pw-marginX-qrBoxW, qrBoxY=firmaLineY-1;
