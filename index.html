@@ -815,14 +815,27 @@ function academiaBarraProgreso(pct,color){
   return `<div style="height:6px;border-radius:3px;background:#eee;overflow:hidden;"><div style="height:100%;width:${p}%;background:${color||'var(--teal)'};transition:width .3s;"></div></div>`;
 }
 const ACADEMIA_VIGENCIA_ALERTA_DIAS=7; // días antes del vencimiento para marcar en rojo
-// Vigencia de prácticas: se captura por CURSO (ventana_practicas_dias / practicas_extension_dias
-// sobre la fecha de fin de la generación); quién goza de la extensión es por inscripción (checkbox).
+// Vigencia de prácticas: preferentemente se captura por GENERACIÓN, como fecha
+// explícita (fecha_limite_practicas / fecha_limite_practicas_extension — Jp,
+// 2026-08-31, sugeridas en automático al capturar fecha_fin pero editables a
+// mano). Si una generación no las tiene capturadas (generaciones anteriores a
+// este cambio), se cae de regreso al método anterior: días fijos por CURSO
+// (ventana_practicas_dias / practicas_extension_dias) sobre la fecha de fin.
+// Quién goza de la extensión es por inscripción (checkbox).
 function academiaVigenciaInfo(gen,insc){
-  const ventana=gen?.curso?.ventana_practicas_dias;
-  if(!gen?.fecha_fin || !ventana) return null;
-  const dias=ventana+(insc?.practicas_extension?(gen?.curso?.practicas_extension_dias||0):0);
-  const base=new Date(gen.fecha_fin+'T00:00:00');
-  const venc=new Date(base.getTime()+dias*86400000);
+  if(!gen?.fecha_fin) return null;
+  const usaExtension=!!insc?.practicas_extension;
+  const fechaExplicita=usaExtension?gen?.fecha_limite_practicas_extension:gen?.fecha_limite_practicas;
+  let venc;
+  if(fechaExplicita){
+    venc=new Date(fechaExplicita+'T00:00:00');
+  } else {
+    const ventana=gen?.curso?.ventana_practicas_dias;
+    if(!ventana) return null;
+    const dias=ventana+(usaExtension?(gen?.curso?.practicas_extension_dias||0):0);
+    const base=new Date(gen.fecha_fin+'T00:00:00');
+    venc=new Date(base.getTime()+dias*86400000);
+  }
   const hoy=new Date(new Date().toDateString());
   const diasRestantes=Math.round((venc-hoy)/86400000);
   let estado='vigente';
@@ -973,7 +986,11 @@ async function academiaAbrirNuevaGeneracion(){
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha de inicio',inp('genFechaInicio','date'))}
-      ${fld('Fecha de fin',inp('genFechaFin','date'))}
+      ${fld('Fecha de fin',inp('genFechaFin','date','','',`onchange="academiaSugerirFechasPracticas('genFechaFin','genFechaLimitePracticas','genFechaLimitePracticasExt')"`))}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Fecha de conclusión de prácticas (sugerida: +15 días)',inp('genFechaLimitePracticas','date','','',`oninput="this.dataset.tocado='1'"`))}
+      ${fld('Fecha de conclusión con extensión (sugerida: +30 días)',inp('genFechaLimitePracticasExt','date','','',`oninput="this.dataset.tocado='1'"`))}
     </div>
     <div style="margin-bottom:4px;">${fld('Número de prácticas',inp('genPracticas','number','','0'))}</div>`;
   mkModal('modalNuevaGen','Nueva generación',html,'academiaGuardarNuevaGeneracion');
@@ -1010,6 +1027,8 @@ async function academiaGuardarNuevaGeneracion(){
     fecha_fin:document.getElementById('genFechaFin')?.value||null,
     sesiones_totales:parseInt(document.getElementById('genSesiones')?.value)||null,
     practicas_totales:parseInt(document.getElementById('genPracticas')?.value)||null,
+    fecha_limite_practicas:document.getElementById('genFechaLimitePracticas')?.value||null,
+    fecha_limite_practicas_extension:document.getElementById('genFechaLimitePracticasExt')?.value||null,
   });
   if(error){alert('Error al crear la generación (¿ya existe una con esta clave para este curso?): '+error.message);return;}
   document.getElementById('modalNuevaGen')?.remove();
@@ -1021,6 +1040,22 @@ async function academiaGuardarNuevaGeneracion(){
 // escribe mal el texto, luego son vueltas y vueltas para corregir constancias
 // ya emitidas) — corregido con el catálogo real: faltaba "En línea · En vivo"
 // y "In company" en realidad es el curso Empresarial.
+// Fechas de vigencia de prácticas: al capturar/cambiar la fecha de fin se
+// sugieren en automático (+15 días período normal, +30 días con extensión),
+// pero solo mientras el usuario no las haya tocado a mano (Jp, 2026-08-31).
+function academiaSumarDias(fechaStr,dias){
+  if(!fechaStr) return '';
+  const d=new Date(fechaStr+'T00:00:00');
+  d.setDate(d.getDate()+dias);
+  return d.toISOString().split('T')[0];
+}
+function academiaSugerirFechasPracticas(finId,limId,extId){
+  const fin=document.getElementById(finId)?.value;
+  const limEl=document.getElementById(limId), extEl=document.getElementById(extId);
+  if(!fin||!limEl||!extEl) return;
+  if(!limEl.dataset.tocado) limEl.value=academiaSumarDias(fin,15);
+  if(!extEl.dataset.tocado) extEl.value=academiaSumarDias(fin,30);
+}
 const ACADEMIA_OPCIONES_FORMATO=[
   ['', '(automático según modalidad del curso)'],
   ['Presencial · En vivo', 'Presencial · En vivo'],
@@ -1056,7 +1091,11 @@ async function academiaAbrirEditarGeneracion(generacionId){
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha de inicio',inp('egFechaInicio','date','',g.fecha_inicio||''))}
-      ${fld('Fecha de fin',inp('egFechaFin','date','',g.fecha_fin||''))}
+      ${fld('Fecha de fin',inp('egFechaFin','date','',g.fecha_fin||'',`onchange="academiaSugerirFechasPracticas('egFechaFin','egFechaLimitePracticas','egFechaLimitePracticasExt')"`))}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Fecha de conclusión de prácticas (sugerida: +15 días)',inp('egFechaLimitePracticas','date','',g.fecha_limite_practicas||'',`oninput="this.dataset.tocado='1'" ${g.fecha_limite_practicas?`data-tocado="1"`:''}`))}
+      ${fld('Fecha de conclusión con extensión (sugerida: +30 días)',inp('egFechaLimitePracticasExt','date','',g.fecha_limite_practicas_extension||'',`oninput="this.dataset.tocado='1'" ${g.fecha_limite_practicas_extension?`data-tocado="1"`:''}`))}
     </div>
     <div style="margin-bottom:10px;">${fld('Número de prácticas',inp('egPracticas','number','',g.practicas_totales??''))}</div>
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin:14px 0 8px;">TEXTO DE LA CONSTANCIA (opcional — si se deja vacío, la constancia calcula un texto por default según la modalidad del curso)</div>
@@ -1082,6 +1121,8 @@ async function academiaGuardarEditarGeneracion(generacionId,cursoId){
     fecha_fin:document.getElementById('egFechaFin')?.value||null,
     practicas_totales:parseInt(document.getElementById('egPracticas')?.value)||null,
     formato_texto:document.getElementById('egFormato')?.value?.trim()||null,
+    fecha_limite_practicas:document.getElementById('egFechaLimitePracticas')?.value||null,
+    fecha_limite_practicas_extension:document.getElementById('egFechaLimitePracticasExt')?.value||null,
   }).eq('id',generacionId);
   if(errGen){alert('Error al actualizar la generación: '+errGen.message);return;}
 
@@ -1436,6 +1477,7 @@ async function academiaVerFicha(inscripcionId){
             <div><b>${c.tipo}</b> · ${c.folio} · ${c.fecha_emision} · ${c.estatus}${!c.pdf_path?' · <span style="color:#c0392b;">sin PDF</span>':''}</div>
             <div style="display:flex;gap:6px;">
               ${c.pdf_path?`<button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">Descargar PDF</button>`:`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaRegenerarPDF('${c.id}')">Regenerar PDF</button>`}
+              ${c.pdf_path&&telLimpio?`<button class="cartera-subtab" style="background:#25D366;color:#fff;" onclick="academiaEnviarConstanciaWhatsApp('${c.id}')">Enviar por WhatsApp</button>`:''}
               ${esDirector?`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaEliminarConstancia('${c.id}','${inscripcionId}')">Eliminar</button>`:''}
             </div>
           </div>`).join('')||'<div style="font-size:12px;color:var(--text3);">Aún no se ha emitido ninguna constancia.</div>'}
@@ -2004,6 +2046,37 @@ async function academiaDescargarConstancia(constanciaId){
     if(!errUrl&&data){window.open(data.signedUrl,'_blank');return;}
   }
   alert('Esta constancia no tiene un PDF guardado en Storage todavía.');
+}
+
+// Plantilla del mensaje de WhatsApp al entregar la constancia (Jp, 2026-08-31).
+function academiaPlantillaConstancia(insc,c,url){
+  const nombrePila=(insc?.participante?.nombre||'').trim().split(' ')[0]||'';
+  const tipoLabel=c.tipo==='acreditacion'?'Acreditación':(c.tipo==='aprobacion'?'Aprobación':'Participación');
+  return `🎓 ¡Felicidades, ${nombrePila}!\n\n`+
+    `Con mucho gusto te hacemos llegar tu constancia de *${tipoLabel}* correspondiente a:\n\n`+
+    `📘 ${insc?.generacion?.curso?.nombre||''}\n`+
+    `🏷️ Generación ${insc?.generacion?.clave||''}\n`+
+    `🔖 Folio: ${c.folio}\n\n`+
+    `Gracias por tu compromiso y dedicación durante todo el proceso. ¡Ha sido un placer acompañarte en este paso más en tu crecimiento profesional! 🚀\n\n`+
+    `📎 Descarga tu constancia aquí:\n${url}\n\n`+
+    `Cualquier duda, quedamos a tus órdenes. 💬\n\n`+
+    `*Grupo Innovaci* 💚`;
+}
+
+async function academiaEnviarConstanciaWhatsApp(constanciaId){
+  const {data:c,error}=await sb.from('academia_constancias')
+    .select('*,inscripcion:inscripcion_id(folio,participante:participante_id(nombre,telefono),generacion:generacion_id(clave,curso:curso_id(nombre)))')
+    .eq('id',constanciaId).single();
+  if(error||!c){alert('No se encontró la constancia.');return;}
+  if(!c.pdf_path){alert('Esta constancia no tiene un PDF guardado en Storage todavía. Genera/regenera el PDF primero.');return;}
+  const insc=c.inscripcion||{};
+  const tel=(insc.participante?.telefono||'').replace(/[^0-9]/g,'');
+  if(!tel){alert('Este participante no tiene teléfono capturado.');return;}
+  const {data:urlData,error:errUrl}=await sb.storage.from('constancias-pdf').createSignedUrl(c.pdf_path,60*60*24*7);
+  if(errUrl||!urlData){alert('No se pudo generar el enlace de descarga: '+(errUrl?.message||''));return;}
+  const numero=tel.length===10?'52'+tel:tel;
+  const msg=academiaPlantillaConstancia(insc,c,urlData.signedUrl);
+  window.open(`https://wa.me/${numero}?text=${encodeURIComponent(msg)}`,'_blank');
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
