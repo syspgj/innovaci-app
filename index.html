@@ -1017,28 +1017,25 @@ async function academiaGuardarNuevaGeneracion(){
 }
 
 // ── EDITAR GENERACIÓN (y los datos del curso que se muestran en la constancia) ─
-// Listas cerradas (Jp, 2026-08-29: si se captura libre y alguien escribe mal
-// el texto, luego son vueltas y vueltas para corregir constancias ya emitidas)
-// para los 3 campos de texto de la constancia — en vez de un input libre, un
-// select con las opciones que ya cubren los 3 tipos de constancia.
+// Lista cerrada para Formato (Jp, 2026-08-29: si se captura libre y alguien
+// escribe mal el texto, luego son vueltas y vueltas para corregir constancias
+// ya emitidas) — corregido con el catálogo real: faltaba "En línea · En vivo"
+// y "In company" en realidad es el curso Empresarial.
 const ACADEMIA_OPCIONES_FORMATO=[
   ['', '(automático según modalidad del curso)'],
   ['Presencial · En vivo', 'Presencial · En vivo'],
+  ['En línea · En vivo', 'En línea · En vivo'],
   ['24/7 · Bajo demanda', '24/7 · Bajo demanda'],
-  ['In company', 'In company'],
+  ['Empresarial', 'Empresarial'],
 ];
-const ACADEMIA_OPCIONES_METODO=[
-  ['', '(automático según tipo de constancia)'],
-  ['Prácticas de laboratorio', 'Prácticas de laboratorio'],
-  ['Examen final', 'Examen final'],
-  ['Asistencia a sesiones', 'Asistencia a sesiones'],
-];
-const ACADEMIA_OPCIONES_CRITERIO=[
-  ['', '(automático según tipo de constancia)'],
-  ['Prácticas mínimas 80%', 'Prácticas mínimas 80%'],
-  ['Calificación mínima 80/100', 'Calificación mínima 80/100'],
-  ['Asistencia mínima 80%', 'Asistencia mínima 80%'],
-];
+// Método de evaluación y Criterio de acreditación NO se volvieron campo
+// editable por generación (Jp, 2026-08-29): dentro de una misma generación
+// hay DOS métodos válidos a la vez según el nivel de acceso — Esencial se
+// evalúa por asistencia a sesiones, Plus/Premium por prácticas de
+// laboratorio — así que un solo valor por generación estaría mal la mitad
+// de las veces. Se quedan 100% automáticos según el tipo de constancia
+// (participación → asistencia, acreditación → prácticas, aprobación →
+// examen), que es exactamente esa misma regla aplicada por constancia.
 
 async function academiaAbrirEditarGeneracion(generacionId){
   const {data:g,error}=await sb.from('academia_generaciones').select('*,curso:curso_id(*)').eq('id',generacionId).single();
@@ -1062,10 +1059,9 @@ async function academiaAbrirEditarGeneracion(generacionId){
       ${fld('Fecha de fin',inp('egFechaFin','date','',g.fecha_fin||''))}
     </div>
     <div style="margin-bottom:10px;">${fld('Número de prácticas',inp('egPracticas','number','',g.practicas_totales??''))}</div>
-    <div style="font-size:11px;font-weight:700;color:var(--teal);margin:14px 0 8px;">TEXTOS DE LA CONSTANCIA (opcional — si se dejan vacíos, la constancia calcula un texto por default según el tipo de constancia)</div>
-    <div style="margin-bottom:10px;">${fld('Formato',selPares('egFormato',ACADEMIA_OPCIONES_FORMATO,g.formato_texto||''))}</div>
-    <div style="margin-bottom:10px;">${fld('Método de evaluación',selPares('egMetodo',ACADEMIA_OPCIONES_METODO,g.metodo_evaluacion||''))}</div>
-    <div style="margin-bottom:4px;">${fld('Criterio de acreditación',selPares('egCriterio',ACADEMIA_OPCIONES_CRITERIO,g.criterio_acreditacion||''))}</div>`;
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin:14px 0 8px;">TEXTO DE LA CONSTANCIA (opcional — si se deja vacío, la constancia calcula un texto por default según la modalidad del curso)</div>
+    <div style="margin-bottom:4px;">${fld('Formato',selPares('egFormato',ACADEMIA_OPCIONES_FORMATO,g.formato_texto||''))}</div>
+    <div style="font-size:11px;color:var(--text3);margin-top:10px;">El método de evaluación y el criterio de acreditación no se capturan aquí: la constancia los calcula solos según el tipo (Esencial → asistencia a sesiones · Plus/Premium → prácticas de laboratorio), porque en una misma generación aplican los dos a la vez.</div>`;
   mkModal('modalEditarGen','Editar generación',html,`academiaGuardarEditarGeneracion('${generacionId}','${c.id}')`);
 }
 
@@ -1086,8 +1082,6 @@ async function academiaGuardarEditarGeneracion(generacionId,cursoId){
     fecha_fin:document.getElementById('egFechaFin')?.value||null,
     practicas_totales:parseInt(document.getElementById('egPracticas')?.value)||null,
     formato_texto:document.getElementById('egFormato')?.value?.trim()||null,
-    metodo_evaluacion:document.getElementById('egMetodo')?.value?.trim()||null,
-    criterio_acreditacion:document.getElementById('egCriterio')?.value?.trim()||null,
   }).eq('id',generacionId);
   if(errGen){alert('Error al actualizar la generación: '+errGen.message);return;}
 
