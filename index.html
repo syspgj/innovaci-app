@@ -1822,8 +1822,17 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
   const accent=academiaColorAcento(insc.generacion?.curso?.sistema?.clave);
   const accentBg=[accent[0]+(255-accent[0])*0.88, accent[1]+(255-accent[1])*0.88, accent[2]+(255-accent[2])*0.88];
 
+  const MESES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  function formatoPeriodo(fi,ff){
+    if(!fi||!ff) return '—';
+    const a=new Date(fi+'T00:00:00'), b=new Date(ff+'T00:00:00');
+    return `${a.getDate()} al ${b.getDate()} de ${MESES[b.getMonth()]} de ${b.getFullYear()}`;
+  }
+
   // ── Iconos vectoriales estilo línea, usados en la franja de datos
-  // (diseño final aprobado por Jp, 2026-08-28, sobre su propio mockup) ──
+  // (diseño final aprobado por Jp, 2026-08-31 — segunda ronda: fuentes más
+  // grandes, franja de 4 columnas con fila secundaria + panel de
+  // competencias movido a columna lateral derecha) ──────────────────────
   function iconMonitor(cx,cy,s){
     doc.setDrawColor(...accent); doc.setLineWidth(0.35);
     doc.roundedRect(cx-s*0.5,cy-s*0.55,s,s*0.75,0.3,0.3,'S');
@@ -1836,27 +1845,11 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
     doc.line(cx,cy,cx,cy-s*0.3);
     doc.line(cx,cy,cx+s*0.22,cy+s*0.05);
   }
-  function iconGrupo(cx,cy,s){
+  function iconClipboard(cx,cy,s){
     doc.setDrawColor(...accent); doc.setLineWidth(0.35);
-    doc.circle(cx-s*0.16,cy-s*0.12,s*0.16,'S');
-    doc.circle(cx+s*0.16,cy-s*0.12,s*0.16,'S');
-    doc.lines([[-s*0.05,-s*0.12,-s*0.1,-s*0.02,-s*0.1,s*0.16]], cx-s*0.3, cy+s*0.28, [1,1], 'S', false);
-    doc.lines([[s*0.05,-s*0.12,s*0.1,-s*0.02,s*0.1,s*0.16]], cx+s*0.3, cy+s*0.28, [1,1], 'S', false);
-    doc.lines([[s*0.08,-s*0.2,s*0.16,-s*0.03,s*0.16,s*0.24]], cx-s*0.16, cy+s*0.16, [1,1], 'S', false);
-  }
-  function iconEstrella(cx,cy,s){
-    const r=s*0.5;
-    const pts=[];
-    for(let i=0;i<10;i++){
-      const ang=(-90 + i*36) * Math.PI/180;
-      const rad = i%2===0 ? r : r*0.42;
-      pts.push([cx+rad*Math.cos(ang), cy+rad*Math.sin(ang)]);
-    }
-    const segs=[];
-    for(let i=1;i<pts.length;i++) segs.push([pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1]]);
-    segs.push([pts[0][0]-pts[pts.length-1][0], pts[0][1]-pts[pts.length-1][1]]);
-    doc.setDrawColor(...accent); doc.setLineWidth(0.35);
-    doc.lines(segs, pts[0][0], pts[0][1], [1,1], 'S', true);
+    doc.roundedRect(cx-s*0.32,cy-s*0.45,s*0.64,s*0.9,0.4,0.4,'S');
+    doc.roundedRect(cx-s*0.14,cy-s*0.52,s*0.28,s*0.14,0.2,0.2,'S');
+    doc.lines([[s*0.09,s*0.1],[s*0.22,-s*0.16]], cx-s*0.18, cy+s*0.02, [1,1], 'S', false);
   }
   function iconMedalla(cx,cy,s){
     doc.setDrawColor(...accent); doc.setLineWidth(0.35);
@@ -1865,7 +1858,7 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
     doc.circle(cx,cy+s*0.05,s*0.32,'S');
     doc.circle(cx,cy+s*0.05,s*0.16,'S');
   }
-  const ICONOS=[iconMonitor,iconReloj,iconGrupo,iconEstrella,iconMedalla];
+  const ICONOS=[iconMonitor,iconReloj,iconClipboard,iconMedalla];
 
   function checkmark(cx,cy,r){
     doc.setFillColor(...accent); doc.circle(cx,cy,r,'F');
@@ -1894,84 +1887,106 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
   doc.addImage(ACADEMIA_BADGE_DATAURL,'PNG',badgeCx-badgeD/2,badgeCy-badgeD/2,badgeD,badgeD);
 
   // ── Título ───────────────────────────────────────────────────────────────
-  let y=42;
-  doc.setFontSize(24); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
+  let y=40;
+  doc.setFontSize(22); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
   doc.text(ACADEMIA_TIPO_TITULO[constancia.tipo]||'CONSTANCIA', pw/2, y, {align:'center'});
 
-  y+=8;
+  y+=7.5;
   doc.setDrawColor(...accent); doc.setLineWidth(0.6);
   doc.line(pw/2-38,y,pw/2-6,y); doc.line(pw/2+6,y,pw/2+38,y);
   doc.setFillColor(...accent); doc.circle(pw/2,y,1.1,'F');
 
-  y+=7.5;
-  doc.setFontSize(10.5); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
+  y+=7;
+  doc.setFontSize(10); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
   doc.text('Se otorga la presente a:', pw/2, y, {align:'center'});
 
-  y+=10;
-  doc.setFontSize(20); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
+  y+=10.5;
+  doc.setFontSize(22); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
   doc.text(insc.participante?.nombre||'', pw/2, y, {align:'center'});
 
-  y+=8.5;
+  y+=8;
   doc.setFontSize(10.5); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
   const verbo=constancia.tipo==='acreditacion'?'Por haber acreditado satisfactoriamente el programa de capacitación:':(constancia.tipo==='aprobacion'?'Por haber aprobado el programa de capacitación:':'Por su participación en el programa de capacitación:');
   doc.text(verbo, pw/2, y, {align:'center'});
 
-  y+=8;
-  doc.setFontSize(14); doc.setFont(undefined,'bold'); doc.setTextColor(...accent);
+  y+=8.5;
+  doc.setFontSize(16); doc.setFont(undefined,'bold'); doc.setTextColor(...accent);
   doc.text(insc.generacion?.curso?.nombre||'', pw/2, y, {align:'center'});
 
-  // ── Franja de datos (5 columnas, icono outline sobre fondo tintado) ──────
-  y+=15;
+  // ── Subtítulo / descripción del curso (del mockup de referencia) ──────────
+  const descripcionCurso=insc.generacion?.curso?.descripcion;
+  if(descripcionCurso){
+    y+=6.5;
+    doc.setFontSize(10); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
+    const wrapped=doc.splitTextToSize(descripcionCurso, pw-2*42);
+    wrapped.slice(0,2).forEach((line,i)=>{ doc.text(line, pw/2, y+i*4.6, {align:'center'}); });
+    y+=(Math.min(wrapped.length,2)-1)*4.6;
+  }
+
+  // ── Franja de datos: 4 columnas (izquierda) + panel de competencias (der.) ──
+  y+=17;
   const stripY=y;
+  const marginX=20;
+  const compPanelW=78;
+  const dataAreaW=pw-2*marginX-compPanelW-8;
   const cols=[
-    {label:'MODALIDAD', value: insc.generacion?.curso?.modalidad==='en_vivo'?'En vivo':(insc.generacion?.curso?.modalidad==='24_7'?'24/7':(insc.generacion?.curso?.modalidad||'—'))},
-    {label:'DURACIÓN', value: insc.generacion?.curso?.duracion_horas?insc.generacion.curso.duracion_horas+' horas':'—'},
-    {label:'GENERACIÓN', value: insc.generacion?.clave||'—'},
-    {label:'NIVEL DE ACCESO', value: academiaAccesoLabel(insc.nivel_acceso)},
-    {label:constancia.tipo==='acreditacion'?'RESULTADO':'CALIFICACIÓN', value: constancia.tipo==='acreditacion'?'ACREDITADO':(constancia.tipo==='participacion'?'No aplica':calificacion+'/100')},
+    {label:'MODALIDAD', value: insc.generacion?.curso?.modalidad==='en_vivo'?'En vivo':(insc.generacion?.curso?.modalidad==='24_7'?'24/7':(insc.generacion?.curso?.modalidad||'—')),
+     sublabel:'FORMATO', subvalue: insc.generacion?.formato_texto || (insc.generacion?.curso?.modalidad==='en_vivo'?'En vivo':(insc.generacion?.curso?.modalidad==='24_7'?'24/7 · Bajo demanda':'—'))},
+    {label:'DURACIÓN', value: insc.generacion?.curso?.duracion_horas?insc.generacion.curso.duracion_horas+' horas':'—',
+     sublabel:'PERIODO', subvalue: formatoPeriodo(insc.generacion?.fecha_inicio, insc.generacion?.fecha_fin)},
+    {label:'MÉTODO DE EVALUACIÓN', value: constancia.tipo==='acreditacion'?'Prácticas de laboratorio':(constancia.tipo==='aprobacion'?'Examen final':'Asistencia a sesiones'),
+     sublabel:'CRITERIO DE ACREDITACIÓN', subvalue: constancia.tipo==='acreditacion'?'Prácticas mínimas 80%':(constancia.tipo==='aprobacion'?'Calificación mínima 80/100':'Asistencia mínima 80%')},
+    {label:'RESULTADO', value: constancia.tipo==='acreditacion'?'ACREDITADO':(constancia.tipo==='aprobacion'?'APROBADO':'PARTICIPÓ'),
+     sublabel:'CALIFICACIÓN OBTENIDA', subvalue: constancia.tipo==='participacion'?'No aplica':calificacion+'/100'},
   ];
-  const marginX=20, stripW=pw-2*marginX, colW=stripW/cols.length;
+  const colW=dataAreaW/cols.length;
   cols.forEach((c,i)=>{
     const ccx=marginX+colW*i+colW/2;
-    doc.setFillColor(...accentBg); doc.circle(ccx,stripY,6,'F');
-    ICONOS[i](ccx,stripY,7);
-    doc.setFontSize(7); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
-    doc.text(c.label, ccx, stripY+11.5, {align:'center'});
-    doc.setFontSize(9.5); doc.setFont(undefined,'bold'); doc.setTextColor(...gray);
-    doc.text(String(c.value), ccx, stripY+17, {align:'center'});
-    if(i>0){ doc.setDrawColor(220,225,232); doc.setLineWidth(0.2); doc.line(marginX+colW*i,stripY-7,marginX+colW*i,stripY+18); }
+    doc.setFillColor(...accentBg); doc.circle(ccx,stripY,5.5,'F');
+    ICONOS[i](ccx,stripY,6.3);
+    doc.setFontSize(6.3); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
+    doc.text(c.label, ccx, stripY+10.5, {align:'center'});
+    doc.setFontSize(8.7); doc.setFont(undefined,'bold'); doc.setTextColor(...gray);
+    doc.text(String(c.value), ccx, stripY+15.5, {align:'center'});
+    if(i>0){ doc.setDrawColor(220,225,232); doc.setLineWidth(0.2); doc.line(marginX+colW*i,stripY-6.5,marginX+colW*i,stripY+37); }
+    doc.setDrawColor(225,230,236); doc.setLineWidth(0.2);
+    doc.line(marginX+colW*i+4, stripY+20, marginX+colW*i+colW-4, stripY+20);
+    doc.setFontSize(6); doc.setFont(undefined,'bold'); doc.setTextColor(...accent);
+    doc.text(c.sublabel, ccx, stripY+25, {align:'center'});
+    doc.setFontSize(7.6); doc.setFont(undefined,'normal'); doc.setTextColor(...navy);
+    const subLines=doc.splitTextToSize(String(c.subvalue), colW-6);
+    subLines.slice(0,2).forEach((ln,li)=>doc.text(ln, ccx, stripY+29.5+li*3.6, {align:'center'}));
   });
 
-  // ── Firmas: alturas fijas para dejar espacio suficiente al panel de
-  // competencias arriba (imagen real solo si el nombre del firmante
-  // coincide con una firma que tengamos cargada) ────────────────────────
-  const firmaLineY=170;
+  // ── Panel de competencias (columna derecha, lista vertical con checkmarks) ──
+  const competencias=insc.generacion?.curso?.competencias||[];
+  const compPanelX=marginX+dataAreaW+8;
+  const panelTop=stripY-9;
+  const panelBottom=stripY+37;
+  doc.setFillColor(247,250,252);
+  doc.roundedRect(compPanelX,panelTop,compPanelW,panelBottom-panelTop,2,2,'F');
+  doc.setFontSize(7.6); doc.setFont(undefined,'bold'); doc.setTextColor(...accent);
+  doc.text('COMPETENCIAS', compPanelX+6, panelTop+7);
+  doc.text('DESARROLLADAS', compPanelX+6, panelTop+11.5);
+  doc.setFontSize(7.8); doc.setFont(undefined,'normal'); doc.setTextColor(60,68,80);
+  competencias.slice(0,5).forEach((comp,i)=>{
+    const cy=panelTop+18+i*6.2;
+    checkmark(compPanelX+7,cy-1.3,1.1);
+    const lines=doc.splitTextToSize(comp, compPanelW-16);
+    doc.text(lines.slice(0,1), compPanelX+11, cy);
+  });
+
+  // ── Firmas: mismo acomodo aprobado con Jp (folio izq. alineado, firma
+  // instructora al centro, firma director y QR sin cambios) — firmaLineY
+  // ahora depende del alto real de la franja/panel (panelBottom+16) en vez
+  // de un valor fijo, así no queda hueco en blanco ni se encima con el
+  // panel de competencias si éste crece (imagen real solo si el nombre del
+  // firmante coincide con una firma que tengamos cargada) ─────────────────
+  const firmaLineY=panelBottom+16;
   const firmaInstructoraImg=ACADEMIA_FIRMAS_IMG[instructor?.nombre];
   const firmaDirectorImg=ACADEMIA_FIRMAS_IMG[director?.nombre];
   const fiH=13, fiW=firmaInstructoraImg?fiH*firmaInstructoraImg.w/firmaInstructoraImg.h:0;
   const fdH=11.5, fdW=firmaDirectorImg?fdH*firmaDirectorImg.w/firmaDirectorImg.h:0;
-
-  // ── Panel de competencias desarrolladas (checkmarks + divisor central) ───
-  const competencias=insc.generacion?.curso?.competencias||[];
-  const panelY=stripY+23;
-  const panelBottom=firmaLineY-Math.max(fiH,fdH,10)-1-2;
-  if(competencias.length){
-    doc.setFillColor(247,250,252);
-    doc.roundedRect(marginX,panelY,pw-2*marginX,panelBottom-panelY,2,2,'F');
-    doc.setFontSize(8.5); doc.setFont(undefined,'bold'); doc.setTextColor(...accent);
-    doc.text('COMPETENCIAS DESARROLLADAS', marginX+8, panelY+6.5);
-    doc.setDrawColor(225,230,236); doc.setLineWidth(0.2);
-    doc.line(pw/2, panelY+10, pw/2, panelBottom-3);
-    doc.setFontSize(9); doc.setFont(undefined,'normal'); doc.setTextColor(60,68,80);
-    const colGap=(pw-2*marginX-16)/2;
-    competencias.slice(0,6).forEach((comp,i)=>{
-      const col=i%2, row=Math.floor(i/2);
-      const ccx=marginX+8+col*colGap;
-      const cy=panelY+15+row*6.5;
-      checkmark(ccx,cy-1.3,1.3);
-      doc.text(comp, ccx+5, cy);
-    });
-  }
 
   // Orden de izquierda a derecha (Jp, 2026-08-29): FOLIO alineado a la
   // izquierda (antes centrado y muy pegado a la firma de Karen) — luego la
