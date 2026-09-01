@@ -838,6 +838,16 @@ const ACADEMIA_VIGENCIA_ALERTA_DIAS=7; // días antes del vencimiento para marca
 // (ventana_practicas_dias / practicas_extension_dias) sobre la fecha de fin.
 // Quién goza de la extensión es por inscripción (checkbox).
 function academiaVigenciaInfo(gen,insc){
+  // Prioridad (Jp, 2026-09-01): en cursos de inscripción continua (24/7:
+  // desde cero, Pólizas Dinámicas, talleres) cada persona compra en un
+  // momento distinto y su vigencia de laboratorio se cuenta desde SU propia
+  // fecha, no desde una fecha compartida de generación — por eso
+  // insc.fecha_fin_laboratorio manda si existe. Si no, se usa la fecha
+  // explícita de generación (diplomados en vivo, Lote 6). Si tampoco existe,
+  // se cae al cálculo anterior por días fijos de curso sobre fecha_fin.
+  if(insc?.fecha_fin_laboratorio){
+    return academiaVigenciaSimple(insc.fecha_fin_laboratorio);
+  }
   if(!gen?.fecha_fin) return null;
   const usaExtension=!!insc?.practicas_extension;
   const fechaExplicita=usaExtension?gen?.fecha_limite_practicas_extension:gen?.fecha_limite_practicas;
@@ -851,6 +861,18 @@ function academiaVigenciaInfo(gen,insc){
     const base=new Date(gen.fecha_fin+'T00:00:00');
     venc=new Date(base.getTime()+dias*86400000);
   }
+  const hoy=new Date(new Date().toDateString());
+  const diasRestantes=Math.round((venc-hoy)/86400000);
+  let estado='vigente';
+  if(diasRestantes<0) estado='vencido';
+  else if(diasRestantes<=ACADEMIA_VIGENCIA_ALERTA_DIAS) estado='por_vencer';
+  return {fecha:venc.toISOString().split('T')[0],diasRestantes,estado};
+}
+// Vigencia genérica a partir de una sola fecha explícita (usada para
+// laboratorio individual y para sesión privada con Karen, Jp 2026-09-01).
+function academiaVigenciaSimple(fechaStr){
+  if(!fechaStr) return null;
+  const venc=new Date(fechaStr+'T00:00:00');
   const hoy=new Date(new Date().toDateString());
   const diasRestantes=Math.round((venc-hoy)/86400000);
   let estado='vigente';
@@ -1086,6 +1108,22 @@ function academiaSugerirFechasPracticas(finId,limId,extId){
   if(!limEl.dataset.tocado) limEl.value=academiaSumarDias(fin,15);
   if(!extEl.dataset.tocado) extEl.value=academiaSumarDias(fin,30);
 }
+// Vigencia individual (24/7, Jp 2026-09-01): a partir de la fecha de compra de
+// CADA participante, se sugieren la fecha de fin de laboratorio (diasLab: 30
+// para diplomados 24/7 "desde cero" tipo diplomado_vip/24_7, 15 para los demás
+// talleres/cursos desde cero) y la de fin de sesión privada con Karen (fija en
+// 90 días para todos los casos). Igual que en academiaSugerirFechasPracticas,
+// respeta ediciones manuales vía data-tocado.
+function academiaDiasLabPorCurso(curso){
+  return academiaCategoriaCurso(curso)?.key==='diplomado_247' ? 30 : 15;
+}
+function academiaSugerirVigenciaIndividual(iniId,finLabId,finSesId,diasLab){
+  const ini=document.getElementById(iniId)?.value;
+  const finLabEl=document.getElementById(finLabId), finSesEl=document.getElementById(finSesId);
+  if(!ini) return;
+  if(finLabEl && !finLabEl.dataset.tocado) finLabEl.value=academiaSumarDias(ini,diasLab);
+  if(finSesEl && !finSesEl.dataset.tocado) finSesEl.value=academiaSumarDias(ini,90);
+}
 const ACADEMIA_OPCIONES_FORMATO=[
   ['', '(automático según modalidad del curso)'],
   ['Presencial · En vivo', 'Presencial · En vivo'],
@@ -1305,6 +1343,11 @@ function academiaAbrirNuevoAsistente(generacionId){
   // campo queda vacío para capturarlo a mano.
   const folioEjemplo=(cache?.inscripciones||[]).find(i=>i.folio)?.folio;
   const prefijoSugerido=folioEjemplo?folioEjemplo.split('-')[0]:'';
+  // Vigencia individual (24/7, Jp 2026-09-01): solo aplica a Plus/Premium de
+  // cursos de inscripción continua (diplomados desde cero, Pólizas Dinámicas,
+  // demás talleres 24/7); Esencial queda con fecha abierta (campos vacíos,
+  // "hay que dejar ahí el campo para que después se capture").
+  const diasLabSugerido=academiaDiasLabPorCurso(gen?.curso);
   const html=`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Nombre completo',inp('naNombre','text','Nombre del participante'))}
@@ -1330,6 +1373,12 @@ function academiaAbrirNuevoAsistente(generacionId){
       ${fld('Empresa Aspel',inp('naEmpresaAspel','text',''))}
       ${fld('Usuario Aspel',inp('naUsuarioAspel','text',''))}
       ${fld('Contraseña Aspel',inp('naPassAspel','text',''))}
+    </div>
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin:12px 0 8px;">VIGENCIA DE LABORATORIO Y SESIÓN PRIVADA (24/7, Plus/Premium — dejar en blanco si es Esencial o no aplica)</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+      ${fld('Fecha de compra / inicio',`<input id="naFechaCompra" type="date" onchange="academiaSugerirVigenciaIndividual('naFechaCompra','naFechaFinLab','naFechaFinSesion',${diasLabSugerido})">`)}
+      ${fld(`Fin de acceso a laboratorio (sugerido: +${diasLabSugerido} días)`,`<input id="naFechaFinLab" type="date" oninput="this.dataset.tocado='1'">`)}
+      ${fld('Fin de sesión privada con Karen (sugerido: +90 días)',`<input id="naFechaFinSesion" type="date" oninput="this.dataset.tocado='1'">`)}
     </div>`;
   mkModal('modalNuevoAsistente',`Agregar asistente — ${gen?.curso?.nombre||''} ${gen?.clave||''}`,html,`academiaGuardarNuevoAsistente('${generacionId}')`,'Guardar',true);
 }
@@ -1374,6 +1423,9 @@ async function academiaGuardarNuevoAsistente(generacionId){
     usuario_aspel:document.getElementById('naUsuarioAspel')?.value?.trim()||null,
     contrasena_aspel:document.getElementById('naPassAspel')?.value?.trim()||null,
     vendedor_nombre_original:document.getElementById('naVendedor')?.value?.trim()||null,
+    fecha_inicio_laboratorio:document.getElementById('naFechaCompra')?.value||null,
+    fecha_fin_laboratorio:document.getElementById('naFechaFinLab')?.value||null,
+    fecha_fin_sesion_privada:document.getElementById('naFechaFinSesion')?.value||null,
   });
   if(errInsc){alert('El participante se creó (folio '+folio+') pero no se pudo inscribir a la generación: '+errInsc.message);return;}
 
@@ -1483,6 +1535,7 @@ async function academiaVerFicha(inscripcionId){
         </div>
         <div style="font-size:11px;color:var(--text3);margin-top:6px;">Vigencia del período de prácticas: ${academiaVigenciaBadge(vig)}</div>
         <div style="font-size:11px;color:var(--text3);margin-top:2px;">${elegibleAcreditacion?'✅ Cumple 80% en prácticas (Acreditación)':'❌ No alcanza 80% de prácticas'}</div>
+        ${insc.fecha_fin_sesion_privada?`<div style="font-size:11px;color:var(--text3);margin-top:2px;">Vigencia de sesión privada con Karen: ${academiaVigenciaBadge(academiaVigenciaSimple(insc.fecha_fin_sesion_privada))}</div>`:''}
         `:`<div style="font-size:12px;color:var(--text3);margin-bottom:8px;">Este curso no tiene definido un número de prácticas (campo "practicas_totales" en el catálogo de cursos).</div>`}
       </div>
     </div>
@@ -1548,8 +1601,9 @@ function academiaToggleAccesoLab(inscripcionId){
 // Supabase. De paso sirve para limpiar caso por caso el bug ".0" (punto 31)
 // mientras no se corre la limpieza masiva.
 async function academiaAbrirEditarAccesoLab(inscripcionId){
-  const {data:insc,error}=await sb.from('academia_inscripciones').select('servidor,usuario_rdp,contrasena_rdp,empresa_aspel,usuario_aspel,contrasena_aspel').eq('id',inscripcionId).single();
+  const {data:insc,error}=await sb.from('academia_inscripciones').select('servidor,usuario_rdp,contrasena_rdp,empresa_aspel,usuario_aspel,contrasena_aspel,fecha_inicio_laboratorio,fecha_fin_laboratorio,fecha_fin_sesion_privada,generacion:generacion_id(curso:curso_id(tipo,modalidad))').eq('id',inscripcionId).single();
   if(error||!insc){alert('No se pudo cargar la inscripción: '+(error?.message||''));return;}
+  const diasLabSugerido=academiaDiasLabPorCurso(insc.generacion?.curso);
   const html=`
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Servidor',inp('ealServidor','text','',insc.servidor||''))}
@@ -1560,6 +1614,12 @@ async function academiaAbrirEditarAccesoLab(inscripcionId){
       ${fld('Empresa Aspel',inp('ealEmpresaAspel','text','',insc.empresa_aspel||''))}
       ${fld('Usuario Aspel',inp('ealUsuarioAspel','text','',insc.usuario_aspel||''))}
       ${fld('Contraseña Aspel',inp('ealPassAspel','text','',insc.contrasena_aspel||''))}
+    </div>
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin:12px 0 8px;">VIGENCIA DE LABORATORIO Y SESIÓN PRIVADA (24/7, Plus/Premium — dejar en blanco si es Esencial o no aplica)</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+      ${fld('Fecha de compra / inicio',`<input id="ealFechaCompra" type="date" value="${insc.fecha_inicio_laboratorio||''}" onchange="academiaSugerirVigenciaIndividual('ealFechaCompra','ealFechaFinLab','ealFechaFinSesion',${diasLabSugerido})">`)}
+      ${fld(`Fin de acceso a laboratorio (sugerido: +${diasLabSugerido} días)`,`<input id="ealFechaFinLab" type="date" value="${insc.fecha_fin_laboratorio||''}" oninput="this.dataset.tocado='1'" data-tocado="${insc.fecha_fin_laboratorio?'1':''}">`)}
+      ${fld('Fin de sesión privada con Karen (sugerido: +90 días)',`<input id="ealFechaFinSesion" type="date" value="${insc.fecha_fin_sesion_privada||''}" oninput="this.dataset.tocado='1'" data-tocado="${insc.fecha_fin_sesion_privada?'1':''}">`)}
     </div>`;
   mkModal('modalEditarAccesoLab','Editar acceso al laboratorio virtual',html,`academiaGuardarAccesoLab('${inscripcionId}')`,'Guardar',true);
 }
@@ -1571,6 +1631,9 @@ async function academiaGuardarAccesoLab(inscripcionId){
     empresa_aspel:document.getElementById('ealEmpresaAspel')?.value?.trim()||null,
     usuario_aspel:document.getElementById('ealUsuarioAspel')?.value?.trim()||null,
     contrasena_aspel:document.getElementById('ealPassAspel')?.value?.trim()||null,
+    fecha_inicio_laboratorio:document.getElementById('ealFechaCompra')?.value||null,
+    fecha_fin_laboratorio:document.getElementById('ealFechaFinLab')?.value||null,
+    fecha_fin_sesion_privada:document.getElementById('ealFechaFinSesion')?.value||null,
   }).eq('id',inscripcionId);
   if(error){alert('Error al guardar: '+error.message);return;}
   document.getElementById('modalEditarAccesoLab')?.remove();
