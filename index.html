@@ -760,12 +760,18 @@ function buildMesaControlUI(){
 // ══════════════════════════════════════════════════════════════════════════════
 const ACADEMIA_SUBTABS=[
   {id:'generaciones',label:'🎓 Generaciones'},
+  {id:'asistentes',label:'👤 Asistentes'},
   {id:'practicas',label:'🧪 Prácticas'},
   {id:'constancias',label:'📜 Constancias'},
 ];
 let currentAcademiaTab='generaciones';
 let academiaGeneracionSel=null; // id de generación activa dentro de Generaciones/Prácticas
 let academiaGenFiltro={q:'',sistema:'',tipoCurso:''};
+// Catálogo de Asistentes (Lote 10): un expediente por PERSONA, no por
+// inscripción — Jp: "cuando me aparezca en la lista de asistentes solamente
+// me va a aparecer un solo Marco Antonio y que asistió a los dos [cursos]".
+let academiaAsistFiltro={q:''};
+let academiaConstFiltro={q:''};
 // Categorías combinadas de curso para el filtro de Generaciones (Jp, Lote 4
 // punto 29): tipo/modalidad por separado no correspondían a como Jp piensa
 // los cursos ("diplomado en vivo", "diplomado 24/7", etc.) — se combinan
@@ -813,6 +819,7 @@ function swAcademia(tab){
 }
 function renderAcademiaTab(){
   if(currentAcademiaTab==='generaciones') renderAcademiaGeneraciones();
+  else if(currentAcademiaTab==='asistentes') renderAcademiaAsistentes();
   else if(currentAcademiaTab==='practicas') renderAcademiaPracticasHome();
   else if(currentAcademiaTab==='constancias') renderAcademiaConstancias();
 }
@@ -1397,13 +1404,13 @@ async function academiaGuardarNuevoAsistente(generacionId){
   const {data:clienteId,error:errCliente}=await sb.rpc('academia_find_or_create_cliente',{p_razon_social:empresa});
   if(errCliente){alert('Error al buscar/crear la cuenta en Cartera: '+errCliente.message);return;}
 
-  const {data:participante,error:errPart}=await sb.from('academia_participantes').insert({
-    nombre,
-    mail:document.getElementById('naMail')?.value?.trim()||null,
-    telefono:document.getElementById('naTelefono')?.value?.trim()||null,
-    cliente_cartera_id:clienteId,
-  }).select().single();
-  if(errPart){alert('Error al crear el participante: '+errPart.message);return;}
+  const {data:participanteId,error:errPart}=await sb.rpc('academia_find_or_create_participante',{
+    p_nombre:nombre,
+    p_mail:document.getElementById('naMail')?.value?.trim()||null,
+    p_telefono:document.getElementById('naTelefono')?.value?.trim()||null,
+    p_cliente_id:clienteId,
+  });
+  if(errPart){alert('Error al buscar/crear el participante: '+errPart.message);return;}
 
   const {data:folio,error:errFolio}=await sb.rpc('academia_generar_folio',{
     p_sistema:prefijo, p_generacion:gen?.clave, p_acceso:academiaAccesoLetra(nivelAcceso),
@@ -1411,7 +1418,7 @@ async function academiaGuardarNuevoAsistente(generacionId){
   if(errFolio){alert('El participante se creó pero no se pudo generar el folio: '+errFolio.message+'. Puedes reintentar dando de alta la inscripción a mano.');return;}
 
   const {error:errInsc}=await sb.from('academia_inscripciones').insert({
-    participante_id:participante.id,
+    participante_id:participanteId,
     generacion_id:generacionId,
     nivel_acceso:nivelAcceso,
     tipo:document.getElementById('naTipo')?.value||'entero',
@@ -1798,20 +1805,46 @@ async function renderAcademiaConstancias(){
     .select('*,inscripcion:inscripcion_id(folio,participante:participante_id(nombre),generacion:generacion_id(clave,curso:curso_id(nombre,sistema:sistema_id(clave))))')
     .order('created_at',{ascending:false});
   if(error){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error: ${error.message}</div>`;return;}
-  const esDirector=userProfile?.rol==='director';
+  window._academiaCache.constancias=constancias||[];
 
   mc.innerHTML=`
-  <div style="margin-bottom:16px;">
-    <div style="font-size:18px;font-weight:600;color:var(--text);">Constancias emitidas</div>
-    <div style="font-size:12px;color:var(--text3);">${(constancias||[]).length} constancias.</div>
+  <div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+    <div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);">Constancias emitidas</div>
+      <div id="academiaConstConteo" style="font-size:12px;color:var(--text3);"></div>
+    </div>
+    <input id="academiaConstBuscar" type="text" placeholder="Buscar por asistente o curso..." value="${academiaConstFiltro.q}"
+      style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;min-width:260px;"
+      oninput="academiaConstFiltro.q=this.value;academiaPintarConstancias();">
   </div>
+  <div id="academiaConstContenido"></div>`;
+  academiaPintarConstancias();
+}
+
+function academiaPintarConstancias(){
+  const cont=document.getElementById('academiaConstContenido');
+  const conteo=document.getElementById('academiaConstConteo');
+  if(!cont) return;
+  const esDirector=userProfile?.rol==='director';
+  const q=(academiaConstFiltro.q||'').trim().toLowerCase();
+  const todas=window._academiaCache.constancias||[];
+  const constancias=q?todas.filter(c=>{
+    const asistente=(c.inscripcion?.participante?.nombre||'').toLowerCase();
+    const curso=(c.inscripcion?.generacion?.curso?.nombre||'').toLowerCase();
+    const sistema=(c.inscripcion?.generacion?.curso?.sistema?.clave||'').toLowerCase();
+    const clave=(c.inscripcion?.generacion?.clave||'').toLowerCase();
+    return asistente.includes(q)||curso.includes(q)||sistema.includes(q)||clave.includes(q)||(c.folio||'').toLowerCase().includes(q);
+  }):todas;
+  if(conteo) conteo.textContent=`${constancias.length} de ${todas.length} constancias.`;
+
+  cont.innerHTML=`
   <div class="card" style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
       <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;">
         <th style="padding:10px 12px;">Folio</th><th>Asistente</th><th>Curso</th><th>Tipo</th><th>Emisión</th><th>Estatus</th><th></th>
       </tr></thead>
       <tbody>
-        ${(constancias||[]).map(c=>`
+        ${constancias.map(c=>`
         <tr>
           <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${c.folio}</td>
           <td>${c.inscripcion?.participante?.nombre||'—'}</td>
@@ -1823,7 +1856,122 @@ async function renderAcademiaConstancias(){
             ${c.pdf_path?`<button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">PDF</button>`:`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaRegenerarPDF('${c.id}')">Regenerar</button>`}
             ${esDirector?`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaEliminarConstancia('${c.id}','${c.inscripcion_id}')">Eliminar</button>`:''}
           </td>
-        </tr>`).join('')||'<tr><td colspan="7" style="padding:16px;color:var(--text3);">Aún no hay constancias emitidas.</td></tr>'}
+        </tr>`).join('')||`<tr><td colspan="7" style="padding:16px;color:var(--text3);">${q?'Sin resultados para tu búsqueda.':'Aún no hay constancias emitidas.'}</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+// ── ASISTENTES (Lote 10): un expediente por PERSONA, no por inscripción ────
+// Jp: "cuando me aparezca en la lista de asistentes solamente me va a
+// aparecer un solo Marco Antonio y que asistió a los dos [cursos]".
+async function renderAcademiaAsistentes(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando asistentes...</div>';
+  const {data:asistentes,error}=await sb.from('academia_participantes')
+    .select('*,inscripciones:academia_inscripciones(id,nivel_acceso,generacion:generacion_id(clave,curso:curso_id(nombre,sistema:sistema_id(clave))))')
+    .order('nombre',{ascending:true});
+  if(error){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error: ${error.message}</div>`;return;}
+  window._academiaCache.asistentes=asistentes||[];
+
+  mc.innerHTML=`
+  <div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+    <div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);">Asistentes</div>
+      <div id="academiaAsistConteo" style="font-size:12px;color:var(--text3);"></div>
+    </div>
+    <input id="academiaAsistBuscar" type="text" placeholder="Buscar por nombre, correo, teléfono o folio..." value="${academiaAsistFiltro.q}"
+      style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;min-width:280px;"
+      oninput="academiaAsistFiltro.q=this.value;academiaPintarAsistentes();">
+  </div>
+  <div id="academiaAsistContenido"></div>`;
+  academiaPintarAsistentes();
+}
+
+function academiaPintarAsistentes(){
+  const cont=document.getElementById('academiaAsistContenido');
+  const conteo=document.getElementById('academiaAsistConteo');
+  if(!cont) return;
+  const q=(academiaAsistFiltro.q||'').trim().toLowerCase();
+  const todos=window._academiaCache.asistentes||[];
+  const asistentes=q?todos.filter(a=>{
+    return (a.nombre||'').toLowerCase().includes(q)
+      || (a.mail||'').toLowerCase().includes(q)
+      || (a.telefono||'').toLowerCase().includes(q)
+      || (a.folio_asistente||'').toLowerCase().includes(q);
+  }):todos;
+  if(conteo) conteo.textContent=`${asistentes.length} de ${todos.length} asistentes.`;
+
+  cont.innerHTML=`
+  <div class="card" style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;">
+        <th style="padding:10px 12px;">Folio</th><th>Nombre</th><th>Correo</th><th>Teléfono</th><th>Cursos</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${asistentes.map(a=>{
+          const cursos=(a.inscripciones||[]);
+          const resumen=cursos.map(i=>`${i.generacion?.curso?.sistema?.clave||''} ${i.generacion?.curso?.nombre||''}`.trim()).join(' · ');
+          return `
+        <tr>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${a.folio_asistente||'—'}</td>
+          <td>${a.nombre||'—'}</td>
+          <td>${a.mail||'—'}</td>
+          <td>${a.telefono||'—'}</td>
+          <td style="max-width:320px;font-size:12px;color:var(--text3);" title="${resumen.replace(/"/g,'&quot;')}">${cursos.length} curso${cursos.length===1?'':'s'}${cursos.length?' · '+resumen.slice(0,60)+(resumen.length>60?'…':''):''}</td>
+          <td style="text-align:right;"><button class="cartera-subtab" onclick="academiaVerAsistente('${a.id}')">Ver expediente</button></td>
+        </tr>`;}).join('')||`<tr><td colspan="6" style="padding:16px;color:var(--text3);">${q?'Sin resultados para tu búsqueda.':'Aún no hay asistentes registrados.'}</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+async function academiaVerAsistente(participanteId){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando expediente...</div>';
+  const {data:a,error}=await sb.from('academia_participantes')
+    .select('*,cliente:cliente_cartera_id(razon_social,num_cliente),inscripciones:academia_inscripciones(*,generacion:generacion_id(*,curso:curso_id(*,sistema:sistema_id(*))),constancias:academia_constancias(id,folio,tipo,fecha_emision,pdf_path,estatus))')
+    .eq('id',participanteId).single();
+  if(error||!a){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error: ${error?.message||'no encontrado'}</div>`;return;}
+
+  const inscripciones=a.inscripciones||[];
+
+  mc.innerHTML=`
+  <button class="cartera-subtab" onclick="swAcademia('asistentes')">← Volver a Asistentes</button>
+  <div class="card" style="margin-top:12px;padding:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
+      <div>
+        <div style="font-size:18px;font-weight:600;color:var(--text);">${a.nombre||'—'}</div>
+        <div style="font-size:12px;color:var(--text3);margin-top:2px;">${a.mail||'—'} · ${a.telefono||'—'}</div>
+        ${a.cliente?.razon_social?`<div style="font-size:12px;color:var(--text3);margin-top:2px;">Cuenta: ${a.cliente.razon_social}</div>`:''}
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:10px;color:var(--text3);">Folio de asistente</div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:600;">${a.folio_asistente||'—'}</div>
+      </div>
+    </div>
+  </div>
+  <div style="font-size:14px;font-weight:600;color:var(--text);margin:16px 0 8px;">Capacitaciones (${inscripciones.length})</div>
+  <div class="card" style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;">
+        <th style="padding:10px 12px;">Curso</th><th>Generación</th><th>Acceso</th><th>Folio de inscripción</th><th>Constancias</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${inscripciones.map(i=>{
+          const constancias=i.constancias||[];
+          return `
+        <tr>
+          <td>${i.generacion?.curso?.sistema?.clave||''} ${i.generacion?.curso?.nombre||''}</td>
+          <td>${i.generacion?.clave||'—'}</td>
+          <td style="text-transform:capitalize;">${i.nivel_acceso||'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${i.folio||'—'}</td>
+          <td>${constancias.length?constancias.map(c=>`<span style="text-transform:capitalize;">${c.tipo}</span> (${c.fecha_emision})`).join(', '):'<span style="color:var(--text3);">Sin emitir</span>'}</td>
+          <td style="text-align:right;white-space:nowrap;">
+            <button class="cartera-subtab" onclick="academiaVerFicha('${i.id}')">Ver ficha</button>
+            ${constancias.filter(c=>c.pdf_path).map(c=>`<button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">PDF</button>`).join('')}
+          </td>
+        </tr>`;}).join('')||'<tr><td colspan="6" style="padding:16px;color:var(--text3);">Sin inscripciones.</td></tr>'}
       </tbody>
     </table>
   </div>`;
@@ -1835,7 +1983,7 @@ const ACADEMIA_TIPO_TITULO={
   aprobacion:'CONSTANCIA DE APROBACIÓN',
   acreditacion:'CONSTANCIA DE ACREDITACIÓN',
 };
-const ACADEMIA_VERIFICAR_URL='https://innovaci.com.mx/verificar.html'; // AJUSTAR al dominio real antes de producción
+const ACADEMIA_VERIFICAR_URL='https://innovaci-app.vercel.app/verificar.html';
 
 // Color de acento por sistema en la constancia (Jp, 2026-08-28): "vivos" —
 // líneas, círculos, ribbon y título del curso toman este color; el resto
