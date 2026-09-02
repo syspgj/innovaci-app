@@ -762,12 +762,13 @@ function buildMesaControlUI(){
 // ACADEMIA VIEW — piloto NOI 11.GMAY26 / COI 11.GMAY26 (constancias con QR)
 // ══════════════════════════════════════════════════════════════════════════════
 const ACADEMIA_SUBTABS=[
+  {id:'dashboard',label:'📊 Resumen'},
   {id:'generaciones',label:'🎓 Generaciones'},
   {id:'asistentes',label:'👤 Asistentes'},
   {id:'practicas',label:'🧪 Prácticas'},
   {id:'constancias',label:'📜 Constancias'},
 ];
-let currentAcademiaTab='generaciones';
+let currentAcademiaTab='dashboard';
 let academiaGeneracionSel=null; // id de generación activa dentro de Generaciones/Prácticas
 let academiaGenFiltro={q:'',sistema:'',tipoCurso:''};
 // Catálogo de Asistentes (Lote 10): un expediente por PERSONA, no por
@@ -821,10 +822,129 @@ function swAcademia(tab){
   renderAcademiaTab();
 }
 function renderAcademiaTab(){
-  if(currentAcademiaTab==='generaciones') renderAcademiaGeneraciones();
+  if(currentAcademiaTab==='dashboard') renderAcademiaDashboard();
+  else if(currentAcademiaTab==='generaciones') renderAcademiaGeneraciones();
   else if(currentAcademiaTab==='asistentes') renderAcademiaAsistentes();
   else if(currentAcademiaTab==='practicas') renderAcademiaPracticasHome();
   else if(currentAcademiaTab==='constancias') renderAcademiaConstancias();
+}
+
+// ── DASHBOARD (Jp, 2026-09-02): panorama rápido de qué está activo y qué se
+// vence pronto, sin tener que entrar generación por generación. "Activo" para
+// un curso empresarial/24_7 significa que tiene al menos una inscripción cuyo
+// período de prácticas no está vencido (vigente o por vencer) — así deja de
+// aparecer solo cuando ya no le queda nadie con acceso corriendo.
+async function renderAcademiaDashboard(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando resumen...</div>';
+
+  const [{data:generaciones,error:errG},{data:inscripciones,error:errI}]=await Promise.all([
+    sb.from('academia_generaciones').select('*,curso:curso_id(id,nombre,tipo,modalidad,ventana_practicas_dias,practicas_extension_dias,sistema:sistema_id(clave,nombre))').order('clave'),
+    sb.from('academia_inscripciones').select('id,generacion_id,practicas_extension,fecha_fin_laboratorio,participante:participante_id(nombre)'),
+  ]);
+  if(errG||errI){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error cargando el resumen: ${(errG||errI).message}</div>`;return;}
+  window._academiaCache.generaciones=generaciones||[];
+
+  const gensById={};
+  (generaciones||[]).forEach(g=>gensById[g.id]=g);
+
+  // Vigencia de cada inscripción + a qué generación/curso pertenece
+  const filas=(inscripciones||[]).map(insc=>{
+    const gen=gensById[insc.generacion_id];
+    return {insc,gen,vig:gen?academiaVigenciaInfo(gen,insc):null};
+  }).filter(f=>f.gen);
+
+  // ── Cursos activos por categoría (empresariales y 24/7) ──
+  function generacionesActivasDe(keys){
+    return (generaciones||[]).filter(g=>{
+      const cat=academiaCategoriaCurso(g.curso);
+      if(!cat||!keys.includes(cat.key)) return false;
+      const suyas=filas.filter(f=>f.gen.id===g.id);
+      if(!suyas.length) return true; // sin inscripciones aún: se muestra como activa (recién dada de alta)
+      return suyas.some(f=>!f.vig||f.vig.estado!=='vencido');
+    });
+  }
+  const empresarialesActivos=generacionesActivasDe(['empresarial']);
+  const veinticuatro7Activos=generacionesActivasDe(['taller_247','diplomado_247']);
+
+  function tarjetaCurso(g){
+    const ac=academiaAccent(g.curso?.sistema?.clave);
+    const suyas=filas.filter(f=>f.gen.id===g.id);
+    const total=suyas.length;
+    const vencidos=suyas.filter(f=>f.vig?.estado==='vencido').length;
+    return `<div class="card" style="padding:14px 16px;border-left:3px solid ${ac.c};">
+      <div style="font-size:11px;font-weight:700;color:${ac.c};text-transform:uppercase;letter-spacing:.04em;">${g.curso?.sistema?.clave||''} · ${g.clave}</div>
+      <div style="font-size:14px;font-weight:600;color:var(--navy);margin:2px 0 6px;">${g.curso?.nombre||''}</div>
+      <div style="font-size:12px;color:var(--text2);">${total} participante${total===1?'':'s'}${total?` · ${total-vencidos} activo${total-vencidos===1?'':'s'}`:''}</div>
+    </div>`;
+  }
+
+  // ── Próximos vencimientos ──
+  // Por generación: diplomados/talleres con fecha compartida de fin de prácticas
+  // (no tienen fecha_fin_laboratorio individual por inscripción).
+  const vencGeneracion=(generaciones||[]).map(g=>({g,vig:academiaVigenciaInfo(g,null)}))
+    .filter(x=>x.vig && (x.vig.estado==='vencido'||x.vig.estado==='por_vencer'))
+    .sort((a,b)=>a.vig.diasRestantes-b.vig.diasRestantes);
+  // Por individual: inscripciones con su propia fecha de fin de laboratorio (24/7, desde cero, etc.)
+  const vencIndividual=filas.filter(f=>f.insc.fecha_fin_laboratorio && f.vig && (f.vig.estado==='vencido'||f.vig.estado==='por_vencer'))
+    .sort((a,b)=>a.vig.diasRestantes-b.vig.diasRestantes);
+
+  function filaVencGeneracion(x){
+    const ac=academiaAccent(x.g.curso?.sistema?.clave);
+    return `<tr style="border-top:1px solid var(--border);cursor:pointer;" onclick="academiaVerGeneracion('${x.g.id}')">
+      <td style="padding:10px 12px;"><span style="color:${ac.c};font-weight:700;">${x.g.curso?.sistema?.clave||''}</span></td>
+      <td>${x.g.curso?.nombre||''} · ${x.g.clave}</td>
+      <td>${academiaVigenciaBadge(x.vig)}</td>
+    </tr>`;
+  }
+  function filaVencIndividual(f){
+    const ac=academiaAccent(f.gen.curso?.sistema?.clave);
+    return `<tr style="border-top:1px solid var(--border);">
+      <td style="padding:10px 12px;">${f.insc.participante?.nombre||'—'}</td>
+      <td><span style="color:${ac.c};font-weight:700;">${f.gen.curso?.sistema?.clave||''}</span> ${f.gen.curso?.nombre||''} · ${f.gen.clave}</td>
+      <td>${academiaVigenciaBadge(f.vig)}</td>
+    </tr>`;
+  }
+
+  mc.innerHTML=`
+  <div style="margin-bottom:16px;">
+    <div style="font-size:18px;font-weight:600;color:var(--text);">Resumen de Academia</div>
+    <div style="font-size:12px;color:var(--text3);">Cursos activos y próximos vencimientos de prácticas.</div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;">
+    <div>
+      <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">Cursos empresariales activos (${empresarialesActivos.length})</div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        ${empresarialesActivos.map(tarjetaCurso).join('')||'<div style="font-size:12px;color:var(--text3);">Ninguno activo por ahora.</div>'}
+      </div>
+    </div>
+    <div>
+      <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">Cursos 24/7 activos (${veinticuatro7Activos.length})</div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        ${veinticuatro7Activos.map(tarjetaCurso).join('')||'<div style="font-size:12px;color:var(--text3);">Ninguno activo por ahora.</div>'}
+      </div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+    <div>
+      <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">Próximos vencimientos por generación (${vencGeneracion.length})</div>
+      <div class="card" style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;"><th style="padding:8px 12px;">Sistema</th><th>Generación</th><th>Vence</th></tr></thead>
+          <tbody>${vencGeneracion.map(filaVencGeneracion).join('')||'<tr><td colspan="3" style="padding:14px;color:var(--text3);">Sin vencimientos próximos.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+    <div>
+      <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">Próximos vencimientos individuales (${vencIndividual.length})</div>
+      <div class="card" style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;"><th style="padding:8px 12px;">Participante</th><th>Curso</th><th>Vence</th></tr></thead>
+          <tbody>${vencIndividual.map(filaVencIndividual).join('')||'<tr><td colspan="3" style="padding:14px;color:var(--text3);">Sin vencimientos próximos.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>`;
 }
 
 // ── Utilidades ───────────────────────────────────────────────────────────────
@@ -843,7 +963,7 @@ function academiaBarraProgreso(pct,color){
   const p=Math.max(0,Math.min(100,Math.round((pct||0)*100)));
   return `<div style="height:6px;border-radius:3px;background:#eee;overflow:hidden;"><div style="height:100%;width:${p}%;background:${color||'var(--teal)'};transition:width .3s;"></div></div>`;
 }
-const ACADEMIA_VIGENCIA_ALERTA_DIAS=7; // días antes del vencimiento para marcar en rojo
+const ACADEMIA_VIGENCIA_ALERTA_DIAS=3; // días antes del vencimiento para marcar en naranja ("por vencer")
 // Vigencia de prácticas: preferentemente se captura por GENERACIÓN, como fecha
 // explícita (fecha_limite_practicas / fecha_limite_practicas_extension — Jp,
 // 2026-08-31, sugeridas en automático al capturar fecha_fin pero editables a
@@ -896,7 +1016,8 @@ function academiaVigenciaSimple(fechaStr){
 }
 function academiaVigenciaBadge(info){
   if(!info) return '<span style="color:var(--text3);">—</span>';
-  const colores={vigente:'var(--green)',por_vencer:'var(--red)',vencido:'var(--red)'};
+  // Rojo = vencido, naranja = por vencer (dentro de ACADEMIA_VIGENCIA_ALERTA_DIAS días), verde = vigente (Jp, 2026-09-02).
+  const colores={vigente:'var(--green)',por_vencer:'var(--gold)',vencido:'var(--red)'};
   const etiquetas={vigente:'Vigente',por_vencer:'Por vencer',vencido:'Vencido'};
   return `<span style="color:${colores[info.estado]};font-weight:${info.estado==='vigente'?400:700};">${info.fecha} · ${etiquetas[info.estado]}</span>`;
 }
