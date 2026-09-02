@@ -770,7 +770,7 @@ const ACADEMIA_SUBTABS=[
 ];
 let currentAcademiaTab='dashboard';
 let academiaGeneracionSel=null; // id de generación activa dentro de Generaciones/Prácticas
-let academiaGenFiltro={q:'',sistema:'',tipoCurso:''};
+let academiaGenFiltro={q:'',sistema:'',tipoCurso:'',archivadas:false};
 // Catálogo de Asistentes (Lote 10): un expediente por PERSONA, no por
 // inscripción — Jp: "cuando me aparezca en la lista de asistentes solamente
 // me va a aparecer un solo Marco Antonio y que asistió a los dos [cursos]".
@@ -792,7 +792,7 @@ function academiaCategoriaCurso(curso){
   return ACADEMIA_CATEGORIAS_CURSO.find(cat=>cat.match(curso))||null;
 }
 let academiaGenVista='grid'; // 'grid' | 'lista'
-let academiaPartFiltro={q:'',acceso:'',constancia:'',vigencia:''};
+let academiaPartFiltro={q:'',acceso:'',constancia:'',vigencia:'',archivados:false};
 let academiaPartSort={col:'folio',dir:'asc'};
 window._academiaCache={};
 
@@ -840,7 +840,7 @@ async function renderAcademiaDashboard(){
 
   const [{data:generaciones,error:errG},{data:inscripciones,error:errI}]=await Promise.all([
     sb.from('academia_generaciones').select('*,curso:curso_id(id,nombre,tipo,modalidad,ventana_practicas_dias,practicas_extension_dias,sistema:sistema_id(clave,nombre))').order('clave'),
-    sb.from('academia_inscripciones').select('id,generacion_id,practicas_extension,fecha_fin_laboratorio,participante:participante_id(nombre)'),
+    sb.from('academia_inscripciones').select('id,generacion_id,practicas_extension,fecha_fin_laboratorio,participante:participante_id(nombre),constancias:academia_constancias(enviada)'),
   ]);
   if(errG||errI){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error cargando el resumen: ${(errG||errI).message}</div>`;return;}
   window._academiaCache.generaciones=generaciones||[];
@@ -848,19 +848,30 @@ async function renderAcademiaDashboard(){
   const gensById={};
   (generaciones||[]).forEach(g=>gensById[g.id]=g);
 
-  // Vigencia de cada inscripción + a qué generación/curso pertenece
+  // Vigencia de cada inscripción + a qué generación/curso pertenece. Se
+  // excluyen del resumen las que ya están archivadas (constancia enviada) —
+  // Jp, 2026-09-02: en cuanto se le mandó su constancia a alguien, deja de
+  // contar como pendiente/activo en todo el dashboard.
   const filas=(inscripciones||[]).map(insc=>{
     const gen=gensById[insc.generacion_id];
-    return {insc,gen,vig:gen?academiaVigenciaInfo(gen,insc):null};
-  }).filter(f=>f.gen);
+    const archivada=(insc.constancias||[]).some(c=>c.enviada);
+    return {insc,gen,archivada,vig:gen?academiaVigenciaInfo(gen,insc):null};
+  }).filter(f=>f.gen && !f.archivada);
 
   // ── Cursos activos por categoría (empresariales y 24/7) ──
+  // Una generación se considera archivada (ya no "activa") cuando tiene
+  // inscripciones y a TODAS ya se les envió su constancia.
+  function generacionArchivada(g){
+    const todas=(inscripciones||[]).filter(i=>i.generacion_id===g.id);
+    return todas.length>0 && todas.every(i=>(i.constancias||[]).some(c=>c.enviada));
+  }
   function generacionesActivasDe(keys){
     return (generaciones||[]).filter(g=>{
       const cat=academiaCategoriaCurso(g.curso);
       if(!cat||!keys.includes(cat.key)) return false;
+      if(generacionArchivada(g)) return false;
       const suyas=filas.filter(f=>f.gen.id===g.id);
-      if(!suyas.length) return true; // sin inscripciones aún: se muestra como activa (recién dada de alta)
+      if(!suyas.length) return true; // sin inscripciones aún, o todas archivadas ya se filtró arriba: se muestra como activa (recién dada de alta)
       return suyas.some(f=>!f.vig||f.vig.estado!=='vencido');
     });
   }
@@ -875,14 +886,14 @@ async function renderAcademiaDashboard(){
     return `<div class="card" style="padding:14px 16px;border-left:3px solid ${ac.c};">
       <div style="font-size:11px;font-weight:700;color:${ac.c};text-transform:uppercase;letter-spacing:.04em;">${g.curso?.sistema?.clave||''} · ${g.clave}</div>
       <div style="font-size:14px;font-weight:600;color:var(--navy);margin:2px 0 6px;">${g.curso?.nombre||''}</div>
-      <div style="font-size:12px;color:var(--text2);">${total} participante${total===1?'':'s'}${total?` · ${total-vencidos} activo${total-vencidos===1?'':'s'}`:''}</div>
+      <div style="font-size:12px;color:var(--text2);">${total} participante${total===1?'':'s'} pendiente${total===1?'':'s'}${total?` · ${total-vencidos} activo${total-vencidos===1?'':'s'}`:''}</div>
     </div>`;
   }
 
-  // ── Próximos vencimientos ──
+  // ── Próximos vencimientos (ya excluyen lo archivado) ──
   // Por generación: diplomados/talleres con fecha compartida de fin de prácticas
   // (no tienen fecha_fin_laboratorio individual por inscripción).
-  const vencGeneracion=(generaciones||[]).map(g=>({g,vig:academiaVigenciaInfo(g,null)}))
+  const vencGeneracion=(generaciones||[]).filter(g=>!generacionArchivada(g)).map(g=>({g,vig:academiaVigenciaInfo(g,null)}))
     .filter(x=>x.vig && (x.vig.estado==='vencido'||x.vig.estado==='por_vencer'))
     .sort((a,b)=>a.vig.diasRestantes-b.vig.diasRestantes);
   // Por individual: inscripciones con su propia fecha de fin de laboratorio (24/7, desde cero, etc.)
@@ -1037,15 +1048,21 @@ async function renderAcademiaGeneraciones(){
     window._academiaCache.sistemas=sistemas||[];
   }
 
-  // Contar inscripciones por generación
-  const {data:inscripciones}=await sb.from('academia_inscripciones').select('id,generacion_id,nivel_acceso');
+  // Contar inscripciones por generación, y de paso quién ya tiene su
+  // constancia enviada — una generación se considera archivada cuando TODAS
+  // sus inscripciones ya tienen al menos una constancia enviada (Jp, 2026-09-02).
+  const {data:inscripciones}=await sb.from('academia_inscripciones').select('id,generacion_id,nivel_acceso,constancias:academia_constancias(enviada)');
   const conteos={};
+  const archivadas={};
   (inscripciones||[]).forEach(i=>{
-    conteos[i.generacion_id]=conteos[i.generacion_id]||{total:0,esencial:0,plus:0,premium:0};
+    conteos[i.generacion_id]=conteos[i.generacion_id]||{total:0,esencial:0,plus:0,premium:0,enviados:0};
     conteos[i.generacion_id].total++;
     conteos[i.generacion_id][i.nivel_acceso]=(conteos[i.generacion_id][i.nivel_acceso]||0)+1;
+    if((i.constancias||[]).some(c=>c.enviada)) conteos[i.generacion_id].enviados++;
   });
+  Object.keys(conteos).forEach(genId=>{ archivadas[genId]=conteos[genId].total>0 && conteos[genId].enviados===conteos[genId].total; });
   window._academiaCache.generacionesConteos=conteos;
+  window._academiaCache.generacionesArchivadas=archivadas;
 
   mc.innerHTML=`
   <div style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px;">
@@ -1063,6 +1080,7 @@ async function renderAcademiaGeneraciones(){
         <option value="" ${!academiaGenFiltro.tipoCurso?'selected':''}>Tipo de curso: todos</option>
         ${ACADEMIA_CATEGORIAS_CURSO.map(cat=>`<option value="${cat.key}" ${academiaGenFiltro.tipoCurso===cat.key?'selected':''}>${cat.label}</option>`).join('')}
       </select>
+      <button class="cartera-subtab" style="${academiaGenFiltro.archivadas?'background:var(--navy);color:#fff;':''}" title="Generaciones donde ya se le envió su constancia a todos" onclick="academiaGenFiltro.archivadas=!academiaGenFiltro.archivadas;academiaPintarGeneraciones();">🗄 ${academiaGenFiltro.archivadas?'Viendo archivadas':'Ver archivadas'}</button>
       <button class="cartera-subtab" style="${academiaGenVista==='grid'?'background:var(--teal);color:#fff;':''}" onclick="academiaGenVista='grid';academiaPintarGeneraciones();">▦ Tarjetas</button>
       <button class="cartera-subtab" style="${academiaGenVista==='lista'?'background:var(--teal);color:#fff;':''}" onclick="academiaGenVista='lista';academiaPintarGeneraciones();">☰ Lista</button>
       <button class="cartera-subtab" style="background:var(--teal);color:#fff;" onclick="academiaAbrirNuevaGeneracion()">+ Nueva generación</button>
@@ -1077,7 +1095,9 @@ function academiaPintarGeneraciones(){
   if(!cont) return;
   const q=(academiaGenFiltro.q||'').trim().toLowerCase();
   const conteos=window._academiaCache.generacionesConteos||{};
+  const archivadasMap=window._academiaCache.generacionesArchivadas||{};
   const generaciones=(window._academiaCache.generaciones||[]).filter(g=>{
+    if(!!archivadasMap[g.id]!==!!academiaGenFiltro.archivadas) return false;
     if(academiaGenFiltro.sistema && g.curso?.sistema?.clave!==academiaGenFiltro.sistema) return false;
     if(academiaGenFiltro.tipoCurso && academiaCategoriaCurso(g.curso)?.key!==academiaGenFiltro.tipoCurso) return false;
     if(!q) return true;
@@ -1377,7 +1397,7 @@ async function academiaGuardarEditarGeneracion(generacionId,cursoId){
 
 async function academiaVerGeneracion(generacionId){
   academiaGeneracionSel=generacionId;
-  academiaPartFiltro={q:'',acceso:'',constancia:'',vigencia:''};
+  academiaPartFiltro={q:'',acceso:'',constancia:'',vigencia:'',archivados:false};
   academiaPartSort={col:'folio',dir:'asc'};
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando participantes...</div>';
@@ -1391,12 +1411,14 @@ async function academiaVerGeneracion(generacionId){
 
   const ids=(inscripciones||[]).map(i=>i.id);
   let conConstancia=new Set();
+  let enviadaSet=new Set(); // inscripciones cuya constancia ya se le hizo llegar al participante — se archivan (Jp, 2026-09-02)
   if(ids.length){
-    const {data:cs}=await sb.from('academia_constancias').select('inscripcion_id').in('inscripcion_id',ids);
+    const {data:cs}=await sb.from('academia_constancias').select('inscripcion_id,enviada').in('inscripcion_id',ids);
     conConstancia=new Set((cs||[]).map(c=>c.inscripcion_id));
+    enviadaSet=new Set((cs||[]).filter(c=>c.enviada).map(c=>c.inscripcion_id));
   }
 
-  window._academiaCache.participantesGen={generacionId,gen,inscripciones:inscripciones||[],conConstancia};
+  window._academiaCache.participantesGen={generacionId,gen,inscripciones:inscripciones||[],conConstancia,enviadaSet};
   academiaPintarParticipantes();
 }
 
@@ -1409,11 +1431,15 @@ function academiaOrdenarParticipantes(col){
 function academiaPintarParticipantes(){
   const cache=window._academiaCache.participantesGen;
   if(!cache) return;
-  const {gen,inscripciones,conConstancia}=cache;
+  const {gen,inscripciones,conConstancia,enviadaSet}=cache;
   const mc=document.getElementById('mainContent');
 
   const q=(academiaPartFiltro.q||'').trim().toLowerCase();
   let filas=(inscripciones||[]).filter(i=>{
+    // Archivado = ya se le envió su constancia (Jp, 2026-09-02): por default se
+    // ocultan de la lista de pendientes; con el toggle "Ver archivados" se
+    // muestran solo esos.
+    if(!!enviadaSet.has(i.id)!==!!academiaPartFiltro.archivados) return false;
     if(q && !(i.participante?.nombre||'').toLowerCase().includes(q) && !(i.folio||'').toLowerCase().includes(q)) return false;
     if(academiaPartFiltro.acceso && i.nivel_acceso!==academiaPartFiltro.acceso) return false;
     if(academiaPartFiltro.constancia==='si' && !conConstancia.has(i.id)) return false;
@@ -1463,7 +1489,7 @@ function academiaPintarParticipantes(){
       <td style="padding:14px 12px;"><span class="cartera-subtab" style="cursor:default;padding:3px 10px;">${academiaAccesoLabel(i.nivel_acceso)}</span></td>
       <td style="padding:14px 12px;">${academiaPct(pctAsist)}</td>
       <td style="padding:14px 12px;">${pctPracticas==null?'—':academiaPct(pctPracticas)}</td>
-      <td style="padding:14px 12px;">${tieneConstancia?'✅ Sí':'—'}</td>
+      <td style="padding:14px 12px;">${tieneConstancia?(cache.enviadaSet.has(i.id)?'✅ Sí · <span style="color:var(--green);font-weight:700;">enviada</span>':'✅ Sí'):'—'}</td>
       <td style="padding:14px 12px;font-size:12px;">${academiaVigenciaBadge(vig)}</td>
       <td style="padding:14px 12px;">${i.practicas_extension?'✅ Sí':'—'}</td>
       <td style="padding:14px 12px;text-align:right;">
@@ -1499,6 +1525,7 @@ function academiaPintarParticipantes(){
       <option value="por_vencer" ${academiaPartFiltro.vigencia==='por_vencer'?'selected':''}>Por vencer</option>
       <option value="vencido" ${academiaPartFiltro.vigencia==='vencido'?'selected':''}>Vencido</option>
     </select>
+    <button class="cartera-subtab" style="${academiaPartFiltro.archivados?'background:var(--navy);color:#fff;':''}" title="Participantes a quienes ya se les envió su constancia" onclick="academiaPartFiltro.archivados=!academiaPartFiltro.archivados;academiaPintarParticipantes();">🗄 ${academiaPartFiltro.archivados?'Viendo archivados':'Ver archivados'}</button>
   </div>
   <div class="card" style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
@@ -1750,11 +1777,12 @@ async function academiaVerFicha(inscripcionId){
       <div style="margin-top:12px;">
         ${(constancias||[]).map(c=>`
           <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;">
-            <div><b>${c.tipo}</b> · ${c.folio} · ${c.fecha_emision} · ${c.estatus}${!c.pdf_path?' · <span style="color:#c0392b;">sin PDF</span>':''}</div>
+            <div><b>${c.tipo}</b> · ${c.folio} · ${c.fecha_emision} · ${c.estatus}${!c.pdf_path?' · <span style="color:#c0392b;">sin PDF</span>':''}${c.enviada?' · <span style="color:var(--green);font-weight:700;">✓ Enviada'+(c.fecha_envio?' '+new Date(c.fecha_envio).toLocaleDateString():'')+'</span>':''}</div>
             <div style="display:flex;gap:6px;">
               ${c.pdf_path?`<button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">Descargar PDF</button>`:`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaRegenerarPDF('${c.id}')">Regenerar PDF</button>`}
               ${c.pdf_path?`<button class="cartera-subtab" title="Vuelve a generar el PDF y el QR con los datos/URL actuales" onclick="academiaRegenerarPDF('${c.id}')">↻ Actualizar PDF/QR</button>`:''}
               ${c.pdf_path&&telLimpio?`<button class="cartera-subtab" style="background:#25D366;color:#fff;" onclick="academiaEnviarConstanciaWhatsApp('${c.id}')">Enviar por WhatsApp</button>`:''}
+              ${c.enviada?`<button class="cartera-subtab" onclick="academiaToggleEnviada('${c.id}',false,'${inscripcionId}')">Desmarcar enviada</button>`:`<button class="cartera-subtab" onclick="academiaToggleEnviada('${c.id}',true,'${inscripcionId}')">Marcar como enviada</button>`}
               ${esDirector?`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaEliminarConstancia('${c.id}','${inscripcionId}')">Eliminar</button>`:''}
             </div>
           </div>`).join('')||'<div style="font-size:12px;color:var(--text3);">Aún no se ha emitido ninguna constancia.</div>'}
@@ -2012,7 +2040,7 @@ function academiaPintarConstancias(){
   <div class="card" style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:13px;">
       <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;">
-        <th style="padding:10px 12px;">Folio</th><th>Asistente</th><th>Curso</th><th>Tipo</th><th>Emisión</th><th>Estatus</th><th></th>
+        <th style="padding:10px 12px;">Folio</th><th>Asistente</th><th>Curso</th><th>Tipo</th><th>Emisión</th><th>Estatus</th><th>Enviada</th><th></th>
       </tr></thead>
       <tbody>
         ${constancias.map(c=>`
@@ -2023,12 +2051,14 @@ function academiaPintarConstancias(){
           <td style="text-transform:capitalize;">${c.tipo}</td>
           <td>${c.fecha_emision}</td>
           <td>${c.estatus}</td>
+          <td>${c.enviada?'<span style="color:var(--green);font-weight:700;">✓ Sí</span>':'<span style="color:var(--text3);">No</span>'}</td>
           <td style="text-align:right;white-space:nowrap;">
             ${c.pdf_path?`<button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">PDF</button>`:`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaRegenerarPDF('${c.id}')">Regenerar</button>`}
             ${c.pdf_path?`<button class="cartera-subtab" title="Vuelve a generar el PDF y el QR con los datos/URL actuales" onclick="academiaRegenerarPDF('${c.id}')">↻</button>`:''}
+            ${c.enviada?`<button class="cartera-subtab" onclick="academiaToggleEnviada('${c.id}',false,null)">Desmarcar</button>`:`<button class="cartera-subtab" onclick="academiaToggleEnviada('${c.id}',true,null)">Marcar enviada</button>`}
             ${esDirector?`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaEliminarConstancia('${c.id}','${c.inscripcion_id}')">Eliminar</button>`:''}
           </td>
-        </tr>`).join('')||`<tr><td colspan="7" style="padding:16px;color:var(--text3);">${q?'Sin resultados para tu búsqueda.':'Aún no hay constancias emitidas.'}</td></tr>`}
+        </tr>`).join('')||`<tr><td colspan="8" style="padding:16px;color:var(--text3);">${q?'Sin resultados para tu búsqueda.':'Aún no hay constancias emitidas.'}</td></tr>`}
       </tbody>
     </table>
   </div>`;
@@ -2554,6 +2584,21 @@ async function academiaEnviarConstanciaWhatsApp(constanciaId){
   const numero=tel.length===10?'52'+tel:tel;
   const msg=academiaPlantillaConstancia(insc,c,urlData.signedUrl);
   window.open(`https://wa.me/${numero}?text=${encodeURIComponent(msg)}`,'_blank');
+  // Se marca enviada al usar este botón (Jp, 2026-09-02): es la señal para
+  // archivar automáticamente al participante y, cuando todos los de una
+  // generación queden así, a la generación completa. Si el envío no se
+  // concretó, se puede desmarcar con "Desmarcar enviada".
+  await sb.from('academia_constancias').update({enviada:true,fecha_envio:new Date().toISOString()}).eq('id',constanciaId);
+  if(c.inscripcion_id) academiaVerFicha(c.inscripcion_id);
+}
+
+// Marcar/desmarcar manualmente una constancia como enviada — para las que se
+// entregaron por otro medio (correo, en persona) o para corregir un envío
+// por WhatsApp que no se concretó.
+async function academiaToggleEnviada(constanciaId,valor,inscripcionId){
+  const {error}=await sb.from('academia_constancias').update({enviada:valor,fecha_envio:valor?new Date().toISOString():null}).eq('id',constanciaId);
+  if(error){alert('Error al actualizar: '+error.message);return;}
+  if(inscripcionId) academiaVerFicha(inscripcionId); else renderAcademiaConstancias();
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
