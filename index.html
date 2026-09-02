@@ -32,7 +32,7 @@ Minimum version required to store current data is: `+i+`.
 :root{
   --navy:#0D2240;--teal:#00A99D;--teal-bg:rgba(0,169,157,0.1);--teal-b:rgba(0,169,157,0.25);
   --gold:#F5A623;--gold-bg:rgba(245,166,35,0.1);--gold-b:rgba(245,166,35,0.25);
-  --red:#E84040;--red-bg:rgba(232,64,64,0.08);--green:#27AE60;--green-bg:rgba(39,174,96,0.1);
+  --red:#E84040;--red-bg:rgba(232,64,64,0.08);--red-b:rgba(232,64,64,0.25);--green:#27AE60;--green-bg:rgba(39,174,96,0.1);
   --bg:#EEF2F7;--surface:#fff;--surf2:#F7FAFC;
   --text:#0D2240;--text2:#4A6080;--text3:#8BA0B8;
   --border:rgba(13,34,64,0.08);--rad:14px;--radsm:9px;
@@ -831,9 +831,13 @@ function renderAcademiaTab(){
 function academiaAccesoLabel(n){return n==='premium'?'Premium':n==='plus'?'Plus':'Esencial';}
 function academiaAccesoLetra(n){return n==='premium'?'PM':n==='plus'?'P':'E';}
 function academiaPct(v){return v==null?'—':Math.round(v*100)+'%';}
-// NOI se distingue con acento naranja/dorado (color de marca); el resto se queda en teal.
+// NOI se distingue con acento naranja/dorado (color de marca), SAE con rojo
+// (mismo criterio que ya se usa en la constancia — ver ACADEMIA_COLOR_SISTEMA);
+// el resto (COI, etc.) se queda en teal.
 function academiaAccent(sistemaClave){
-  return sistemaClave==='NOI' ? {c:'var(--gold)',bg:'var(--gold-bg)',b:'var(--gold-b)'} : {c:'var(--teal)',bg:'var(--teal-bg)',b:'var(--teal-b)'};
+  if(sistemaClave==='NOI') return {c:'var(--gold)',bg:'var(--gold-bg)',b:'var(--gold-b)'};
+  if(sistemaClave==='SAE') return {c:'var(--red)',bg:'var(--red-bg)',b:'var(--red-b)'};
+  return {c:'var(--teal)',bg:'var(--teal-bg)',b:'var(--teal-b)'};
 }
 function academiaBarraProgreso(pct,color){
   const p=Math.max(0,Math.min(100,Math.round((pct||0)*100)));
@@ -1027,20 +1031,19 @@ async function academiaAbrirNuevaGeneracion(){
   ]);
   window._academiaCache.sistemas=sistemas||[];
   window._academiaCache.cursos=cursos||[];
-  const cursoOpts=(cursos||[]).map(c=>`<option value="${c.id}">${c.nombre}</option>`).join('');
+  const cursoOpts=(cursos||[]).map(c=>`<option value="${c.id}" data-nombre="${(c.nombre||'').replace(/"/g,'&quot;')}" data-tipo="${c.tipo||''}" data-modalidad="${c.modalidad||''}" data-horas="${c.duracion_horas??''}">${c.nombre}</option>`).join('');
   const html=`
-    <div style="margin-bottom:10px;">${fld('Curso',`<select id="genCursoSel" onchange="document.getElementById('genCursoNuevoBox').style.display=this.value==='__nuevo__'?'block':'none'" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;"><option value="">Selecciona un curso...</option>${cursoOpts}<option value="__nuevo__">+ Nuevo curso...</option></select>`)}</div>
+    <div style="margin-bottom:10px;">${fld('Curso',`<select id="genCursoSel" onchange="academiaOnCambioCursoSel(this)" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;"><option value="">Selecciona un curso...</option>${cursoOpts}<option value="__nuevo__">+ Nuevo curso...</option></select>`)}</div>
     <div id="genCursoNuevoBox" style="display:none;background:rgba(0,169,157,0.06);border:1px dashed var(--teal);border-radius:8px;padding:12px;margin-bottom:10px;">
-      <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DEL NUEVO CURSO</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-        ${fld('Sistema',sel('genNuevoCursoSistema',(sistemas||[]).map(s=>s.clave)))}
+      <div id="genCursoBoxTitulo" style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DEL NUEVO CURSO</div>
+      <div id="genCursoSistemaWrap" style="margin-bottom:10px;">${fld('Sistema',sel('genNuevoCursoSistema',(sistemas||[]).map(s=>s.clave)))}</div>
+      <div style="margin-bottom:10px;">${fld('Nombre del curso',inp('genNuevoCursoNombre','text','Ej. DIPLOMADO SIIGO ASPEL NOI 2026'))}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px;">
+        ${fld('Tipo',sel('genNuevoCursoTipo',['diplomado_vip','24_7','empresarial','taller','desde_cero']))}
         ${fld('Modalidad',sel('genNuevoCursoModalidad',['en_vivo','24_7','in_company']))}
       </div>
-      <div style="margin-bottom:10px;">${fld('Nombre del curso',inp('genNuevoCursoNombre','text','Ej. DIPLOMADO SIIGO ASPEL NOI 2026'))}</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-        ${fld('Duración (horas)',inp('genNuevoCursoHoras','number','',''))}
-        ${fld('Tipo',sel('genNuevoCursoTipo',['diplomado_vip','24_7','empresarial','taller','desde_cero']))}
-      </div>
+      <div style="margin-bottom:8px;">${fld('Duración (horas)',inp('genNuevoCursoHoras','number','',''))}</div>
+      <div style="font-size:11px;color:var(--text3);">Tipo + Modalidad determinan la categoría del filtro "Tipo de curso" en Generaciones.</div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Clave de generación',inp('genClave','text','Ej. GMAY26'))}
@@ -1056,6 +1059,34 @@ async function academiaAbrirNuevaGeneracion(){
     </div>
     <div style="margin-bottom:4px;">${fld('Número de prácticas',inp('genPracticas','number','','0'))}</div>`;
   mkModal('modalNuevaGen','Nueva generación',html,'academiaGuardarNuevaGeneracion');
+}
+
+// Al elegir un curso ya existente, muestra el mismo bloque de datos del curso
+// (nombre, tipo, modalidad, horas) precargado, para poder corregirlo ahí mismo
+// sin tener que ir después a "Editar generación" — y al elegir "+ Nuevo curso"
+// lo muestra vacío para capturarlo desde cero.
+function academiaOnCambioCursoSel(selEl){
+  const box=document.getElementById('genCursoNuevoBox');
+  const sistemaWrap=document.getElementById('genCursoSistemaWrap');
+  const titulo=document.getElementById('genCursoBoxTitulo');
+  if(!selEl.value){ box.style.display='none'; return; }
+  box.style.display='block';
+  if(selEl.value==='__nuevo__'){
+    sistemaWrap.style.display='block';
+    titulo.textContent='DATOS DEL NUEVO CURSO';
+    document.getElementById('genNuevoCursoNombre').value='';
+    document.getElementById('genNuevoCursoTipo').value='diplomado_vip';
+    document.getElementById('genNuevoCursoModalidad').value='en_vivo';
+    document.getElementById('genNuevoCursoHoras').value='';
+  } else {
+    const opt=selEl.selectedOptions[0];
+    sistemaWrap.style.display='none';
+    titulo.textContent='DATOS DEL CURSO (ajusta tipo/modalidad si hace falta)';
+    document.getElementById('genNuevoCursoNombre').value=opt.dataset.nombre||'';
+    document.getElementById('genNuevoCursoTipo').value=opt.dataset.tipo||'diplomado_vip';
+    document.getElementById('genNuevoCursoModalidad').value=opt.dataset.modalidad||'en_vivo';
+    document.getElementById('genNuevoCursoHoras').value=opt.dataset.horas||'';
+  }
 }
 
 async function academiaGuardarNuevaGeneracion(){
@@ -1080,6 +1111,16 @@ async function academiaGuardarNuevaGeneracion(){
     }).select().single();
     if(errCurso){alert('Error al crear el curso: '+errCurso.message);return;}
     cursoId=nuevoCurso.id;
+  } else {
+    // Curso existente: guarda también cualquier ajuste de nombre/tipo/modalidad/horas
+    // hecho en el bloque "DATOS DEL CURSO" de este mismo modal.
+    const {error:errUpd}=await sb.from('academia_cursos').update({
+      nombre:document.getElementById('genNuevoCursoNombre')?.value?.trim(),
+      tipo:document.getElementById('genNuevoCursoTipo')?.value,
+      modalidad:document.getElementById('genNuevoCursoModalidad')?.value,
+      duracion_horas:parseFloat(document.getElementById('genNuevoCursoHoras')?.value)||null,
+    }).eq('id',cursoSel);
+    if(errUpd){alert('Error al actualizar el curso: '+errUpd.message);return;}
   }
 
   const {error}=await sb.from('academia_generaciones').insert({
@@ -1155,11 +1196,14 @@ async function academiaAbrirEditarGeneracion(generacionId){
   if(error||!g){alert('No se pudo cargar la generación: '+(error?.message||''));return;}
   const c=g.curso||{};
   const html=`
-    <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DEL CURSO (${c.nombre||''})</div>
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DEL CURSO</div>
+    <div style="margin-bottom:10px;">${fld('Nombre del curso / generación',inp('egNombreCurso','text','',c.nombre||''))}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Tipo',sel('egTipo',['diplomado_vip','24_7','empresarial','taller','desde_cero'],c.tipo))}
       ${fld('Modalidad',sel('egModalidad',['en_vivo','24_7','in_company'],c.modalidad))}
-      ${fld('Duración (horas)',inp('egHoras','number','',c.duracion_horas??''))}
     </div>
+    <div style="margin-bottom:10px;">${fld('Duración (horas)',inp('egHoras','number','',c.duracion_horas??''))}</div>
+    <div style="font-size:11px;color:var(--text3);margin:-4px 0 10px;">Tipo + Modalidad determinan la categoría que se usa en el filtro de "Tipo de curso" de Generaciones (ej. Tipo=taller + Modalidad=24_7 → "Talleres de especialización 24/7").</div>
     <div style="margin-bottom:10px;">${fld('Descripción (aparece debajo del nombre del curso en la constancia)',`<textarea id="egDescripcion" rows="2" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${c.descripcion||''}</textarea>`)}</div>
     <div style="margin-bottom:14px;">${fld('Competencias desarrolladas (una por línea)',`<textarea id="egCompetencias" rows="4" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${(c.competencias||[]).join('\n')}</textarea>`)}</div>
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DE LA GENERACIÓN (${g.clave||''})</div>
@@ -1185,6 +1229,8 @@ async function academiaAbrirEditarGeneracion(generacionId){
 async function academiaGuardarEditarGeneracion(generacionId,cursoId){
   const competencias=(document.getElementById('egCompetencias')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean);
   const {error:errCurso}=await sb.from('academia_cursos').update({
+    nombre:document.getElementById('egNombreCurso')?.value?.trim(),
+    tipo:document.getElementById('egTipo')?.value,
     modalidad:document.getElementById('egModalidad')?.value,
     duracion_horas:parseFloat(document.getElementById('egHoras')?.value)||null,
     descripcion:document.getElementById('egDescripcion')?.value?.trim()||null,
@@ -1586,6 +1632,7 @@ async function academiaVerFicha(inscripcionId){
             <div><b>${c.tipo}</b> · ${c.folio} · ${c.fecha_emision} · ${c.estatus}${!c.pdf_path?' · <span style="color:#c0392b;">sin PDF</span>':''}</div>
             <div style="display:flex;gap:6px;">
               ${c.pdf_path?`<button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">Descargar PDF</button>`:`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaRegenerarPDF('${c.id}')">Regenerar PDF</button>`}
+              ${c.pdf_path?`<button class="cartera-subtab" title="Vuelve a generar el PDF y el QR con los datos/URL actuales" onclick="academiaRegenerarPDF('${c.id}')">↻ Actualizar PDF/QR</button>`:''}
               ${c.pdf_path&&telLimpio?`<button class="cartera-subtab" style="background:#25D366;color:#fff;" onclick="academiaEnviarConstanciaWhatsApp('${c.id}')">Enviar por WhatsApp</button>`:''}
               ${esDirector?`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaEliminarConstancia('${c.id}','${inscripcionId}')">Eliminar</button>`:''}
             </div>
@@ -1857,6 +1904,7 @@ function academiaPintarConstancias(){
           <td>${c.estatus}</td>
           <td style="text-align:right;white-space:nowrap;">
             ${c.pdf_path?`<button class="cartera-subtab" onclick="academiaDescargarConstancia('${c.id}')">PDF</button>`:`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaRegenerarPDF('${c.id}')">Regenerar</button>`}
+            ${c.pdf_path?`<button class="cartera-subtab" title="Vuelve a generar el PDF y el QR con los datos/URL actuales" onclick="academiaRegenerarPDF('${c.id}')">↻</button>`:''}
             ${esDirector?`<button class="cartera-subtab" style="color:#c0392b;" onclick="academiaEliminarConstancia('${c.id}','${c.inscripcion_id}')">Eliminar</button>`:''}
           </td>
         </tr>`).join('')||`<tr><td colspan="7" style="padding:16px;color:var(--text3);">${q?'Sin resultados para tu búsqueda.':'Aún no hay constancias emitidas.'}</td></tr>`}
