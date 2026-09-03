@@ -2732,39 +2732,48 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
   doc.line(pw/2-38,y,pw/2-6,y); doc.line(pw/2+6,y,pw/2+38,y);
   doc.setFillColor(...accent); doc.circle(pw/2,y,1.1,'F');
 
-  y+=7;
+  y+=6;
   doc.setFontSize(10); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
   doc.text('Se otorga la presente a:', pw/2, y, {align:'center'});
 
-  y+=10.5;
+  y+=9.5;
   doc.setFontSize(22); doc.setFont(undefined,'bold'); doc.setTextColor(...navy);
   doc.text(insc.participante?.nombre||'', pw/2, y, {align:'center'});
 
-  y+=8;
+  y+=7;
   doc.setFontSize(10.5); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
   const verbo=constancia.tipo==='acreditacion'?'Por haber acreditado satisfactoriamente el programa de capacitación:':(constancia.tipo==='aprobacion'?'Por haber aprobado el programa de capacitación:':'Por su participación en el programa de capacitación:');
   doc.text(verbo, pw/2, y, {align:'center'});
 
-  y+=8.5;
+  y+=7.5;
   doc.setFontSize(16); doc.setFont(undefined,'bold'); doc.setTextColor(...accent);
   doc.text(insc.generacion?.curso?.nombre||'', pw/2, y, {align:'center'});
 
   // ── Subtítulo / descripción del curso (del mockup de referencia) ──────────
+  // (Espaciado ligeramente más compacto que antes — Jp, 2026-09-03: se
+  // liberó espacio vertical para que las competencias, movidas debajo de la
+  // franja de datos, siempre quepan en la página sin encimarse con el pie.)
   const descripcionCurso=insc.generacion?.curso?.descripcion;
   if(descripcionCurso){
-    y+=6.5;
+    y+=5.5;
     doc.setFontSize(10); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
     const wrapped=doc.splitTextToSize(descripcionCurso, pw-2*42);
-    wrapped.slice(0,2).forEach((line,i)=>{ doc.text(line, pw/2, y+i*4.6, {align:'center'}); });
-    y+=(Math.min(wrapped.length,2)-1)*4.6;
+    wrapped.slice(0,2).forEach((line,i)=>{ doc.text(line, pw/2, y+i*4, {align:'center'}); });
+    y+=(Math.min(wrapped.length,2)-1)*4;
   }
 
-  // ── Franja de datos: 4 columnas (izquierda) + panel de competencias (der.) ──
-  y+=17;
+  // ── Franja de datos: 4 columnas a todo lo ancho ─────────────────────────
+  // (Antes las competencias vivían en un panel angosto a la derecha de esta
+  // franja, de alto fijo — con texto largo, la 2ª línea de cada competencia
+  // se perdía sin avisar. Jp, 2026-09-03: "se debería ajustar para que salga
+  // en la parte de abajo". Ahora la franja de datos usa todo el ancho y las
+  // competencias se movieron a una sección propia debajo, a dos columnas,
+  // con el texto completo envuelto en tantas líneas como haga falta — ver
+  // más abajo.)
+  y+=12;
   const stripY=y;
   const marginX=20;
-  const compPanelW=78;
-  const dataAreaW=pw-2*marginX-compPanelW-8;
+  const dataAreaW=pw-2*marginX;
   const cols=[
     {label:'MODALIDAD', value: insc.generacion?.curso?.modalidad==='en_vivo'?'En vivo':(insc.generacion?.curso?.modalidad==='24_7'?'24/7':(insc.generacion?.curso?.modalidad||'—')),
      sublabel:'FORMATO', subvalue: insc.generacion?.formato_texto || (insc.generacion?.curso?.modalidad==='en_vivo'?'En vivo':(insc.generacion?.curso?.modalidad==='24_7'?'24/7 · Bajo demanda':'—'))},
@@ -2794,31 +2803,63 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
     subLines.slice(0,2).forEach((ln,li)=>doc.text(ln, ccx, stripY+29.5+li*3.6, {align:'center'}));
   });
 
-  // ── Panel de competencias (columna derecha, lista vertical con checkmarks) ──
-  const competencias=insc.generacion?.curso?.competencias||[];
-  const compPanelX=marginX+dataAreaW+8;
-  const panelTop=stripY-9;
-  const panelBottom=stripY+37;
-  doc.setFillColor(247,250,252);
-  doc.roundedRect(compPanelX,panelTop,compPanelW,panelBottom-panelTop,2,2,'F');
-  doc.setFontSize(7.6); doc.setFont(undefined,'bold'); doc.setTextColor(...accent);
-  doc.text('COMPETENCIAS', compPanelX+6, panelTop+7);
-  doc.text('DESARROLLADAS', compPanelX+6, panelTop+11.5);
-  doc.setFontSize(7.8); doc.setFont(undefined,'normal'); doc.setTextColor(60,68,80);
-  competencias.slice(0,5).forEach((comp,i)=>{
-    const cy=panelTop+18+i*6.2;
-    checkmark(compPanelX+7,cy-1.3,1.1);
-    const lines=doc.splitTextToSize(comp, compPanelW-16);
-    doc.text(lines.slice(0,1), compPanelX+11, cy);
-  });
+  // ── Competencias desarrolladas: sección propia debajo de la franja de
+  // datos, a todo el ancho, 2 columnas. El texto de cada competencia se
+  // envuelve completo (sin recortar a 1 línea, que era el bug que reportó
+  // Jp) — el alto del panel se calcula ANTES de dibujar el fondo, según
+  // cuántas líneas necesite cada una. Si aun así no cabe en el espacio
+  // disponible antes de firmas/QR/pie (curso con muchas competencias muy
+  // largas capturadas), el tamaño de letra/interlineado se reduce un poco
+  // en vez de desbordar la página — nunca se pierde texto.
+  const panelTop=stripY+37+3;
+  const competencias=(insc.generacion?.curso?.competencias||[]).slice(0,6);
+  let panelBottom=panelTop;
+  if(competencias.length){
+    const compColGap=10;
+    const compColW=(dataAreaW-compColGap)/2;
+    const compTextW=compColW-14;
+    const headerH=8, pad=3;
+    // Presupuesto de alto disponible: hasta donde puede llegar panelBottom sin
+    // que firmas+folio+QR+pie se encimen (ver más abajo: firmaLineY=panelBottom+10,
+    // y lo más bajo que dibujamos después es firmaLineY+21.5; -3 de colchón extra).
+    const hardBudget=(ph-6-11-21.5-10-3)-panelTop-headerH-pad;
+    doc.setFontSize(7.8);
+    const compWrapped=competencias.map(c=>doc.splitTextToSize(c,compTextW));
+    const rows=[];
+    for(let i=0;i<compWrapped.length;i+=2) rows.push([compWrapped[i],compWrapped[i+1]]);
+    const bodyHAt=(lh,rg)=>rows.reduce((acc,[izq,der])=>acc+Math.max(izq?.length||0,der?.length||0)*lh+rg,0);
+    let compLineH=3.4, compRowGap=2.0, compFontSize=7.8, scale=1;
+    const naturalBodyH=bodyHAt(compLineH,compRowGap);
+    if(naturalBodyH>hardBudget && hardBudget>0){
+      scale=Math.max(0.68,hardBudget/naturalBodyH);
+      compLineH*=scale; compRowGap*=scale; compFontSize=Math.max(6.2,7.8*scale);
+    }
+    const bodyH=bodyHAt(compLineH,compRowGap);
+    panelBottom=panelTop+headerH+bodyH+pad;
+
+    doc.setFillColor(247,250,252);
+    doc.roundedRect(marginX,panelTop,dataAreaW,panelBottom-panelTop,2,2,'F');
+    doc.setFontSize(8.3); doc.setFont(undefined,'bold'); doc.setTextColor(...accent);
+    doc.text('COMPETENCIAS DESARROLLADAS', marginX+7, panelTop+6.5);
+
+    doc.setFontSize(compFontSize); doc.setFont(undefined,'normal'); doc.setTextColor(60,68,80);
+    let cy=panelTop+headerH+4;
+    const colXIzq=marginX, colXDer=marginX+compColW+compColGap;
+    rows.forEach(([izq,der])=>{
+      const maxLines=Math.max(izq?.length||0,der?.length||0);
+      if(izq){ checkmark(colXIzq+7,cy-1.3,1.1*scale); izq.forEach((ln,li)=>doc.text(ln,colXIzq+11,cy+li*compLineH)); }
+      if(der){ checkmark(colXDer+7,cy-1.3,1.1*scale); der.forEach((ln,li)=>doc.text(ln,colXDer+11,cy+li*compLineH)); }
+      cy+=maxLines*compLineH+compRowGap;
+    });
+  }
 
   // ── Firmas: mismo acomodo aprobado con Jp (folio izq. alineado, firma
   // instructora al centro, firma director y QR sin cambios) — firmaLineY
-  // ahora depende del alto real de la franja/panel (panelBottom+16) en vez
-  // de un valor fijo, así no queda hueco en blanco ni se encima con el
-  // panel de competencias si éste crece (imagen real solo si el nombre del
-  // firmante coincide con una firma que tengamos cargada) ─────────────────
-  const firmaLineY=panelBottom+16;
+  // depende del alto real de la sección de competencias (panelBottom+10),
+  // así no queda hueco en blanco ni se encima con ella si crece (imagen
+  // real solo si el nombre del firmante coincide con una firma que
+  // tengamos cargada) ──────────────────────────────────────────────────
+  const firmaLineY=panelBottom+10;
   const firmaInstructoraImg=ACADEMIA_FIRMAS_IMG[instructor?.nombre];
   const firmaDirectorImg=ACADEMIA_FIRMAS_IMG[director?.nombre];
   const fiH=13, fiW=firmaInstructoraImg?fiH*firmaInstructoraImg.w/firmaInstructoraImg.h:0;
@@ -2852,22 +2893,22 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
   doc.setDrawColor(...accent); doc.setLineWidth(0.2);
   const folioW=doc.getTextWidth(`FOLIO: ${constancia.folio}`);
   doc.line(folioX, fy+1, folioX+folioW, fy+1);
-  fy+=5.5;
+  fy+=5;
   doc.setFont(undefined,'normal'); doc.setFontSize(7.8); doc.setTextColor(...gray);
   doc.text(`Fecha de emisión: ${constancia.fecha_emision}`, folioX, fy);
-  fy+=6.5;
+  fy+=5.5;
   doc.text('Verifica la autenticidad en:', folioX, fy);
-  fy+=4.2;
+  fy+=3.8;
   doc.setFont(undefined,'bold'); doc.setTextColor(...accent);
   doc.text(ACADEMIA_VERIFICAR_URL, folioX, fy);
 
   // ── QR (columna propia, a la derecha de la firma del Director) ──────────
-  const qrBoxW=22, qrBoxH=22, qrBoxX=pw-marginX-qrBoxW, qrBoxY=firmaLineY-1;
+  const qrBoxW=22, qrBoxH=19, qrBoxX=pw-marginX-qrBoxW, qrBoxY=firmaLineY-1;
   doc.setDrawColor(...accent); doc.setLineWidth(0.4);
   doc.roundedRect(qrBoxX,qrBoxY,qrBoxW,qrBoxH,2,2);
   doc.addImage(qrDataUrl,'PNG',qrBoxX+1.5,qrBoxY+1.5,qrBoxW-3,qrBoxH-3);
   doc.setFontSize(6.2); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
-  doc.text('Escanea y verifica la autenticidad', qrBoxX+qrBoxW/2, qrBoxY+qrBoxH+4.2, {align:'center'});
+  doc.text('Escanea y verifica la autenticidad', qrBoxX+qrBoxW/2, qrBoxY+qrBoxH+3.5, {align:'center'});
 
   // ── Pie navy ───────────────────────────────────────────────────────────
   const footerH=11;
