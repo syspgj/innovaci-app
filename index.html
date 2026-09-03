@@ -1079,7 +1079,7 @@ async function renderAcademiaGeneraciones(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando generaciones...</div>';
   const {data:generaciones,error}=await sb.from('academia_generaciones')
-    .select('*,curso:curso_id(id,nombre,tipo,modalidad,ventana_practicas_dias,practicas_extension_dias,practicas_totales,sistema:sistema_id(clave,nombre))')
+    .select('*,curso:curso_id(id,nombre,tipo,modalidad,ventana_practicas_dias,practicas_extension_dias,practicas_totales,sistema_id,sistema:sistema_id(clave,nombre))')
     .order('clave');
   if(error){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error cargando generaciones: ${error.message}</div>`;return;}
   window._academiaCache.generaciones=generaciones||[];
@@ -1464,6 +1464,25 @@ function academiaEmpresaEstado(asigVigente){
   if(asigVigente.empresa?.siempre_activo || (!asigVigente.fecha_fin && asigVigente.status_original==='SIEMPRE ACTIVO')) return 'permanente';
   return 'ocupada';
 }
+// Empresas libres de un sistema, ordenadas por número (Jp, 2026-09-03: "la app
+// podría sugerir qué empresa asignarle siempre y cuando esté libre") — mismo
+// cómputo de vigencia que la pestaña Accesos, nunca un campo aparte que se
+// pueda desincronizar. La primera del arreglo es la "sugerida".
+async function academiaEmpresasDisponiblesSistema(sistemaId){
+  if(!sistemaId) return [];
+  const {data:empresas}=await sb.from('academia_empresas_acceso').select('*').eq('sistema_id',sistemaId).order('numero');
+  if(!empresas?.length) return [];
+  const ids=empresas.map(e=>e.id);
+  const {data:asignaciones}=await sb.from('academia_empresas_asignaciones').select('*').in('empresa_id',ids).order('created_at',{ascending:false});
+  const hoy=new Date().toISOString().split('T')[0];
+  const vigentePorEmpresa={};
+  (asignaciones||[]).forEach(a=>{
+    if(vigentePorEmpresa[a.empresa_id]) return;
+    const cubre=(!a.fecha_inicio||a.fecha_inicio<=hoy)&&(!a.fecha_fin||a.fecha_fin>=hoy);
+    if(cubre) vigentePorEmpresa[a.empresa_id]=a;
+  });
+  return empresas.filter(e=>academiaEmpresaEstado(vigentePorEmpresa[e.id]?{...vigentePorEmpresa[e.id],empresa:e}:null)==='disponible');
+}
 async function renderAcademiaAccesos(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando control de accesos...</div>';
@@ -1672,62 +1691,100 @@ async function academiaLiberarAsignacion(asignacionId,empresaId){
   if(error){alert('Error al liberar: '+error.message);return;}
   renderAcademiaAccesos();
 }
-// Filtra en vivo el <select> de "vincular a inscripción" (Jp, 2026-09-03:
-// "estaría bien una barra de búsqueda o filtros, ya que al desplegar la
-// lista salen todos los usuarios de todos los cursos") — sin librerías,
-// solo re-arma las <option> del select contra el texto capturado.
+// Asignar empresa (Jp, 2026-09-03): "debe estar bloqueado para que solo se
+// pueda asignar a participantes que estén dados de alta en generaciones...
+// todo esto ligado para evitar duplicidades y que esta app se vuelva
+// automática e inteligente" — ya no se puede escribir nombre/curso a mano.
+// Flujo obligatorio: 1) Generación → 2) Participante (solo los inscritos en
+// esa generación) → el curso se autocompleta solo. Sin inscripción
+// seleccionada no se puede guardar.
+function academiaFiltrarParticipantesPorGen(){
+  const genSel=document.getElementById('accGenSel');
+  const genId=genSel?.value||'';
+  const opt=genSel?.selectedOptions[0];
+  const cursoTexto=document.getElementById('accCursoTexto');
+  if(cursoTexto) cursoTexto.textContent=genId?(opt?.dataset.curso||'—'):'—';
+  window._academiaAsignarParticipantes=genId?(window._academiaCache.inscripcionesParaAcceso||[]).filter(i=>i.generacion_id===genId):[];
+  const buscar=document.getElementById('accInscBuscar');
+  if(buscar) buscar.value='';
+  academiaFiltrarInscOpts();
+}
+// Filtra en vivo el <select> de participante dentro de la generación ya
+// elegida (Jp, 2026-09-03: "una barra de búsqueda o filtros, ya que al
+// desplegar la lista salen todos los usuarios de todos los cursos").
 function academiaFiltrarInscOpts(){
   const q=(document.getElementById('accInscBuscar')?.value||'').trim().toLowerCase();
   const sel=document.getElementById('accInscSel');
   if(!sel) return;
+  const lista=window._academiaAsignarParticipantes||[];
+  if(!document.getElementById('accGenSel')?.value){
+    sel.innerHTML='<option value="">— Selecciona primero una generación —</option>';
+    return;
+  }
   const valorPrevio=sel.value;
-  const lista=window._academiaCache.inscripcionesParaAcceso||[];
-  const filtradas=q?lista.filter(i=>`${i.participante?.nombre||''} ${i.generacion?.curso?.nombre||''} ${i.generacion?.clave||''}`.toLowerCase().includes(q)):lista;
+  const filtradas=q?lista.filter(i=>(i.participante?.nombre||'').toLowerCase().includes(q)):lista;
   const opts=filtradas.map(i=>
-    `<option value="${i.id}" data-nombre="${(i.participante?.nombre||'').replace(/"/g,'&quot;')}">${i.participante?.nombre||'—'} — ${i.generacion?.curso?.nombre||''} · ${i.generacion?.clave||''}</option>`
+    `<option value="${i.id}" data-nombre="${(i.participante?.nombre||'').replace(/"/g,'&quot;')}">${i.participante?.nombre||'—'}</option>`
   ).join('');
-  sel.innerHTML=`<option value="">— Sin vincular (uso interno / alumno suelto) —</option>${opts}`;
+  sel.innerHTML=`<option value="">— Selecciona un participante —</option>${opts}${lista.length?'':'<option value="" disabled>(sin inscripciones en esta generación)</option>'}`;
   if(filtradas.some(i=>i.id===valorPrevio)) sel.value=valorPrevio;
 }
 async function academiaAbrirAsignarEmpresa(empresaId){
   const {empresas}=window._academiaCache.accesos||{empresas:[]};
   const e=(empresas||[]).find(x=>x.id===empresaId);
+  if(!e) return;
+  if(!window._academiaCache.generacionesParaAcceso){
+    const {data}=await sb.from('academia_generaciones').select('id,clave,curso:curso_id(nombre)').order('clave',{ascending:false}).limit(300);
+    window._academiaCache.generacionesParaAcceso=data||[];
+  }
   if(!window._academiaCache.inscripcionesParaAcceso){
-    const {data}=await sb.from('academia_inscripciones').select('id,participante:participante_id(nombre),generacion:generacion_id(clave,curso:curso_id(nombre))').order('created_at',{ascending:false}).limit(500);
+    const {data}=await sb.from('academia_inscripciones').select('id,generacion_id,participante:participante_id(nombre)').order('created_at',{ascending:false}).limit(2000);
     window._academiaCache.inscripcionesParaAcceso=data||[];
   }
-  const inscOpts=window._academiaCache.inscripcionesParaAcceso.map(i=>
-    `<option value="${i.id}" data-nombre="${(i.participante?.nombre||'').replace(/"/g,'&quot;')}">${i.participante?.nombre||'—'} — ${i.generacion?.curso?.nombre||''} · ${i.generacion?.clave||''}</option>`
+  window._academiaAsignarParticipantes=[];
+  const genOpts=window._academiaCache.generacionesParaAcceso.map(g=>
+    `<option value="${g.id}" data-curso="${(g.curso?.nombre||'').replace(/"/g,'&quot;')}">${g.clave} — ${g.curso?.nombre||''}</option>`
   ).join('');
   const hoy=new Date().toISOString().split('T')[0];
   const html=`
-    <div style="margin-bottom:6px;">${fld('Vincular a una inscripción existente (opcional)',`
-      <input id="accInscBuscar" type="text" placeholder="Buscar por nombre, curso o generación..." oninput="academiaFiltrarInscOpts()"
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">${e.sistema?.clave||''} · Empresa #${e.numero}${e.servidor?` · servidor ${e.servidor}`:''}</div>
+    <div style="margin-bottom:10px;">${fld('Generación (obligatorio)',`<select id="accGenSel" onchange="academiaFiltrarParticipantesPorGen()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;"><option value="">— Selecciona una generación —</option>${genOpts}</select>`)}</div>
+    <div style="margin-bottom:6px;">${fld('Participante (obligatorio — solo alumnos dados de alta en esa generación)',`
+      <input id="accInscBuscar" type="text" placeholder="Buscar participante..." oninput="academiaFiltrarInscOpts()"
         style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px 6px 0 0;font-size:12px;box-sizing:border-box;border-bottom:none;">
-      <select id="accInscSel" onchange="const o=this.selectedOptions[0];document.getElementById('accNombre').value=o?.dataset.nombre||'';" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:0 0 6px 6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;"><option value="">— Sin vincular (uso interno / alumno suelto) —</option>${inscOpts}</select>`)}</div>
-    <div style="margin-bottom:10px;">${fld('Nombre del participante',inp('accNombre','text','Nombre completo'))}</div>
-    <div style="margin-bottom:10px;">${fld('Curso / taller',inp('accCurso','text','Ej. Diplomado Siigo Aspel COI 2026'))}</div>
+      <select id="accInscSel" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:0 0 6px 6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;"><option value="">— Selecciona primero una generación —</option></select>`)}</div>
+    <div style="margin-bottom:10px;font-size:12px;color:var(--text2);">Curso: <b id="accCursoTexto">—</b></div>
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin:14px 0 8px;">ACCESO AL SERVIDOR (LABORATORIO REMOTO)</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px;">
       ${fld('Servidor',inp('accServidor','text','',e?.servidor||''))}
       ${fld('Usuario RDP',inp('accUsuarioRdp','text','Ej. US03'))}
       ${fld('Contraseña RDP',inp('accContrasenaRdp','text',''))}
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
       ${fld('Fecha de inicio',inp('accFechaInicio','date','',hoy))}
       ${fld('Fecha de fin (opcional — se libera sola en esa fecha)',inp('accFechaFin','date'))}
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button type="button" onclick="academiaGuardarAsignarEmpresa('${empresaId}',false)" style="padding:8px 16px;border:1px solid var(--teal);border-radius:6px;background:none;color:var(--teal);cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">Asignar y cerrar</button>
+      <button type="button" onclick="academiaGuardarAsignarEmpresa('${empresaId}',true)" style="padding:8px 16px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">Guardar y seguir con el siguiente acceso</button>
     </div>`;
-  mkModal('modalAsignarAcceso','Asignar empresa',html,`academiaGuardarAsignarEmpresa('${empresaId}')`,'Asignar');
+  mkModal('modalAsignarAcceso','Asignar empresa',html,null,'Cancelar');
 }
-async function academiaGuardarAsignarEmpresa(empresaId){
-  const inscId=document.getElementById('accInscSel')?.value||null;
-  const nombre=document.getElementById('accNombre')?.value?.trim();
-  if(!nombre){alert('Captura el nombre del participante (o selecciona una inscripción).');return;}
+async function academiaGuardarAsignarEmpresa(empresaId,seguirConSiguiente){
+  const genId=document.getElementById('accGenSel')?.value;
+  const inscSel=document.getElementById('accInscSel');
+  const inscId=inscSel?.value;
+  if(!genId){alert('Selecciona la generación del participante.');return;}
+  if(!inscId){alert('Selecciona un participante dado de alta en esa generación (no se puede escribir el nombre a mano).');return;}
+  const nombre=inscSel.selectedOptions[0]?.dataset.nombre||'';
+  const curso=document.getElementById('accCursoTexto')?.textContent||'';
+  const {empresas}=window._academiaCache.accesos||{empresas:[]};
+  const e=(empresas||[]).find(x=>x.id===empresaId);
   const {error}=await sb.from('academia_empresas_asignaciones').insert({
     empresa_id:empresaId,
-    inscripcion_id:inscId||null,
+    inscripcion_id:inscId,
     participante_nombre:nombre,
-    curso_taller:document.getElementById('accCurso')?.value?.trim()||null,
+    curso_taller:curso,
     servidor:document.getElementById('accServidor')?.value?.trim()||null,
     usuario_rdp:document.getElementById('accUsuarioRdp')?.value?.trim()||null,
     contrasena_rdp:document.getElementById('accContrasenaRdp')?.value?.trim()||null,
@@ -1737,7 +1794,15 @@ async function academiaGuardarAsignarEmpresa(empresaId){
   });
   if(error){alert('Error al asignar: '+error.message);return;}
   document.getElementById('modalAsignarAcceso')?.remove();
-  renderAcademiaAccesos();
+  await renderAcademiaAccesos();
+  if(seguirConSiguiente){
+    const {empresas:empresasFrescas,vigentePorEmpresa}=window._academiaCache.accesos||{empresas:[],vigentePorEmpresa:{}};
+    const mismoSistema=(empresasFrescas||[]).filter(x=>x.sistema_id===e?.sistema_id && x.id!==empresaId);
+    const disponibles=mismoSistema.filter(x=>academiaEmpresaEstado(vigentePorEmpresa[x.id]?{...vigentePorEmpresa[x.id],empresa:x}:null)==='disponible').sort((a,b)=>a.numero-b.numero);
+    const siguiente=disponibles.find(x=>x.numero>(e?.numero||0))||disponibles[0];
+    if(siguiente) academiaAbrirAsignarEmpresa(siguiente.id);
+    else alert('Ya no quedan empresas disponibles en este sistema.');
+  }
 }
 function academiaVerEmpresaAcceso(empresaId){
   const {empresas,asignaciones}=window._academiaCache.accesos||{empresas:[],asignaciones:[]};
@@ -1914,7 +1979,7 @@ function academiaPintarParticipantes(){
 }
 
 // ── AGREGAR ASISTENTE ────────────────────────────────────────────────────────
-function academiaAbrirNuevoAsistente(generacionId){
+async function academiaAbrirNuevoAsistente(generacionId){
   const cache=window._academiaCache.participantesGen;
   const gen=cache?.gen;
   // Prefijo de folio (sistema+versión, ej. "NOI11"): no es un campo estructurado
@@ -1928,6 +1993,12 @@ function academiaAbrirNuevoAsistente(generacionId){
   // demás talleres 24/7); Esencial queda con fecha abierta (campos vacíos,
   // "hay que dejar ahí el campo para que después se capture").
   const diasLabSugerido=academiaDiasLabPorCurso(gen?.curso);
+  // Sugerencia de empresa libre (Jp, 2026-09-03: "al dar de alta al participante
+  // la app podría sugerir qué empresa asignarle, siempre y cuando esté libre").
+  const sistemaId=gen?.curso?.sistema_id;
+  const disponibles=await academiaEmpresasDisponiblesSistema(sistemaId);
+  window._academiaAsistenteDisponibles=disponibles;
+  const empresaOpts=disponibles.map(e=>`<option value="${e.id}">Empresa #${e.numero}${e.servidor?` (servidor ${e.servidor})`:''}</option>`).join('');
   const html=`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Nombre completo',inp('naNombre','text','Nombre del participante'))}
@@ -1943,7 +2014,14 @@ function academiaAbrirNuevoAsistente(generacionId){
       ${fld('Prefijo de folio (sistema+versión)',inp('naPrefijo','text','Ej. NOI11',prefijoSugerido))}
     </div>
     <div style="margin-bottom:10px;">${fld('Vendedor (nombre)',inp('naVendedor','text',''))}</div>
-    <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">ACCESO AL LABORATORIO VIRTUAL (opcional)</div>
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">EMPRESA DE PRÁCTICA (Control de Accesos)</div>
+    ${disponibles.length?`
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:8px;">
+      <input type="checkbox" id="naAsignarEmpresa" checked onchange="document.getElementById('naEmpresaSel').disabled=!this.checked;"> Asignarle una empresa libre ahora mismo
+    </label>
+    <div style="margin-bottom:14px;">${fld('Empresa sugerida (puedes elegir otra)',`<select id="naEmpresaSel" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${empresaOpts}</select>`)}</div>
+    `:`<div style="font-size:11px;color:var(--text3);margin-bottom:14px;">${sistemaId?'No hay empresas disponibles ahora mismo en este sistema — se puede asignar después desde Accesos.':'No se identificó el sistema de este curso — asigna la empresa después desde Accesos.'}</div>`}
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">ACCESO AL LABORATORIO VIRTUAL (opcional — se puede dejar en blanco si ya se asignó una empresa arriba)</div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Servidor',inp('naServidor','text',''))}
       ${fld('Usuario RDP',inp('naUsuarioRdp','text',''))}
@@ -1990,7 +2068,7 @@ async function academiaGuardarNuevoAsistente(generacionId){
   });
   if(errFolio){alert('El participante se creó pero no se pudo generar el folio: '+errFolio.message+'. Puedes reintentar dando de alta la inscripción a mano.');return;}
 
-  const {error:errInsc}=await sb.from('academia_inscripciones').insert({
+  const {data:inscNueva,error:errInsc}=await sb.from('academia_inscripciones').insert({
     participante_id:participanteId,
     generacion_id:generacionId,
     nivel_acceso:nivelAcceso,
@@ -2006,8 +2084,29 @@ async function academiaGuardarNuevoAsistente(generacionId){
     fecha_inicio_laboratorio:document.getElementById('naFechaCompra')?.value||null,
     fecha_fin_laboratorio:document.getElementById('naFechaFinLab')?.value||null,
     fecha_fin_sesion_privada:document.getElementById('naFechaFinSesion')?.value||null,
-  });
+  }).select('id').single();
   if(errInsc){alert('El participante se creó (folio '+folio+') pero no se pudo inscribir a la generación: '+errInsc.message);return;}
+
+  // Si aceptó la sugerencia de empresa, la asignación queda ligada a esta
+  // inscripción desde el momento del alta — así ya aparece en su ficha sin
+  // tener que ir después a Accesos (Jp, 2026-09-03).
+  const asignarChk=document.getElementById('naAsignarEmpresa');
+  const empresaSel=document.getElementById('naEmpresaSel')?.value;
+  if(asignarChk?.checked && empresaSel){
+    const {error:errAsig}=await sb.from('academia_empresas_asignaciones').insert({
+      empresa_id:empresaSel,
+      inscripcion_id:inscNueva.id,
+      participante_nombre:nombre,
+      curso_taller:gen?.curso?.nombre||null,
+      servidor:document.getElementById('naServidor')?.value?.trim()||null,
+      usuario_rdp:document.getElementById('naUsuarioRdp')?.value?.trim()||null,
+      contrasena_rdp:document.getElementById('naPassRdp')?.value?.trim()||null,
+      fecha_inicio:document.getElementById('naFechaCompra')?.value||new Date().toISOString().split('T')[0],
+      fecha_fin:document.getElementById('naFechaFinLab')?.value||null,
+      creada_por:userProfile?.id||null,
+    });
+    if(errAsig) alert('El participante se creó bien, pero no se pudo asignar la empresa de práctica: '+errAsig.message+'. Puedes asignarla desde la pestaña Accesos.');
+  }
 
   document.getElementById('modalNuevoAsistente')?.remove();
   academiaVerGeneracion(generacionId);
@@ -2026,6 +2125,14 @@ async function academiaVerFicha(inscripcionId){
   const {data:practicasSes}=await sb.from('academia_practicas_sesiones').select('*').eq('inscripcion_id',inscripcionId);
   const {data:constancias}=await sb.from('academia_constancias').select('*').eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false});
   const {data:bitacora}=await sb.from('academia_bitacora').select('*,usuario:capturada_por(nombre)').eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false}).limit(20);
+  // Asignación de Control de Accesos ligada a ESTA inscripción, si existe (Jp,
+  // 2026-09-03: "una vez asignado deberán aparecer los datos en el detalle del
+  // participante") — la más reciente, ligada o no ligada a una fecha vigente.
+  const {data:asigVinculada}=await sb.from('academia_empresas_asignaciones')
+    .select('*,empresa:empresa_id(*,sistema:sistema_id(clave,nombre))')
+    .eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false}).limit(1).maybeSingle();
+  const hoyAcc=new Date().toISOString().split('T')[0];
+  const asigVigenteAcc=asigVinculada&&(!asigVinculada.fecha_inicio||asigVinculada.fecha_inicio<=hoyAcc)&&(!asigVinculada.fecha_fin||asigVinculada.fecha_fin>=hoyAcc)?asigVinculada:null;
 
   const sesiones=(insc.asistencias||[]).sort((a,b)=>a.numero_sesion-b.numero_sesion);
   const totalSesiones=insc.generacion?.sesiones_totales||sesiones.length||0;
@@ -2128,17 +2235,25 @@ async function academiaVerFicha(inscripcionId){
 
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-        <div style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;">Datos de acceso al laboratorio virtual</div>
+        <div style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;">Datos de acceso al laboratorio virtual${asigVinculada?' <span style="color:var(--teal);font-weight:600;text-transform:none;letter-spacing:0;">🔗 vinculado a Control de Accesos</span>':''}</div>
         <div style="display:flex;gap:6px;">
           <button class="cartera-subtab" onclick="academiaToggleAccesoLab('${inscripcionId}')">Ver / ocultar</button>
-          <button class="cartera-subtab" onclick="academiaAbrirEditarAccesoLab('${inscripcionId}')">Editar</button>
+          ${asigVinculada?`<button class="cartera-subtab" onclick="academiaIrAEmpresaAcceso('${asigVinculada.empresa_id}')">Ver en Accesos</button>`:`<button class="cartera-subtab" style="background:var(--teal);color:#fff;" onclick="academiaAbrirAsignarDesdeFicha('${inscripcionId}')">Asignar empresa</button><button class="cartera-subtab" onclick="academiaAbrirEditarAccesoLab('${inscripcionId}')">Editar manual</button>`}
         </div>
       </div>
       <div id="academiaAccesoLab_${inscripcionId}" style="display:none;font-size:12px;color:var(--text2);line-height:1.8;">
+        ${asigVinculada?`
+        <div><b>Sistema:</b> ${asigVinculada.empresa?.sistema?.clave||'—'} · <b>Empresa:</b> #${asigVinculada.empresa?.numero??'—'} · <b>Servidor:</b> ${asigVinculada.servidor||asigVinculada.empresa?.servidor||'—'}</div>
+        <div><b>Usuario RDP:</b> ${asigVinculada.usuario_rdp||'—'} · <b>Contraseña RDP:</b> ${asigVinculada.contrasena_rdp||'—'}</div>
+        <div><b>Usuario Aspel (empresa):</b> ${asigVinculada.empresa?.usuario_empresa||'—'} · <b>Contraseña Aspel:</b> ${asigVinculada.empresa?.contrasena_empresa||'—'}</div>
+        <div style="margin-top:4px;">${asigVigenteAcc?`<span style="color:var(--green);font-weight:700;">● Vigente</span> desde ${asigVinculada.fecha_inicio||'—'}${asigVinculada.fecha_fin?' hasta '+asigVinculada.fecha_fin:''}`:`<span style="color:var(--text3);">Asignación anterior — ya no vigente (${asigVinculada.fecha_fin?'liberada el '+asigVinculada.fecha_fin:'sin fecha'})</span>`}</div>
+        `:`
         <div><b>Servidor:</b> ${insc.servidor||'—'} · <b>Usuario RDP:</b> ${insc.usuario_rdp||'—'} · <b>Contraseña RDP:</b> ${insc.contrasena_rdp||'—'}</div>
         <div><b>Empresa Aspel:</b> ${insc.empresa_aspel||'—'} · <b>Usuario Aspel:</b> ${insc.usuario_aspel||'—'} · <b>Contraseña Aspel:</b> ${insc.contrasena_aspel||'—'}</div>
+        <div style="margin-top:4px;color:var(--text3);">No vinculado a Control de Accesos — datos capturados a mano.</div>
+        `}
         <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
-          ${telLimpio?`<a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}?text=${encodeURIComponent(academiaPlantillaAccesoLab(insc))}" target="_blank" style="background:#25D366;color:#fff;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;text-decoration:none;">Enviar por WhatsApp</a>`:''}
+          ${telLimpio?`<a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}?text=${encodeURIComponent(academiaPlantillaAccesoLab(insc,asigVinculada))}" target="_blank" style="background:#25D366;color:#fff;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;text-decoration:none;">Enviar por WhatsApp</a>`:''}
           <button class="cartera-subtab" onclick="academiaCopiarPlantillaAccesoLab('${inscripcionId}')">Copiar plantilla</button>
         </div>
       </div>
@@ -2221,16 +2336,82 @@ async function academiaGuardarAccesoLab(inscripcionId){
   document.getElementById('modalEditarAccesoLab')?.remove();
   academiaVerFicha(inscripcionId);
 }
-function academiaPlantillaAccesoLab(insc){
+// Si la inscripción tiene una empresa vinculada en Control de Accesos, la
+// plantilla usa esos datos (siempre al día); si no, cae en los campos
+// capturados a mano en la propia inscripción (compatibilidad con datos viejos).
+function academiaPlantillaAccesoLab(insc,asigVinculada){
+  const servidor=asigVinculada?(asigVinculada.servidor||asigVinculada.empresa?.servidor):insc.servidor;
+  const usuarioRdp=asigVinculada?asigVinculada.usuario_rdp:insc.usuario_rdp;
+  const contrasenaRdp=asigVinculada?asigVinculada.contrasena_rdp:insc.contrasena_rdp;
+  const empresaNum=asigVinculada?asigVinculada.empresa?.numero:insc.empresa_aspel;
+  const usuarioAspel=asigVinculada?asigVinculada.empresa?.usuario_empresa:insc.usuario_aspel;
+  const contrasenaAspel=asigVinculada?asigVinculada.empresa?.contrasena_empresa:insc.contrasena_aspel;
   return `Hola ${insc.participante?.nombre||''}, estos son tus datos de acceso al laboratorio virtual de ${insc.generacion?.curso?.nombre||''} (${insc.generacion?.clave||''}):\n`+
-    `Servidor: ${insc.servidor||'—'}\nUsuario RDP: ${insc.usuario_rdp||'—'}\nContraseña RDP: ${insc.contrasena_rdp||'—'}\n`+
-    `Empresa Aspel: ${insc.empresa_aspel||'—'}\nUsuario Aspel: ${insc.usuario_aspel||'—'}\nContraseña Aspel: ${insc.contrasena_aspel||'—'}\n\nGrupo Innovaci`;
+    `Servidor: ${servidor||'—'}\nUsuario RDP: ${usuarioRdp||'—'}\nContraseña RDP: ${contrasenaRdp||'—'}\n`+
+    `Empresa Aspel: ${empresaNum??'—'}\nUsuario Aspel: ${usuarioAspel||'—'}\nContraseña Aspel: ${contrasenaAspel||'—'}\n\nGrupo Innovaci`;
 }
 async function academiaCopiarPlantillaAccesoLab(inscripcionId){
   const {data:insc}=await sb.from('academia_inscripciones').select('*,participante:participante_id(nombre),generacion:generacion_id(clave,curso:curso_id(nombre))').eq('id',inscripcionId).single();
   if(!insc) return;
-  try{ await navigator.clipboard.writeText(academiaPlantillaAccesoLab(insc)); alert('Plantilla copiada al portapapeles.'); }
+  const {data:asig}=await sb.from('academia_empresas_asignaciones').select('*,empresa:empresa_id(*)').eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false}).limit(1).maybeSingle();
+  try{ await navigator.clipboard.writeText(academiaPlantillaAccesoLab(insc,asig)); alert('Plantilla copiada al portapapeles.'); }
   catch(e){ alert('No se pudo copiar automáticamente. Copia manualmente los datos de la sección.'); }
+}
+// Navega a la pestaña Accesos y abre el historial de la empresa vinculada
+// (Jp, 2026-09-03: los datos ya vinculados se editan/consultan desde Accesos,
+// no se duplican en la ficha del participante).
+async function academiaIrAEmpresaAcceso(empresaId){
+  currentAcademiaTab='accesos';
+  document.querySelectorAll('[data-atab]').forEach(t=>t.classList.toggle('active',t.dataset.atab==='accesos'));
+  document.getElementById('mainContent')?.classList.add('full-width');
+  await renderAcademiaAccesos();
+  academiaVerEmpresaAcceso(empresaId);
+}
+// Asignar una empresa directo desde la ficha del participante (Jp, 2026-09-03)
+// — sugiere la primera disponible del sistema del curso, con opción de elegir
+// otra, sin tener que ir primero a la pestaña Accesos.
+async function academiaAbrirAsignarDesdeFicha(inscripcionId){
+  const {data:insc,error}=await sb.from('academia_inscripciones').select('participante:participante_id(nombre),generacion:generacion_id(curso:curso_id(nombre,sistema_id,sistema:sistema_id(clave)))').eq('id',inscripcionId).single();
+  if(error||!insc){alert('No se pudo cargar la inscripción: '+(error?.message||''));return;}
+  const sistemaId=insc.generacion?.curso?.sistema_id;
+  if(!sistemaId){alert('Esta generación no tiene un sistema (Aspel) identificado, así que no se puede sugerir empresa. Puedes asignarla manualmente desde la pestaña Accesos si aplica a otro sistema.');return;}
+  const disponibles=await academiaEmpresasDisponiblesSistema(sistemaId);
+  if(!disponibles.length){alert(`No hay empresas disponibles ahora mismo en ${insc.generacion?.curso?.sistema?.clave||'este sistema'}. Puedes liberar alguna desde la pestaña Accesos.`);return;}
+  const empresaOpts=disponibles.map(e=>`<option value="${e.id}" data-servidor="${e.servidor||''}">Empresa #${e.numero}${e.servidor?` (servidor ${e.servidor})`:''}</option>`).join('');
+  const hoy=new Date().toISOString().split('T')[0];
+  const html=`
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">${insc.participante?.nombre||''} · ${insc.generacion?.curso?.nombre||''}</div>
+    <div style="margin-bottom:10px;">${fld('Empresa sugerida (puedes elegir otra)',`<select id="fichaEmpresaSel" onchange="document.getElementById('fichaAccServidor').value=this.selectedOptions[0]?.dataset.servidor||'';" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${empresaOpts}</select>`)}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px;">
+      ${fld('Servidor',inp('fichaAccServidor','text','',disponibles[0]?.servidor||''))}
+      ${fld('Usuario RDP',inp('fichaAccUsuarioRdp','text','Ej. US03'))}
+      ${fld('Contraseña RDP',inp('fichaAccContrasenaRdp','text',''))}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      ${fld('Fecha de inicio',inp('fichaAccFechaInicio','date','',hoy))}
+      ${fld('Fecha de fin (opcional)',inp('fichaAccFechaFin','date'))}
+    </div>`;
+  mkModal('modalAsignarDesdeFicha','Asignar empresa de práctica',html,`academiaGuardarAsignarDesdeFicha('${inscripcionId}')`,'Asignar');
+}
+async function academiaGuardarAsignarDesdeFicha(inscripcionId){
+  const empresaId=document.getElementById('fichaEmpresaSel')?.value;
+  if(!empresaId){alert('Selecciona una empresa.');return;}
+  const {data:insc}=await sb.from('academia_inscripciones').select('participante:participante_id(nombre),generacion:generacion_id(curso:curso_id(nombre))').eq('id',inscripcionId).single();
+  const {error}=await sb.from('academia_empresas_asignaciones').insert({
+    empresa_id:empresaId,
+    inscripcion_id:inscripcionId,
+    participante_nombre:insc?.participante?.nombre||null,
+    curso_taller:insc?.generacion?.curso?.nombre||null,
+    servidor:document.getElementById('fichaAccServidor')?.value?.trim()||null,
+    usuario_rdp:document.getElementById('fichaAccUsuarioRdp')?.value?.trim()||null,
+    contrasena_rdp:document.getElementById('fichaAccContrasenaRdp')?.value?.trim()||null,
+    fecha_inicio:document.getElementById('fichaAccFechaInicio')?.value||null,
+    fecha_fin:document.getElementById('fichaAccFechaFin')?.value||null,
+    creada_por:userProfile?.id||null,
+  });
+  if(error){alert('Error al asignar: '+error.message);return;}
+  document.getElementById('modalAsignarDesdeFicha')?.remove();
+  academiaVerFicha(inscripcionId);
 }
 
 async function academiaToggleAsistencia(inscripcionId,numeroSesion,nuevoValor){
