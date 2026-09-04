@@ -2810,6 +2810,12 @@ async function academiaGenerarConstancia(inscripcionId,tipo){
   }).select().single();
   if(errC){alert('Error al registrar la constancia (¿ya existe una con este folio?): '+errC.message);return;}
 
+  await sb.from('academia_bitacora').insert({
+    inscripcion_id:inscripcionId,tipo:'constancia',
+    detalle:`Constancia de ${tipo} emitida (folio ${nuevaConstancia.folio}) por ${userProfile?.nombre||'—'}`,
+    capturada_por:currentUser?.id||null
+  });
+
   try{
     await academiaDibujarYSubirPDF(nuevaConstancia,insc,instructor,director,calificacion);
   }catch(e){
@@ -2830,6 +2836,11 @@ async function academiaRegenerarPDF(constanciaId){
   const director=(firmantes||[]).find(f=>f.id===c.firmante_director_id)||(firmantes||[]).find(f=>f.cargo?.toLowerCase().includes('director'));
   try{
     await academiaDibujarYSubirPDF(c,insc,instructor,director,c.calificacion);
+    await sb.from('academia_bitacora').insert({
+      inscripcion_id:c.inscripcion_id,tipo:'constancia',
+      detalle:`PDF de la constancia ${c.folio||''} regenerado por ${userProfile?.nombre||'—'}`,
+      capturada_por:currentUser?.id||null
+    });
     alert('PDF regenerado y subido correctamente.');
   }catch(e){
     alert('Seguimos sin poder subir el PDF: '+(e?.message||e)+'. Es probable que falte una política de Storage que permita subir archivos al bucket "constancias-pdf" (ver supabase/academia_fix_storage_policies.sql).');
