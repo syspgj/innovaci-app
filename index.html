@@ -845,7 +845,7 @@ async function renderAcademiaDashboard(){
 
   const [{data:generaciones,error:errG},{data:inscripciones,error:errI},{data:empresasAcc,error:errA}]=await Promise.all([
     sb.from('academia_generaciones').select('*,curso:curso_id(id,nombre,tipo,modalidad,ventana_practicas_dias,practicas_extension_dias,sistema:sistema_id(clave,nombre))').order('clave'),
-    sb.from('academia_inscripciones').select('id,generacion_id,practicas_extension,fecha_fin_laboratorio,participante:participante_id(nombre),constancias:academia_constancias(enviada)'),
+    sb.from('academia_inscripciones').select('id,generacion_id,practicas_extension,fecha_fin_laboratorio,estatus_final,participante:participante_id(nombre),constancias:academia_constancias(enviada)'),
     sb.from('academia_empresas_acceso').select('numero,sistema:sistema_id(clave),asignaciones:academia_empresas_asignaciones(participante_nombre,curso_taller,fecha_inicio,fecha_fin,created_at)'),
   ]);
   if(errG||errI){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error cargando el resumen: ${(errG||errI).message}</div>`;return;}
@@ -860,20 +860,22 @@ async function renderAcademiaDashboard(){
   // contar como pendiente/activo en todo el dashboard.
   const filas=(inscripciones||[]).map(insc=>{
     const gen=gensById[insc.generacion_id];
-    const archivada=(insc.constancias||[]).some(c=>c.enviada);
+    const archivada=(insc.constancias||[]).some(c=>c.enviada)||!!insc.estatus_final;
     return {insc,gen,archivada,vig:gen?academiaVigenciaInfo(gen,insc):null};
   }).filter(f=>f.gen && !f.archivada);
 
   // ── Cursos activos por categoría (empresariales y 24/7) ──
   // Una generación se considera archivada (ya no "activa") cuando tiene
-  // inscripciones y a TODAS ya se les envió su constancia — O cuando Jp la
+  // inscripciones y a TODAS ya se les envió su constancia, o se les marcó
+  // "finalizada sin constancia" (Jp, 2026-09-04 — quienes no cumplieron
+  // asistencia/prácticas y no van a tener constancia nunca) — O cuando Jp la
   // marcó manualmente como archivada (checkbox en Editar generación, Jp
   // 2026-09-03: para el histórico que ya pasó pero no tiene el dato de
   // "enviada" completo, o que ya no quiere ver entre las vigentes).
   function generacionArchivada(g){
     if(g.archivado_manual) return true;
     const todas=(inscripciones||[]).filter(i=>i.generacion_id===g.id);
-    return todas.length>0 && todas.every(i=>(i.constancias||[]).some(c=>c.enviada));
+    return todas.length>0 && todas.every(i=>(i.constancias||[]).some(c=>c.enviada)||!!i.estatus_final);
   }
   function generacionesActivasDe(keys){
     return (generaciones||[]).filter(g=>{
@@ -1001,6 +1003,7 @@ async function renderAcademiaDashboard(){
 
 // ── Utilidades ───────────────────────────────────────────────────────────────
 function academiaAccesoLabel(n){return n==='premium'?'Premium':n==='plus'?'Plus':'Esencial';}
+function academiaEstatusFinalLabel(v){return v==='baja'?'Baja':'No acreditado';}
 function academiaAccesoLetra(n){return n==='premium'?'PM':n==='plus'?'P':'E';}
 function academiaPct(v){return v==null?'—':Math.round(v*100)+'%';}
 // NOI se distingue con acento naranja/dorado (color de marca), SAE con rojo
@@ -1092,14 +1095,14 @@ async function renderAcademiaGeneraciones(){
   // Contar inscripciones por generación, y de paso quién ya tiene su
   // constancia enviada — una generación se considera archivada cuando TODAS
   // sus inscripciones ya tienen al menos una constancia enviada (Jp, 2026-09-02).
-  const {data:inscripciones}=await sb.from('academia_inscripciones').select('id,generacion_id,nivel_acceso,constancias:academia_constancias(enviada)');
+  const {data:inscripciones}=await sb.from('academia_inscripciones').select('id,generacion_id,nivel_acceso,estatus_final,constancias:academia_constancias(enviada)');
   const conteos={};
   const archivadas={};
   (inscripciones||[]).forEach(i=>{
     conteos[i.generacion_id]=conteos[i.generacion_id]||{total:0,esencial:0,plus:0,premium:0,enviados:0};
     conteos[i.generacion_id].total++;
     conteos[i.generacion_id][i.nivel_acceso]=(conteos[i.generacion_id][i.nivel_acceso]||0)+1;
-    if((i.constancias||[]).some(c=>c.enviada)) conteos[i.generacion_id].enviados++;
+    if((i.constancias||[]).some(c=>c.enviada)||i.estatus_final) conteos[i.generacion_id].enviados++;
   });
   Object.keys(conteos).forEach(genId=>{ archivadas[genId]=conteos[genId].total>0 && conteos[genId].enviados===conteos[genId].total; });
   // Archivado manual (Jp, 2026-09-03): checkbox en Editar generación, para
@@ -1877,10 +1880,12 @@ function academiaPintarParticipantes(){
 
   const q=(academiaPartFiltro.q||'').trim().toLowerCase();
   let filas=(inscripciones||[]).filter(i=>{
-    // Archivado = ya se le envió su constancia (Jp, 2026-09-02): por default se
-    // ocultan de la lista de pendientes; con el toggle "Ver archivados" se
-    // muestran solo esos.
-    if(!!enviadaSet.has(i.id)!==!!academiaPartFiltro.archivados) return false;
+    // Archivado = ya se le envió su constancia (Jp, 2026-09-02), o se marcó
+    // "finalizado sin constancia" por no cumplir asistencia/prácticas (Jp,
+    // 2026-09-04): por default se ocultan de la lista de pendientes; con el
+    // toggle "Ver archivados" se muestran solo esos.
+    const archivadaFila=enviadaSet.has(i.id)||!!i.estatus_final;
+    if(archivadaFila!==!!academiaPartFiltro.archivados) return false;
     if(q && !(i.participante?.nombre||'').toLowerCase().includes(q) && !(i.folio||'').toLowerCase().includes(q)) return false;
     if(academiaPartFiltro.acceso && i.nivel_acceso!==academiaPartFiltro.acceso) return false;
     if(academiaPartFiltro.constancia==='si' && !conConstancia.has(i.id)) return false;
@@ -1930,7 +1935,7 @@ function academiaPintarParticipantes(){
       <td style="padding:14px 12px;"><span class="cartera-subtab" style="cursor:default;padding:3px 10px;">${academiaAccesoLabel(i.nivel_acceso)}</span></td>
       <td style="padding:14px 12px;">${academiaPct(pctAsist)}</td>
       <td style="padding:14px 12px;">${pctPracticas==null?'—':academiaPct(pctPracticas)}</td>
-      <td style="padding:14px 12px;">${tieneConstancia?(cache.enviadaSet.has(i.id)?'✅ Sí · <span style="color:var(--green);font-weight:700;">enviada</span>':'✅ Sí'):'—'}</td>
+      <td style="padding:14px 12px;">${tieneConstancia?(cache.enviadaSet.has(i.id)?'✅ Sí · <span style="color:var(--green);font-weight:700;">enviada</span>':'✅ Sí'):(i.estatus_final?`<span style="color:#c0392b;font-weight:700;">🚫 ${academiaEstatusFinalLabel(i.estatus_final)}</span>`:'—')}</td>
       <td style="padding:14px 12px;font-size:12px;">${academiaVigenciaBadge(vig)}</td>
       <td style="padding:14px 12px;">${i.practicas_extension?'✅ Sí':'—'}</td>
       <td style="padding:14px 12px;text-align:right;">
@@ -2327,6 +2332,16 @@ async function academiaVerFicha(inscripcionId){
       <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
         <button class="btn-primary" style="width:auto;padding:9px 16px;" ${elegibleParticipacion?'':'disabled title="No cumple 80% de asistencia"'} onclick="academiaGenerarConstancia('${inscripcionId}','participacion')">Emitir constancia de Participación</button>
         <button class="btn-primary" style="width:auto;padding:9px 16px;background:var(--navy);" ${elegibleAcreditacion?'':'disabled title="No cumple criterio de acreditación"'} onclick="academiaGenerarConstancia('${inscripcionId}','acreditacion')">Emitir constancia de Acreditación</button>
+      </div>
+      <div style="margin-top:10px;">
+        ${insc.estatus_final?`
+        <div style="background:#fdecea;border:1px solid #f5c2c0;border-radius:8px;padding:10px 12px;font-size:12px;color:#7a2822;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+          <div>🚫 <b>Finalizado sin constancia — ${academiaEstatusFinalLabel(insc.estatus_final)}</b>${insc.estatus_final_fecha?' · '+insc.estatus_final_fecha:''}${insc.estatus_final_motivo?'<br>Motivo: '+insc.estatus_final_motivo:''}</div>
+          <button class="cartera-subtab" onclick="academiaRevertirFinalizarSinConstancia('${inscripcionId}')">Revertir</button>
+        </div>
+        `:`
+        <button class="cartera-subtab" onclick="academiaAbrirFinalizarSinConstancia('${inscripcionId}')">Finalizar sin constancia (no cumplió)</button>
+        `}
       </div>
       <div style="margin-top:12px;">
         ${(constancias||[]).map(c=>`
@@ -2836,6 +2851,51 @@ function academiaNormalizarApellido(nombreCompleto){
   const partes=(nombreCompleto||'').trim().split(/\s+/);
   const apellido=partes.length>=2?partes[partes.length-2]:partes[partes.length-1]||'';
   return apellido.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+}
+
+// "Finalizar sin constancia" (Jp, 2026-09-04): para quienes no cumplieron
+// el mínimo de asistencia ni de prácticas y nunca van a tener una
+// constancia — se marca uno por uno desde su ficha, con motivo opcional, y
+// a partir de ahí cuenta como "resuelto" en toda la app (participantes,
+// generaciones, dashboard) exactamente igual que si se le hubiera enviado
+// una constancia — ver academia_add_estatus_final.sql.
+function academiaAbrirFinalizarSinConstancia(inscripcionId){
+  const html=`
+    ${fld('Motivo',selPares('afEstatus',[['no_acreditado','No acreditado (no cumplió asistencia/prácticas)'],['baja','Baja / se dio de baja']],'no_acreditado'))}
+    <div style="margin-top:10px;">${fld('Detalle (opcional)',`<textarea id="afMotivoTexto" rows="3" placeholder="Ej. 0% de asistencia, curso ya vencido..." style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:inherit;resize:vertical;box-sizing:border-box;"></textarea>`)}</div>
+    <div style="font-size:11px;color:var(--text3);margin-top:8px;">Esto NO genera ninguna constancia. Solo marca a este participante como finalizado, para que deje de aparecer entre los pendientes/vencidos. Se puede revertir después si fue un error.</div>`;
+  mkModal('modalFinalizarSinConstancia','Finalizar sin constancia',html,`academiaGuardarFinalizarSinConstancia('${inscripcionId}')`,'Finalizar');
+}
+async function academiaGuardarFinalizarSinConstancia(inscripcionId){
+  const estatus=document.getElementById('afEstatus')?.value||'no_acreditado';
+  const motivo=document.getElementById('afMotivoTexto')?.value?.trim()||null;
+  const {error}=await sb.from('academia_inscripciones').update({
+    estatus_final:estatus,
+    estatus_final_motivo:motivo,
+    estatus_final_fecha:new Date().toISOString().split('T')[0],
+    estatus_final_por:userProfile?.id||null,
+  }).eq('id',inscripcionId);
+  if(error){alert('Error al finalizar: '+error.message);return;}
+  await sb.from('academia_bitacora').insert({
+    inscripcion_id:inscripcionId,tipo:'observacion',
+    detalle:`Finalizado sin constancia (${academiaEstatusFinalLabel(estatus)}) por ${userProfile?.nombre||'—'}${motivo?': '+motivo:''}`,
+    capturada_por:currentUser?.id||null,
+  });
+  document.getElementById('modalFinalizarSinConstancia')?.remove();
+  academiaVerFicha(inscripcionId);
+}
+async function academiaRevertirFinalizarSinConstancia(inscripcionId){
+  if(!confirm('¿Revertir el estatus de finalizado? El participante volverá a aparecer como pendiente.')) return;
+  const {error}=await sb.from('academia_inscripciones').update({
+    estatus_final:null,estatus_final_motivo:null,estatus_final_fecha:null,estatus_final_por:null,
+  }).eq('id',inscripcionId);
+  if(error){alert('Error al revertir: '+error.message);return;}
+  await sb.from('academia_bitacora').insert({
+    inscripcion_id:inscripcionId,tipo:'observacion',
+    detalle:`Estatus de finalizado revertido por ${userProfile?.nombre||'—'}`,
+    capturada_por:currentUser?.id||null,
+  });
+  academiaVerFicha(inscripcionId);
 }
 
 async function academiaGenerarConstancia(inscripcionId,tipo){
