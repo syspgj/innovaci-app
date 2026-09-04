@@ -2000,6 +2000,11 @@ async function academiaAbrirNuevoAsistente(generacionId){
   window._academiaAsistenteDisponibles=disponibles;
   const empresaOpts=disponibles.map(e=>`<option value="${e.id}">Empresa #${e.numero}${e.servidor?` (servidor ${e.servidor})`:''}</option>`).join('');
   const html=`
+    <div style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px;background:#f8fafb;">
+      <label for="naImagenInput" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#fff;background:var(--teal);padding:7px 14px;border-radius:6px;cursor:pointer;">📷 Cargar desde imagen</label>
+      <input type="file" id="naImagenInput" accept="image/*" style="display:none;" onchange="academiaExtraerAsistenteDesdeImagen(this)">
+      <span id="naImagenEstado" style="font-size:11px;color:var(--text3);margin-left:10px;">Captura de Telegram/Ventas — se intentan llenar los campos de abajo, siempre revisa antes de guardar.</span>
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Nombre completo',inp('naNombre','text','Nombre del participante'))}
       ${fld('Empresa / razón social',inp('naEmpresa','text','Cuenta principal en Cartera'))}
@@ -2039,6 +2044,64 @@ async function academiaAbrirNuevoAsistente(generacionId){
       ${fld('Fin de sesión privada con Karen (sugerido: +90 días)',`<input id="naFechaFinSesion" type="date" oninput="this.dataset.tocado='1'">`)}
     </div>`;
   mkModal('modalNuevoAsistente',`Agregar asistente — ${gen?.curso?.nombre||''} ${gen?.clave||''}`,html,`academiaGuardarNuevoAsistente('${generacionId}')`,'Guardar',true);
+}
+
+// Lee una captura (ej. la que manda Ventas por Telegram con los datos de alta)
+// y llena los campos del modal de "Agregar asistente" automáticamente — Jp,
+// 2026-09-04: "esa información se tiene que capturar ahora en la app antes de
+// capturar en el Excel". Llama a un endpoint serverless propio (api/academia-
+// extraer-asistente.js) que a su vez llama a Claude con visión — la API key
+// vive solo en el servidor (variable de entorno en Vercel), nunca en el
+// navegador. SIEMPRE se deja para revisión manual antes de Guardar — nunca
+// guarda solo con lo que salga de la imagen.
+async function academiaExtraerAsistenteDesdeImagen(inputEl){
+  const file=inputEl.files?.[0];
+  if(!file) return;
+  const estado=document.getElementById('naImagenEstado');
+  if(estado){estado.textContent='Leyendo imagen...';estado.style.color='var(--teal)';}
+  try{
+    const b64=await new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(String(reader.result).split(',')[1]||'');
+      reader.onerror=reject;
+      reader.readAsDataURL(file);
+    });
+    const resp=await fetch('/api/academia-extraer-asistente',{
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({imagenBase64:b64,mediaType:file.type||'image/png'}),
+    });
+    let data={};
+    try{data=await resp.json();}catch(e){/* respuesta no-JSON, se maneja abajo */}
+    if(!resp.ok||!data.ok){
+      if(estado){estado.textContent='No se pudo leer la imagen: '+(data.error||'error desconocido')+'. Puedes capturar los datos a mano.';estado.style.color='#c0392b';}
+      return;
+    }
+    const d=data.datos||{};
+    if(d.nombre) document.getElementById('naNombre').value=d.nombre;
+    if(d.correo) document.getElementById('naMail').value=d.correo;
+    if(d.telefono) document.getElementById('naTelefono').value=d.telefono;
+    if(d.cliente_empresa) document.getElementById('naEmpresa').value=d.cliente_empresa;
+    if(d.vendedor) document.getElementById('naVendedor').value=d.vendedor;
+    if(d.nivel_acceso&&['esencial','plus','premium'].includes(d.nivel_acceso)&&document.getElementById('naAcceso')) document.getElementById('naAcceso').value=d.nivel_acceso;
+
+    const cache=window._academiaCache.participantesGen;
+    const cursoActual=cache?.gen?.curso?.nombre||'';
+    const primeraPalabraCurso=cursoActual.split(' ')[0]?.toLowerCase();
+    let avisoCurso='';
+    if(d.curso_texto&&cursoActual&&primeraPalabraCurso&&!d.curso_texto.toLowerCase().includes(primeraPalabraCurso)){
+      avisoCurso=` ⚠️ Verifica que el curso de la imagen coincida con esta generación (${cursoActual}).`;
+    }
+    if(estado){
+      estado.style.color='var(--text2)';
+      estado.innerHTML='✅ Datos cargados — revisa cada campo antes de guardar.'+
+        (d.curso_texto?` Curso detectado: "${d.curso_texto}".`:'')+
+        (d.bono_texto?` Bono detectado: "${d.bono_texto}" (no se guarda solo, anótalo aparte si aplica).`:'')+
+        avisoCurso;
+    }
+  }catch(e){
+    if(estado){estado.textContent='Error al procesar la imagen: '+(e?.message||e);estado.style.color='#c0392b';}
+  }
 }
 
 async function academiaGuardarNuevoAsistente(generacionId){
