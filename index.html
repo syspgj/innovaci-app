@@ -3237,29 +3237,30 @@ async function academiaDescargarConstancia(constanciaId){
 
 // Plantilla del mensaje de WhatsApp al entregar la constancia (Jp, 2026-08-31).
 function academiaPlantillaConstancia(insc,c,url){
-  // Jp confirmó que los emoji seguían saliendo como "�" en el mensaje de
-  // WhatsApp incluso con el archivo correcto ya desplegado (verificado
-  // viendo el código fuente en vivo) — así que NO era corrupción del
-  // archivo. Patrón real: TODOS los símbolos rotos (🎓📘🏷️🔖🚀📎💬💚) son
-  // caracteres "astrales" (fuera del Plano Básico Multilingüe, code point
-  // > U+FFFF, 4 bytes en UTF-8) — mientras que los acentos del texto (¡,
-  // ó, á) sí se veían bien, y esos SÍ son BMP. wa.me/WhatsApp está
-  // maltratando específicamente los caracteres astrales en el parámetro
-  // `text=`. Solución: usar solo símbolos dentro del BMP (\u2000-\u2BFF,
-  // el mismo rango de ★ ✔ ✉ ♥, etc.), que si sobreviven bien.
-  const G='\u2605',LIBRO='\u25B8',ETIQUETA='\u25B8',MARCADOR='\u25B8',
-    COHETE='\u2714',CLIP='\u2709',GLOBO='\u2709',CORAZON='\u2665';
+  // Historial: primero se probó con emoji normales (🎓📘🏷️🔖🚀📎💬💚) — salían
+  // como "�". Se confirmó que el archivo desplegado era el correcto y que
+  // el texto llegaba realmente roto (no un tema de fuente/render, Jp lo
+  // confirmó copiando el mensaje ya enviado y pegándolo aparte). Se probó
+  // una segunda ronda con símbolos más simples (★ ▸ ✔ ✉ ♥): ★ y ▸
+  // sobrevivieron bien, pero ✔ ✉ ♥ SIGUIERON saliendo rotos — no hay un
+  // patrón limpio (ni "todo lo astral" ni "todo un mismo bloque Unicode")
+  // que explique cuáles símbolos pasan por wa.me/WhatsApp intactos y
+  // cuáles no. Jp autorizó quitarlos si no se podían arreglar del todo, así
+  // que aquí se quitan por completo — el mensaje usa solo texto, guiones y
+  // *negritas* (que WhatsApp sí soporta de forma nativa), sin ningún
+  // símbolo decorativo. Los acentos/¡¿ del español SÍ sobreviven bien
+  // (confirmado en las 3 pruebas) y se conservan tal cual.
   const nombrePila=(insc?.participante?.nombre||'').trim().split(' ')[0]||'';
   const tipoLabel=c.tipo==='acreditacion'?'Acreditación':(c.tipo==='aprobacion'?'Aprobación':'Participación');
-  return `${G} ¡Felicidades, ${nombrePila}!\n\n`+
+  return `¡Felicidades, ${nombrePila}!\n\n`+
     `Con mucho gusto te hacemos llegar tu constancia de *${tipoLabel}* correspondiente a:\n\n`+
-    `${LIBRO} ${insc?.generacion?.curso?.nombre||''}\n`+
-    `${ETIQUETA} Generación ${insc?.generacion?.clave||''}\n`+
-    `${MARCADOR} Folio: ${c.folio}\n\n`+
-    `Gracias por tu compromiso y dedicación durante todo el proceso. ¡Ha sido un placer acompañarte en este paso más en tu crecimiento profesional! ${COHETE}\n\n`+
-    `${CLIP} Descarga tu constancia aquí:\n${url}\n\n`+
-    `Cualquier duda, quedamos a tus órdenes. ${GLOBO}\n\n`+
-    `*Grupo Innovaci* ${CORAZON}`;
+    `- ${insc?.generacion?.curso?.nombre||''}\n`+
+    `- Generación ${insc?.generacion?.clave||''}\n`+
+    `- Folio: ${c.folio}\n\n`+
+    `Gracias por tu compromiso y dedicación durante todo el proceso. ¡Ha sido un placer acompañarte en este paso más en tu crecimiento profesional!\n\n`+
+    `Descarga tu constancia aquí:\n${url}\n\n`+
+    `Cualquier duda, quedamos a tus órdenes.\n\n`+
+    `*Grupo Innovaci*`;
 }
 
 async function academiaEnviarConstanciaWhatsApp(constanciaId){
