@@ -10286,7 +10286,7 @@ async function guardarCapturaMetaAspel(){
 // ══════════════════════════════════════════════════════════════════════════════
 // OPERACIONES — Mesa de Control (Fase 1: catálogo de pólizas + banco de horas)
 // ══════════════════════════════════════════════════════════════════════════════
-let currentOpsTab='catalogo';
+let currentOpsTab='resumen';
 function swOps(tab){ currentOpsTab=tab; renderDirectorOperaciones(); }
 
 async function renderDirectorOperaciones(){
@@ -10295,16 +10295,153 @@ async function renderDirectorOperaciones(){
   <div style="padding:20px;">
     <div style="font-size:18px;font-weight:700;color:var(--navy);margin-bottom:4px;">🛠 Operaciones — Mesa de Control</div>
     <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">Catálogo de pólizas, contratos de clientes y banco de horas.</div>
-    <div style="display:flex;gap:8px;margin-bottom:18px;border-bottom:1px solid var(--border);padding-bottom:10px;">
+    <div style="display:flex;gap:8px;margin-bottom:18px;border-bottom:1px solid var(--border);padding-bottom:10px;flex-wrap:wrap;">
+      <button onclick="swOps('resumen')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='resumen'?'var(--navy)':'none'};color:${currentOpsTab==='resumen'?'#fff':'var(--text2)'};">📊 Resumen</button>
       <button onclick="swOps('catalogo')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='catalogo'?'var(--navy)':'none'};color:${currentOpsTab==='catalogo'?'#fff':'var(--text2)'};">📋 Catálogo de pólizas</button>
       <button onclick="swOps('contratos')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='contratos'?'var(--navy)':'none'};color:${currentOpsTab==='contratos'?'#fff':'var(--text2)'};">📁 Contratos y banco de horas</button>
       <button onclick="swOps('tickets')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='tickets'?'var(--navy)':'none'};color:${currentOpsTab==='tickets'?'#fff':'var(--text2)'};">🎫 Servicios / tickets</button>
     </div>
     <div id="opsBody"><div class="loading"><div class="spinner"></div></div></div>
   </div>`;
-  if(currentOpsTab==='catalogo') await renderOpsCatalogo();
+  if(currentOpsTab==='resumen') await renderOpsResumen();
+  else if(currentOpsTab==='catalogo') await renderOpsCatalogo();
   else if(currentOpsTab==='contratos') await renderOpsContratos();
   else await renderOpsTickets();
+}
+
+// ── RESUMEN / TORRE DE CONTROL (Jp, 2026-09-04): "la mesa de control es como
+// la torre de control de un aeropuerto" — de un vistazo, sin entrar a cada
+// ticket: qué solicitudes nuevas llegaron sin asignar, qué está corriendo,
+// qué servicios ya deberían tener reporte y no lo tienen, y qué tan cerca o
+// vencido está el tiempo de respuesta comprometido por la prioridad de cada
+// póliza (el catálogo ya trae resp_horas_min/max por prioridad — hasta ahora
+// no se usaba para nada visual). El semáforo de tiempo de respuesta usa horas
+// de RELOJ desde que se creó el ticket, no horas hábiles — mismo criterio de
+// "empezar simple, afinar después" que se usó para vigencia de prácticas en
+// Academia (punto 26, todavía pendiente ahí); si Jp necesita el cálculo
+// exacto por horario hábil aquí, se puede afinar cuando lo pida.
+async function renderOpsResumen(){
+  const body=document.getElementById('opsBody');
+  body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  const [{data:tickets,error},{data:asesores}]=await Promise.all([
+    sb.from('servicios_ejecutados')
+      .select('*, clientes_polizas(cliente_nombre, polizas_catalogo(prioridad_codigo,prioridad_nombre,resp_horas_min,resp_horas_max))')
+      .order('created_at',{ascending:false}).limit(500),
+    sb.from('usuarios').select('id,nombre').eq('rol','asesor').order('nombre')
+  ]);
+  if(error){body.innerHTML=`<div style="padding:20px;color:var(--red);">Error cargando el resumen: ${error.message}. ¿Ya corriste el SQL de Operaciones Fase 1?</div>`;return;}
+  window._opsTickets=tickets||[];
+  window._opsAsesores=asesores||[];
+
+  const today=todayLocal();
+  const ahora=Date.now();
+
+  function slaInfo(t){
+    const pri=t.clientes_polizas?.polizas_catalogo;
+    if(!pri||!pri.resp_horas_max||!t.created_at) return null;
+    const horasTranscurridas=(ahora-new Date(t.created_at).getTime())/3600000;
+    let estado='verde';
+    if(horasTranscurridas>pri.resp_horas_max) estado='rojo';
+    else if(horasTranscurridas>=(pri.resp_horas_min||pri.resp_horas_max*0.6)) estado='naranja';
+    return {estado,horasTranscurridas,pri};
+  }
+
+  const abiertos=(tickets||[]).filter(t=>['PENDIENTE','ASIGNADO','EN_CURSO'].includes(t.estatus));
+  const sinAsignar=(tickets||[]).filter(t=>t.estatus==='PENDIENTE');
+  const enCurso=(tickets||[]).filter(t=>t.estatus==='ASIGNADO'||t.estatus==='EN_CURSO');
+  const porCerrar=(tickets||[]).filter(t=>(t.estatus==='CONCLUIDO'||t.estatus==='NO_CONCLUIDO')&&!t.ticket_cerrado);
+  const vencidosSinReportar=enCurso.filter(t=>t.fecha_asignada&&t.fecha_asignada<today);
+  const nuevasHoy=(tickets||[]).filter(t=>t.created_at&&t.created_at.slice(0,10)===today);
+  const conSla=abiertos.map(t=>({t,sla:slaInfo(t)})).filter(x=>x.sla);
+  const slaRojo=conSla.filter(x=>x.sla.estado==='rojo').map(x=>x.t);
+  const slaNaranja=conSla.filter(x=>x.sla.estado==='naranja').map(x=>x.t);
+
+  // Pendientes por asesor: cuántos tickets tiene abiertos cada quien, cuántos
+  // ya vencieron su fecha sin reportarse, y cuántos reportó pero Mesa de
+  // Control aún no cierra — para saber a quién empujar sin tener que abrir
+  // ticket por ticket.
+  const porAsesor={};
+  (asesores||[]).forEach(a=>{porAsesor[a.id]={nombre:a.nombre,abiertos:0,vencidos:0,porCerrar:0};});
+  enCurso.forEach(t=>{
+    if(!t.asesor_id) return;
+    if(!porAsesor[t.asesor_id]) porAsesor[t.asesor_id]={nombre:t.asesor_nombre||'—',abiertos:0,vencidos:0,porCerrar:0};
+    porAsesor[t.asesor_id].abiertos++;
+    if(t.fecha_asignada&&t.fecha_asignada<today) porAsesor[t.asesor_id].vencidos++;
+  });
+  porCerrar.forEach(t=>{
+    if(!t.asesor_id) return;
+    if(!porAsesor[t.asesor_id]) porAsesor[t.asesor_id]={nombre:t.asesor_nombre||'—',abiertos:0,vencidos:0,porCerrar:0};
+    porAsesor[t.asesor_id].porCerrar++;
+  });
+  const asesoresConPendientes=Object.values(porAsesor).filter(a=>a.abiertos>0||a.porCerrar>0)
+    .sort((a,b)=>(b.vencidos-a.vencidos)||(b.abiertos-a.abiertos));
+
+  const tipoLabel={SOPORTE_POLIZA:'Póliza',EVENTO:'Evento',CURSO_EMPRESARIAL:'Curso'};
+  function filaTicket(t){
+    const sla=slaInfo(t);
+    const slaColor=sla?({verde:'#27AE60',naranja:'#F5A623',rojo:'#E84040'}[sla.estado]):null;
+    return `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="abrirDetalleTicket('${t.id}')">
+      <td style="padding:6px 8px;font-weight:600;color:var(--navy);">${t.folio_ticket||'—'}</td>
+      <td style="padding:6px 8px;">${t.cliente_nombre}</td>
+      <td style="padding:6px 8px;text-align:center;font-size:10px;">${tipoLabel[t.tipo_servicio]||t.tipo_servicio}</td>
+      <td style="padding:6px 8px;">${t.asesor_nombre||'<span style="color:#F5A623;">Sin asignar</span>'}</td>
+      <td style="padding:6px 8px;text-align:center;">${t.fecha_asignada||'—'}</td>
+      <td style="padding:6px 8px;text-align:center;">${sla?`<span style="padding:2px 8px;border-radius:10px;font-size:9px;font-weight:700;background:${slaColor}22;color:${slaColor};">${sla.pri.prioridad_codigo||sla.pri.prioridad_nombre||'SLA'} · ${Math.round(sla.horasTranscurridas)}h</span>`:'<span style="color:var(--text3);font-size:10px;">—</span>'}</td>
+    </tr>`;
+  }
+  function tablaTickets(rows){
+    return `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="background:var(--navy);color:#fff;">
+        <th style="padding:6px 8px;text-align:left;">Folio</th><th style="padding:6px 8px;text-align:left;">Cliente</th>
+        <th style="padding:6px 8px;">Tipo</th><th style="padding:6px 8px;text-align:left;">Asesor</th>
+        <th style="padding:6px 8px;">Fecha</th><th style="padding:6px 8px;">Tiempo de respuesta</th>
+      </tr></thead>
+      <tbody>${rows.map(t=>filaTicket(t)).join('')}</tbody>
+    </table>`;
+  }
+
+  body.innerHTML=`
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:20px;">
+      <div class="thc" style="cursor:pointer;" onclick="opsIrATickets('PENDIENTE')"><div class="th-lbl">Sin asignar</div><div class="th-val" style="color:#F5A623;">${sinAsignar.length}</div></div>
+      <div class="thc" style="cursor:pointer;" onclick="opsIrATickets('encurso')"><div class="th-lbl">En curso</div><div class="th-val" style="color:#2980B9;">${enCurso.length}</div></div>
+      <div class="thc" style="${vencidosSinReportar.length?'border:1px solid var(--red);':''}"><div class="th-lbl">Vencidos sin reportar</div><div class="th-val" style="color:var(--red);">${vencidosSinReportar.length}</div></div>
+      <div class="thc" style="cursor:pointer;" onclick="opsIrATickets('porcerrar')"><div class="th-lbl">Por cerrar</div><div class="th-val" style="color:#8B5CF6;">${porCerrar.length}</div></div>
+      <div class="thc"><div class="th-lbl">Nuevas hoy</div><div class="th-val" style="color:var(--teal);">${nuevasHoy.length}</div></div>
+      <div class="thc" style="${slaRojo.length?'border:1px solid var(--red);':''}"><div class="th-lbl">Tiempo de resp. vencido</div><div class="th-val" style="color:var(--red);">${slaRojo.length}</div></div>
+    </div>
+
+    ${sinAsignar.length?`<div style="margin-bottom:22px;">
+      <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">🆕 Nuevas solicitudes sin asignar (${sinAsignar.length})</div>
+      ${tablaTickets(sinAsignar)}
+    </div>`:''}
+
+    ${(slaRojo.length||slaNaranja.length)?`<div style="margin-bottom:22px;">
+      <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">⏱ Tiempo de respuesta por vencer / vencido (${slaRojo.length+slaNaranja.length})</div>
+      ${tablaTickets([...slaRojo,...slaNaranja])}
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;">Solo aplica a servicios de póliza con prioridad definida. El semáforo usa horas corridas desde que se creó el ticket, sin descontar horario no hábil todavía.</div>
+    </div>`:''}
+
+    ${vencidosSinReportar.length?`<div style="margin-bottom:22px;">
+      <div style="font-size:13px;font-weight:700;color:var(--red);margin-bottom:8px;">⚠ Servicios cuya fecha ya pasó y siguen sin reporte (${vencidosSinReportar.length})</div>
+      ${tablaTickets(vencidosSinReportar)}
+    </div>`:''}
+
+    <div>
+      <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">👤 Asesores con pendientes</div>
+      ${asesoresConPendientes.length===0?'<div style="color:var(--text3);font-size:12px;">Ningún asesor tiene servicios abiertos ni reportes por cerrar.</div>':`
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;">
+        ${asesoresConPendientes.map(a=>`<div class="card" style="padding:12px 14px;${a.vencidos?'border-left:3px solid var(--red);':'border-left:3px solid var(--teal);'}">
+          <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:6px;">${a.nombre}</div>
+          <div style="font-size:11px;color:var(--text2);">🎫 ${a.abiertos} abierto(s)${a.vencidos?` · <span style="color:var(--red);font-weight:700;">${a.vencidos} vencido(s) sin reportar</span>`:''}</div>
+          ${a.porCerrar?`<div style="font-size:11px;color:#8B5CF6;margin-top:2px;">📝 ${a.porCerrar} reporte(s) por cerrar</div>`:''}
+        </div>`).join('')}
+      </div>`}
+    </div>
+  `;
+}
+function opsIrATickets(filtro){
+  window._opsTicketFiltro=filtro;
+  swOps('tickets');
 }
 
 async function renderOpsCatalogo(){
