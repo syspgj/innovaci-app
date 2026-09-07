@@ -10307,12 +10307,14 @@ async function renderDirectorOperaciones(){
       <button onclick="swOps('catalogo')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='catalogo'?'var(--navy)':'none'};color:${currentOpsTab==='catalogo'?'#fff':'var(--text2)'};">📋 Catálogo de pólizas</button>
       <button onclick="swOps('contratos')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='contratos'?'var(--navy)':'none'};color:${currentOpsTab==='contratos'?'#fff':'var(--text2)'};">📋 Pólizas</button>
       <button onclick="swOps('tickets')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='tickets'?'var(--navy)':'none'};color:${currentOpsTab==='tickets'?'#fff':'var(--text2)'};">🎫 Servicios / tickets</button>
+      <button onclick="swOps('historial')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='historial'?'var(--navy)':'none'};color:${currentOpsTab==='historial'?'#fff':'var(--text2)'};">📜 Historial</button>
     </div>
     <div id="opsBody"><div class="loading"><div class="spinner"></div></div></div>
   </div>`;
   if(currentOpsTab==='resumen') await renderOpsResumen();
   else if(currentOpsTab==='catalogo') await renderOpsCatalogo();
   else if(currentOpsTab==='contratos') await renderOpsContratos();
+  else if(currentOpsTab==='historial') await renderOpsHistorial();
   else await renderOpsTickets();
 }
 
@@ -10708,6 +10710,19 @@ async function abrirDetallePoliza(id){
   const est=opsEstadoPoliza(c);
   const cartera=c.clientes_cartera;
   const colorEstatus={PENDIENTE:'#F5A623',ASIGNADO:'#2980B9',EN_CURSO:'#2980B9',CONCLUIDO:'#27AE60',NO_CONCLUIDO:'#E84040',CANCELADO_INASISTENCIA:'#94a3b8'};
+  // Historial anterior a la app (Jp, 2026-09-07): el formulario de Mesa de
+  // Control usado desde 2019 no se liga a un contrato específico, sino a la
+  // cuenta de Cartera — así que se trae por cliente_cartera_id, no por esta
+  // póliza puntual, y se combina con los tickets de la app en una sola lista.
+  let historicos=[];
+  if(cartera?.id){
+    const {data:h}=await sb.from('servicios_historicos').select('id,fecha_registro,asesor_nombre,servicio_realizado,forma_servicio,tipo_ticket').eq('cliente_cartera_id',cartera.id).order('fecha_registro',{ascending:false}).limit(50);
+    historicos=h||[];
+  }
+  const combinados=[
+    ...(tickets||[]).map(t=>({fuente:'app',fecha:t.fecha_asignada||t.created_at,folio:t.folio_ticket,asesor:t.asesor_nombre,detalle:t.estatus,min:t.duracion_facturada_min,id:t.id})),
+    ...historicos.map(h=>({fuente:'historico',fecha:h.fecha_registro,folio:h.tipo_ticket||'—',asesor:h.asesor_nombre,detalle:h.servicio_realizado||h.forma_servicio||'—',min:null,id:h.id})),
+  ].sort((a,b)=>String(b.fecha||'').localeCompare(String(a.fecha||'')));
   const html=`
     <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:14px;">
       <div>
@@ -10732,26 +10747,37 @@ async function abrirDetallePoliza(id){
     ${c.vendedor?`<div style="margin-bottom:8px;font-size:12px;"><b>Vendedor:</b> ${c.vendedor}</div>`:''}
     ${c.notas?`<div style="margin-bottom:8px;font-size:12px;"><b>Notas:</b> ${c.notas}</div>`:''}
     ${c.origen==='crm_import'?`<div style="margin-bottom:12px;font-size:10px;color:var(--text3);">Importado del CRM anterior${c.numero_proyecto_crm?' · proyecto '+c.numero_proyecto_crm:''}.</div>`:''}
-    <div style="font-size:12px;font-weight:700;color:var(--navy);margin:14px 0 8px;">Historial de servicios (${(tickets||[]).length})</div>
-    <div style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+    <div style="font-size:12px;font-weight:700;color:var(--navy);margin:14px 0 8px;">Historial de servicios (${combinados.length})${historicos.length?` · incluye ${historicos.length} del historial 2019-2026`:''}</div>
+    <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
       <table style="width:100%;border-collapse:collapse;font-size:11px;">
         <thead><tr style="background:var(--bg2,#f5f6f8);position:sticky;top:0;">
-          <th style="padding:6px 8px;text-align:left;">Folio</th><th style="padding:6px 8px;">Fecha</th>
-          <th style="padding:6px 8px;text-align:left;">Asesor</th><th style="padding:6px 8px;">Estatus</th><th style="padding:6px 8px;">Min.</th>
+          <th style="padding:6px 8px;text-align:left;">Fecha</th><th style="padding:6px 8px;text-align:left;">Detalle</th>
+          <th style="padding:6px 8px;text-align:left;">Asesor</th><th style="padding:6px 8px;">Origen</th>
         </tr></thead>
         <tbody>
-          ${(tickets||[]).length===0?'<tr><td colspan="5" style="text-align:center;padding:12px;color:var(--text3);">Sin servicios registrados todavía</td></tr>':''}
-          ${(tickets||[]).map(t=>`<tr style="border-top:1px solid var(--border);cursor:pointer;" onclick="document.getElementById('modalDetallePoliza')?.remove();abrirDetalleTicket('${t.id}')">
-            <td style="padding:6px 8px;font-weight:600;color:var(--navy);">${t.folio_ticket||'—'}</td>
-            <td style="padding:6px 8px;text-align:center;">${t.fecha_asignada||'—'}</td>
-            <td style="padding:6px 8px;">${t.asesor_nombre||'—'}</td>
-            <td style="padding:6px 8px;text-align:center;"><span style="padding:1px 6px;border-radius:8px;font-size:9px;font-weight:700;background:${colorEstatus[t.estatus]}22;color:${colorEstatus[t.estatus]};">${t.estatus}</span></td>
-            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${t.duracion_facturada_min||'—'}</td>
-          </tr>`).join('')}
+          ${combinados.length===0?'<tr><td colspan="4" style="text-align:center;padding:12px;color:var(--text3);">Sin servicios registrados todavía</td></tr>':''}
+          ${combinados.map(r=>{
+            const esApp=r.fuente==='app';
+            const onclick=esApp?`document.getElementById('modalDetallePoliza')?.remove();abrirDetalleTicket('${r.id}')`:`verDetalleHistoricoDesdeModal('${r.id}')`;
+            return `<tr style="border-top:1px solid var(--border);cursor:pointer;" onclick="${onclick}">
+            <td style="padding:6px 8px;font-family:'JetBrains Mono',monospace;">${(r.fecha||'—').toString().slice(0,10)}</td>
+            <td style="padding:6px 8px;">${esApp?(r.folio||'—')+' · '+(r.detalle||''):r.detalle}</td>
+            <td style="padding:6px 8px;">${r.asesor||'—'}</td>
+            <td style="padding:6px 8px;text-align:center;"><span style="padding:1px 6px;border-radius:8px;font-size:9px;font-weight:700;background:${esApp?colorEstatus[r.detalle]||'#2980B9':'#94a3b8'}22;color:${esApp?colorEstatus[r.detalle]||'#2980B9':'#94a3b8'};">${esApp?'App':'Histórico'}</span></td>
+          </tr>`;
+          }).join('')}
         </tbody>
       </table>
     </div>`;
   mkModal('modalDetallePoliza',`Detalle de póliza — ${c.cliente_nombre}`,html,null,'Cerrar',true);
+}
+// Ver un registro histórico completo desde el modal de detalle de póliza
+// (aquí solo se trajeron campos resumidos, así que se pide el registro
+// completo al hacer clic, igual que hace la búsqueda de la pestaña Historial).
+function verDetalleHistoricoDesdeModal(id){
+  sb.from('servicios_historicos').select('*').eq('id',id).single().then(({data})=>{
+    if(data) mostrarModalHistorico(data);
+  });
 }
 // Alias por compatibilidad (el nombre viejo llamaba al detalle antes de la Fase 2).
 async function editarContratoPoliza(id){ return abrirDetallePoliza(id); }
@@ -11009,6 +11035,120 @@ async function guardarDetalleTicket(){
 
   document.getElementById('modalDetalleTicket')?.remove();
   renderOpsTickets();
+}
+
+// ── HISTORIAL (Jp, 2026-09-07): el log completo de servicios que Mesa de
+// Control ha reportado desde 2019 vía el formulario "Pólizas de Asistencia
+// Aspel" (123FormBuilder) — 8,649 registros importados a `servicios_historicos`.
+// Objetivo confirmado con Jp: verlo en el detalle de póliza/cuenta (ver
+// abrirDetallePoliza más abajo, que ya lo combina) y tener un reporte de
+// productividad histórica por asesor. Aquí solo se traen fecha/asesor/tipo
+// (no las descripciones completas) para que el conteo agregado sea liviano;
+// el buscador trae el detalle completo solo para el cliente que se busca.
+async function renderOpsHistorial(){
+  const body=document.getElementById('opsBody');
+  body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  const {data:rows,error}=await sb.from('servicios_historicos').select('fecha_registro,asesor_nombre,tipo_ticket,cliente_cartera_id');
+  if(error){body.innerHTML=`<div style="color:var(--red);">Error: ${error.message}. ¿Ya corriste el import de historial (supabase/mesa_control_historial_*.sql)?</div>`;return;}
+  window._opsHistorialResumen=rows||[];
+  const total=(rows||[]).length;
+  const conVinculo=(rows||[]).filter(r=>r.cliente_cartera_id).length;
+  const porAnio={}, porAsesor={};
+  (rows||[]).forEach(r=>{
+    const anio=r.fecha_registro?new Date(r.fecha_registro).getFullYear():'—';
+    porAnio[anio]=(porAnio[anio]||0)+1;
+    const a=r.asesor_nombre||'Sin asesor';
+    porAsesor[a]=(porAsesor[a]||0)+1;
+  });
+  const anios=Object.keys(porAnio).sort();
+  const asesoresOrdenados=Object.entries(porAsesor).sort((a,b)=>b[1]-a[1]);
+  const maxAnio=Math.max(...Object.values(porAnio));
+  const maxAsesor=Math.max(...asesoresOrdenados.map(([,n])=>n));
+  body.innerHTML=`
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px;">
+      <b>${total.toLocaleString('es-MX')}</b> servicios registrados desde 2019 (formulario histórico de Mesa de Control) · <b>${conVinculo.toLocaleString('es-MX')}</b> ligados a una cuenta de Cartera (${total?Math.round(conVinculo/total*100):0}%)
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:20px;">
+      <div class="card" style="padding:14px;">
+        <div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:10px;">Servicios por año</div>
+        ${anios.map(a=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          <div style="width:36px;font-size:11px;color:var(--text3);">${a}</div>
+          <div style="flex:1;background:var(--bg2,#f5f6f8);border-radius:4px;overflow:hidden;height:14px;"><div style="width:${maxAnio?porAnio[a]/maxAnio*100:0}%;background:var(--teal);height:100%;"></div></div>
+          <div style="width:44px;text-align:right;font-size:11px;font-family:'JetBrains Mono',monospace;">${porAnio[a]}</div>
+        </div>`).join('')}
+      </div>
+      <div class="card" style="padding:14px;">
+        <div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:10px;">Servicios por asesor (histórico completo)</div>
+        ${asesoresOrdenados.map(([a,n])=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          <div style="width:120px;font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${a}</div>
+          <div style="flex:1;background:var(--bg2,#f5f6f8);border-radius:4px;overflow:hidden;height:14px;"><div style="width:${maxAsesor?n/maxAsesor*100:0}%;background:var(--navy);height:100%;"></div></div>
+          <div style="width:44px;text-align:right;font-size:11px;font-family:'JetBrains Mono',monospace;">${n}</div>
+        </div>`).join('')}
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;margin-bottom:10px;">
+      <input id="opsHistorialBuscar" type="text" placeholder="Buscar cliente en el historial completo..." style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
+      <button onclick="buscarOpsHistorial()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Buscar</button>
+    </div>
+    <div id="opsHistorialResultados"></div>`;
+  document.getElementById('opsHistorialBuscar')?.addEventListener('keydown',e=>{ if(e.key==='Enter') buscarOpsHistorial(); });
+}
+
+async function buscarOpsHistorial(){
+  const q=(document.getElementById('opsHistorialBuscar')?.value||'').trim();
+  const cont=document.getElementById('opsHistorialResultados');
+  if(!q){cont.innerHTML='';return;}
+  cont.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  const {data:rows,error}=await sb.from('servicios_historicos').select('*').ilike('cliente_nombre','%'+q+'%').order('fecha_registro',{ascending:false}).limit(200);
+  if(error){cont.innerHTML=`<div style="color:var(--red);">Error: ${error.message}</div>`;return;}
+  if(!rows||rows.length===0){cont.innerHTML='<div style="color:var(--text3);font-size:12px;padding:12px;">Sin resultados para "'+q+'".</div>';return;}
+  cont.innerHTML=`<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${rows.length} resultado(s)${rows.length===200?' (mostrando los primeros 200)':''}</div>
+  <div class="card" style="overflow-x:auto;">
+  <table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="background:var(--bg2,#f5f6f8);">
+      <th style="padding:6px 8px;text-align:left;">Fecha</th><th style="padding:6px 8px;text-align:left;">Cliente</th>
+      <th style="padding:6px 8px;text-align:left;">Servicio</th><th style="padding:6px 8px;text-align:left;">Asesor</th>
+      <th style="padding:6px 8px;text-align:center;">Tipo</th>
+    </tr></thead>
+    <tbody>
+      ${rows.map(r=>`<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="verDetalleHistorico('${r.id}')">
+        <td style="padding:6px 8px;font-family:'JetBrains Mono',monospace;">${r.fecha_registro?r.fecha_registro.slice(0,10):'—'}</td>
+        <td style="padding:6px 8px;">${r.cliente_nombre||'—'}</td>
+        <td style="padding:6px 8px;">${r.servicio_realizado||r.forma_servicio||'—'}</td>
+        <td style="padding:6px 8px;">${r.asesor_nombre||'—'}</td>
+        <td style="padding:6px 8px;text-align:center;font-size:10px;">${r.tipo_ticket||'—'}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table></div>`;
+  window._opsHistorialBusqueda=rows;
+}
+
+function verDetalleHistorico(id){
+  const r=(window._opsHistorialBusqueda||[]).find(x=>x.id===id);
+  if(!r) return;
+  mostrarModalHistorico(r);
+}
+
+// Modal de solo lectura reutilizado tanto por la búsqueda de Historial como
+// por el detalle de póliza (abrirDetallePoliza) para mostrar un registro
+// histórico completo con todos sus campos originales del formulario.
+function mostrarModalHistorico(r){
+  const html=`
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Registro histórico del formulario de Mesa de Control · ${r.fecha_registro?r.fecha_registro.slice(0,16).replace('T',' '):'—'}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;font-size:12px;">
+      <div><div style="color:var(--text3);font-size:10px;">Cliente</div><div>${r.cliente_nombre||'—'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Póliza (referencia original)</div><div>${r.poliza_texto||'—'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Asesor</div><div>${r.asesor_nombre||'—'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Tipo de ticket</div><div>${r.tipo_ticket||'—'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Servicio realizado</div><div>${r.servicio_realizado||'—'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Forma del servicio</div><div>${r.forma_servicio||'—'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Sistema relacionado</div><div>${r.sistema_relacionado||'—'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Minutos remoto</div><div>${r.minutos_remoto??'—'}</div></div>
+    </div>
+    ${r.descripcion?`<div style="margin-bottom:10px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Descripción del servicio:</b><br>${r.descripcion}</div>`:''}
+    ${r.observacion_interna&&r.observacion_interna!=='NA'?`<div style="margin-bottom:10px;padding:10px 12px;background:rgba(232,64,64,0.06);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Observación interna:</b><br>${r.observacion_interna}</div>`:''}
+    <div style="font-size:10px;color:var(--text3);">Control de calidad del asesor: correcto=${r.correcto_reportado||'—'} · inició a tiempo=${r.inicio_tiempo_forma||'—'} · reportó a tiempo=${r.reporto_tiempo_forma||'—'} · detectó necesidades=${r.detecto_necesidades||'—'}</div>`;
+  mkModal('modalDetalleHistorico','Servicio histórico',html,null,'Cerrar',true);
 }
 
 async function renderDirectorPromociones(){
