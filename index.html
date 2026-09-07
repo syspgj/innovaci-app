@@ -10288,6 +10288,13 @@ async function guardarCapturaMetaAspel(){
 // ══════════════════════════════════════════════════════════════════════════════
 let currentOpsTab='resumen';
 function swOps(tab){ currentOpsTab=tab; renderDirectorOperaciones(); }
+// Pólizas (antes "Contratos"): estado de filtros y orden — mismo patrón de
+// fichas de filtro instantáneo + columnas ordenables que Academia (Lote 16).
+let opsPolizasFiltro={grupo:null,tipo:null,q:''};
+let opsPolizasSort={col:'fecha_vencimiento',dir:'asc'};
+// Tickets: filtro instantáneo por tipo de servicio (Jp: "servicios y tickets
+// igual filtrado inmediato"), además del filtro por estatus que ya existía.
+let opsTicketsTipoFiltro=null;
 
 async function renderDirectorOperaciones(){
   const mc=document.getElementById('mainContent');
@@ -10298,7 +10305,7 @@ async function renderDirectorOperaciones(){
     <div style="display:flex;gap:8px;margin-bottom:18px;border-bottom:1px solid var(--border);padding-bottom:10px;flex-wrap:wrap;">
       <button onclick="swOps('resumen')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='resumen'?'var(--navy)':'none'};color:${currentOpsTab==='resumen'?'#fff':'var(--text2)'};">📊 Resumen</button>
       <button onclick="swOps('catalogo')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='catalogo'?'var(--navy)':'none'};color:${currentOpsTab==='catalogo'?'#fff':'var(--text2)'};">📋 Catálogo de pólizas</button>
-      <button onclick="swOps('contratos')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='contratos'?'var(--navy)':'none'};color:${currentOpsTab==='contratos'?'#fff':'var(--text2)'};">📁 Contratos y banco de horas</button>
+      <button onclick="swOps('contratos')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='contratos'?'var(--navy)':'none'};color:${currentOpsTab==='contratos'?'#fff':'var(--text2)'};">📋 Pólizas</button>
       <button onclick="swOps('tickets')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='tickets'?'var(--navy)':'none'};color:${currentOpsTab==='tickets'?'#fff':'var(--text2)'};">🎫 Servicios / tickets</button>
     </div>
     <div id="opsBody"><div class="loading"><div class="spinner"></div></div></div>
@@ -10477,45 +10484,158 @@ async function renderOpsCatalogo(){
   }).join('');
 }
 
+// Estado real de una póliza para Mesa de Control. Jp (2026-09-07): vigente =
+// en curso + tiempo restante + fecha de término vigente. Aquí agregamos los
+// grupos que pidió ver: en curso, por vencer (fecha U horas), nueva, vencida,
+// agotada. "Por vencer" usa 30 días o <=15% de horas restantes — mismo
+// umbral visual que ya existía (15%) para no inventar un criterio nuevo.
+function opsEstadoPoliza(c){
+  const hoy=new Date();
+  const totales=c.horas_totales||0, consumidas=c.horas_consumidas||0;
+  const restantes=Math.max(totales-consumidas,0);
+  const fVenc=c.fecha_vencimiento?new Date(c.fecha_vencimiento+'T00:00:00'):null;
+  const fIni=c.fecha_inicio?new Date(c.fecha_inicio+'T00:00:00'):null;
+  const diasParaVencer=fVenc?Math.ceil((fVenc-hoy)/86400000):null;
+  const vencida=fVenc?fVenc<hoy:false;
+  const agotada=totales>0&&restantes<=0;
+  const porVencerFecha=!vencida&&!agotada&&diasParaVencer!==null&&diasParaVencer<=30;
+  const porVencerHoras=!vencida&&!agotada&&totales>0&&restantes>0&&restantes<=totales*0.15;
+  const diasDesdeInicio=fIni?Math.floor((hoy-fIni)/86400000):null;
+  const nueva=!vencida&&!agotada&&diasDesdeInicio!==null&&diasDesdeInicio>=0&&diasDesdeInicio<=30;
+  let grupo='vigente';
+  if(agotada) grupo='agotada';
+  else if(vencida) grupo='vencida';
+  else if(porVencerFecha||porVencerHoras) grupo='porvencer';
+  else if(nueva) grupo='nueva';
+  const labelGrupo={vigente:'En curso',porvencer:'Por vencer',nueva:'Nueva',vencida:'Vencida',agotada:'Agotada'};
+  const colorGrupo={vigente:'#27AE60',porvencer:'#F5A623',nueva:'#2980B9',vencida:'#E84040',agotada:'#94a3b8'};
+  return {totales,consumidas,restantes,diasParaVencer,vencida,agotada,porVencerFecha,porVencerHoras,nueva,grupo,label:labelGrupo[grupo],color:colorGrupo[grupo]};
+}
+
 async function renderOpsContratos(){
   const body=document.getElementById('opsBody');
-  const [{data:contratos},{data:polizas}]=await Promise.all([
-    sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,horas_incluidas)').order('fecha_vencimiento'),
+  body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  const [{data:contratos,error},{data:polizas}]=await Promise.all([
+    sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,horas_incluidas), clientes_cartera(razon_social,vendedor_asignado,telefono)').order('fecha_vencimiento'),
     sb.from('polizas_catalogo').select('id,categoria,nombre,modalidad,horas_incluidas,precio,vigencia_meses').eq('activo',true).order('categoria').order('precio')
   ]);
+  if(error){body.innerHTML=`<div style="color:var(--red);">Error: ${error.message}</div>`;return;}
   window._opsPolizasCat=polizas||[];
-  const hoy=new Date();
+  window._opsPolizas=contratos||[];
   body.innerHTML=`
-    <button onclick="abrirNuevoContratoPoliza()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;margin-bottom:14px;font-family:'Inter',sans-serif;">+ Nuevo contrato</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
+      <input id="opsPolizasBuscar" type="text" placeholder="Buscar cliente..." value="${opsPolizasFiltro.q||''}" oninput="opsPolizasFiltro.q=this.value;opsPintarPolizas();" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;min-width:220px;">
+      <button onclick="abrirNuevoContratoPoliza()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Nuevo contrato</button>
+    </div>
+    <div id="opsPolizasFichas"></div>
+    <div id="opsPolizasTiposFichas" style="margin-bottom:14px;"></div>
+    <div id="opsPolizasTablaCont"></div>`;
+  opsPintarPolizas();
+}
+
+function opsFiltrarPolizasGrupo(grupo){
+  opsPolizasFiltro.grupo=opsPolizasFiltro.grupo===grupo?null:grupo;
+  opsPintarPolizas();
+}
+function opsFiltrarPolizasTipo(tipo){
+  opsPolizasFiltro.tipo=opsPolizasFiltro.tipo===tipo?null:tipo;
+  opsPintarPolizas();
+}
+function opsOrdenarPolizas(col){
+  if(opsPolizasSort.col===col){ opsPolizasSort.dir=opsPolizasSort.dir==='asc'?'desc':'asc'; }
+  else { opsPolizasSort={col,dir:'asc'}; }
+  opsPintarPolizas();
+}
+function opsThPolizas(col,label,alinear){
+  const activa=opsPolizasSort.col===col;
+  const flecha=activa?(opsPolizasSort.dir==='asc'?' ▲':' ▼'):'';
+  return `<th style="padding:7px 8px;cursor:pointer;user-select:none;white-space:nowrap;text-align:${alinear||'left'};" onclick="opsOrdenarPolizas('${col}')">${label}${flecha}</th>`;
+}
+
+function opsPintarPolizas(){
+  const contDom=document.getElementById('opsPolizasFichas');
+  if(!contDom) return;
+  const todas=window._opsPolizas||[];
+  const conteos={vigente:0,porvencer:0,nueva:0,vencida:0,agotada:0};
+  const porTipo={};
+  todas.forEach(c=>{
+    const est=opsEstadoPoliza(c);
+    conteos[est.grupo]++;
+    const nombreTipo=c.polizas_catalogo?.nombre||'Sin catálogo';
+    porTipo[nombreTipo]=(porTipo[nombreTipo]||0)+1;
+  });
+  const fichas=[
+    ['vigente','En curso',conteos.vigente,'#27AE60'],
+    ['porvencer','Por vencer',conteos.porvencer,'#F5A623'],
+    ['nueva','Nuevas',conteos.nueva,'#2980B9'],
+    ['vencida','Vencidas',conteos.vencida,'#E84040'],
+    ['agotada','Agotadas',conteos.agotada,'#94a3b8'],
+  ];
+  contDom.innerHTML=`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:12px;">
+    ${fichas.map(([g,label,n,color])=>`<div class="thc" style="cursor:pointer;${opsPolizasFiltro.grupo===g?`border:1px solid ${color};`:''}" onclick="opsFiltrarPolizasGrupo('${g}')"><div class="th-lbl">${label}</div><div class="th-val" style="color:${color};">${n}</div></div>`).join('')}
+    <div class="thc" style="cursor:pointer;${!opsPolizasFiltro.grupo?'border:1px solid var(--navy);':''}" onclick="opsPolizasFiltro.grupo=null;opsPintarPolizas();"><div class="th-lbl">Todas</div><div class="th-val">${todas.length}</div></div>
+  </div>`;
+  const tiposDom=document.getElementById('opsPolizasTiposFichas');
+  const tipos=Object.keys(porTipo).sort();
+  if(tiposDom) tiposDom.innerHTML=`<div style="display:flex;gap:8px;flex-wrap:wrap;">
+    ${tipos.map(t=>`<span onclick="opsFiltrarPolizasTipo('${t.replace(/'/g,"\\'")}')" style="cursor:pointer;padding:4px 12px;border-radius:14px;font-size:11px;font-weight:600;border:1px solid ${opsPolizasFiltro.tipo===t?'var(--teal)':'var(--border)'};background:${opsPolizasFiltro.tipo===t?'rgba(0,169,157,0.1)':'#fff'};color:${opsPolizasFiltro.tipo===t?'var(--teal)':'var(--text2)'};">${t} <span style="opacity:0.6;">(${porTipo[t]})</span></span>`).join('')}
+  </div>`;
+
+  const tablaDom=document.getElementById('opsPolizasTablaCont');
+  if(!tablaDom) return;
+  const q=(opsPolizasFiltro.q||'').trim().toLowerCase();
+  let filas=todas.filter(c=>{
+    const est=opsEstadoPoliza(c);
+    if(opsPolizasFiltro.grupo&&est.grupo!==opsPolizasFiltro.grupo) return false;
+    if(opsPolizasFiltro.tipo&&(c.polizas_catalogo?.nombre||'Sin catálogo')!==opsPolizasFiltro.tipo) return false;
+    if(q&&!(c.cliente_nombre||'').toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const {col,dir}=opsPolizasSort, mult=dir==='asc'?1:-1;
+  const valorOrden=(c)=>{
+    const est=opsEstadoPoliza(c);
+    if(col==='cliente') return c.cliente_nombre||'';
+    if(col==='poliza') return c.polizas_catalogo?.nombre||'';
+    if(col==='fecha_inicio') return c.fecha_inicio||'';
+    if(col==='fecha_vencimiento') return c.fecha_vencimiento||'';
+    if(col==='horas') return c.horas_totales||0;
+    if(col==='consumidas') return c.horas_consumidas||0;
+    if(col==='restantes') return est.restantes;
+    if(col==='estatus') return est.label;
+    return '';
+  };
+  filas=[...filas].sort((a,b)=>{
+    const va=valorOrden(a), vb=valorOrden(b);
+    if(typeof va==='number'&&typeof vb==='number') return (va-vb)*mult;
+    return String(va).localeCompare(String(vb))*mult;
+  });
+  tablaDom.innerHTML=`
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${filas.length} de ${todas.length} pólizas</div>
+    <div class="card" style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:12px;">
-      <thead><tr style="background:var(--navy);color:#fff;">
-        <th style="padding:7px 8px;text-align:left;">Cliente</th><th style="padding:7px 8px;text-align:left;">Póliza</th>
-        <th style="padding:7px 8px;">Inicio</th><th style="padding:7px 8px;">Vencimiento</th>
-        <th style="padding:7px 8px;text-align:right;">Horas</th><th style="padding:7px 8px;">Consumidas</th>
-        <th style="padding:7px 8px;">Restantes</th><th style="padding:7px 8px;">Estatus</th>
+      <thead><tr style="background:var(--bg2,#f5f6f8);">
+        ${opsThPolizas('cliente','Cliente')}${opsThPolizas('poliza','Póliza')}
+        ${opsThPolizas('fecha_inicio','Inicio','center')}${opsThPolizas('fecha_vencimiento','Vencimiento','center')}
+        ${opsThPolizas('horas','Horas','right')}${opsThPolizas('consumidas','Consumidas','center')}
+        ${opsThPolizas('restantes','Restantes','center')}${opsThPolizas('estatus','Estatus','center')}
       </tr></thead>
       <tbody>
-        ${(contratos||[]).length===0?'<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text3);">Sin contratos capturados todavía</td></tr>':''}
-        ${(contratos||[]).map(c=>{
-          const totales=c.horas_totales||0, consumidas=c.horas_consumidas||0, restantes=Math.max(totales-consumidas,0);
-          const vencida=new Date(c.fecha_vencimiento)<hoy;
-          const agotada=totales>0&&restantes<=0;
-          const estatusReal=agotada?'AGOTADA':vencida?'VENCIDA':'VIGENTE';
-          const color=estatusReal==='VIGENTE'?'#27AE60':estatusReal==='VENCIDA'?'#E84040':'#F5A623';
-          const diasParaVencer=Math.ceil((new Date(c.fecha_vencimiento)-hoy)/86400000);
-          return `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="editarContratoPoliza('${c.id}')">
+        ${filas.length===0?'<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text3);">Sin pólizas con estos filtros</td></tr>':''}
+        ${filas.map(c=>{
+          const est=opsEstadoPoliza(c);
+          return `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="abrirDetallePoliza('${c.id}')">
             <td style="padding:6px 8px;font-weight:600;">${c.cliente_nombre}</td>
             <td style="padding:6px 8px;">${c.polizas_catalogo?.nombre||'—'}</td>
-            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${c.fecha_inicio}</td>
-            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${c.fecha_vencimiento}${!vencida&&diasParaVencer<=15?` <span style="color:#F5A623;font-size:9px;">(${diasParaVencer}d)</span>`:''}</td>
-            <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${totales?totales+'h':'—'}</td>
-            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${consumidas}h</td>
-            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;color:${restantes<=totales*0.15?'#E84040':'var(--text)'};">${totales?restantes+'h':'—'}</td>
-            <td style="padding:6px 8px;text-align:center;"><span style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${color}22;color:${color};">${estatusReal}</span></td>
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${c.fecha_inicio||'—'}</td>
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${c.fecha_vencimiento||'—'}${!est.vencida&&est.diasParaVencer!==null&&est.diasParaVencer<=30?` <span style="color:#F5A623;font-size:9px;">(${est.diasParaVencer}d)</span>`:''}</td>
+            <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${est.totales?est.totales+'h':'—'}</td>
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${est.totales?est.consumidas+'h':'—'}</td>
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;color:${est.porVencerHoras?'#E84040':'var(--text)'};">${est.totales?est.restantes+'h':'—'}</td>
+            <td style="padding:6px 8px;text-align:center;"><span style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${est.color}22;color:${est.color};">${est.label}</span></td>
           </tr>`;
         }).join('')}
       </tbody>
-    </table>`;
+    </table></div>`;
 }
 
 function abrirNuevoContratoPoliza(){
@@ -10576,10 +10696,65 @@ async function guardarContratoPoliza(){
   renderOpsContratos();
 }
 
-async function editarContratoPoliza(id){
-  // Fase 2: aquí irá el detalle completo del contrato + historial de tickets ligados.
-  alert('El detalle completo del contrato (con historial de servicios) llega en la Fase 2 de Mesa de Control.');
+// Detalle de póliza (Jp, 2026-09-07): "poder yo darle clic y entrar y ver
+// el detalle" — cliente, cartera vinculada, fechas/horas, y el historial de
+// servicios (tickets) que se han cobrado contra esta póliza.
+async function abrirDetallePoliza(id){
+  const [{data:c,error},{data:tickets}]=await Promise.all([
+    sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,modalidad,horas_incluidas), clientes_cartera(id,razon_social,vendedor_asignado,telefono,num_cliente)').eq('id',id).single(),
+    sb.from('servicios_ejecutados').select('id,folio_ticket,fecha_asignada,asesor_nombre,estatus,duracion_facturada_min,descripcion_solicitud,created_at').eq('cliente_poliza_id',id).order('created_at',{ascending:false}).limit(50)
+  ]);
+  if(error||!c){alert('No se pudo cargar el detalle: '+(error?.message||'póliza no encontrada'));return;}
+  const est=opsEstadoPoliza(c);
+  const cartera=c.clientes_cartera;
+  const colorEstatus={PENDIENTE:'#F5A623',ASIGNADO:'#2980B9',EN_CURSO:'#2980B9',CONCLUIDO:'#27AE60',NO_CONCLUIDO:'#E84040',CANCELADO_INASISTENCIA:'#94a3b8'};
+  const html=`
+    <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:14px;">
+      <div>
+        <div style="font-size:15px;font-weight:700;color:var(--navy);">${c.cliente_nombre}</div>
+        <div style="font-size:11px;color:var(--text3);">${c.polizas_catalogo?.nombre||'Sin catálogo'} ${c.polizas_catalogo?.modalidad?'· '+c.polizas_catalogo.modalidad:''}</div>
+      </div>
+      <span style="padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700;background:${est.color}22;color:${est.color};">${est.label}</span>
+    </div>
+    ${cartera?`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(0,169,157,0.06);border-radius:6px;font-size:11px;">
+      🔗 Vinculado a Cartera de Cuentas: <b>${cartera.razon_social}</b>${cartera.num_cliente?' · #'+cartera.num_cliente:''}${cartera.vendedor_asignado?' · vendedor: '+cartera.vendedor_asignado:''}${cartera.telefono?' · tel: '+cartera.telefono:''}
+    </div>`:`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(232,64,64,0.06);border-radius:6px;font-size:11px;color:var(--red);">⚠ Sin cuenta ligada en Cartera de Cuentas (revisar nombre del cliente).</div>`}
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px;font-size:12px;">
+      <div><div style="color:var(--text3);font-size:10px;">Inicio</div><div style="font-family:'JetBrains Mono',monospace;">${c.fecha_inicio||'—'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Vencimiento</div><div style="font-family:'JetBrains Mono',monospace;">${c.fecha_vencimiento||'—'}${!est.vencida&&est.diasParaVencer!==null?` (${est.diasParaVencer}d)`:''}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Precio contratado</div><div style="font-family:'JetBrains Mono',monospace;">${c.precio_contratado?fmt(c.precio_contratado):'—'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Horas totales</div><div style="font-family:'JetBrains Mono',monospace;">${est.totales?est.totales+'h':'—'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Horas consumidas</div><div style="font-family:'JetBrains Mono',monospace;">${est.totales?est.consumidas+'h':'—'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Horas restantes</div><div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${est.porVencerHoras?'#E84040':'var(--text)'};">${est.totales?est.restantes+'h':'—'}</div></div>
+    </div>
+    ${c.horas_referencia_texto?`<div style="margin-bottom:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Referencia de horas (CRM anterior):</b><br>${c.horas_referencia_texto}</div>`:''}
+    ${c.personas_autorizadas?`<div style="margin-bottom:8px;font-size:12px;"><b>Personas autorizadas:</b> ${c.personas_autorizadas}</div>`:''}
+    ${c.vendedor?`<div style="margin-bottom:8px;font-size:12px;"><b>Vendedor:</b> ${c.vendedor}</div>`:''}
+    ${c.notas?`<div style="margin-bottom:8px;font-size:12px;"><b>Notas:</b> ${c.notas}</div>`:''}
+    ${c.origen==='crm_import'?`<div style="margin-bottom:12px;font-size:10px;color:var(--text3);">Importado del CRM anterior${c.numero_proyecto_crm?' · proyecto '+c.numero_proyecto_crm:''}.</div>`:''}
+    <div style="font-size:12px;font-weight:700;color:var(--navy);margin:14px 0 8px;">Historial de servicios (${(tickets||[]).length})</div>
+    <div style="max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead><tr style="background:var(--bg2,#f5f6f8);position:sticky;top:0;">
+          <th style="padding:6px 8px;text-align:left;">Folio</th><th style="padding:6px 8px;">Fecha</th>
+          <th style="padding:6px 8px;text-align:left;">Asesor</th><th style="padding:6px 8px;">Estatus</th><th style="padding:6px 8px;">Min.</th>
+        </tr></thead>
+        <tbody>
+          ${(tickets||[]).length===0?'<tr><td colspan="5" style="text-align:center;padding:12px;color:var(--text3);">Sin servicios registrados todavía</td></tr>':''}
+          ${(tickets||[]).map(t=>`<tr style="border-top:1px solid var(--border);cursor:pointer;" onclick="document.getElementById('modalDetallePoliza')?.remove();abrirDetalleTicket('${t.id}')">
+            <td style="padding:6px 8px;font-weight:600;color:var(--navy);">${t.folio_ticket||'—'}</td>
+            <td style="padding:6px 8px;text-align:center;">${t.fecha_asignada||'—'}</td>
+            <td style="padding:6px 8px;">${t.asesor_nombre||'—'}</td>
+            <td style="padding:6px 8px;text-align:center;"><span style="padding:1px 6px;border-radius:8px;font-size:9px;font-weight:700;background:${colorEstatus[t.estatus]}22;color:${colorEstatus[t.estatus]};">${t.estatus}</span></td>
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${t.duracion_facturada_min||'—'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  mkModal('modalDetallePoliza',`Detalle de póliza — ${c.cliente_nombre}`,html,null,'Cerrar',true);
 }
+// Alias por compatibilidad (el nombre viejo llamaba al detalle antes de la Fase 2).
+async function editarContratoPoliza(id){ return abrirDetallePoliza(id); }
 
 async function renderOpsTickets(){
   const body=document.getElementById('opsBody');
@@ -10610,6 +10785,7 @@ async function renderOpsTickets(){
       <div class="thc" style="cursor:pointer;${window._opsTicketFiltro==='porcerrar'?'border:1px solid #8B5CF6;':''}" onclick="filtrarOpsTickets('porcerrar')"><div class="th-lbl">Por cerrar</div><div class="th-val" style="color:#8B5CF6;">${porCerrar.length}</div></div>
       <div class="thc" style="cursor:pointer;${window._opsTicketFiltro==='NO_CONCLUIDO'?'border:1px solid var(--red);':''}" onclick="filtrarOpsTickets('NO_CONCLUIDO')"><div class="th-lbl">No concluidos</div><div class="th-val" style="color:var(--red);">${noConcluidos.length}</div></div>
     </div>
+    <div id="opsTicketsTiposFichas" style="margin-bottom:14px;"></div>
     <div id="opsTicketsTabla"></div>`;
   renderOpsTicketsTabla();
 }
@@ -10617,6 +10793,24 @@ async function renderOpsTickets(){
 function filtrarOpsTickets(f){
   window._opsTicketFiltro=window._opsTicketFiltro===f?null:f;
   renderOpsTicketsTabla();
+}
+// Filtro instantáneo por tipo de servicio (Jp: "servicios y tickets igual
+// filtrado inmediato") — fichas tipo Elite/Infinito de Pólizas, aquí por
+// SOPORTE_POLIZA/EVENTO/CURSO_EMPRESARIAL.
+function filtrarOpsTicketsTipo(tipo){
+  opsTicketsTipoFiltro=opsTicketsTipoFiltro===tipo?null:tipo;
+  renderOpsTicketsTabla();
+}
+let opsTicketsSort={col:'fecha_asignada',dir:'desc'};
+function opsOrdenarTickets(col){
+  if(opsTicketsSort.col===col){ opsTicketsSort.dir=opsTicketsSort.dir==='asc'?'desc':'asc'; }
+  else { opsTicketsSort={col,dir:'asc'}; }
+  renderOpsTicketsTabla();
+}
+function opsThTickets(col,label,alinear){
+  const activa=opsTicketsSort.col===col;
+  const flecha=activa?(opsTicketsSort.dir==='asc'?' ▲':' ▼'):'';
+  return `<th style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;text-align:${alinear||'left'};" onclick="opsOrdenarTickets('${col}')">${label}${flecha}</th>`;
 }
 
 function renderOpsTicketsTabla(){
@@ -10631,12 +10825,42 @@ function renderOpsTicketsTabla(){
 
   const colorEstatus={PENDIENTE:'#F5A623',ASIGNADO:'#2980B9',EN_CURSO:'#2980B9',CONCLUIDO:'#27AE60',NO_CONCLUIDO:'#E84040',CANCELADO_INASISTENCIA:'#94a3b8'};
   const tipoLabel={SOPORTE_POLIZA:'Póliza',EVENTO:'Evento',CURSO_EMPRESARIAL:'Curso'};
-  cont.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:12px;">
-    <thead><tr style="background:var(--navy);color:#fff;">
-      <th style="padding:6px 8px;text-align:left;">Folio</th><th style="padding:6px 8px;">Fecha</th>
-      <th style="padding:6px 8px;text-align:left;">Cliente</th><th style="padding:6px 8px;">Tipo</th>
-      <th style="padding:6px 8px;text-align:left;">Asesor</th><th style="padding:6px 8px;">Estatus</th>
-      <th style="padding:6px 8px;">Duración</th><th style="padding:6px 8px;"></th>
+
+  const tiposDom=document.getElementById('opsTicketsTiposFichas');
+  if(tiposDom){
+    const conteoTipo={};
+    (window._opsTickets||[]).forEach(t=>{ conteoTipo[t.tipo_servicio]=(conteoTipo[t.tipo_servicio]||0)+1; });
+    tiposDom.innerHTML=`<div style="display:flex;gap:8px;flex-wrap:wrap;">
+      ${Object.keys(tipoLabel).filter(k=>conteoTipo[k]).map(k=>`<span onclick="filtrarOpsTicketsTipo('${k}')" style="cursor:pointer;padding:4px 12px;border-radius:14px;font-size:11px;font-weight:600;border:1px solid ${opsTicketsTipoFiltro===k?'var(--teal)':'var(--border)'};background:${opsTicketsTipoFiltro===k?'rgba(0,169,157,0.1)':'#fff'};color:${opsTicketsTipoFiltro===k?'var(--teal)':'var(--text2)'};">${tipoLabel[k]} <span style="opacity:0.6;">(${conteoTipo[k]})</span></span>`).join('')}
+    </div>`;
+  }
+  if(opsTicketsTipoFiltro) rows=rows.filter(t=>t.tipo_servicio===opsTicketsTipoFiltro);
+
+  const {col,dir}=opsTicketsSort, mult=dir==='asc'?1:-1;
+  const valorOrden=(t)=>{
+    if(col==='folio') return t.folio_ticket||'';
+    if(col==='fecha_asignada') return t.fecha_asignada||'';
+    if(col==='cliente') return t.cliente_nombre||'';
+    if(col==='tipo') return tipoLabel[t.tipo_servicio]||'';
+    if(col==='asesor') return t.asesor_nombre||'';
+    if(col==='estatus') return t.estatus||'';
+    if(col==='duracion') return t.duracion_facturada_min||0;
+    return '';
+  };
+  rows=[...rows].sort((a,b)=>{
+    const va=valorOrden(a), vb=valorOrden(b);
+    if(typeof va==='number'&&typeof vb==='number') return (va-vb)*mult;
+    return String(va).localeCompare(String(vb))*mult;
+  });
+
+  cont.innerHTML=`<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${rows.length} de ${(window._opsTickets||[]).length} servicios</div>
+  <div class="card" style="overflow-x:auto;">
+  <table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="background:var(--bg2,#f5f6f8);">
+      ${opsThTickets('folio','Folio')}${opsThTickets('fecha_asignada','Fecha','center')}
+      ${opsThTickets('cliente','Cliente')}${opsThTickets('tipo','Tipo','center')}
+      ${opsThTickets('asesor','Asesor')}${opsThTickets('estatus','Estatus','center')}
+      ${opsThTickets('duracion','Duración','center')}<th></th>
     </tr></thead>
     <tbody>
       ${rows.length===0?'<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text3);">Sin servicios</td></tr>':''}
@@ -10651,7 +10875,7 @@ function renderOpsTicketsTabla(){
         <td style="padding:6px 8px;text-align:center;">${(t.estatus==='CONCLUIDO'||t.estatus==='NO_CONCLUIDO')&&!t.ticket_cerrado?'<span style="color:#8B5CF6;font-size:10px;">cerrar ▸</span>':''}</td>
       </tr>`).join('')}
     </tbody>
-  </table>`;
+  </table></div>`;
 }
 
 async function abrirNuevoTicket(){
