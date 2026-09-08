@@ -1510,7 +1510,25 @@ async function renderAcademiaAccesos(){
     const cubre=(!a.fecha_inicio||a.fecha_inicio<=hoy)&&(!a.fecha_fin||a.fecha_fin>=hoy);
     if(cubre) vigentePorEmpresa[a.empresa_id]=a;
   });
-  window._academiaCache.accesos={empresas:empresas||[],asignaciones,vigentePorEmpresa};
+
+  // Regla de Jp (2026-09-08): solo se debe poder "Liberar" una empresa
+  // asignada cuando el participante ya terminó — es decir, tiene una
+  // constancia marcada como enviada, o quedó "finalizado sin constancia".
+  // Antes cualquier asignación "ocupada" se podía liberar aunque el curso
+  // siguiera en curso. Se calcula aquí (nunca como campo aparte) para no
+  // desincronizarse, igual que el resto del estado de esta pantalla.
+  const inscIdsOcupados=[...new Set(Object.values(vigentePorEmpresa).map(a=>a.inscripcion_id).filter(Boolean))];
+  let finalizadoPorInscripcion={};
+  if(inscIdsOcupados.length){
+    const [{data:inscs},{data:consts}]=await Promise.all([
+      sb.from('academia_inscripciones').select('id,estatus_final').in('id',inscIdsOcupados),
+      sb.from('academia_constancias').select('inscripcion_id,enviada').in('inscripcion_id',inscIdsOcupados),
+    ]);
+    const enviadaSet=new Set((consts||[]).filter(c=>c.enviada).map(c=>c.inscripcion_id));
+    (inscs||[]).forEach(i=>{ finalizadoPorInscripcion[i.id]=!!i.estatus_final||enviadaSet.has(i.id); });
+  }
+
+  window._academiaCache.accesos={empresas:empresas||[],asignaciones,vigentePorEmpresa,finalizadoPorInscripcion};
 
   // Fichas por servidor (Jp, 2026-09-03): un vistazo rápido de cada sistema/
   // servidor con sus conteos, y al darles click filtran la tabla de abajo a
@@ -1575,7 +1593,7 @@ function academiaAccThAccesos(col,label){
 function academiaPintarAccesos(){
   const cont=document.getElementById('academiaAccContenido');
   if(!cont) return;
-  const {empresas,vigentePorEmpresa}=window._academiaCache.accesos||{empresas:[],vigentePorEmpresa:{}};
+  const {empresas,vigentePorEmpresa,finalizadoPorInscripcion}=window._academiaCache.accesos||{empresas:[],vigentePorEmpresa:{},finalizadoPorInscripcion:{}};
   const q=(academiaAccesosFiltro.q||'').trim().toLowerCase();
   let filas=(empresas||[]).filter(e=>{
     if(academiaAccesosFiltro.sistema && e.sistema?.clave!==academiaAccesosFiltro.sistema) return false;
@@ -1647,7 +1665,11 @@ function academiaPintarAccesos(){
             <td>${asig?.fecha_fin||(asig?'sin fecha':'—')}</td>
             <td style="text-align:right;white-space:nowrap;">
               ${estado==='disponible'?`<button class="cartera-subtab" onclick="event.stopPropagation();academiaAbrirAsignarEmpresa('${e.id}')">Asignar</button>`:''}
-              ${estado==='ocupada'&&asig?`<button class="cartera-subtab" onclick="event.stopPropagation();academiaLiberarAsignacion('${asig.id}','${e.id}')">Liberar</button>`:''}
+              ${estado==='ocupada'&&asig?(
+                !asig.inscripcion_id||finalizadoPorInscripcion[asig.inscripcion_id]
+                  ?`<button class="cartera-subtab" onclick="event.stopPropagation();academiaLiberarAsignacion('${asig.id}','${e.id}')">Liberar</button>`
+                  :`<span title="Solo se puede liberar cuando el participante haya finalizado (constancia entregada, o finalizado sin constancia)" style="font-size:11px;color:var(--text3);">🔒 En curso</span>`
+              ):''}
               <button class="cartera-subtab" onclick="event.stopPropagation();academiaAbrirEditarEmpresaAcceso('${e.id}')">Editar</button>
             </td>
           </tr>`;
@@ -1690,8 +1712,15 @@ async function academiaGuardarEditarEmpresaAcceso(empresaId){
 async function academiaLiberarAsignacion(asignacionId,empresaId){
   if(!confirm('¿Marcar esta empresa como liberada a partir de hoy?')) return;
   const hoy=new Date().toISOString().split('T')[0];
-  const {error}=await sb.from('academia_empresas_asignaciones').update({fecha_fin:hoy}).eq('id',asignacionId);
+  // Se pide .select() de vuelta a propósito (Jp, 2026-09-08: "el botón está,
+  // no arroja mensajes, pero no aplica los cambios"): si una política RLS de
+  // UPDATE bloquea la fila, Supabase/PostgREST NO regresa error — regresa
+  // éxito con 0 filas afectadas, y por eso antes esto fallaba en silencio.
+  // Ver supabase/academia_fix_rls_liberar_asignacion.sql para la política que
+  // hacía falta.
+  const {data,error}=await sb.from('academia_empresas_asignaciones').update({fecha_fin:hoy}).eq('id',asignacionId).select();
   if(error){alert('Error al liberar: '+error.message);return;}
+  if(!data||!data.length){alert('No se pudo liberar: la base de datos no aplicó el cambio (probablemente falta una política de permisos/RLS para actualizar academia_empresas_asignaciones). Avisa a soporte con este mensaje.');return;}
   renderAcademiaAccesos();
 }
 // Asignar empresa (Jp, 2026-09-03): "debe estar bloqueado para que solo se
@@ -1808,7 +1837,7 @@ async function academiaGuardarAsignarEmpresa(empresaId,seguirConSiguiente){
   }
 }
 function academiaVerEmpresaAcceso(empresaId){
-  const {empresas,asignaciones}=window._academiaCache.accesos||{empresas:[],asignaciones:[]};
+  const {empresas,asignaciones,finalizadoPorInscripcion}=window._academiaCache.accesos||{empresas:[],asignaciones:[],finalizadoPorInscripcion:{}};
   const e=(empresas||[]).find(x=>x.id===empresaId);
   if(!e) return;
   const hist=(asignaciones||[]).filter(a=>a.empresa_id===empresaId);
@@ -1827,7 +1856,11 @@ function academiaVerEmpresaAcceso(empresaId){
           <div style="font-size:11px;color:var(--text3);">${a.curso_taller||''}</div>
           <div style="font-size:11px;color:var(--text2);margin-top:4px;">${a.fecha_inicio||'sin fecha inicio'} → ${a.fecha_fin||'sin fecha fin'}${a.status_original?` · status original: ${a.status_original}`:''}</div>
           ${a.usuario_rdp||a.contrasena_rdp?`<div style="font-size:11px;color:var(--text2);margin-top:4px;">🖥️ Acceso al servidor${a.servidor?` (${a.servidor})`:''}: <b>${a.usuario_rdp||'—'}</b>${a.contrasena_rdp?` / ${a.contrasena_rdp}`:''}</div>`:''}
-          ${vigente&&a.fecha_fin===null&&!e.siempre_activo?`<button class="cartera-subtab" style="margin-top:6px;" onclick="academiaLiberarAsignacion('${a.id}','${e.id}');document.getElementById('modalVerAcceso').remove();">Liberar ahora</button>`:''}
+          ${vigente&&a.fecha_fin===null&&!e.siempre_activo?(
+            !a.inscripcion_id||finalizadoPorInscripcion[a.inscripcion_id]
+              ?`<button class="cartera-subtab" style="margin-top:6px;" onclick="academiaLiberarAsignacion('${a.id}','${e.id}');document.getElementById('modalVerAcceso').remove();">Liberar ahora</button>`
+              :`<div style="font-size:11px;color:var(--text3);margin-top:6px;">🔒 Solo se puede liberar cuando el participante haya finalizado (constancia entregada, o finalizado sin constancia).</div>`
+          ):''}
         </div>`;
       }).join(''):'<div style="color:var(--text3);font-size:12px;">Sin asignaciones registradas.</div>'}
     </div>`;
@@ -1877,6 +1910,12 @@ function academiaPintarParticipantes(){
   if(!cache) return;
   const {gen,inscripciones,conConstancia,enviadaSet}=cache;
   const mc=document.getElementById('mainContent');
+  // Bug reportado por Jp (2026-09-08): el buscador solo agarraba una letra a
+  // la vez, porque este redibujo hace mc.innerHTML=... y eso reemplaza el
+  // propio campo de texto, que pierde el foco tras cada tecla. Mismo parche
+  // que ya usaba el buscador de Accesos: recordar si el campo tenía el foco
+  // antes de redibujar, y regresárselo después (con el cursor al final).
+  const academiaPartBuscarActivo=document.activeElement?.id==='academiaPartBuscar';
 
   const q=(academiaPartFiltro.q||'').trim().toLowerCase();
   let filas=(inscripciones||[]).filter(i=>{
@@ -1981,6 +2020,10 @@ function academiaPintarParticipantes(){
       <tbody>${filasHtml||'<tr><td colspan="9" style="padding:16px;color:var(--text3);">Sin participantes que coincidan con los filtros.</td></tr>'}</tbody>
     </table>
   </div>`;
+  if(academiaPartBuscarActivo){
+    const el=document.getElementById('academiaPartBuscar');
+    if(el){ el.focus(); const v=el.value; el.value=''; el.value=v; }
+  }
 }
 
 // ── AGREGAR ASISTENTE ────────────────────────────────────────────────────────
@@ -2190,6 +2233,18 @@ async function academiaVerFicha(inscripcionId){
     .eq('id',inscripcionId).single();
   if(error||!insc){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error: ${error?.message||'no encontrado'}</div>`;return;}
 
+  // Mensajes rápidos de WhatsApp (Jp, 2026-09-08): catálogo de plantillas
+  // (bienvenida, manual de escritorio remoto, manual de Zoom, etc.) — se
+  // administra directo en Supabase (tabla academia_whatsapp_plantillas,
+  // mismo patrón que academia_firmantes: sin pantalla de CRUD en la app,
+  // Jp agrega/edita/desactiva filas desde el Table Editor cuando quiera).
+  // Se cachea una sola vez por sesión de la app.
+  if(!window._academiaCache.whatsappPlantillas){
+    const {data:pls}=await sb.from('academia_whatsapp_plantillas').select('*').eq('activa',true).order('orden',{ascending:true});
+    window._academiaCache.whatsappPlantillas=pls||[];
+  }
+  const plantillasWhatsApp=window._academiaCache.whatsappPlantillas||[];
+
   const {data:practicasSes}=await sb.from('academia_practicas_sesiones').select('*').eq('inscripcion_id',inscripcionId);
   const {data:constancias}=await sb.from('academia_constancias').select('*').eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false});
   const {data:bitacora}=await sb.from('academia_bitacora').select('*,usuario:capturada_por(nombre)').eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false}).limit(20);
@@ -2226,7 +2281,7 @@ async function academiaVerFicha(inscripcionId){
   <div class="card" style="padding:20px;margin-top:12px;">
     <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">
       <div>
-        <div style="font-size:18px;font-weight:600;color:var(--navy);">${insc.participante?.nombre}</div>
+        <div style="font-size:18px;font-weight:600;color:var(--navy);display:flex;align-items:center;gap:8px;">${insc.participante?.nombre}<button class="cartera-subtab" style="font-size:11px;font-weight:600;padding:2px 8px;" onclick="academiaAbrirEditarParticipante('${insc.participante?.id}','${inscripcionId}')">✎ Editar</button></div>
         <div style="font-size:12px;color:var(--text3);display:flex;align-items:center;gap:8px;">
           <span>${insc.participante?.mail||'—'} · ${telLimpio||'—'}</span>
           ${telLimpio?`<a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}" target="_blank" style="background:#25D366;color:#fff;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600;text-decoration:none;">WhatsApp</a>`:''}
@@ -2359,6 +2414,15 @@ async function academiaVerFicha(inscripcionId){
     </div>
 
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+      <div style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Mensajes rápidos</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        ${!telLimpio?'<div style="font-size:12px;color:var(--text3);">Este participante no tiene teléfono capturado.</div>'
+          :!plantillasWhatsApp.length?'<div style="font-size:12px;color:var(--text3);">Sin plantillas configuradas todavía (tabla academia_whatsapp_plantillas en Supabase).</div>'
+          :plantillasWhatsApp.map(pl=>`<a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}?text=${encodeURIComponent(academiaSustituirPlantillaWhatsApp(pl.cuerpo,insc))}" target="_blank" style="background:#25D366;color:#fff;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;text-decoration:none;">${pl.nombre}</a>`).join('')}
+      </div>
+    </div>
+
+    <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
       <div style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Historial</div>
       <div style="display:flex;flex-direction:column;gap:4px;max-height:160px;overflow-y:auto;font-size:11px;color:var(--text2);">
         ${(bitacora||[]).map(b=>`<div>${new Date(b.created_at).toLocaleString('es-MX')} — ${b.detalle}${b.usuario?.nombre?' ('+b.usuario.nombre+')':''}</div>`).join('')||'<div style="color:var(--text3);">Sin movimientos registrados todavía.</div>'}
@@ -2434,6 +2498,45 @@ async function academiaCopiarPlantillaAccesoLab(inscripcionId){
   const {data:asig}=await sb.from('academia_empresas_asignaciones').select('*,empresa:empresa_id(*)').eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false}).limit(1).maybeSingle();
   try{ await navigator.clipboard.writeText(academiaPlantillaAccesoLab(insc,asig)); alert('Plantilla copiada al portapapeles.'); }
   catch(e){ alert('No se pudo copiar automáticamente. Copia manualmente los datos de la sección.'); }
+}
+
+// Sustituye los placeholders {nombre}/{curso}/{generacion}/{folio} de una
+// plantilla de "Mensajes rápidos" (Jp, 2026-09-08) con los datos reales de
+// la inscripción. Nuevos placeholders se pueden agregar aquí si hace falta.
+function academiaSustituirPlantillaWhatsApp(texto,insc){
+  return (texto||'')
+    .replaceAll('{nombre}', insc.participante?.nombre||'')
+    .replaceAll('{curso}', insc.generacion?.curso?.nombre||'')
+    .replaceAll('{generacion}', insc.generacion?.clave||'')
+    .replaceAll('{folio}', insc.folio||'');
+}
+
+// Editar datos del participante (Jp, 2026-09-08): nombre/correo/teléfono
+// eran de solo captura al alta — no había forma de corregirlos después sin
+// entrar a Supabase directo.
+async function academiaAbrirEditarParticipante(participanteId,inscripcionId){
+  if(!participanteId){alert('No se encontró el participante.');return;}
+  const {data:p,error}=await sb.from('academia_participantes').select('*').eq('id',participanteId).single();
+  if(error||!p){alert('No se pudo cargar el participante: '+(error?.message||''));return;}
+  const html=`
+    <div style="margin-bottom:10px;">${fld('Nombre completo',inp('epNombre','text','',p.nombre||''))}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      ${fld('Correo',inp('epMail','email','',p.mail||''))}
+      ${fld('Teléfono',inp('epTelefono','text','',p.telefono||''))}
+    </div>`;
+  mkModal('modalEditarParticipante','Editar datos del participante',html,`academiaGuardarEditarParticipante('${participanteId}','${inscripcionId}')`);
+}
+async function academiaGuardarEditarParticipante(participanteId,inscripcionId){
+  const nombre=document.getElementById('epNombre')?.value?.trim();
+  if(!nombre){alert('El nombre no puede quedar vacío.');return;}
+  const {error}=await sb.from('academia_participantes').update({
+    nombre,
+    mail:document.getElementById('epMail')?.value?.trim()||null,
+    telefono:document.getElementById('epTelefono')?.value?.trim()||null,
+  }).eq('id',participanteId);
+  if(error){alert('Error al guardar: '+error.message);return;}
+  document.getElementById('modalEditarParticipante')?.remove();
+  academiaVerFicha(inscripcionId);
 }
 // Navega a la pestaña Accesos y abre el historial de la empresa vinculada
 // (Jp, 2026-09-03: los datos ya vinculados se editan/consultan desde Accesos,
