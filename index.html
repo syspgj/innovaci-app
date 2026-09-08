@@ -10710,14 +10710,46 @@ async function abrirDetallePoliza(id){
   const est=opsEstadoPoliza(c);
   const cartera=c.clientes_cartera;
   const colorEstatus={PENDIENTE:'#F5A623',ASIGNADO:'#2980B9',EN_CURSO:'#2980B9',CONCLUIDO:'#27AE60',NO_CONCLUIDO:'#E84040',CANCELADO_INASISTENCIA:'#94a3b8'};
-  // Historial anterior a la app (Jp, 2026-09-07): el formulario de Mesa de
-  // Control usado desde 2019 no se liga a un contrato específico, sino a la
-  // cuenta de Cartera — así que se trae por cliente_cartera_id, no por esta
-  // póliza puntual, y se combina con los tickets de la app en una sola lista.
+  // Historial anterior a la app (Jp, 2026-09-08): el control NO es por
+  // cliente, es por PÓLIZA — un mismo cliente puede tener 2+ pólizas (cada
+  // una con su propia vigencia por tiempo y por banco de horas), así que
+  // mezclar todo el historial de la cuenta en cada póliza es incorrecto.
+  // El formulario viejo sí identifica cada póliza individual con su propio
+  // número ("POL####" en `servicios_historicos.poliza_numero`), pero ese
+  // número no existe en `clientes_polizas` (que viene del CRM, numerado
+  // "PROJ####" — un sistema totalmente distinto, ver Lote 2/4). No hay forma
+  // automática de saber cuál "POL####" corresponde a esta póliza puntual.
+  // Solución: `clientes_polizas.poliza_numero_legacy` guarda esa asignación
+  // una vez que se hace (a mano, o automático si la cuenta solo tiene UNA
+  // póliza histórica). Sin ese campo, se listan las pólizas históricas de la
+  // cuenta para que Jp elija cuál es esta, en vez de adivinar o mezclar todo.
   let historicos=[];
+  let polizasHistoricasCandidatas=[];
   if(cartera?.id){
-    const {data:h}=await sb.from('servicios_historicos').select('id,fecha_registro,asesor_nombre,servicio_realizado,forma_servicio,tipo_ticket').eq('cliente_cartera_id',cartera.id).order('fecha_registro',{ascending:false}).limit(50);
-    historicos=h||[];
+    if(c.poliza_numero_legacy){
+      const {data:h}=await sb.from('servicios_historicos').select('id,fecha_registro,asesor_nombre,servicio_realizado,forma_servicio,tipo_ticket').eq('poliza_numero',c.poliza_numero_legacy).order('fecha_registro',{ascending:false}).limit(50);
+      historicos=h||[];
+    } else {
+      const {data:todos}=await sb.from('servicios_historicos').select('poliza_numero,poliza_texto,fecha_registro').eq('cliente_cartera_id',cartera.id).not('poliza_numero','is',null);
+      const porPoliza={};
+      (todos||[]).forEach(r=>{
+        if(!porPoliza[r.poliza_numero]) porPoliza[r.poliza_numero]={numero:r.poliza_numero,texto:r.poliza_texto,count:0,min:r.fecha_registro,max:r.fecha_registro};
+        const p=porPoliza[r.poliza_numero];
+        p.count++;
+        if(r.fecha_registro<p.min) p.min=r.fecha_registro;
+        if(r.fecha_registro>p.max) p.max=r.fecha_registro;
+      });
+      polizasHistoricasCandidatas=Object.values(porPoliza).sort((a,b)=>b.count-a.count);
+      if(polizasHistoricasCandidatas.length===1){
+        // Única póliza histórica en la cuenta: se asigna sola, sin pedirle a Jp que elija.
+        const unica=polizasHistoricasCandidatas[0].numero;
+        await sb.from('clientes_polizas').update({poliza_numero_legacy:unica}).eq('id',id);
+        c.poliza_numero_legacy=unica;
+        const {data:h}=await sb.from('servicios_historicos').select('id,fecha_registro,asesor_nombre,servicio_realizado,forma_servicio,tipo_ticket').eq('poliza_numero',unica).order('fecha_registro',{ascending:false}).limit(50);
+        historicos=h||[];
+        polizasHistoricasCandidatas=[];
+      }
+    }
   }
   const combinados=[
     ...(tickets||[]).map(t=>({fuente:'app',fecha:t.fecha_asignada||t.created_at,folio:t.folio_ticket,asesor:t.asesor_nombre,detalle:t.estatus,min:t.duracion_facturada_min,id:t.id})),
@@ -10747,6 +10779,16 @@ async function abrirDetallePoliza(id){
     ${c.vendedor?`<div style="margin-bottom:8px;font-size:12px;"><b>Vendedor:</b> ${c.vendedor}</div>`:''}
     ${c.notas?`<div style="margin-bottom:8px;font-size:12px;"><b>Notas:</b> ${c.notas}</div>`:''}
     ${c.origen==='crm_import'?`<div style="margin-bottom:12px;font-size:10px;color:var(--text3);">Importado del CRM anterior${c.numero_proyecto_crm?' · proyecto '+c.numero_proyecto_crm:''}.</div>`:''}
+    ${polizasHistoricasCandidatas.length>1?`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(245,166,35,0.08);border-radius:6px;font-size:11px;">
+      ⚠ Esta cuenta tiene <b>${polizasHistoricasCandidatas.length} pólizas distintas</b> en el historial 2019-2026 — elige cuál corresponde a ESTA póliza para no mezclar el historial de otra:
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+        ${polizasHistoricasCandidatas.map(p=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:6px 10px;">
+          <div><b>${p.numero?'POL'+p.numero:'—'}</b> — ${p.texto||''} <span style="color:var(--text3);">(${p.count} servicios, ${(p.min||'').slice(0,10)} a ${(p.max||'').slice(0,10)})</span></div>
+          <button onclick="opsAsignarPolizaHistorica('${id}','${p.numero}')" style="background:var(--teal);color:#fff;border:none;border-radius:4px;padding:4px 10px;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap;">Es esta</button>
+        </div>`).join('')}
+      </div>
+    </div>`:''}
+    ${c.poliza_numero_legacy?`<div style="margin-bottom:8px;font-size:10px;color:var(--text3);">Historial ligado a la póliza histórica POL${c.poliza_numero_legacy} <a href="#" onclick="event.preventDefault();opsAsignarPolizaHistorica('${id}',null)" style="color:var(--teal);">(cambiar)</a></div>`:''}
     <div style="font-size:12px;font-weight:700;color:var(--navy);margin:14px 0 8px;">Historial de servicios (${combinados.length})${historicos.length?` · incluye ${historicos.length} del historial 2019-2026`:''}</div>
     <div style="max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
       <table style="width:100%;border-collapse:collapse;font-size:11px;">
@@ -10770,6 +10812,16 @@ async function abrirDetallePoliza(id){
       </table>
     </div>`;
   mkModal('modalDetallePoliza',`Detalle de póliza — ${c.cliente_nombre}`,html,null,'Cerrar',true);
+}
+// Asigna (o quita, si numero es null) el número de póliza histórica
+// ("POL####") que corresponde a esta póliza puntual de clientes_polizas —
+// ver el comentario largo en abrirDetallePoliza sobre por qué hace falta
+// esta asignación manual cuando una cuenta tiene 2+ pólizas.
+async function opsAsignarPolizaHistorica(polizaId,numero){
+  const {error}=await sb.from('clientes_polizas').update({poliza_numero_legacy:numero}).eq('id',polizaId);
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalDetallePoliza')?.remove();
+  abrirDetallePoliza(polizaId);
 }
 // Ver un registro histórico completo desde el modal de detalle de póliza
 // (aquí solo se trajeron campos resumidos, así que se pide el registro
