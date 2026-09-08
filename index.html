@@ -10704,9 +10704,10 @@ async function guardarContratoPoliza(){
 // el detalle" — cliente, cartera vinculada, fechas/horas, y el historial de
 // servicios (tickets) que se han cobrado contra esta póliza.
 async function abrirDetallePoliza(id){
-  const [{data:c,error},{data:tickets}]=await Promise.all([
-    sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,modalidad,horas_incluidas), clientes_cartera(id,razon_social,vendedor_asignado,telefono,num_cliente,correo_principal,telefono_whatsapp)').eq('id',id).single(),
-    sb.from('servicios_ejecutados').select('id,folio_ticket,fecha_asignada,asesor_nombre,estatus,duracion_facturada_min,descripcion_solicitud,created_at').eq('cliente_poliza_id',id).order('created_at',{ascending:false}).limit(50)
+  const [{data:c,error},{data:tickets},{data:ticketsTodos}]=await Promise.all([
+    sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,modalidad,horas_incluidas,prioridad_codigo,prioridad_nombre,resp_horas_min,resp_horas_max,horario_atencion,resguardos_incluidos,beneficios), clientes_cartera(id,razon_social,vendedor_asignado,telefono,num_cliente,correo_principal,telefono_whatsapp)').eq('id',id).single(),
+    sb.from('servicios_ejecutados').select('id,folio_ticket,fecha_asignada,asesor_nombre,estatus,duracion_facturada_min,descripcion_solicitud,created_at').eq('cliente_poliza_id',id).order('created_at',{ascending:false}).limit(50),
+    sb.from('servicios_ejecutados').select('duracion_facturada_min').eq('cliente_poliza_id',id)
   ]);
   if(error||!c){alert('No se pudo cargar el detalle: '+(error?.message||'póliza no encontrada'));return;}
   const est=opsEstadoPoliza(c);
@@ -10753,24 +10754,29 @@ async function abrirDetallePoliza(id){
       }
     }
   }
-  // Horas reales consumidas (Jp, 2026-09-08): "ya que ya tenemos los ticket,
-  // debemos tener la suma del tiempo consumido y por lo tanto el tiempo
-  // restante" — suma minutos_remoto de TODO el historial ligado a esta
-  // póliza (no solo los 50 que se muestran en la tabla) más lo que ya traía
-  // horas_consumidas de la app. Cálculo aparte, solo para este modal — no
-  // toca opsEstadoPoliza() ni la tabla de la lista.
-  let horasReales=null;
+  // Horas reales consumidas (Jp, 2026-09-08 y 2026-09-09): "ya se tiene que
+  // reflejar el tiempo consumido con base a los tiempos de cada ticket" —
+  // ya no se usa el campo `horas_consumidas` (que solo se actualizaba a
+  // mano al cerrar un ticket, y podía quedar desfasado); se recalcula
+  // siempre desde el origen real: TODOS los tickets de la app ligados a
+  // esta póliza (`servicios_ejecutados.duracion_facturada_min`, sin límite
+  // de 50) más, si la póliza ya está ligada a su historial 2019-2026, todo
+  // ese `minutos_remoto`. Total = horas contratadas si se capturaron, si no
+  // las que traiga el tipo de póliza asignado.
+  const minutosApp=(ticketsTodos||[]).reduce((s,r)=>s+(parseFloat(r.duracion_facturada_min)||0),0);
+  let minutosHistorico=0;
   if(c.poliza_numero_legacy){
     const {data:minutos}=await sb.from('servicios_historicos').select('minutos_remoto').eq('poliza_numero',c.poliza_numero_legacy);
-    const minutosHistorico=(minutos||[]).reduce((s,r)=>s+(parseFloat(r.minutos_remoto)||0),0);
-    const totalHoras=c.horas_totales>0?c.horas_totales:(c.polizas_catalogo?.horas_incluidas||0);
-    const consumidoHoras=(c.horas_consumidas||0)+(minutosHistorico/60);
-    horasReales={total:totalHoras,consumido:Math.round(consumidoHoras*100)/100,restante:Math.max(Math.round((totalHoras-consumidoHoras)*100)/100,0),minutosHistorico};
+    minutosHistorico=(minutos||[]).reduce((s,r)=>s+(parseFloat(r.minutos_remoto)||0),0);
   }
+  const totalHoras=c.horas_totales>0?c.horas_totales:(c.polizas_catalogo?.horas_incluidas||0);
+  const consumidoHoras=(minutosApp+minutosHistorico)/60;
+  const horasReales={total:totalHoras,consumido:Math.round(consumidoHoras*100)/100,restante:Math.max(Math.round((totalHoras-consumidoHoras)*100)/100,0),minutosApp,minutosHistorico};
   const combinados=[
     ...(tickets||[]).map(t=>({fuente:'app',fecha:t.fecha_asignada||t.created_at,folio:t.folio_ticket,asesor:t.asesor_nombre,detalle:t.estatus,min:t.duracion_facturada_min,id:t.id})),
     ...historicos.map(h=>({fuente:'historico',fecha:h.fecha_registro,folio:h.tipo_ticket||'—',asesor:h.asesor_nombre,detalle:h.servicio_realizado||h.forma_servicio||'—',min:null,id:h.id})),
   ].sort((a,b)=>String(b.fecha||'').localeCompare(String(a.fecha||'')));
+  const cat=window._opsPolizasCat||[];
   const html=`
     <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:14px;">
       <div>
@@ -10790,25 +10796,59 @@ async function abrirDetallePoliza(id){
         ${!cartera.correo_principal&&!cartera.telefono_whatsapp?'<span style="color:var(--text3);">Sin correo/WhatsApp capturados en Cartera de Cuentas.</span>':''}
       </div>
     </div>`:`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(232,64,64,0.06);border-radius:6px;font-size:11px;color:var(--red);">⚠ Sin cuenta ligada en Cartera de Cuentas (revisar nombre del cliente).</div>`}
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px;font-size:12px;">
-      <div><div style="color:var(--text3);font-size:10px;">Inicio</div><div style="font-family:'JetBrains Mono',monospace;">${c.fecha_inicio||'—'}</div></div>
-      <div><div style="color:var(--text3);font-size:10px;">Vencimiento</div><div style="font-family:'JetBrains Mono',monospace;">${c.fecha_vencimiento||'—'}${!est.vencida&&est.diasParaVencer!==null?` (${est.diasParaVencer}d)`:''}</div></div>
-      <div><div style="color:var(--text3);font-size:10px;">Precio contratado</div><div style="font-family:'JetBrains Mono',monospace;">${c.precio_contratado?fmt(c.precio_contratado):'—'}</div></div>
-      <div><div style="color:var(--text3);font-size:10px;">Horas totales</div><div style="font-family:'JetBrains Mono',monospace;">${est.totales?est.totales+'h':'—'}</div></div>
-      <div><div style="color:var(--text3);font-size:10px;">Horas consumidas (app)</div><div style="font-family:'JetBrains Mono',monospace;">${est.totales?est.consumidas+'h':'—'}</div></div>
-      <div><div style="color:var(--text3);font-size:10px;">Horas restantes (app)</div><div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${est.porVencerHoras?'#E84040':'var(--text)'};">${est.totales?est.restantes+'h':'—'}</div></div>
-    </div>
-    ${horasReales?`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(41,128,185,0.06);border-radius:6px;">
-      <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:6px;">⏱ Horas reales (app + historial 2019-2026 de POL${c.poliza_numero_legacy})</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:12px;">
-        <div><div style="color:var(--text3);font-size:10px;">Total</div><div style="font-family:'JetBrains Mono',monospace;">${horasReales.total?horasReales.total+'h':'—'}</div></div>
-        <div><div style="color:var(--text3);font-size:10px;">Consumido real</div><div style="font-family:'JetBrains Mono',monospace;">${horasReales.consumido}h</div></div>
-        <div><div style="color:var(--text3);font-size:10px;">Restante real</div><div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${horasReales.total>0&&horasReales.restante<=horasReales.total*0.15?'#E84040':'var(--text)'};">${horasReales.total?horasReales.restante+'h':'—'}</div></div>
+
+    <div style="margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:8px;">
+      <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:8px;">✏ Datos de la póliza (editables)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+        <div>
+          <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Tipo de póliza</div>
+          <select id="dpCatalogo" style="${INP}">
+            <option value="">— Sin catálogo —</option>
+            ${cat.map(p=>`<option value="${p.id}" ${p.id===c.poliza_catalogo_id?'selected':''}>${p.categoria} — ${p.nombre} (${p.modalidad})</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Vendedor</div>
+          <input id="dpVendedor" type="text" value="${(c.vendedor||'').replace(/"/g,'&quot;')}" style="${INP}">
+        </div>
+        <div>
+          <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Fecha de inicio</div>
+          <input id="dpFechaInicio" type="date" value="${c.fecha_inicio||''}" style="${INP}">
+        </div>
+        <div>
+          <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Fecha de conclusión</div>
+          <input id="dpFechaVencimiento" type="date" value="${c.fecha_vencimiento||''}" style="${INP}">
+        </div>
+        <div>
+          <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Horas que incluye la póliza</div>
+          <input id="dpHorasTotales" type="number" step="0.5" value="${c.horas_totales||0}" style="${INP}">
+        </div>
+        <div>
+          <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Precio contratado</div>
+          <input id="dpPrecio" type="number" step="0.01" value="${c.precio_contratado||0}" style="${INP}">
+        </div>
       </div>
-    </div>`:''}
+      <button onclick="guardarEdicionPoliza('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💾 Guardar cambios</button>
+    </div>
+
+    ${c.polizas_catalogo?`<div style="margin-bottom:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;">
+      ${c.polizas_catalogo.prioridad_codigo?`<div style="margin-bottom:4px;">🎯 <b>Prioridad ${c.polizas_catalogo.prioridad_codigo}</b> — ${c.polizas_catalogo.prioridad_nombre||''} · tiempo de respuesta ${c.polizas_catalogo.resp_horas_min}-${c.polizas_catalogo.resp_horas_max}h hábiles</div>`:''}
+      ${c.polizas_catalogo.horario_atencion?`<div style="margin-bottom:4px;">🕐 ${c.polizas_catalogo.horario_atencion}</div>`:''}
+      ${c.polizas_catalogo.resguardos_incluidos?`<div style="margin-bottom:4px;">💾 ${c.polizas_catalogo.resguardos_incluidos}</div>`:''}
+      ${c.polizas_catalogo.beneficios?`<div style="color:var(--text2);border-top:1px solid var(--border);padding-top:6px;margin-top:4px;line-height:1.5;">${c.polizas_catalogo.beneficios}</div>`:''}
+    </div>`:`<div style="margin-bottom:12px;font-size:11px;color:var(--text3);">Sin tipo de póliza asignado — asígnalo arriba para ver prioridad, horario y beneficios.</div>`}
+
+    <div style="margin-bottom:12px;padding:10px 12px;background:rgba(41,128,185,0.06);border-radius:6px;">
+      <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:6px;">⏱ Horas — con base en los tickets reales${c.poliza_numero_legacy?` (app + historial 2019-2026 de POL${c.poliza_numero_legacy})`:' (app)'}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:12px;">
+        <div><div style="color:var(--text3);font-size:10px;">Incluidas</div><div style="font-family:'JetBrains Mono',monospace;">${horasReales.total?horasReales.total+'h':'—'}</div></div>
+        <div><div style="color:var(--text3);font-size:10px;">Consumidas</div><div style="font-family:'JetBrains Mono',monospace;">${horasReales.consumido}h</div></div>
+        <div><div style="color:var(--text3);font-size:10px;">Restantes</div><div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${horasReales.total>0&&horasReales.restante<=horasReales.total*0.15?'#E84040':'var(--text)'};">${horasReales.total?horasReales.restante+'h':'—'}</div></div>
+      </div>
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;">${(horasReales.minutosApp/60).toFixed(2)}h de tickets en la app${c.poliza_numero_legacy?` + ${(horasReales.minutosHistorico/60).toFixed(2)}h del historial`:''}</div>
+    </div>
     ${c.horas_referencia_texto?`<div style="margin-bottom:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Referencia de horas (CRM anterior):</b><br>${c.horas_referencia_texto}</div>`:''}
     ${c.personas_autorizadas?`<div style="margin-bottom:8px;font-size:12px;"><b>Personas autorizadas:</b> ${c.personas_autorizadas}</div>`:''}
-    ${c.vendedor?`<div style="margin-bottom:8px;font-size:12px;"><b>Vendedor:</b> ${c.vendedor}</div>`:''}
     ${c.notas?`<div style="margin-bottom:8px;font-size:12px;"><b>Notas:</b> ${c.notas}</div>`:''}
     ${c.origen==='crm_import'?`<div style="margin-bottom:12px;font-size:10px;color:var(--text3);">Importado del CRM anterior${c.numero_proyecto_crm?' · proyecto '+c.numero_proyecto_crm:''}.</div>`:''}
     ${polizasHistoricasCandidatas.length>1?`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(245,166,35,0.08);border-radius:6px;font-size:11px;">
@@ -10844,6 +10884,26 @@ async function abrirDetallePoliza(id){
       </table>
     </div>`;
   mkModal('modalDetallePoliza',`Detalle de póliza — ${c.cliente_nombre}`,html,null,'Cerrar',true);
+}
+// Guarda los campos editables del detalle de póliza (Jp, 2026-09-09):
+// "ademas de lo anterior deben ser campos modificables" — tipo de póliza,
+// vendedor, fechas, horas incluidas y precio contratado.
+async function guardarEdicionPoliza(id){
+  const catalogoId=document.getElementById('dpCatalogo')?.value||null;
+  const payload={
+    poliza_catalogo_id:catalogoId,
+    vendedor:document.getElementById('dpVendedor')?.value||null,
+    fecha_inicio:document.getElementById('dpFechaInicio')?.value||null,
+    fecha_vencimiento:document.getElementById('dpFechaVencimiento')?.value||null,
+    horas_totales:parseFloat(document.getElementById('dpHorasTotales')?.value)||0,
+    precio_contratado:parseFloat(document.getElementById('dpPrecio')?.value)||0,
+    updated_at:new Date().toISOString()
+  };
+  const {error}=await sb.from('clientes_polizas').update(payload).eq('id',id);
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalDetallePoliza')?.remove();
+  abrirDetallePoliza(id);
+  if(document.getElementById('opsPolizasFichas')) renderOpsContratos();
 }
 // Asigna (o quita, si numero es null) el número de póliza histórica
 // ("POL####") que corresponde a esta póliza puntual de clientes_polizas —
