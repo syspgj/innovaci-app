@@ -1711,14 +1711,21 @@ async function academiaGuardarEditarEmpresaAcceso(empresaId){
 }
 async function academiaLiberarAsignacion(asignacionId,empresaId){
   if(!confirm('¿Marcar esta empresa como liberada a partir de hoy?')) return;
-  const hoy=new Date().toISOString().split('T')[0];
-  // Se pide .select() de vuelta a propósito (Jp, 2026-09-08: "el botón está,
-  // no arroja mensajes, pero no aplica los cambios"): si una política RLS de
-  // UPDATE bloquea la fila, Supabase/PostgREST NO regresa error — regresa
-  // éxito con 0 filas afectadas, y por eso antes esto fallaba en silencio.
-  // Ver supabase/academia_fix_rls_liberar_asignacion.sql para la política que
-  // hacía falta.
-  const {data,error}=await sb.from('academia_empresas_asignaciones').update({fecha_fin:hoy}).eq('id',asignacionId).select();
+  // BUG real encontrado (Jp, 2026-09-08 — "presiono liberar, acepto, y se
+  // queda igual"): en TODA la app, una asignación se considera vigente/
+  // ocupada mientras fecha_fin >= hoy (fecha_fin es el último día que SIGUE
+  // vigente, inclusive). Antes esta función guardaba fecha_fin=hoy, así que
+  // la empresa se seguía viendo "Ocupada" el resto del día de hoy — parecía
+  // que el clic no hacía nada, aunque el UPDATE sí se había guardado. Ahora
+  // se guarda AYER, para que "liberar a partir de hoy" de verdad la deje
+  // disponible hoy mismo.
+  const ayer=new Date(); ayer.setDate(ayer.getDate()-1);
+  const ayerStr=ayer.toISOString().split('T')[0];
+  // Se pide .select() de vuelta a propósito (mismo reporte de Jp): si una
+  // política RLS de UPDATE bloquea la fila, Supabase/PostgREST NO regresa
+  // error — regresa éxito con 0 filas afectadas, y por eso esto podía fallar
+  // en silencio. Ver supabase/academia_fix_rls_liberar_asignacion.sql.
+  const {data,error}=await sb.from('academia_empresas_asignaciones').update({fecha_fin:ayerStr}).eq('id',asignacionId).select();
   if(error){alert('Error al liberar: '+error.message);return;}
   if(!data||!data.length){alert('No se pudo liberar: la base de datos no aplicó el cambio (probablemente falta una política de permisos/RLS para actualizar academia_empresas_asignaciones). Avisa a soporte con este mensaje.');return;}
   renderAcademiaAccesos();
