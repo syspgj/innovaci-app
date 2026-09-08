@@ -1396,7 +1396,7 @@ async function academiaAbrirEditarGeneracion(generacionId){
     </div>
     <div style="margin-bottom:10px;">${fld('Duración (horas)',inp('egHoras','number','',c.duracion_horas??''))}</div>
     <div style="font-size:11px;color:var(--text3);margin:-4px 0 10px;">Tipo + Modalidad determinan la categoría que se usa en el filtro de "Tipo de curso" de Generaciones (ej. Tipo=taller + Modalidad=24_7 → "Talleres de especialización 24/7").</div>
-    <div style="margin-bottom:10px;">${fld('Descripción (aparece debajo del nombre del curso en la constancia)',`<textarea id="egDescripcion" rows="2" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${c.descripcion||''}</textarea>`)}</div>
+    <div style="margin-bottom:10px;">${fld('Descripción (aparece debajo del nombre del curso en la constancia — máximo 4 líneas, se recomienda no pasar de ~320 caracteres para que quepa completa)',`<textarea id="egDescripcion" rows="3" maxlength="400" oninput="document.getElementById('egDescripcionContador').textContent=this.value.length+'/400'" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${c.descripcion||''}</textarea><div id="egDescripcionContador" style="font-size:10px;color:var(--text3);text-align:right;margin-top:2px;">${(c.descripcion||'').length}/400</div>`)}</div>
     <div style="margin-bottom:14px;">${fld('Competencias desarrolladas (una por línea)',`<textarea id="egCompetencias" rows="4" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${(c.competencias||[]).join('\n')}</textarea>`)}</div>
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DE LA GENERACIÓN (${g.clave||''})</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
@@ -3108,13 +3108,27 @@ async function academiaDibujarYSubirPDF(constancia,insc,instructor,director,cali
   // (Espaciado ligeramente más compacto que antes — Jp, 2026-09-03: se
   // liberó espacio vertical para que las competencias, movidas debajo de la
   // franja de datos, siempre quepan en la página sin encimarse con el pie.)
+  // Antes se recortaba a 2 líneas fijas — con descripciones más largas
+  // (>~180 caracteres) esto cortaba el texto a media palabra sin avisar
+  // (bug reportado por Jp, 2026-09-08). Ahora se permiten hasta 4 líneas
+  // (el textarea de "Editar generación" ya sugiere no pasar de ~320
+  // caracteres para que quepa completa) y, si aun así excede las 4 líneas,
+  // se corta en un límite de palabra completa con "…" en vez de partir una
+  // palabra a la mitad. El resto del layout (franja de datos, competencias,
+  // firmas, folio, QR) ya está calculado en cascada a partir de "y", así que
+  // crece automáticamente sin encimarse con nada de abajo.
   const descripcionCurso=insc.generacion?.curso?.descripcion;
   if(descripcionCurso){
     y+=5.5;
     doc.setFontSize(10); doc.setFont(undefined,'normal'); doc.setTextColor(...gray);
-    const wrapped=doc.splitTextToSize(descripcionCurso, pw-2*42);
-    wrapped.slice(0,2).forEach((line,i)=>{ doc.text(line, pw/2, y+i*4, {align:'center'}); });
-    y+=(Math.min(wrapped.length,2)-1)*4;
+    const maxLineasDesc=4;
+    let wrapped=doc.splitTextToSize(descripcionCurso, pw-2*42);
+    if(wrapped.length>maxLineasDesc){
+      wrapped=wrapped.slice(0,maxLineasDesc);
+      wrapped[maxLineasDesc-1]=wrapped[maxLineasDesc-1].replace(/[.,;:\s]+$/,'')+'…';
+    }
+    wrapped.forEach((line,i)=>{ doc.text(line, pw/2, y+i*4, {align:'center'}); });
+    y+=(wrapped.length-1)*4;
   }
 
   // ── Franja de datos: 4 columnas a todo lo ancho ─────────────────────────
