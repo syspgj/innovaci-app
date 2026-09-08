@@ -10518,7 +10518,7 @@ async function renderOpsContratos(){
   const body=document.getElementById('opsBody');
   body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
   const [{data:contratos,error},{data:polizas}]=await Promise.all([
-    sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,horas_incluidas), clientes_cartera(razon_social,vendedor_asignado,telefono)').order('fecha_vencimiento'),
+    sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,horas_incluidas), clientes_cartera(razon_social,vendedor_asignado,telefono,correo_principal,telefono_whatsapp)').order('fecha_vencimiento'),
     sb.from('polizas_catalogo').select('id,categoria,nombre,modalidad,horas_incluidas,precio,vigencia_meses').eq('activo',true).order('categoria').order('precio')
   ]);
   if(error){body.innerHTML=`<div style="color:var(--red);">Error: ${error.message}</div>`;return;}
@@ -10526,7 +10526,7 @@ async function renderOpsContratos(){
   window._opsPolizas=contratos||[];
   body.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
-      <input id="opsPolizasBuscar" type="text" placeholder="Buscar cliente..." value="${opsPolizasFiltro.q||''}" oninput="opsPolizasFiltro.q=this.value;opsPintarPolizas();" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;min-width:220px;">
+      <input id="opsPolizasBuscar" type="text" placeholder="Buscar cliente o POL####..." value="${opsPolizasFiltro.q||''}" oninput="opsPolizasFiltro.q=this.value;opsPintarPolizas();" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;min-width:220px;">
       <button onclick="abrirNuevoContratoPoliza()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Nuevo contrato</button>
     </div>
     <div id="opsPolizasFichas"></div>
@@ -10590,12 +10590,13 @@ function opsPintarPolizas(){
     const est=opsEstadoPoliza(c);
     if(opsPolizasFiltro.grupo&&est.grupo!==opsPolizasFiltro.grupo) return false;
     if(opsPolizasFiltro.tipo&&(c.polizas_catalogo?.nombre||'Sin catálogo')!==opsPolizasFiltro.tipo) return false;
-    if(q&&!(c.cliente_nombre||'').toLowerCase().includes(q)) return false;
+    if(q&&!(c.cliente_nombre||'').toLowerCase().includes(q)&&!('pol'+(c.poliza_numero_legacy||'')).toLowerCase().includes(q)) return false;
     return true;
   });
   const {col,dir}=opsPolizasSort, mult=dir==='asc'?1:-1;
   const valorOrden=(c)=>{
     const est=opsEstadoPoliza(c);
+    if(col==='pol') return c.poliza_numero_legacy||'';
     if(col==='cliente') return c.cliente_nombre||'';
     if(col==='poliza') return c.polizas_catalogo?.nombre||'';
     if(col==='fecha_inicio') return c.fecha_inicio||'';
@@ -10616,16 +10617,17 @@ function opsPintarPolizas(){
     <div class="card" style="overflow-x:auto;">
     <table style="width:100%;border-collapse:collapse;font-size:12px;">
       <thead><tr style="background:var(--bg2,#f5f6f8);">
-        ${opsThPolizas('cliente','Cliente')}${opsThPolizas('poliza','Póliza')}
+        ${opsThPolizas('pol','POL#','center')}${opsThPolizas('cliente','Cliente')}${opsThPolizas('poliza','Póliza')}
         ${opsThPolizas('fecha_inicio','Inicio','center')}${opsThPolizas('fecha_vencimiento','Vencimiento','center')}
         ${opsThPolizas('horas','Horas','right')}${opsThPolizas('consumidas','Consumidas','center')}
         ${opsThPolizas('restantes','Restantes','center')}${opsThPolizas('estatus','Estatus','center')}
       </tr></thead>
       <tbody>
-        ${filas.length===0?'<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--text3);">Sin pólizas con estos filtros</td></tr>':''}
+        ${filas.length===0?'<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--text3);">Sin pólizas con estos filtros</td></tr>':''}
         ${filas.map(c=>{
           const est=opsEstadoPoliza(c);
           return `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="abrirDetallePoliza('${c.id}')">
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--teal);">${c.poliza_numero_legacy?'POL'+c.poliza_numero_legacy:'—'}</td>
             <td style="padding:6px 8px;font-weight:600;">${c.cliente_nombre}</td>
             <td style="padding:6px 8px;">${c.polizas_catalogo?.nombre||'—'}</td>
             <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${c.fecha_inicio||'—'}</td>
@@ -10703,7 +10705,7 @@ async function guardarContratoPoliza(){
 // servicios (tickets) que se han cobrado contra esta póliza.
 async function abrirDetallePoliza(id){
   const [{data:c,error},{data:tickets}]=await Promise.all([
-    sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,modalidad,horas_incluidas), clientes_cartera(id,razon_social,vendedor_asignado,telefono,num_cliente)').eq('id',id).single(),
+    sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,modalidad,horas_incluidas), clientes_cartera(id,razon_social,vendedor_asignado,telefono,num_cliente,correo_principal,telefono_whatsapp)').eq('id',id).single(),
     sb.from('servicios_ejecutados').select('id,folio_ticket,fecha_asignada,asesor_nombre,estatus,duracion_facturada_min,descripcion_solicitud,created_at').eq('cliente_poliza_id',id).order('created_at',{ascending:false}).limit(50)
   ]);
   if(error||!c){alert('No se pudo cargar el detalle: '+(error?.message||'póliza no encontrada'));return;}
@@ -10751,6 +10753,20 @@ async function abrirDetallePoliza(id){
       }
     }
   }
+  // Horas reales consumidas (Jp, 2026-09-08): "ya que ya tenemos los ticket,
+  // debemos tener la suma del tiempo consumido y por lo tanto el tiempo
+  // restante" — suma minutos_remoto de TODO el historial ligado a esta
+  // póliza (no solo los 50 que se muestran en la tabla) más lo que ya traía
+  // horas_consumidas de la app. Cálculo aparte, solo para este modal — no
+  // toca opsEstadoPoliza() ni la tabla de la lista.
+  let horasReales=null;
+  if(c.poliza_numero_legacy){
+    const {data:minutos}=await sb.from('servicios_historicos').select('minutos_remoto').eq('poliza_numero',c.poliza_numero_legacy);
+    const minutosHistorico=(minutos||[]).reduce((s,r)=>s+(parseFloat(r.minutos_remoto)||0),0);
+    const totalHoras=c.horas_totales>0?c.horas_totales:(c.polizas_catalogo?.horas_incluidas||0);
+    const consumidoHoras=(c.horas_consumidas||0)+(minutosHistorico/60);
+    horasReales={total:totalHoras,consumido:Math.round(consumidoHoras*100)/100,restante:Math.max(Math.round((totalHoras-consumidoHoras)*100)/100,0),minutosHistorico};
+  }
   const combinados=[
     ...(tickets||[]).map(t=>({fuente:'app',fecha:t.fecha_asignada||t.created_at,folio:t.folio_ticket,asesor:t.asesor_nombre,detalle:t.estatus,min:t.duracion_facturada_min,id:t.id})),
     ...historicos.map(h=>({fuente:'historico',fecha:h.fecha_registro,folio:h.tipo_ticket||'—',asesor:h.asesor_nombre,detalle:h.servicio_realizado||h.forma_servicio||'—',min:null,id:h.id})),
@@ -10758,22 +10774,38 @@ async function abrirDetallePoliza(id){
   const html=`
     <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:14px;">
       <div>
-        <div style="font-size:15px;font-weight:700;color:var(--navy);">${c.cliente_nombre}</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          ${c.poliza_numero_legacy?`<span style="padding:2px 9px;border-radius:6px;font-size:12px;font-weight:800;background:var(--navy);color:#fff;font-family:'JetBrains Mono',monospace;">POL${c.poliza_numero_legacy}</span>`:''}
+          <div style="font-size:15px;font-weight:700;color:var(--navy);">${c.cliente_nombre}</div>
+        </div>
         <div style="font-size:11px;color:var(--text3);">${c.polizas_catalogo?.nombre||'Sin catálogo'} ${c.polizas_catalogo?.modalidad?'· '+c.polizas_catalogo.modalidad:''}</div>
       </div>
       <span style="padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700;background:${est.color}22;color:${est.color};">${est.label}</span>
     </div>
     ${cartera?`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(0,169,157,0.06);border-radius:6px;font-size:11px;">
       🔗 Vinculado a Cartera de Cuentas: <b>${cartera.razon_social}</b>${cartera.num_cliente?' · #'+cartera.num_cliente:''}${cartera.vendedor_asignado?' · vendedor: '+cartera.vendedor_asignado:''}${cartera.telefono?' · tel: '+cartera.telefono:''}
+      <div style="margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;">
+        ${cartera.correo_principal?`<a href="mailto:${cartera.correo_principal}" style="color:var(--teal);font-weight:600;">✉ ${cartera.correo_principal}</a>`:''}
+        ${cartera.telefono_whatsapp?`<a href="https://wa.me/52${cartera.telefono_whatsapp}" target="_blank" style="color:#25D366;font-weight:600;">💬 WhatsApp ${cartera.telefono_whatsapp}</a>`:''}
+        ${!cartera.correo_principal&&!cartera.telefono_whatsapp?'<span style="color:var(--text3);">Sin correo/WhatsApp capturados en Cartera de Cuentas.</span>':''}
+      </div>
     </div>`:`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(232,64,64,0.06);border-radius:6px;font-size:11px;color:var(--red);">⚠ Sin cuenta ligada en Cartera de Cuentas (revisar nombre del cliente).</div>`}
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px;font-size:12px;">
       <div><div style="color:var(--text3);font-size:10px;">Inicio</div><div style="font-family:'JetBrains Mono',monospace;">${c.fecha_inicio||'—'}</div></div>
       <div><div style="color:var(--text3);font-size:10px;">Vencimiento</div><div style="font-family:'JetBrains Mono',monospace;">${c.fecha_vencimiento||'—'}${!est.vencida&&est.diasParaVencer!==null?` (${est.diasParaVencer}d)`:''}</div></div>
       <div><div style="color:var(--text3);font-size:10px;">Precio contratado</div><div style="font-family:'JetBrains Mono',monospace;">${c.precio_contratado?fmt(c.precio_contratado):'—'}</div></div>
       <div><div style="color:var(--text3);font-size:10px;">Horas totales</div><div style="font-family:'JetBrains Mono',monospace;">${est.totales?est.totales+'h':'—'}</div></div>
-      <div><div style="color:var(--text3);font-size:10px;">Horas consumidas</div><div style="font-family:'JetBrains Mono',monospace;">${est.totales?est.consumidas+'h':'—'}</div></div>
-      <div><div style="color:var(--text3);font-size:10px;">Horas restantes</div><div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${est.porVencerHoras?'#E84040':'var(--text)'};">${est.totales?est.restantes+'h':'—'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Horas consumidas (app)</div><div style="font-family:'JetBrains Mono',monospace;">${est.totales?est.consumidas+'h':'—'}</div></div>
+      <div><div style="color:var(--text3);font-size:10px;">Horas restantes (app)</div><div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${est.porVencerHoras?'#E84040':'var(--text)'};">${est.totales?est.restantes+'h':'—'}</div></div>
     </div>
+    ${horasReales?`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(41,128,185,0.06);border-radius:6px;">
+      <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:6px;">⏱ Horas reales (app + historial 2019-2026 de POL${c.poliza_numero_legacy})</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:12px;">
+        <div><div style="color:var(--text3);font-size:10px;">Total</div><div style="font-family:'JetBrains Mono',monospace;">${horasReales.total?horasReales.total+'h':'—'}</div></div>
+        <div><div style="color:var(--text3);font-size:10px;">Consumido real</div><div style="font-family:'JetBrains Mono',monospace;">${horasReales.consumido}h</div></div>
+        <div><div style="color:var(--text3);font-size:10px;">Restante real</div><div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${horasReales.total>0&&horasReales.restante<=horasReales.total*0.15?'#E84040':'var(--text)'};">${horasReales.total?horasReales.restante+'h':'—'}</div></div>
+      </div>
+    </div>`:''}
     ${c.horas_referencia_texto?`<div style="margin-bottom:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Referencia de horas (CRM anterior):</b><br>${c.horas_referencia_texto}</div>`:''}
     ${c.personas_autorizadas?`<div style="margin-bottom:8px;font-size:12px;"><b>Personas autorizadas:</b> ${c.personas_autorizadas}</div>`:''}
     ${c.vendedor?`<div style="margin-bottom:8px;font-size:12px;"><b>Vendedor:</b> ${c.vendedor}</div>`:''}
@@ -11032,6 +11064,8 @@ async function abrirDetalleTicket(id){
     <div style="margin-bottom:10px;">${fld('Estatus',`<select id="tdEstatus" style="${INP}">${['PENDIENTE','ASIGNADO','EN_CURSO','CONCLUIDO','NO_CONCLUIDO','CANCELADO_INASISTENCIA'].map(e=>`<option value="${e}" ${e===t.estatus?'selected':''}>${e}</option>`).join('')}</select>`)}</div>
     <div style="margin-bottom:10px;">${fld('Comentarios del asesor',inp('tdComentarios','text','',t.comentarios_asesor||''))}</div>
     <div style="margin-bottom:10px;">${fld('Trabajo realizado',inp('tdTrabajo','text','',t.trabajo_realizado||''))}</div>
+    <div style="margin-bottom:10px;">${fld('Servicio adicional',inp('tdAdicional','text','',t.servicio_adicional||''))}</div>
+    <div style="margin-bottom:10px;">${fld('Servicio pendiente',inp('tdPendiente','text','',t.servicio_pendiente||''))}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:6px;">
       ${fld('Duración real (min)',inp('tdDuracionReal','number','',t.duracion_real_min||''))}
       ${fld('Duración facturada (min, bloques de 15)',inp('tdDuracionFact','number','',t.duracion_facturada_min||''))}
@@ -11070,6 +11104,8 @@ async function guardarDetalleTicket(){
     estatus,
     comentarios_asesor:document.getElementById('tdComentarios')?.value||null,
     trabajo_realizado:document.getElementById('tdTrabajo')?.value||null,
+    servicio_adicional:document.getElementById('tdAdicional')?.value||null,
+    servicio_pendiente:document.getElementById('tdPendiente')?.value||null,
     duracion_real_min:parseInt(document.getElementById('tdDuracionReal')?.value)||null,
     duracion_facturada_min:duracionFact||null,
     ticket_cerrado:cerradoAhora,
@@ -11197,7 +11233,14 @@ function mostrarModalHistorico(r){
       <div><div style="color:var(--text3);font-size:10px;">Sistema relacionado</div><div>${r.sistema_relacionado||'—'}</div></div>
       <div><div style="color:var(--text3);font-size:10px;">Minutos remoto</div><div>${r.minutos_remoto??'—'}</div></div>
     </div>
-    ${r.descripcion?`<div style="margin-bottom:10px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Descripción del servicio:</b><br>${r.descripcion}</div>`:''}
+    ${r.servicio_solicitado||r.servicio_realizado_detalle||r.servicio_adicional||r.servicio_pendiente?`
+    <div style="margin-bottom:10px;display:flex;flex-direction:column;gap:8px;">
+      ${r.servicio_solicitado?`<div style="padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Servicio solicitado:</b><br>${r.servicio_solicitado}</div>`:''}
+      ${r.servicio_realizado_detalle?`<div style="padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Servicio realizado:</b><br>${r.servicio_realizado_detalle}</div>`:''}
+      ${r.servicio_adicional?`<div style="padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Servicio adicional:</b><br>${r.servicio_adicional}</div>`:''}
+      ${r.servicio_pendiente?`<div style="padding:10px 12px;background:rgba(245,166,35,0.08);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Servicio pendiente:</b><br>${r.servicio_pendiente}</div>`:''}
+    </div>
+    `:(r.descripcion?`<div style="margin-bottom:10px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Descripción del servicio:</b><br>${r.descripcion}</div>`:'')}
     ${r.observacion_interna&&r.observacion_interna!=='NA'?`<div style="margin-bottom:10px;padding:10px 12px;background:rgba(232,64,64,0.06);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Observación interna:</b><br>${r.observacion_interna}</div>`:''}
     <div style="font-size:10px;color:var(--text3);">Control de calidad del asesor: correcto=${r.correcto_reportado||'—'} · inició a tiempo=${r.inicio_tiempo_forma||'—'} · reportó a tiempo=${r.reporto_tiempo_forma||'—'} · detectó necesidades=${r.detecto_necesidades||'—'}</div>`;
   mkModal('modalDetalleHistorico','Servicio histórico',html,null,'Cerrar',true);
