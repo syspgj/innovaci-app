@@ -768,6 +768,7 @@ const ACADEMIA_SUBTABS=[
   {id:'practicas',label:'🧪 Prácticas'},
   {id:'accesos',label:'🔐 Accesos'},
   {id:'constancias',label:'📜 Constancias'},
+  {id:'mensajes',label:'💬 Mensajes'},
 ];
 let currentAcademiaTab='dashboard';
 let academiaGeneracionSel=null; // id de generación activa dentro de Generaciones/Prácticas
@@ -832,6 +833,7 @@ function renderAcademiaTab(){
   else if(currentAcademiaTab==='practicas') renderAcademiaPracticasHome();
   else if(currentAcademiaTab==='accesos') renderAcademiaAccesos();
   else if(currentAcademiaTab==='constancias') renderAcademiaConstancias();
+  else if(currentAcademiaTab==='mensajes') renderAcademiaMensajes();
 }
 
 // ── DASHBOARD (Jp, 2026-09-02): panorama rápido de qué está activo y qué se
@@ -1490,7 +1492,7 @@ async function renderAcademiaAccesos(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando control de accesos...</div>';
   const [{data:empresas,error:errE},{data:sistemas}]=await Promise.all([
-    sb.from('academia_empresas_acceso').select('*,sistema:sistema_id(clave,nombre)').order('numero'),
+    sb.from('academia_empresas_acceso').select('*,sistema:sistema_id(clave,nombre,ddns)').order('numero'),
     window._academiaCache.sistemas?Promise.resolve({data:window._academiaCache.sistemas}):sb.from('academia_sistemas').select('*').order('clave'),
   ]);
   if(errE){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error cargando accesos: ${errE.message}</div>`;return;}
@@ -1536,7 +1538,7 @@ async function renderAcademiaAccesos(){
   const porSistema={};
   (empresas||[]).forEach(e=>{
     const clave=e.sistema?.clave||'—';
-    if(!porSistema[clave]) porSistema[clave]={clave,nombre:e.sistema?.nombre||'',servidor:e.servidor,disponible:0,ocupada:0,permanente:0,total:0};
+    if(!porSistema[clave]) porSistema[clave]={clave,nombre:e.sistema?.nombre||'',servidor:e.servidor,ddns:e.sistema?.ddns||'',sistemaId:e.sistema_id,disponible:0,ocupada:0,permanente:0,total:0};
     const asig=vigentePorEmpresa[e.id];
     porSistema[clave][academiaEmpresaEstado(asig?{...asig,empresa:e}:null)]++;
     porSistema[clave].total++;
@@ -1554,7 +1556,8 @@ async function renderAcademiaAccesos(){
       const activo=academiaAccesosFiltro.sistema===s.clave;
       return `<div class="card" style="padding:14px 16px;cursor:pointer;border:2px solid ${activo?ac.c:'transparent'};border-top:3px solid ${ac.c};" onclick="academiaAccesosFiltro.sistema=academiaAccesosFiltro.sistema==='${s.clave}'?'':'${s.clave}';renderAcademiaAccesos();">
         <div style="font-size:13px;font-weight:700;color:${ac.c};">${s.clave}${s.servidor?` · servidor ${s.servidor}`:''}</div>
-        <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${s.nombre||''}</div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:2px;">${s.nombre||''}</div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:8px;font-family:'JetBrains Mono',monospace;" onclick="event.stopPropagation();">${s.ddns?`🌐 ${s.ddns}`:'Sin DDNS'} <a href="#" onclick="event.preventDefault();academiaEditarDdnsSistema('${s.sistemaId}','${s.clave}','${(s.ddns||'').replace(/"/g,'&quot;')}')" style="font-size:10px;">✎</a></div>
         <div style="display:flex;gap:10px;font-size:12px;">
           <div><span style="color:var(--green);font-weight:700;">${s.disponible}</span> disp.</div>
           <div><span style="color:var(--red);font-weight:700;">${s.ocupada}</span> ocup.</div>
@@ -1770,6 +1773,17 @@ function academiaFiltrarInscOpts(){
   sel.innerHTML=`<option value="">— Selecciona un participante —</option>${opts}${lista.length?'':'<option value="" disabled>(sin inscripciones en esta generación)</option>'}`;
   if(filtradas.some(i=>i.id===valorPrevio)) sel.value=valorPrevio;
 }
+// DDNS por servidor/sistema (Jp, 2026-09-08): "cursosinnovaci.dynns.com:3131"
+// para COI, etc. — solo hay 3 servidores (uno por sistema), así que el campo
+// vive en academia_sistemas.ddns, se edita aquí mismo con un prompt simple.
+async function academiaEditarDdnsSistema(sistemaId,clave,ddnsActual){
+  const nuevo=prompt(`DDNS del servidor de ${clave} (ej. cursosinnovaci.dynns.com:3131):`,ddnsActual||'');
+  if(nuevo===null) return; // canceló
+  const {error}=await sb.from('academia_sistemas').update({ddns:nuevo.trim()||null}).eq('id',sistemaId);
+  if(error){alert('Error al guardar el DDNS: '+error.message);return;}
+  window._academiaCache.sistemas=null;
+  renderAcademiaAccesos();
+}
 async function academiaAbrirAsignarEmpresa(empresaId){
   const {empresas}=window._academiaCache.accesos||{empresas:[]};
   const e=(empresas||[]).find(x=>x.id===empresaId);
@@ -1799,7 +1813,7 @@ async function academiaAbrirAsignarEmpresa(empresaId){
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px;">
       ${fld('Servidor',inp('accServidor','text','',e?.servidor||''))}
       ${fld('Usuario RDP',inp('accUsuarioRdp','text','Ej. US03'))}
-      ${fld('Contraseña RDP',inp('accContrasenaRdp','text',''))}
+      ${fld('Contraseña RDP',academiaCampoPasswordConGenerador('accContrasenaRdp',`document.getElementById('accGenSel')?.selectedOptions[0]?.textContent?.split(' — ')[0]||''`))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
       ${fld('Fecha de inicio',inp('accFechaInicio','date','',hoy))}
@@ -2107,7 +2121,7 @@ async function academiaAbrirNuevoAsistente(generacionId){
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Servidor',inp('naServidor','text',''))}
       ${fld('Usuario RDP',inp('naUsuarioRdp','text',''))}
-      ${fld('Contraseña RDP',inp('naPassRdp','text',''))}
+      ${fld('Contraseña RDP',academiaCampoPasswordConGenerador('naPassRdp',`'${gen?.clave||''}'`))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
       ${fld('Empresa Aspel',inp('naEmpresaAspel','text',''))}
@@ -2261,7 +2275,7 @@ async function academiaVerFicha(inscripcionId){
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando ficha...</div>';
 
   const {data:insc,error}=await sb.from('academia_inscripciones')
-    .select('*,participante:participante_id(*,cliente:cliente_cartera_id(razon_social,num_cliente)),generacion:generacion_id(*,curso:curso_id(*,sistema:sistema_id(*))),asistencias:academia_asistencias(*)')
+    .select('*,participante:participante_id(*,cliente:cliente_cartera_id(razon_social,num_cliente)),generacion:generacion_id(*,curso:curso_id(*,sistema:sistema_id(*))),asistencias:academia_asistencias(*),ligas:academia_inscripcion_ligas(*)')
     .eq('id',inscripcionId).single();
   if(error||!insc){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error: ${error?.message||'no encontrado'}</div>`;return;}
 
@@ -2284,7 +2298,7 @@ async function academiaVerFicha(inscripcionId){
   // 2026-09-03: "una vez asignado deberán aparecer los datos en el detalle del
   // participante") — la más reciente, ligada o no ligada a una fecha vigente.
   const {data:asigVinculada}=await sb.from('academia_empresas_asignaciones')
-    .select('*,empresa:empresa_id(*,sistema:sistema_id(clave,nombre))')
+    .select('*,empresa:empresa_id(*,sistema:sistema_id(clave,nombre,ddns))')
     .eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false}).limit(1).maybeSingle();
   const hoyAcc=new Date().toISOString().split('T')[0];
   const asigVigenteAcc=asigVinculada&&(!asigVinculada.fecha_inicio||asigVinculada.fecha_inicio<=hoyAcc)&&(!asigVinculada.fecha_fin||asigVinculada.fecha_fin>=hoyAcc)?asigVinculada:null;
@@ -2307,6 +2321,11 @@ async function academiaVerFicha(inscripcionId){
   // el tipo "aprobacion" ya existente en la app (examen final, mínimo 80/100).
   const esEsencial247=insc.nivel_acceso==='esencial' && insc.generacion?.curso?.modalidad==='24_7';
   const elegibleAprobacion=esEsencial247 && insc.examen_calificacion!=null && Number(insc.examen_calificacion)>=80;
+  // Ligas de Drive (Jp, 2026-09-08): evidencia de prácticas/asistencia y
+  // respaldos de información — solo para accesos que incluyen prácticas
+  // (Plus/Premium), se acumulan (no se reemplazan), cada una con observación.
+  const ligasEvidencia=(insc.ligas||[]).filter(l=>l.categoria==='evidencia').sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+  const ligasRespaldo=(insc.ligas||[]).filter(l=>l.categoria==='respaldo').sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
 
   const ac=academiaAccent(insc.generacion?.curso?.sistema?.clave);
   const telLimpio=(insc.participante?.telefono||'').replace(/[^0-9]/g,'');
@@ -2397,6 +2416,31 @@ async function academiaVerFicha(inscripcionId){
       </div>
     </div>
 
+    ${elegibleParaAcreditacion?`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Ligas de evidencia (Drive)</div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:8px;">Ligas de Drive que evidencian asistencia y/o prácticas — se acumulan, no se reemplazan.</div>
+        ${academiaListaLigas(ligasEvidencia,inscripcionId)}
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+          <input id="ligaEvidenciaUrl_${inscripcionId}" type="url" placeholder="https://drive.google.com/..." style="flex:2;min-width:140px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;box-sizing:border-box;">
+          <input id="ligaEvidenciaObs_${inscripcionId}" type="text" placeholder="¿De qué es? (ej. Práctica 3)" style="flex:1;min-width:120px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;box-sizing:border-box;">
+          <button class="cartera-subtab" onclick="academiaAgregarLigaInscripcion('${inscripcionId}','evidencia')">+ Agregar</button>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Ligas de respaldos de información (Drive)</div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:8px;">Ligas a respaldos (backups) relacionados con este participante — se acumulan, no se reemplazan.</div>
+        ${academiaListaLigas(ligasRespaldo,inscripcionId)}
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+          <input id="ligaRespaldoUrl_${inscripcionId}" type="url" placeholder="https://drive.google.com/..." style="flex:2;min-width:140px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;box-sizing:border-box;">
+          <input id="ligaRespaldoObs_${inscripcionId}" type="text" placeholder="¿De qué es? (ej. Respaldo previo)" style="flex:1;min-width:120px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;box-sizing:border-box;">
+          <button class="cartera-subtab" onclick="academiaAgregarLigaInscripcion('${inscripcionId}','respaldo')">+ Agregar</button>
+        </div>
+      </div>
+    </div>
+    `:''}
+
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
       <div style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Observaciones</div>
       <textarea id="academiaObs_${inscripcionId}" rows="2" placeholder="Notas libres sobre este participante..." style="width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:inherit;resize:vertical;">${insc.observaciones||''}</textarea>
@@ -2413,12 +2457,12 @@ async function academiaVerFicha(inscripcionId){
       </div>
       <div id="academiaAccesoLab_${inscripcionId}" style="display:none;font-size:12px;color:var(--text2);line-height:1.8;">
         ${asigVinculada?`
-        <div><b>Sistema:</b> ${asigVinculada.empresa?.sistema?.clave||'—'} · <b>Empresa:</b> #${asigVinculada.empresa?.numero??'—'} · <b>Servidor:</b> ${asigVinculada.servidor||asigVinculada.empresa?.servidor||'—'}</div>
+        <div><b>Sistema:</b> ${asigVinculada.empresa?.sistema?.clave||'—'} · <b>Empresa:</b> #${asigVinculada.empresa?.numero??'—'} · <b>Servidor:</b> ${asigVinculada.servidor||asigVinculada.empresa?.servidor||'—'}${asigVinculada.empresa?.sistema?.ddns?` · <b>DDNS:</b> ${asigVinculada.empresa.sistema.ddns}`:''}</div>
         <div><b>Usuario RDP:</b> ${asigVinculada.usuario_rdp||'—'} · <b>Contraseña RDP:</b> ${asigVinculada.contrasena_rdp||'—'}</div>
         <div><b>Usuario Aspel (empresa):</b> ${asigVinculada.empresa?.usuario_empresa||'—'} · <b>Contraseña Aspel:</b> ${asigVinculada.empresa?.contrasena_empresa||'—'}</div>
         <div style="margin-top:4px;">${asigVigenteAcc?`<span style="color:var(--green);font-weight:700;">● Vigente</span> desde ${asigVinculada.fecha_inicio||'—'}${asigVinculada.fecha_fin?' hasta '+asigVinculada.fecha_fin:''}`:`<span style="color:var(--text3);">Asignación anterior — ya no vigente (${asigVinculada.fecha_fin?'liberada el '+asigVinculada.fecha_fin:'sin fecha'})</span>`}</div>
         `:`
-        <div><b>Servidor:</b> ${insc.servidor||'—'} · <b>Usuario RDP:</b> ${insc.usuario_rdp||'—'} · <b>Contraseña RDP:</b> ${insc.contrasena_rdp||'—'}</div>
+        <div><b>Servidor:</b> ${insc.servidor||'—'}${insc.generacion?.curso?.sistema?.ddns?` (DDNS: ${insc.generacion.curso.sistema.ddns})`:''} · <b>Usuario RDP:</b> ${insc.usuario_rdp||'—'} · <b>Contraseña RDP:</b> ${insc.contrasena_rdp||'—'}</div>
         <div><b>Empresa Aspel:</b> ${insc.empresa_aspel||'—'} · <b>Usuario Aspel:</b> ${insc.usuario_aspel||'—'} · <b>Contraseña Aspel:</b> ${insc.contrasena_aspel||'—'}</div>
         <div style="margin-top:4px;color:var(--text3);">No vinculado a Control de Accesos — datos capturados a mano.</div>
         `}
@@ -2466,7 +2510,7 @@ async function academiaVerFicha(inscripcionId){
       <div style="display:flex;flex-wrap:wrap;gap:8px;">
         ${!telLimpio?'<div style="font-size:12px;color:var(--text3);">Este participante no tiene teléfono capturado.</div>'
           :!plantillasWhatsApp.length?'<div style="font-size:12px;color:var(--text3);">Sin plantillas configuradas todavía (tabla academia_whatsapp_plantillas en Supabase).</div>'
-          :plantillasWhatsApp.map(pl=>`<a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}?text=${encodeURIComponent(academiaSustituirPlantillaWhatsApp(pl.cuerpo,insc))}" target="_blank" style="background:#25D366;color:#fff;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;text-decoration:none;">${pl.nombre}</a>`).join('')}
+          :plantillasWhatsApp.map(pl=>`<a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}?text=${encodeURIComponent(academiaSustituirPlantillaWhatsApp(pl.cuerpo,insc,asigVinculada))}" target="_blank" style="background:#25D366;color:#fff;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;text-decoration:none;">${pl.nombre}</a>`).join('')}
       </div>
     </div>
 
@@ -2488,14 +2532,14 @@ function academiaToggleAccesoLab(inscripcionId){
 // Supabase. De paso sirve para limpiar caso por caso el bug ".0" (punto 31)
 // mientras no se corre la limpieza masiva.
 async function academiaAbrirEditarAccesoLab(inscripcionId){
-  const {data:insc,error}=await sb.from('academia_inscripciones').select('servidor,usuario_rdp,contrasena_rdp,empresa_aspel,usuario_aspel,contrasena_aspel,fecha_inicio_laboratorio,fecha_fin_laboratorio,fecha_fin_sesion_privada,generacion:generacion_id(curso:curso_id(tipo,modalidad))').eq('id',inscripcionId).single();
+  const {data:insc,error}=await sb.from('academia_inscripciones').select('servidor,usuario_rdp,contrasena_rdp,empresa_aspel,usuario_aspel,contrasena_aspel,fecha_inicio_laboratorio,fecha_fin_laboratorio,fecha_fin_sesion_privada,generacion:generacion_id(clave,curso:curso_id(tipo,modalidad))').eq('id',inscripcionId).single();
   if(error||!insc){alert('No se pudo cargar la inscripción: '+(error?.message||''));return;}
   const diasLabSugerido=academiaDiasLabPorCurso(insc.generacion?.curso);
   const html=`
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Servidor',inp('ealServidor','text','',insc.servidor||''))}
       ${fld('Usuario RDP',inp('ealUsuarioRdp','text','',insc.usuario_rdp||''))}
-      ${fld('Contraseña RDP',inp('ealPassRdp','text','',insc.contrasena_rdp||''))}
+      ${fld('Contraseña RDP',academiaCampoPasswordConGenerador('ealPassRdp',`'${insc.generacion?.clave||''}'`,insc.contrasena_rdp||''))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
       ${fld('Empresa Aspel',inp('ealEmpresaAspel','text','',insc.empresa_aspel||''))}
@@ -2529,21 +2573,30 @@ async function academiaGuardarAccesoLab(inscripcionId){
 // Si la inscripción tiene una empresa vinculada en Control de Accesos, la
 // plantilla usa esos datos (siempre al día); si no, cae en los campos
 // capturados a mano en la propia inscripción (compatibilidad con datos viejos).
-function academiaPlantillaAccesoLab(insc,asigVinculada){
+// Bloque de datos de acceso (servidor + DDNS + RDP + Aspel) compartido entre
+// la plantilla fija de acceso al laboratorio y el placeholder {datos_acceso}
+// de los Mensajes rápidos configurables (Jp, 2026-09-08: agregar DDNS, ej.
+// "cursosinnovaci.dynns.com:3131" — vive en academia_sistemas.ddns, un solo
+// servidor por sistema).
+function academiaDatosAccesoLabBlock(insc,asigVinculada){
   const servidor=asigVinculada?(asigVinculada.servidor||asigVinculada.empresa?.servidor):insc.servidor;
+  const ddns=(asigVinculada?asigVinculada.empresa?.sistema?.ddns:insc.generacion?.curso?.sistema?.ddns)||'';
   const usuarioRdp=asigVinculada?asigVinculada.usuario_rdp:insc.usuario_rdp;
   const contrasenaRdp=asigVinculada?asigVinculada.contrasena_rdp:insc.contrasena_rdp;
   const empresaNum=asigVinculada?asigVinculada.empresa?.numero:insc.empresa_aspel;
   const usuarioAspel=asigVinculada?asigVinculada.empresa?.usuario_empresa:insc.usuario_aspel;
   const contrasenaAspel=asigVinculada?asigVinculada.empresa?.contrasena_empresa:insc.contrasena_aspel;
+  return `Servidor: ${servidor||'—'}${ddns?` (${ddns})`:''}\nUsuario RDP: ${usuarioRdp||'—'}\nContraseña RDP: ${contrasenaRdp||'—'}\n`+
+    `Empresa Aspel: ${empresaNum??'—'}\nUsuario Aspel: ${usuarioAspel||'—'}\nContraseña Aspel: ${contrasenaAspel||'—'}`;
+}
+function academiaPlantillaAccesoLab(insc,asigVinculada){
   return `Hola ${insc.participante?.nombre||''}, estos son tus datos de acceso al laboratorio virtual de ${insc.generacion?.curso?.nombre||''} (${insc.generacion?.clave||''}):\n`+
-    `Servidor: ${servidor||'—'}\nUsuario RDP: ${usuarioRdp||'—'}\nContraseña RDP: ${contrasenaRdp||'—'}\n`+
-    `Empresa Aspel: ${empresaNum??'—'}\nUsuario Aspel: ${usuarioAspel||'—'}\nContraseña Aspel: ${contrasenaAspel||'—'}\n\nGrupo Innovaci`;
+    academiaDatosAccesoLabBlock(insc,asigVinculada)+`\n\nGrupo Innovaci`;
 }
 async function academiaCopiarPlantillaAccesoLab(inscripcionId){
-  const {data:insc}=await sb.from('academia_inscripciones').select('*,participante:participante_id(nombre),generacion:generacion_id(clave,curso:curso_id(nombre))').eq('id',inscripcionId).single();
+  const {data:insc}=await sb.from('academia_inscripciones').select('*,participante:participante_id(nombre),generacion:generacion_id(clave,curso:curso_id(nombre,sistema:sistema_id(ddns)))').eq('id',inscripcionId).single();
   if(!insc) return;
-  const {data:asig}=await sb.from('academia_empresas_asignaciones').select('*,empresa:empresa_id(*)').eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false}).limit(1).maybeSingle();
+  const {data:asig}=await sb.from('academia_empresas_asignaciones').select('*,empresa:empresa_id(*,sistema:sistema_id(ddns))').eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false}).limit(1).maybeSingle();
   try{ await navigator.clipboard.writeText(academiaPlantillaAccesoLab(insc,asig)); alert('Plantilla copiada al portapapeles.'); }
   catch(e){ alert('No se pudo copiar automáticamente. Copia manualmente los datos de la sección.'); }
 }
@@ -2551,12 +2604,13 @@ async function academiaCopiarPlantillaAccesoLab(inscripcionId){
 // Sustituye los placeholders {nombre}/{curso}/{generacion}/{folio} de una
 // plantilla de "Mensajes rápidos" (Jp, 2026-09-08) con los datos reales de
 // la inscripción. Nuevos placeholders se pueden agregar aquí si hace falta.
-function academiaSustituirPlantillaWhatsApp(texto,insc){
+function academiaSustituirPlantillaWhatsApp(texto,insc,asigVinculada){
   return (texto||'')
     .replaceAll('{nombre}', insc.participante?.nombre||'')
     .replaceAll('{curso}', insc.generacion?.curso?.nombre||'')
     .replaceAll('{generacion}', insc.generacion?.clave||'')
-    .replaceAll('{folio}', insc.folio||'');
+    .replaceAll('{folio}', insc.folio||'')
+    .replaceAll('{datos_acceso}', academiaDatosAccesoLabBlock(insc,asigVinculada));
 }
 
 // Editar datos del participante (Jp, 2026-09-08): nombre/correo/teléfono
@@ -2584,7 +2638,11 @@ async function academiaGuardarEditarParticipante(participanteId,inscripcionId){
   }).eq('id',participanteId);
   if(error){alert('Error al guardar: '+error.message);return;}
   document.getElementById('modalEditarParticipante')?.remove();
-  academiaVerFicha(inscripcionId);
+  // Jp, 2026-09-08: el mismo modal se abre desde la ficha de UNA inscripción
+  // (refresca esa ficha) o desde el expediente del Asistente, que agrupa
+  // todas sus inscripciones (refresca el expediente) — se distingue porque
+  // desde el expediente no se manda inscripcionId.
+  if(inscripcionId) academiaVerFicha(inscripcionId); else academiaVerAsistente(participanteId);
 }
 // Navega a la pestaña Accesos y abre el historial de la empresa vinculada
 // (Jp, 2026-09-03: los datos ya vinculados se editan/consultan desde Accesos,
@@ -2600,7 +2658,7 @@ async function academiaIrAEmpresaAcceso(empresaId){
 // — sugiere la primera disponible del sistema del curso, con opción de elegir
 // otra, sin tener que ir primero a la pestaña Accesos.
 async function academiaAbrirAsignarDesdeFicha(inscripcionId){
-  const {data:insc,error}=await sb.from('academia_inscripciones').select('nivel_acceso,participante:participante_id(nombre),generacion:generacion_id(curso:curso_id(nombre,sistema_id,sistema:sistema_id(clave)))').eq('id',inscripcionId).single();
+  const {data:insc,error}=await sb.from('academia_inscripciones').select('nivel_acceso,participante:participante_id(nombre),generacion:generacion_id(clave,curso:curso_id(nombre,sistema_id,sistema:sistema_id(clave)))').eq('id',inscripcionId).single();
   if(error||!insc){alert('No se pudo cargar la inscripción: '+(error?.message||''));return;}
   if(insc.nivel_acceso==='esencial'){alert('El acceso Esencial no hace prácticas de laboratorio, así que no se le asigna empresa.');return;}
   const sistemaId=insc.generacion?.curso?.sistema_id;
@@ -2615,7 +2673,7 @@ async function academiaAbrirAsignarDesdeFicha(inscripcionId){
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px;">
       ${fld('Servidor',inp('fichaAccServidor','text','',disponibles[0]?.servidor||''))}
       ${fld('Usuario RDP',inp('fichaAccUsuarioRdp','text','Ej. US03'))}
-      ${fld('Contraseña RDP',inp('fichaAccContrasenaRdp','text',''))}
+      ${fld('Contraseña RDP',academiaCampoPasswordConGenerador('fichaAccContrasenaRdp',`'${insc.generacion?.clave||''}'`))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
       ${fld('Fecha de inicio',inp('fichaAccFechaInicio','date','',hoy))}
@@ -2709,6 +2767,35 @@ async function academiaGuardarObservacionPracticas(inscripcionId){
   const {error}=await sb.from('academia_inscripciones').update({practicas_observaciones:val}).eq('id',inscripcionId);
   if(error){alert('Error guardando la observación de prácticas: '+error.message);return;}
   await sb.from('academia_bitacora').insert({inscripcion_id:inscripcionId,tipo:'practica',detalle:'Observación general de prácticas actualizada',capturada_por:currentUser?.id||null});
+  academiaVerFicha(inscripcionId);
+}
+
+// Ligas de Drive (Jp, 2026-09-08): lista compacta de ligas ya guardadas,
+// cada una con su observación y un botón para quitarla. Usada tanto para
+// "evidencia" como para "respaldo" (mismo componente, distinta categoría).
+function academiaListaLigas(ligas,inscripcionId){
+  if(!ligas.length) return `<div style="font-size:11px;color:var(--text3);">Sin ligas todavía.</div>`;
+  return `<div style="display:flex;flex-direction:column;gap:4px;">`+
+    ligas.map(l=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:11px;background:var(--surf2);border-radius:6px;padding:5px 8px;">
+      <a href="${l.url}" target="_blank" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;">${l.observacion||l.url}</a>
+      <button title="Quitar" onclick="academiaEliminarLigaInscripcion('${l.id}','${inscripcionId}')" style="border:none;background:none;color:#c0392b;cursor:pointer;font-size:13px;">✕</button>
+    </div>`).join('')+
+    `</div>`;
+}
+async function academiaAgregarLigaInscripcion(inscripcionId,categoria){
+  const url=document.getElementById(`liga${categoria==='evidencia'?'Evidencia':'Respaldo'}Url_${inscripcionId}`)?.value?.trim();
+  const observacion=document.getElementById(`liga${categoria==='evidencia'?'Evidencia':'Respaldo'}Obs_${inscripcionId}`)?.value?.trim()||null;
+  if(!url){alert('Pega la liga de Drive antes de agregar.');return;}
+  const {error}=await sb.from('academia_inscripcion_ligas').insert({
+    inscripcion_id:inscripcionId, categoria, url, observacion, creada_por:currentUser?.id||null,
+  });
+  if(error){alert('Error al agregar la liga: '+error.message);return;}
+  academiaVerFicha(inscripcionId);
+}
+async function academiaEliminarLigaInscripcion(ligaId,inscripcionId){
+  if(!confirm('¿Quitar esta liga?')) return;
+  const {error}=await sb.from('academia_inscripcion_ligas').delete().eq('id',ligaId);
+  if(error){alert('Error al quitar la liga: '+error.message);return;}
   academiaVerFicha(inscripcionId);
 }
 
@@ -2865,6 +2952,116 @@ function academiaPintarConstancias(){
   </div>`;
 }
 
+// ── MENSAJES RÁPIDOS DE WHATSAPP — configuración dentro de la app (Jp,
+// 2026-09-08): antes esto era un catálogo de solo-Supabase (mismo patrón que
+// academia_firmantes); ahora Jp pidió poder personalizar/agregar plantillas
+// sin salir de Academia, usando etiquetas para que la app jale datos reales.
+const ACADEMIA_PLACEHOLDERS_MSG=[
+  {tag:'{nombre}',desc:'Nombre del asistente'},
+  {tag:'{curso}',desc:'Nombre del curso'},
+  {tag:'{generacion}',desc:'Clave de la generación'},
+  {tag:'{folio}',desc:'Folio de inscripción'},
+  {tag:'{datos_acceso}',desc:'Bloque con servidor, DDNS, usuario/contraseña RDP y Aspel (igual que "Enviar por WhatsApp" de Datos de acceso)'},
+];
+async function renderAcademiaMensajes(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando plantillas...</div>';
+  const {data:plantillas,error}=await sb.from('academia_whatsapp_plantillas').select('*').order('orden',{ascending:true});
+  if(error){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error: ${error.message}</div>`;return;}
+  window._academiaCache.mensajesPlantillas=plantillas||[];
+  mc.innerHTML=`
+  <div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+    <div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);">Mensajes rápidos de WhatsApp</div>
+      <div style="font-size:12px;color:var(--text3);">Plantillas que aparecen en "Mensajes rápidos" dentro de la ficha de cada asistente.</div>
+    </div>
+    <button class="btn-primary" style="width:auto;padding:8px 16px;" onclick="academiaAbrirPlantillaMsg(null)">+ Nueva plantilla</button>
+  </div>
+  <div class="card" style="padding:12px 16px;margin-bottom:16px;background:var(--surf2);">
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:6px;">ETIQUETAS DISPONIBLES</div>
+    <div style="font-size:12px;color:var(--text2);line-height:1.7;">
+      ${ACADEMIA_PLACEHOLDERS_MSG.map(p=>`<code style="background:#fff;border:1px solid var(--border);border-radius:4px;padding:1px 5px;font-family:'JetBrains Mono',monospace;">${p.tag}</code> ${p.desc}`).join('<br>')}
+    </div>
+  </div>
+  <div id="academiaMensajesLista"></div>`;
+  academiaPintarMensajes();
+}
+function academiaPintarMensajes(){
+  const cont=document.getElementById('academiaMensajesLista');
+  if(!cont) return;
+  const plantillas=window._academiaCache.mensajesPlantillas||[];
+  cont.innerHTML=`
+  <div class="card" style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;">
+        <th style="padding:10px 12px;">Orden</th><th>Nombre (botón)</th><th>Mensaje</th><th>Activa</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${plantillas.map(pl=>`
+        <tr style="${pl.activa?'':'opacity:.5;'}">
+          <td style="padding:10px 12px;">${pl.orden}</td>
+          <td style="font-weight:600;">${pl.nombre}</td>
+          <td style="max-width:420px;white-space:pre-wrap;font-size:12px;color:var(--text2);">${(pl.cuerpo||'').slice(0,140)}${(pl.cuerpo||'').length>140?'…':''}</td>
+          <td><label style="cursor:pointer;"><input type="checkbox" ${pl.activa?'checked':''} onchange="academiaToggleActivaPlantillaMsg('${pl.id}',this.checked)"> ${pl.activa?'Sí':'No'}</label></td>
+          <td style="text-align:right;white-space:nowrap;">
+            <button class="cartera-subtab" onclick="academiaAbrirPlantillaMsg('${pl.id}')">✎ Editar</button>
+            <button class="cartera-subtab" style="color:#c0392b;" onclick="academiaEliminarPlantillaMsg('${pl.id}')">Eliminar</button>
+          </td>
+        </tr>`).join('')||`<tr><td colspan="5" style="padding:16px;color:var(--text3);">Aún no hay plantillas — agrega la primera con "+ Nueva plantilla".</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+}
+function academiaAbrirPlantillaMsg(plantillaId){
+  const pl=plantillaId?(window._academiaCache.mensajesPlantillas||[]).find(p=>p.id===plantillaId):null;
+  const html=`
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Nombre del botón',inp('msgNombre','text','Ej. Bienvenida','',pl?.nombre||''))}
+      ${fld('Orden',inp('msgOrden','number','',''))}
+    </div>
+    <div style="margin-bottom:10px;">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:3px;font-weight:500;">Mensaje (usa las etiquetas de arriba)</div>
+      <textarea id="msgCuerpo" rows="6" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:inherit;resize:vertical;box-sizing:border-box;">${pl?.cuerpo||''}</textarea>
+    </div>
+    <label style="font-size:12px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+      <input type="checkbox" id="msgActiva" ${(pl?pl.activa:true)?'checked':''}> Activa (visible en la ficha del asistente)
+    </label>`;
+  mkModal('modalPlantillaMsg',plantillaId?'Editar plantilla':'Nueva plantilla',html,`academiaGuardarPlantillaMsg('${plantillaId||''}')`,'Guardar');
+  // El input de orden se llena con un valor correcto directo (el helper inp()
+  // no soporta expresiones), se corrige aquí tras montar el modal.
+  const ordenEl=document.getElementById('msgOrden');
+  if(ordenEl) ordenEl.value=pl?.orden??((window._academiaCache.mensajesPlantillas||[]).length+1);
+}
+async function academiaGuardarPlantillaMsg(plantillaId){
+  const nombre=document.getElementById('msgNombre')?.value?.trim();
+  const cuerpo=document.getElementById('msgCuerpo')?.value?.trim();
+  const orden=Number(document.getElementById('msgOrden')?.value)||0;
+  const activa=!!document.getElementById('msgActiva')?.checked;
+  if(!nombre){alert('Falta el nombre del botón.');return;}
+  if(!cuerpo){alert('Falta el texto del mensaje.');return;}
+  const payload={nombre,cuerpo,orden,activa};
+  const {error}=plantillaId
+    ?await sb.from('academia_whatsapp_plantillas').update(payload).eq('id',plantillaId)
+    :await sb.from('academia_whatsapp_plantillas').insert(payload);
+  if(error){alert('Error al guardar la plantilla: '+error.message);return;}
+  document.getElementById('modalPlantillaMsg')?.remove();
+  window._academiaCache.whatsappPlantillas=null; // invalida el caché que usa la ficha del asistente
+  renderAcademiaMensajes();
+}
+async function academiaToggleActivaPlantillaMsg(plantillaId,activa){
+  const {error}=await sb.from('academia_whatsapp_plantillas').update({activa}).eq('id',plantillaId);
+  if(error){alert('Error al actualizar: '+error.message);return;}
+  window._academiaCache.whatsappPlantillas=null;
+  renderAcademiaMensajes();
+}
+async function academiaEliminarPlantillaMsg(plantillaId){
+  if(!confirm('¿Eliminar esta plantilla? Esta acción no se puede deshacer.')) return;
+  const {error}=await sb.from('academia_whatsapp_plantillas').delete().eq('id',plantillaId);
+  if(error){alert('Error al eliminar: '+error.message);return;}
+  window._academiaCache.whatsappPlantillas=null;
+  renderAcademiaMensajes();
+}
+
 // ── ASISTENTES (Lote 10): un expediente por PERSONA, no por inscripción ────
 // Jp: "cuando me aparezca en la lista de asistentes solamente me va a
 // aparecer un solo Marco Antonio y que asistió a los dos [cursos]".
@@ -2944,7 +3141,7 @@ async function academiaVerAsistente(participanteId){
   <div class="card" style="margin-top:12px;padding:16px;">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;">
       <div>
-        <div style="font-size:18px;font-weight:600;color:var(--text);">${a.nombre||'—'}</div>
+        <div style="font-size:18px;font-weight:600;color:var(--text);display:flex;align-items:center;gap:8px;">${a.nombre||'—'}<button class="cartera-subtab" style="font-size:11px;font-weight:600;padding:2px 8px;" onclick="academiaAbrirEditarParticipante('${a.id}','')">✎ Editar</button></div>
         <div style="font-size:12px;color:var(--text3);margin-top:2px;">${a.mail||'—'} · ${a.telefono||'—'}</div>
         ${a.cliente?.razon_social?`<div style="font-size:12px;color:var(--text3);margin-top:2px;">Cuenta: ${a.cliente.razon_social}</div>`:''}
       </div>
@@ -13172,6 +13369,30 @@ function mkModal(id,titulo,contenido,onSave,saveLabel='Guardar',wide=false){
 function fld(label,input){return `<div><div style="font-size:11px;color:var(--text3);margin-bottom:3px;font-weight:500;">${label}</div>${input}</div>`;}
 function inp(id,type='text',ph='',val='',extra=''){return `<input id="${id}" type="${type}" placeholder="${ph}" value="${val}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;" ${extra}>`;}
 function sel(id,opts,val=''){return `<select id="${id}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${opts.map(o=>`<option value="${o}" ${o===val?'selected':''}>${o}</option>`).join('')}</select>`;}
+
+// Generador de contraseñas seguras para accesos RDP (Jp, 2026-09-08): prefijo
+// = clave de la generación + sufijo aleatorio (mismo estilo que el folio de
+// asistente, ej. "AS-AEH7L") — SOLO para RDP; Aspel lo sigue capturando Jp a
+// mano. `claveExprJs` es una expresión JS (como texto) que al evaluarse en el
+// navegador da la clave de la generación en ese momento — a veces es fija
+// (ya se conoce al construir el modal) y a veces hay que leerla de un <select>
+// que el usuario puede cambiar (por eso se evalúa al hacer clic, no antes).
+function academiaCampoPasswordConGenerador(id,claveExprJs,valorInicial=''){
+  return `<div style="display:flex;gap:4px;">${inp(id,'text','',valorInicial)}<button type="button" title="Generar contraseña segura" onclick="academiaGenerarPasswordRdp('${id}',${claveExprJs})" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-size:13px;flex-shrink:0;">🎲</button></div>`;
+}
+function academiaGenerarPasswordSegura(prefijo){
+  const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sin caracteres ambiguos (O/0, I/1, l)
+  const arr=new Uint32Array(6);
+  (window.crypto||window.msCrypto).getRandomValues(arr);
+  let suf=''; for(let i=0;i<arr.length;i++) suf+=chars[arr[i]%chars.length];
+  const pre=(prefijo||'').toString().toUpperCase().replace(/[^A-Z0-9]/g,'')||'ACCESO';
+  return `${pre}-${suf}`;
+}
+function academiaGenerarPasswordRdp(inputId,clave){
+  const el=document.getElementById(inputId);
+  if(!el) return;
+  el.value=academiaGenerarPasswordSegura(clave);
+}
 // Como sel(), pero para cuando el texto guardado (value) no debe ser igual al
 // texto mostrado — ej. una opción vacía con una etiqueta descriptiva en vez de
 // dejarla en blanco. pares: array de [value,label].
