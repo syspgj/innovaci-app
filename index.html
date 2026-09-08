@@ -1743,7 +1743,9 @@ function academiaFiltrarParticipantesPorGen(){
   const opt=genSel?.selectedOptions[0];
   const cursoTexto=document.getElementById('accCursoTexto');
   if(cursoTexto) cursoTexto.textContent=genId?(opt?.dataset.curso||'—'):'—';
-  window._academiaAsignarParticipantes=genId?(window._academiaCache.inscripcionesParaAcceso||[]).filter(i=>i.generacion_id===genId):[];
+  // Esencial nunca necesita empresa de práctica (Jp, 2026-09-08) — se
+  // excluye de la lista de participantes asignables aquí.
+  window._academiaAsignarParticipantes=genId?(window._academiaCache.inscripcionesParaAcceso||[]).filter(i=>i.generacion_id===genId&&i.nivel_acceso!=='esencial'):[];
   const buscar=document.getElementById('accInscBuscar');
   if(buscar) buscar.value='';
   academiaFiltrarInscOpts();
@@ -1777,7 +1779,7 @@ async function academiaAbrirAsignarEmpresa(empresaId){
     window._academiaCache.generacionesParaAcceso=data||[];
   }
   if(!window._academiaCache.inscripcionesParaAcceso){
-    const {data}=await sb.from('academia_inscripciones').select('id,generacion_id,participante:participante_id(nombre)').order('created_at',{ascending:false}).limit(2000);
+    const {data}=await sb.from('academia_inscripciones').select('id,generacion_id,nivel_acceso,participante:participante_id(nombre)').order('created_at',{ascending:false}).limit(2000);
     window._academiaCache.inscripcionesParaAcceso=data||[];
   }
   window._academiaAsignarParticipantes=[];
@@ -1815,6 +1817,10 @@ async function academiaGuardarAsignarEmpresa(empresaId,seguirConSiguiente){
   const inscId=inscSel?.value;
   if(!genId){alert('Selecciona la generación del participante.');return;}
   if(!inscId){alert('Selecciona un participante dado de alta en esa generación (no se puede escribir el nombre a mano).');return;}
+  // Defensa adicional (Jp, 2026-09-08): aunque la lista ya excluye Esencial,
+  // se vuelve a verificar contra la BD por si el valor quedó en caché viejo.
+  const inscElegida=(window._academiaAsignarParticipantes||[]).find(i=>i.id===inscId);
+  if(inscElegida?.nivel_acceso==='esencial'){alert('El acceso Esencial no hace prácticas de laboratorio, así que no se le puede asignar empresa.');return;}
   const nombre=inscSel.selectedOptions[0]?.dataset.nombre||'';
   const curso=document.getElementById('accCursoTexto')?.textContent||'';
   const {empresas}=window._academiaCache.accesos||{empresas:[]};
@@ -2034,6 +2040,19 @@ function academiaPintarParticipantes(){
 }
 
 // ── AGREGAR ASISTENTE ────────────────────────────────────────────────────────
+// Esencial nunca hace prácticas de laboratorio, así que nunca debe tener
+// empresa asignada (Jp, 2026-09-08: "Necesitamos una regla para los
+// esenciales no se les asigne empresa"). Este toggle solo controla la UI del
+// modal de alta; el bloqueo real (por si alguien manipula el DOM o cambia el
+// valor después) vive en academiaGuardarNuevoAsistente.
+function academiaToggleEmpresaBlockPorAcceso(){
+  const esEsencial=document.getElementById('naAcceso')?.value==='esencial';
+  const wrap=document.getElementById('naEmpresaBlockWrap');
+  const nota=document.getElementById('naEmpresaBlockEsencialNota');
+  if(wrap) wrap.style.display=esEsencial?'none':'block';
+  if(nota) nota.style.display=esEsencial?'block':'none';
+}
+
 async function academiaAbrirNuevoAsistente(generacionId){
   const cache=window._academiaCache.participantesGen;
   const gen=cache?.gen;
@@ -2069,18 +2088,21 @@ async function academiaAbrirNuevoAsistente(generacionId){
       ${fld('Teléfono',inp('naTelefono','text',''))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
-      ${fld('Nivel de acceso',sel('naAcceso',['esencial','plus','premium']))}
+      ${fld('Nivel de acceso',`<select id="naAcceso" onchange="academiaToggleEmpresaBlockPorAcceso()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;"><option value="esencial">esencial</option><option value="plus">plus</option><option value="premium">premium</option></select>`)}
       ${fld('Tipo',sel('naTipo',['entero','cortesia']))}
       ${fld('Prefijo de folio (sistema+versión)',inp('naPrefijo','text','Ej. NOI11',prefijoSugerido))}
     </div>
     <div style="margin-bottom:10px;">${fld('Vendedor (nombre)',inp('naVendedor','text',''))}</div>
-    <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">EMPRESA DE PRÁCTICA (Control de Accesos)</div>
-    ${disponibles.length?`
-    <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:8px;">
-      <input type="checkbox" id="naAsignarEmpresa" checked onchange="document.getElementById('naEmpresaSel').disabled=!this.checked;"> Asignarle una empresa libre ahora mismo
-    </label>
-    <div style="margin-bottom:14px;">${fld('Empresa sugerida (puedes elegir otra)',`<select id="naEmpresaSel" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${empresaOpts}</select>`)}</div>
-    `:`<div style="font-size:11px;color:var(--text3);margin-bottom:14px;">${sistemaId?'No hay empresas disponibles ahora mismo en este sistema — se puede asignar después desde Accesos.':'No se identificó el sistema de este curso — asigna la empresa después desde Accesos.'}</div>`}
+    <div id="naEmpresaBlockWrap" style="display:none;">
+      <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">EMPRESA DE PRÁCTICA (Control de Accesos)</div>
+      ${disponibles.length?`
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:8px;">
+        <input type="checkbox" id="naAsignarEmpresa" checked onchange="document.getElementById('naEmpresaSel').disabled=!this.checked;"> Asignarle una empresa libre ahora mismo
+      </label>
+      <div style="margin-bottom:14px;">${fld('Empresa sugerida (puedes elegir otra)',`<select id="naEmpresaSel" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${empresaOpts}</select>`)}</div>
+      `:`<div style="font-size:11px;color:var(--text3);margin-bottom:14px;">${sistemaId?'No hay empresas disponibles ahora mismo en este sistema — se puede asignar después desde Accesos.':'No se identificó el sistema de este curso — asigna la empresa después desde Accesos.'}</div>`}
+    </div>
+    <div id="naEmpresaBlockEsencialNota" style="font-size:11px;color:var(--text3);margin-bottom:14px;">El acceso Esencial no hace prácticas de laboratorio — no necesita empresa asignada.</div>
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">ACCESO AL LABORATORIO VIRTUAL (opcional — se puede dejar en blanco si ya se asignó una empresa arriba)</div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Servidor',inp('naServidor','text',''))}
@@ -2099,6 +2121,7 @@ async function academiaAbrirNuevoAsistente(generacionId){
       ${fld('Fin de sesión privada con Karen (sugerido: +90 días)',`<input id="naFechaFinSesion" type="date" oninput="this.dataset.tocado='1'">`)}
     </div>`;
   mkModal('modalNuevoAsistente',`Agregar asistente — ${gen?.curso?.nombre||''} ${gen?.clave||''}`,html,`academiaGuardarNuevoAsistente('${generacionId}')`,'Guardar',true);
+  academiaToggleEmpresaBlockPorAcceso();
 }
 
 // Lee una captura (ej. la que manda Ventas por Telegram con los datos de alta)
@@ -2210,7 +2233,9 @@ async function academiaGuardarNuevoAsistente(generacionId){
   // tener que ir después a Accesos (Jp, 2026-09-03).
   const asignarChk=document.getElementById('naAsignarEmpresa');
   const empresaSel=document.getElementById('naEmpresaSel')?.value;
-  if(asignarChk?.checked && empresaSel){
+  // Esencial nunca ocupa empresa de práctica (Jp, 2026-09-08) — se ignora el
+  // checkbox aunque haya quedado marcado.
+  if(asignarChk?.checked && empresaSel && nivelAcceso!=='esencial'){
     const {error:errAsig}=await sb.from('academia_empresas_asignaciones').insert({
       empresa_id:empresaSel,
       inscripcion_id:inscNueva.id,
@@ -2368,7 +2393,7 @@ async function academiaVerFicha(inscripcionId){
         <div style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;">Datos de acceso al laboratorio virtual${asigVinculada?' <span style="color:var(--teal);font-weight:600;text-transform:none;letter-spacing:0;">🔗 vinculado a Control de Accesos</span>':''}</div>
         <div style="display:flex;gap:6px;">
           <button class="cartera-subtab" onclick="academiaToggleAccesoLab('${inscripcionId}')">Ver / ocultar</button>
-          ${asigVinculada?`<button class="cartera-subtab" onclick="academiaIrAEmpresaAcceso('${asigVinculada.empresa_id}')">Ver en Accesos</button>`:`<button class="cartera-subtab" style="background:var(--teal);color:#fff;" onclick="academiaAbrirAsignarDesdeFicha('${inscripcionId}')">Asignar empresa</button><button class="cartera-subtab" onclick="academiaAbrirEditarAccesoLab('${inscripcionId}')">Editar manual</button>`}
+          ${asigVinculada?`<button class="cartera-subtab" onclick="academiaIrAEmpresaAcceso('${asigVinculada.empresa_id}')">Ver en Accesos</button>`:insc.nivel_acceso==='esencial'?'':`<button class="cartera-subtab" style="background:var(--teal);color:#fff;" onclick="academiaAbrirAsignarDesdeFicha('${inscripcionId}')">Asignar empresa</button><button class="cartera-subtab" onclick="academiaAbrirEditarAccesoLab('${inscripcionId}')">Editar manual</button>`}
         </div>
       </div>
       <div id="academiaAccesoLab_${inscripcionId}" style="display:none;font-size:12px;color:var(--text2);line-height:1.8;">
@@ -2559,8 +2584,9 @@ async function academiaIrAEmpresaAcceso(empresaId){
 // — sugiere la primera disponible del sistema del curso, con opción de elegir
 // otra, sin tener que ir primero a la pestaña Accesos.
 async function academiaAbrirAsignarDesdeFicha(inscripcionId){
-  const {data:insc,error}=await sb.from('academia_inscripciones').select('participante:participante_id(nombre),generacion:generacion_id(curso:curso_id(nombre,sistema_id,sistema:sistema_id(clave)))').eq('id',inscripcionId).single();
+  const {data:insc,error}=await sb.from('academia_inscripciones').select('nivel_acceso,participante:participante_id(nombre),generacion:generacion_id(curso:curso_id(nombre,sistema_id,sistema:sistema_id(clave)))').eq('id',inscripcionId).single();
   if(error||!insc){alert('No se pudo cargar la inscripción: '+(error?.message||''));return;}
+  if(insc.nivel_acceso==='esencial'){alert('El acceso Esencial no hace prácticas de laboratorio, así que no se le asigna empresa.');return;}
   const sistemaId=insc.generacion?.curso?.sistema_id;
   if(!sistemaId){alert('Esta generación no tiene un sistema (Aspel) identificado, así que no se puede sugerir empresa. Puedes asignarla manualmente desde la pestaña Accesos si aplica a otro sistema.');return;}
   const disponibles=await academiaEmpresasDisponiblesSistema(sistemaId);
