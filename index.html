@@ -10921,34 +10921,67 @@ function opsEstadoPoliza(c){
   const diasDesdeInicio=fIni?Math.floor((hoy-fIni)/86400000):null;
   const nueva=!vencida&&!agotada&&diasDesdeInicio!==null&&diasDesdeInicio>=0&&diasDesdeInicio<=30;
   let grupo='vigente';
-  if(agotada) grupo='agotada';
+  if(c.estatus==='CERRADA') grupo='cerrada';
+  else if(agotada) grupo='agotada';
   else if(vencida) grupo='vencida';
   else if(porVencerFecha||porVencerHoras) grupo='porvencer';
   else if(nueva) grupo='nueva';
-  const labelGrupo={vigente:'En curso',porvencer:'Por vencer',nueva:'Nueva',vencida:'Vencida',agotada:'Agotada'};
-  const colorGrupo={vigente:'#27AE60',porvencer:'#F5A623',nueva:'#2980B9',vencida:'#E84040',agotada:'#94a3b8'};
+  const labelGrupo={vigente:'En curso',porvencer:'Por vencer',nueva:'Nueva',vencida:'Vencida',agotada:'Agotada',cerrada:'Cerrada'};
+  const colorGrupo={vigente:'#27AE60',porvencer:'#F5A623',nueva:'#2980B9',vencida:'#E84040',agotada:'#94a3b8',cerrada:'#64748b'};
   return {totales,consumidas,restantes,diasParaVencer,vencida,agotada,porVencerFecha,porVencerHoras,nueva,grupo,label:labelGrupo[grupo],color:colorGrupo[grupo]};
+}
+
+// Suma los minutos reales de TODOS los tickets (app + historial 2019-2026)
+// agrupados por póliza, para que "Consumidas"/"Restantes" digan lo mismo
+// en la tabla de "📋 Pólizas" y en cada detalle (Jp, 2026-09-09: "en el
+// detalle general de pólizas no me está considerando el tiempo real").
+// Con paginación explícita por `.range()` — Supabase/PostgREST limita
+// cada consulta a 1000 filas por default, y `servicios_historicos` ya
+// tiene 8,649 — sin paginar, la mitad de las pólizas se quedaban con
+// "Consumidas: 0h" simplemente porque sus registros caían después de la
+// fila 1000 del query sin filtrar.
+async function opsCargarMapasMinutos(){
+  const minutosApp={},minutosHist={};
+  const pageSize=1000;
+  for(let from=0;;from+=pageSize){
+    const {data,error}=await sb.from('servicios_ejecutados').select('cliente_poliza_id,duracion_facturada_min').not('cliente_poliza_id','is',null).range(from,from+pageSize-1);
+    if(error||!data||!data.length) break;
+    data.forEach(r=>{minutosApp[r.cliente_poliza_id]=(minutosApp[r.cliente_poliza_id]||0)+(parseFloat(r.duracion_facturada_min)||0);});
+    if(data.length<pageSize) break;
+  }
+  for(let from=0;;from+=pageSize){
+    const {data,error}=await sb.from('servicios_historicos').select('poliza_numero,minutos_remoto').not('poliza_numero','is',null).range(from,from+pageSize-1);
+    if(error||!data||!data.length) break;
+    data.forEach(r=>{minutosHist[r.poliza_numero]=(minutosHist[r.poliza_numero]||0)+(parseFloat(r.minutos_remoto)||0);});
+    if(data.length<pageSize) break;
+  }
+  window._opsMinutosApp=minutosApp;
+  window._opsMinutosHist=minutosHist;
+}
+// Convierte horas decimales a "Xh Ymin" para mostrar junto al valor
+// redondeado (Jp, 2026-09-09): "me gustaría que se le agregara... el
+// tiempo en minutos... entre paréntesis".
+function opsHorasAMinutosTexto(h){
+  const totalMin=Math.round((h||0)*60);
+  const hh=Math.floor(totalMin/60), mm=totalMin%60;
+  return `${hh}h ${String(mm).padStart(2,'0')}min`;
 }
 
 async function renderOpsContratos(){
   const body=document.getElementById('opsBody');
   body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
-  const [{data:contratos,error},{data:polizas},{data:servApp},{data:servHist}]=await Promise.all([
+  const [{data:contratos,error},{data:polizas}]=await Promise.all([
     sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,horas_incluidas), clientes_cartera(razon_social,vendedor_asignado,telefono,correo_principal,telefono_whatsapp)').order('fecha_vencimiento'),
     sb.from('polizas_catalogo').select('id,categoria,nombre,modalidad,horas_incluidas,precio,vigencia_meses').eq('activo',true).order('categoria').order('precio'),
-    sb.from('servicios_ejecutados').select('cliente_poliza_id,duracion_facturada_min').not('cliente_poliza_id','is',null),
-    sb.from('servicios_historicos').select('poliza_numero,minutos_remoto').not('poliza_numero','is',null)
+    opsCargarMapasMinutos()
   ]);
   if(error){body.innerHTML=`<div style="color:var(--red);">Error: ${error.message}</div>`;return;}
   window._opsPolizasCat=polizas||[];
-  window._opsPolizas=contratos||[];
-  // Mapas de minutos reales por póliza, usados por opsEstadoPoliza() para
-  // que "Consumidas"/"Restantes" en la tabla coincidan con el detalle.
-  const minutosApp={},minutosHist={};
-  (servApp||[]).forEach(r=>{minutosApp[r.cliente_poliza_id]=(minutosApp[r.cliente_poliza_id]||0)+(parseFloat(r.duracion_facturada_min)||0);});
-  (servHist||[]).forEach(r=>{minutosHist[r.poliza_numero]=(minutosHist[r.poliza_numero]||0)+(parseFloat(r.minutos_remoto)||0);});
-  window._opsMinutosApp=minutosApp;
-  window._opsMinutosHist=minutosHist;
+  // Pólizas cerradas (Jp, 2026-09-09): "poner la póliza como cerrada
+  // concluida y en automático se mande al histórico de pólizas" — se
+  // quitan de la tabla/fichas normales de "📋 Pólizas"; siguen siendo
+  // buscables en "🗂 Histórico de pólizas".
+  window._opsPolizas=(contratos||[]).filter(c=>c.estatus!=='CERRADA');
   body.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
       <input id="opsPolizasBuscar" type="text" placeholder="Buscar cliente o POL####..." value="${opsPolizasFiltro.q||''}" oninput="opsPolizasFiltro.q=this.value;opsPintarPolizas();" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;min-width:220px;">
@@ -11222,6 +11255,13 @@ async function abrirDetallePoliza(id){
       </div>
       <span style="padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700;background:${est.color}22;color:${est.color};">${est.label}</span>
     </div>
+    ${c.estatus==='CERRADA'?`<div style="margin-bottom:12px;padding:8px 12px;background:rgba(100,116,139,0.1);border-radius:6px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:10px;">
+      <span>📁 Esta póliza está cerrada — se ve aquí y en "🗂 Histórico de pólizas", ya no en la lista principal de "📋 Pólizas".</span>
+      <button onclick="reabrirPoliza('${id}')" style="background:#fff;border:1px solid var(--border);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">↺ Reabrir</button>
+    </div>`:(est.vencida||est.agotada)?`<div style="margin-bottom:12px;padding:8px 12px;background:rgba(232,64,64,0.06);border-radius:6px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:10px;">
+      <span>${est.agotada?'⚠ Se acabó el banco de horas.':'⚠ Venció por fecha.'} Si ya no va a seguir usándose, puedes cerrarla — se saca de "📋 Pólizas" y queda archivada en "🗂 Histórico de pólizas".</span>
+      <button onclick="cerrarPoliza('${id}')" style="background:var(--red);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">📁 Cerrar póliza</button>
+    </div>`:''}
     ${cartera?`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(0,169,157,0.06);border-radius:6px;font-size:11px;">
       🔗 Vinculado a Cartera de Cuentas: <b>${cartera.razon_social}</b>${cartera.num_cliente?' · #'+cartera.num_cliente:''}${cartera.vendedor_asignado?' · vendedor: '+cartera.vendedor_asignado:''}${cartera.telefono?' · tel: '+cartera.telefono:''}
       <div style="margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;">
@@ -11283,9 +11323,9 @@ async function abrirDetallePoliza(id){
     <div style="margin-bottom:12px;padding:10px 12px;background:rgba(41,128,185,0.06);border-radius:6px;">
       <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:6px;">⏱ Horas — con base en los tickets reales${c.poliza_numero_legacy?` (app + historial 2019-2026 de POL${c.poliza_numero_legacy})`:' (app)'}</div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:12px;">
-        <div><div style="color:var(--text3);font-size:10px;">Incluidas</div><div style="font-family:'JetBrains Mono',monospace;">${horasReales.total?horasReales.total+'h':'—'}</div></div>
-        <div><div style="color:var(--text3);font-size:10px;">Consumidas</div><div style="font-family:'JetBrains Mono',monospace;">${horasReales.consumido}h</div></div>
-        <div><div style="color:var(--text3);font-size:10px;">Restantes</div><div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${horasReales.total>0&&horasReales.restante<=horasReales.total*0.15?'#E84040':'var(--text)'};">${horasReales.total?horasReales.restante+'h':'—'}</div></div>
+        <div><div style="color:var(--text3);font-size:10px;">Incluidas</div><div style="font-family:'JetBrains Mono',monospace;">${horasReales.total?horasReales.total+'h':'—'}</div><div style="font-size:9px;color:var(--text3);">${horasReales.total?'('+opsHorasAMinutosTexto(horasReales.total)+')':''}</div></div>
+        <div><div style="color:var(--text3);font-size:10px;">Consumidas</div><div style="font-family:'JetBrains Mono',monospace;">${horasReales.consumido}h</div><div style="font-size:9px;color:var(--text3);">(${opsHorasAMinutosTexto(horasReales.consumido)})</div></div>
+        <div><div style="color:var(--text3);font-size:10px;">Restantes</div><div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${horasReales.total>0&&horasReales.restante<=horasReales.total*0.15?'#E84040':'var(--text)'};">${horasReales.total?horasReales.restante+'h':'—'}</div><div style="font-size:9px;color:var(--text3);">${horasReales.total?'('+opsHorasAMinutosTexto(horasReales.restante)+')':''}</div></div>
       </div>
       <div style="font-size:10px;color:var(--text3);margin-top:6px;">${(horasReales.minutosApp/60).toFixed(2)}h de tickets en la app${c.poliza_numero_legacy?` + ${(horasReales.minutosHistorico/60).toFixed(2)}h del historial`:''}</div>
     </div>
@@ -11341,6 +11381,27 @@ function actualizarHorasEdicionPoliza(){
 // Guarda los campos editables del detalle de póliza (Jp, 2026-09-09):
 // "ademas de lo anterior deben ser campos modificables" — tipo de póliza,
 // vendedor, fechas, horas incluidas y precio contratado.
+// Cierra/concluye una póliza (Jp, 2026-09-09): "poder poner la póliza como
+// cerrada concluida y en automático se mande al histórico de pólizas...
+// solamente se debe habilitar en esos casos [vencida por tiempo o por
+// banco de horas]" — el botón solo aparece cuando `est.vencida||est.agotada`
+// (ver el bloque de arriba en abrirDetallePoliza), así que para cuando se
+// llega aquí ya se cumplió esa condición; no hace falta revalidar.
+async function cerrarPoliza(id){
+  if(!confirm('¿Cerrar esta póliza? Deja de aparecer en "📋 Pólizas" y solo queda accesible desde "🗂 Histórico de pólizas".')) return;
+  const {error}=await sb.from('clientes_polizas').update({estatus:'CERRADA',updated_at:new Date().toISOString()}).eq('id',id);
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalDetallePoliza')?.remove();
+  if(document.getElementById('opsPolizasFichas')) renderOpsContratos();
+  alert('Póliza cerrada. Ya no aparece en "📋 Pólizas" — puedes encontrarla en "🗂 Histórico de pólizas".');
+}
+async function reabrirPoliza(id){
+  const {error}=await sb.from('clientes_polizas').update({estatus:'VIGENTE',updated_at:new Date().toISOString()}).eq('id',id);
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalDetallePoliza')?.remove();
+  abrirDetallePoliza(id);
+  if(document.getElementById('opsPolizasFichas')) renderOpsContratos();
+}
 async function guardarEdicionPoliza(id){
   const catalogoId=document.getElementById('dpCatalogo')?.value||null;
   const payload={
@@ -11475,7 +11536,7 @@ async function renderOpsTickets(){
   body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
   const today=todayLocal();
   const [{data:tickets},{data:asesores}]=await Promise.all([
-    sb.from('servicios_ejecutados').select('*').order('fecha_asignada',{ascending:false}).order('created_at',{ascending:false}).limit(400),
+    sb.from('servicios_ejecutados').select('*').order('fecha_asignada',{ascending:false}).order('created_at',{ascending:false}).limit(5000),
     sb.from('usuarios').select('id,nombre').eq('rol','asesor').order('nombre')
   ]);
   window._opsAsesores=asesores||[];
@@ -11491,6 +11552,9 @@ async function renderOpsTickets(){
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
       <div style="font-size:12px;color:var(--text3);">Hoy: <b>${hoy.length}</b> servicio(s) programado(s)</div>
       <button onclick="abrirNuevoTicket()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Nueva solicitud</button>
+    </div>
+    <div style="margin-bottom:14px;">
+      <input id="opsTicketsBuscar" type="text" placeholder="Buscar folio, cliente o descripción, de cualquier asesor..." value="${window._opsTicketsBuscar||''}" oninput="window._opsTicketsBuscar=this.value;renderOpsTicketsTabla();" style="width:100%;box-sizing:border-box;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
     </div>
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:18px;">
       <div class="thc" style="cursor:pointer;${window._opsTicketFiltro==='hoy'?'border:1px solid var(--teal);':''}" onclick="filtrarOpsTickets('hoy')"><div class="th-lbl">Hoy</div><div class="th-val">${hoy.length}</div></div>
@@ -11549,6 +11613,12 @@ function renderOpsTicketsTabla(){
     </div>`;
   }
   if(opsTicketsTipoFiltro) rows=rows.filter(t=>t.tipo_servicio===opsTicketsTipoFiltro);
+  // Búsqueda libre (Jp, 2026-09-09): "necesito poder tener una búsqueda...
+  // que no sea necesario yo meterme al cliente" — folio, cliente o
+  // descripción, entre TODOS los tickets ya cargados (no solo el filtro
+  // de ficha activo).
+  const qTickets=(window._opsTicketsBuscar||'').trim().toLowerCase();
+  if(qTickets) rows=rows.filter(t=>(t.folio_ticket||'').toLowerCase().includes(qTickets)||(t.cliente_nombre||'').toLowerCase().includes(qTickets)||(t.descripcion_solicitud||'').toLowerCase().includes(qTickets));
 
   const {col,dir}=opsTicketsSort, mult=dir==='asc'?1:-1;
   const valorOrden=(t)=>{
@@ -11832,19 +11902,10 @@ function verDetalleHistorico(id){
 async function renderOpsPolizasHistorico(){
   const body=document.getElementById('opsBody');
   body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
-  // Reusa los mismos mapas de minutos reales que la tabla de "📋 Pólizas"
-  // (por si esta pestaña se visita sin haber pasado por ahí primero).
-  if(!window._opsMinutosApp||!window._opsMinutosHist){
-    const [{data:servApp},{data:servHist}]=await Promise.all([
-      sb.from('servicios_ejecutados').select('cliente_poliza_id,duracion_facturada_min').not('cliente_poliza_id','is',null),
-      sb.from('servicios_historicos').select('poliza_numero,minutos_remoto').not('poliza_numero','is',null)
-    ]);
-    const minutosApp={},minutosHist={};
-    (servApp||[]).forEach(r=>{minutosApp[r.cliente_poliza_id]=(minutosApp[r.cliente_poliza_id]||0)+(parseFloat(r.duracion_facturada_min)||0);});
-    (servHist||[]).forEach(r=>{minutosHist[r.poliza_numero]=(minutosHist[r.poliza_numero]||0)+(parseFloat(r.minutos_remoto)||0);});
-    window._opsMinutosApp=minutosApp;
-    window._opsMinutosHist=minutosHist;
-  }
+  // Mismos mapas de minutos reales (paginados) que usa "📋 Pólizas" — se
+  // recargan siempre al entrar a esta pestaña para no arrastrar datos
+  // viejos de otra sesión de la tabla.
+  await opsCargarMapasMinutos();
   body.innerHTML=`
     <div style="font-size:11px;color:var(--text3);margin-bottom:14px;">Busca por cliente o por número de póliza (ej. "POL1998" o solo "1998") entre TODAS las pólizas que han existido — vigentes, vencidas, agotadas o cerradas hace años, tengan o no una fila propia en la app.</div>
     <div style="display:flex;gap:10px;margin-bottom:10px;">
