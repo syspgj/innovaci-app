@@ -10711,6 +10711,7 @@ async function renderDirectorOperaciones(){
       <button onclick="swOps('contratos')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='contratos'?'var(--navy)':'none'};color:${currentOpsTab==='contratos'?'#fff':'var(--text2)'};">📋 Pólizas</button>
       <button onclick="swOps('tickets')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='tickets'?'var(--navy)':'none'};color:${currentOpsTab==='tickets'?'#fff':'var(--text2)'};">🎫 Servicios / tickets</button>
       <button onclick="swOps('historial')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='historial'?'var(--navy)':'none'};color:${currentOpsTab==='historial'?'#fff':'var(--text2)'};">📜 Historial</button>
+      <button onclick="swOps('polizashist')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='polizashist'?'var(--navy)':'none'};color:${currentOpsTab==='polizashist'?'#fff':'var(--text2)'};">🗂 Histórico de pólizas</button>
     </div>
     <div id="opsBody"><div class="loading"><div class="spinner"></div></div></div>
   </div>`;
@@ -10718,6 +10719,7 @@ async function renderDirectorOperaciones(){
   else if(currentOpsTab==='catalogo') await renderOpsCatalogo();
   else if(currentOpsTab==='contratos') await renderOpsContratos();
   else if(currentOpsTab==='historial') await renderOpsHistorial();
+  else if(currentOpsTab==='polizashist') await renderOpsPolizasHistorico();
   else await renderOpsTickets();
 }
 
@@ -11817,6 +11819,106 @@ function verDetalleHistorico(id){
   const r=(window._opsHistorialBusqueda||[]).find(x=>x.id===id);
   if(!r) return;
   mostrarModalHistorico(r);
+}
+
+// ── HISTÓRICO DE PÓLIZAS (Jp, 2026-09-09): "yo quisiera tener aquí en
+// pólizas, desde la póliza cero uno hasta la póliza que tengo en este
+// momento, aunque siendo el mismo cliente... aunque esa póliza ya esté
+// cerrada" — pestaña dedicada a buscar CUALQUIER póliza que haya existido
+// (por cliente o por POL####), esté o no vigente, tenga o no fila propia
+// en `clientes_polizas`. Distinta de "📜 Historial", que busca servicios
+// sueltos — aquí cada resultado es una póliza completa (con su tramo de
+// fechas y, si tiene fila en la app, su estatus/horas reales).
+async function renderOpsPolizasHistorico(){
+  const body=document.getElementById('opsBody');
+  body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  // Reusa los mismos mapas de minutos reales que la tabla de "📋 Pólizas"
+  // (por si esta pestaña se visita sin haber pasado por ahí primero).
+  if(!window._opsMinutosApp||!window._opsMinutosHist){
+    const [{data:servApp},{data:servHist}]=await Promise.all([
+      sb.from('servicios_ejecutados').select('cliente_poliza_id,duracion_facturada_min').not('cliente_poliza_id','is',null),
+      sb.from('servicios_historicos').select('poliza_numero,minutos_remoto').not('poliza_numero','is',null)
+    ]);
+    const minutosApp={},minutosHist={};
+    (servApp||[]).forEach(r=>{minutosApp[r.cliente_poliza_id]=(minutosApp[r.cliente_poliza_id]||0)+(parseFloat(r.duracion_facturada_min)||0);});
+    (servHist||[]).forEach(r=>{minutosHist[r.poliza_numero]=(minutosHist[r.poliza_numero]||0)+(parseFloat(r.minutos_remoto)||0);});
+    window._opsMinutosApp=minutosApp;
+    window._opsMinutosHist=minutosHist;
+  }
+  body.innerHTML=`
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px;">Busca por cliente o por número de póliza (ej. "POL1998" o solo "1998") entre TODAS las pólizas que han existido — vigentes, vencidas, agotadas o cerradas hace años, tengan o no una fila propia en la app.</div>
+    <div style="display:flex;gap:10px;margin-bottom:10px;">
+      <input id="ophBuscar" type="text" placeholder="Buscar cliente o POL####..." style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
+      <button onclick="buscarOpsPolizasHistorico()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Buscar</button>
+    </div>
+    <div id="ophResultados"></div>`;
+  document.getElementById('ophBuscar')?.addEventListener('keydown',e=>{ if(e.key==='Enter') buscarOpsPolizasHistorico(); });
+}
+
+async function buscarOpsPolizasHistorico(){
+  const qRaw=(document.getElementById('ophBuscar')?.value||'').trim();
+  const cont=document.getElementById('ophResultados');
+  if(!qRaw){cont.innerHTML='';return;}
+  cont.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  const qNumero=qRaw.replace(/^pol/i,'').trim();
+  const [{data:app,error:errApp},{data:hist,error:errHist}]=await Promise.all([
+    sb.from('clientes_polizas').select('id,cliente_nombre,fecha_inicio,fecha_vencimiento,horas_totales,poliza_numero_legacy,cliente_cartera_id,polizas_catalogo(nombre,categoria,horas_incluidas)')
+      .or(`cliente_nombre.ilike.%${qRaw}%,poliza_numero_legacy.ilike.%${qNumero}%`)
+      .order('fecha_vencimiento',{ascending:false}).limit(100),
+    sb.from('servicios_historicos').select('poliza_numero,poliza_texto,cliente_nombre,cliente_cartera_id,fecha_registro')
+      .or(`cliente_nombre.ilike.%${qRaw}%,poliza_numero.ilike.%${qNumero}%`)
+      .not('poliza_numero','is',null).limit(3000)
+  ]);
+  if(errApp||errHist){cont.innerHTML=`<div style="color:var(--red);">Error: ${(errApp||errHist).message}</div>`;return;}
+  const appRows=app||[];
+  // Si una póliza histórica ya tiene fila en la app (poliza_numero_legacy
+  // asignado), no se repite como resultado "solo histórico" — se ve dentro
+  // de esa fila.
+  const legacyLigados=new Set(appRows.map(p=>p.poliza_numero_legacy).filter(Boolean));
+  const porPoliza={};
+  (hist||[]).forEach(r=>{
+    if(!porPoliza[r.poliza_numero]) porPoliza[r.poliza_numero]={numero:r.poliza_numero,texto:r.poliza_texto,cliente:r.cliente_nombre,count:0,min:r.fecha_registro,max:r.fecha_registro};
+    const p=porPoliza[r.poliza_numero];
+    p.count++;
+    if(r.fecha_registro<p.min) p.min=r.fecha_registro;
+    if(r.fecha_registro>p.max) p.max=r.fecha_registro;
+  });
+  const soloHistoricas=Object.values(porPoliza).filter(p=>!legacyLigados.has(p.numero));
+  window._ophResultados={app:appRows,historicas:soloHistoricas};
+  const combinado=[
+    ...appRows.map(p=>({tipo:'app',id:p.id,numero:p.poliza_numero_legacy,cliente:p.cliente_nombre,detalle:p.polizas_catalogo?.nombre||'Sin catálogo',fecha:p.fecha_vencimiento||p.fecha_inicio,est:opsEstadoPoliza(p)})),
+    ...soloHistoricas.map(p=>({tipo:'historico',numero:p.numero,cliente:p.cliente,detalle:p.texto||'',fecha:p.max,count:p.count,min:p.min})),
+  ].sort((a,b)=>String(b.fecha||'').localeCompare(String(a.fecha||'')));
+  if(combinado.length===0){cont.innerHTML='<div style="color:var(--text3);font-size:12px;padding:12px;">Sin resultados para "'+qRaw+'".</div>';return;}
+  cont.innerHTML=`<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${combinado.length} póliza(s) encontradas — ${appRows.length} en la app, ${soloHistoricas.length} solo en el historial 2019-2026.</div>
+  <div class="card" style="overflow-x:auto;">
+  <table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="background:var(--bg2,#f5f6f8);">
+      <th style="padding:6px 8px;text-align:center;">POL#</th><th style="padding:6px 8px;text-align:left;">Cliente</th>
+      <th style="padding:6px 8px;text-align:left;">Póliza</th><th style="padding:6px 8px;text-align:center;">Vigencia / actividad</th>
+      <th style="padding:6px 8px;text-align:center;">Estatus</th>
+    </tr></thead>
+    <tbody>
+      ${combinado.map(r=>{
+        if(r.tipo==='app'){
+          return `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="abrirDetallePoliza('${r.id}')">
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--teal);">${r.numero?'POL'+r.numero:'—'}</td>
+            <td style="padding:6px 8px;font-weight:600;">${r.cliente}</td>
+            <td style="padding:6px 8px;">${r.detalle}</td>
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${r.fecha||'—'}</td>
+            <td style="padding:6px 8px;text-align:center;"><span style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${r.est.color}22;color:${r.est.color};">${r.est.label} · en la app</span></td>
+          </tr>`;
+        }
+        return `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="verHistoricoPorPolizaNumero('${r.numero}','${(r.cliente||'').replace(/'/g,"\\'")}')">
+          <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;color:#94a3b8;">${r.numero?'POL'+r.numero:'—'}</td>
+          <td style="padding:6px 8px;font-weight:600;">${r.cliente||'—'}</td>
+          <td style="padding:6px 8px;">${r.detalle}</td>
+          <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${(r.min||'').slice(0,10)} a ${(r.fecha||'').slice(0,10)}</td>
+          <td style="padding:6px 8px;text-align:center;"><span style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:#94a3b822;color:#64748b;">Solo histórico · ${r.count} servicios</span></td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table></div>`;
 }
 
 // Modal de solo lectura reutilizado tanto por la búsqueda de Historial como
