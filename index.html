@@ -10894,10 +10894,21 @@ async function renderOpsCatalogo(){
 // grupos que pidió ver: en curso, por vencer (fecha U horas), nueva, vencida,
 // agotada. "Por vencer" usa 30 días o <=15% de horas restantes — mismo
 // umbral visual que ya existía (15%) para no inventar un criterio nuevo.
+// Consumidas/restantes SIEMPRE con base en los tickets reales (Jp,
+// 2026-09-09): "en el tiempo restante no se esta actualizando" — antes esta
+// función usaba el campo guardado `horas_consumidas` (que solo se movía a
+// mano al cerrar un ticket, y se podía desfasar de lo que ya mostraba el
+// detalle de póliza). Ahora usa los mismos mapas de minutos reales
+// (`window._opsMinutosApp`/`window._opsMinutosHist`, armados una vez en
+// renderOpsContratos con 2 queries agregadas) para que la tabla, las
+// fichas de estatus y el detalle digan siempre lo mismo.
 function opsEstadoPoliza(c){
   const hoy=new Date();
-  const totales=c.horas_totales||0, consumidas=c.horas_consumidas||0;
-  const restantes=Math.max(totales-consumidas,0);
+  const totales=c.horas_totales>0?c.horas_totales:(c.polizas_catalogo?.horas_incluidas||0);
+  const minutosApp=(window._opsMinutosApp||{})[c.id]||0;
+  const minutosHist=c.poliza_numero_legacy?((window._opsMinutosHist||{})[c.poliza_numero_legacy]||0):0;
+  const consumidas=Math.round(((minutosApp+minutosHist)/60)*100)/100;
+  const restantes=Math.max(Math.round((totales-consumidas)*100)/100,0);
   const fVenc=c.fecha_vencimiento?new Date(c.fecha_vencimiento+'T00:00:00'):null;
   const fIni=c.fecha_inicio?new Date(c.fecha_inicio+'T00:00:00'):null;
   const diasParaVencer=fVenc?Math.ceil((fVenc-hoy)/86400000):null;
@@ -10920,13 +10931,22 @@ function opsEstadoPoliza(c){
 async function renderOpsContratos(){
   const body=document.getElementById('opsBody');
   body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
-  const [{data:contratos,error},{data:polizas}]=await Promise.all([
+  const [{data:contratos,error},{data:polizas},{data:servApp},{data:servHist}]=await Promise.all([
     sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,horas_incluidas), clientes_cartera(razon_social,vendedor_asignado,telefono,correo_principal,telefono_whatsapp)').order('fecha_vencimiento'),
-    sb.from('polizas_catalogo').select('id,categoria,nombre,modalidad,horas_incluidas,precio,vigencia_meses').eq('activo',true).order('categoria').order('precio')
+    sb.from('polizas_catalogo').select('id,categoria,nombre,modalidad,horas_incluidas,precio,vigencia_meses').eq('activo',true).order('categoria').order('precio'),
+    sb.from('servicios_ejecutados').select('cliente_poliza_id,duracion_facturada_min').not('cliente_poliza_id','is',null),
+    sb.from('servicios_historicos').select('poliza_numero,minutos_remoto').not('poliza_numero','is',null)
   ]);
   if(error){body.innerHTML=`<div style="color:var(--red);">Error: ${error.message}</div>`;return;}
   window._opsPolizasCat=polizas||[];
   window._opsPolizas=contratos||[];
+  // Mapas de minutos reales por póliza, usados por opsEstadoPoliza() para
+  // que "Consumidas"/"Restantes" en la tabla coincidan con el detalle.
+  const minutosApp={},minutosHist={};
+  (servApp||[]).forEach(r=>{minutosApp[r.cliente_poliza_id]=(minutosApp[r.cliente_poliza_id]||0)+(parseFloat(r.duracion_facturada_min)||0);});
+  (servHist||[]).forEach(r=>{minutosHist[r.poliza_numero]=(minutosHist[r.poliza_numero]||0)+(parseFloat(r.minutos_remoto)||0);});
+  window._opsMinutosApp=minutosApp;
+  window._opsMinutosHist=minutosHist;
   body.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
       <input id="opsPolizasBuscar" type="text" placeholder="Buscar cliente o POL####..." value="${opsPolizasFiltro.q||''}" oninput="opsPolizasFiltro.q=this.value;opsPintarPolizas();" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;min-width:220px;">
@@ -11152,6 +11172,7 @@ async function abrirDetallePoliza(id){
         const unica=polizasHistoricasCandidatas[0].numero;
         await sb.from('clientes_polizas').update({poliza_numero_legacy:unica}).eq('id',id);
         c.poliza_numero_legacy=unica;
+        opsSincronizarPolizaEnLista(id,{poliza_numero_legacy:unica});
         const {data:h}=await sb.from('servicios_historicos').select('id,fecha_registro,asesor_nombre,servicio_realizado,forma_servicio,tipo_ticket').eq('poliza_numero',unica).order('fecha_registro',{ascending:false}).limit(50);
         historicos=h||[];
         polizasHistoricasCandidatas=[];
@@ -11181,6 +11202,13 @@ async function abrirDetallePoliza(id){
     ...historicos.map(h=>({fuente:'historico',fecha:h.fecha_registro,folio:h.tipo_ticket||'—',asesor:h.asesor_nombre,detalle:h.servicio_realizado||h.forma_servicio||'—',min:null,id:h.id})),
   ].sort((a,b)=>String(b.fecha||'').localeCompare(String(a.fecha||'')));
   const cat=window._opsPolizasCat||[];
+  // Vendedor sugerido desde Cartera de Cuentas (Jp, 2026-09-09): "se supone
+  // que tienes a que vendedor pertenece cada cliente... por que no lo
+  // asignas?" — si la póliza no tiene vendedor propio pero la cuenta ligada
+  // sí tiene uno asignado (`clientes_cartera.vendedor_asignado`), se
+  // preselecciona en el combo (no se guarda solo — Jp confirma con
+  // "Guardar cambios", igual que cualquier otro campo editable de aquí).
+  const vendedorSugerido=(!c.vendedor&&cartera?.vendedor_asignado)?(vendedores||[]).find(v=>v.id===cartera.vendedor_asignado)?.nombre:null;
   const html=`
     <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:14px;">
       <div>
@@ -11215,9 +11243,10 @@ async function abrirDetallePoliza(id){
           <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Vendedor</div>
           <select id="dpVendedor" style="${INP}">
             <option value="">— Sin asignar —</option>
-            ${(vendedores||[]).map(v=>`<option value="${v.nombre}" ${v.nombre===c.vendedor?'selected':''}>${v.nombre}</option>`).join('')}
+            ${(vendedores||[]).map(v=>`<option value="${v.nombre}" ${v.nombre===(c.vendedor||vendedorSugerido)?'selected':''}>${v.nombre}</option>`).join('')}
             ${c.vendedor&&!(vendedores||[]).some(v=>v.nombre===c.vendedor)?`<option value="${c.vendedor}" selected>${c.vendedor} (no está en la lista activa)</option>`:''}
           </select>
+          ${vendedorSugerido?`<div style="font-size:10px;color:var(--teal);margin-top:3px;">Sugerido desde Cartera de Cuentas — guarda para confirmarlo.</div>`:''}
         </div>
         <div>
           <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Fecha de inicio</div>
@@ -11331,8 +11360,20 @@ async function guardarEdicionPoliza(id){
 async function opsAsignarPolizaHistorica(polizaId,numero){
   const {error}=await sb.from('clientes_polizas').update({poliza_numero_legacy:numero}).eq('id',polizaId);
   if(error){alert('Error: '+error.message);return;}
+  opsSincronizarPolizaEnLista(polizaId,{poliza_numero_legacy:numero});
   document.getElementById('modalDetallePoliza')?.remove();
   abrirDetallePoliza(polizaId);
+}
+// Actualiza la fila de `window._opsPolizas` (la tabla de "📋 Pólizas") con
+// campos que cambiaron desde el detalle, y repinta la tabla si está visible
+// (Jp, 2026-09-09): "en proyex ya tienes el numero de poliza y no esta
+// apareciendo en el apartado general" — el POL# se asignaba solo (o a
+// mano) dentro del modal de detalle, pero la tabla ya se había cargado
+// antes con datos viejos y no se refrescaba sola.
+function opsSincronizarPolizaEnLista(id,campos){
+  const fila=(window._opsPolizas||[]).find(c=>c.id===id);
+  if(fila) Object.assign(fila,campos);
+  if(document.getElementById('opsPolizasFichas')) opsPintarPolizas();
 }
 // Ver un registro histórico completo desde el modal de detalle de póliza
 // (aquí solo se trajeron campos resumidos, así que se pide el registro
