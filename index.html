@@ -10695,6 +10695,19 @@ function swOps(tab){ currentOpsTab=tab; renderDirectorOperaciones(); }
 // fichas de filtro instantáneo + columnas ordenables que Academia (Lote 16).
 let opsPolizasFiltro={grupo:null,tipo:null,q:''};
 let opsPolizasSort={col:'fecha_vencimiento',dir:'asc'};
+// Soporte vs Resguardo (Jp, 2026-09-09): "un cliente puede tener una
+// póliza de soporte Aspel y simultáneamente una póliza de resguardo...
+// necesito tener las dos vigentes, tener el control, ver cuándo se van a
+// vencer" — mismo `clientes_polizas` para ambas (una cuenta puede tener
+// 2+ filas desde el Lote 5), pero separadas en 2 sub-pestañas dentro de
+// "📋 Pólizas" para que no se mezclen ni confundan visualmente.
+let opsPolizasSeccion='soporte';
+function opsEsResguardo(c){ return (c.polizas_catalogo?.categoria||'').toUpperCase().includes('RESGUARDO'); }
+function swPolizasSeccion(seccion){
+  opsPolizasSeccion=seccion;
+  opsPolizasFiltro={grupo:null,tipo:null,q:opsPolizasFiltro.q};
+  opsPintarPolizas();
+}
 // Tickets: filtro instantáneo por tipo de servicio (Jp: "servicios y tickets
 // igual filtrado inmediato"), además del filtro por estatus que ya existía.
 let opsTicketsTipoFiltro=null;
@@ -10982,7 +10995,13 @@ async function renderOpsContratos(){
   // quitan de la tabla/fichas normales de "📋 Pólizas"; siguen siendo
   // buscables en "🗂 Histórico de pólizas".
   window._opsPolizas=(contratos||[]).filter(c=>c.estatus!=='CERRADA');
+  const nSoporte=window._opsPolizas.filter(c=>!opsEsResguardo(c)).length;
+  const nResguardo=window._opsPolizas.filter(c=>opsEsResguardo(c)).length;
   body.innerHTML=`
+    <div style="display:flex;gap:8px;margin-bottom:14px;">
+      <button onclick="swPolizasSeccion('soporte')" style="padding:6px 14px;border-radius:16px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid ${opsPolizasSeccion==='soporte'?'var(--teal)':'var(--border)'};font-family:'Inter',sans-serif;background:${opsPolizasSeccion==='soporte'?'rgba(0,169,157,0.1)':'#fff'};color:${opsPolizasSeccion==='soporte'?'var(--teal)':'var(--text2)'};">🛠 Soporte <span style="opacity:0.6;">(${nSoporte})</span></button>
+      <button onclick="swPolizasSeccion('resguardo')" style="padding:6px 14px;border-radius:16px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid ${opsPolizasSeccion==='resguardo'?'var(--teal)':'var(--border)'};font-family:'Inter',sans-serif;background:${opsPolizasSeccion==='resguardo'?'rgba(0,169,157,0.1)':'#fff'};color:${opsPolizasSeccion==='resguardo'?'var(--teal)':'var(--text2)'};">💾 Resguardo <span style="opacity:0.6;">(${nResguardo})</span></button>
+    </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
       <input id="opsPolizasBuscar" type="text" placeholder="Buscar cliente o POL####..." value="${opsPolizasFiltro.q||''}" oninput="opsPolizasFiltro.q=this.value;opsPintarPolizas();" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;min-width:220px;">
       <button onclick="abrirNuevoContratoPoliza()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Nuevo contrato</button>
@@ -11015,7 +11034,7 @@ function opsThPolizas(col,label,alinear){
 function opsPintarPolizas(){
   const contDom=document.getElementById('opsPolizasFichas');
   if(!contDom) return;
-  const todas=window._opsPolizas||[];
+  const todas=(window._opsPolizas||[]).filter(c=>opsPolizasSeccion==='resguardo'?opsEsResguardo(c):!opsEsResguardo(c));
   const conteos={vigente:0,porvencer:0,nueva:0,vencida:0,agotada:0};
   const porTipo={};
   todas.forEach(c=>{
@@ -11172,6 +11191,17 @@ async function abrirDetallePoliza(id){
   const est=opsEstadoPoliza(c);
   const cartera=c.clientes_cartera;
   const colorEstatus={PENDIENTE:'#F5A623',ASIGNADO:'#2980B9',EN_CURSO:'#2980B9',CONCLUIDO:'#27AE60',NO_CONCLUIDO:'#E84040',CANCELADO_INASISTENCIA:'#94a3b8'};
+  // "Superada" (Jp, 2026-09-09): además de vencida/agotada, una póliza
+  // también debe poder cerrarse cuando ya existe OTRA póliza del mismo
+  // tipo (misma categoría del catálogo — Soporte/Resguardo/etc.) para la
+  // MISMA cuenta, con fecha de inicio más nueva — caso típico de una
+  // póliza reemplazada por su renovación sin que el sistema la marque
+  // vencida por fecha ni por horas.
+  let superada=false;
+  if(cartera?.id&&c.polizas_catalogo?.categoria){
+    const {data:hermanas}=await sb.from('clientes_polizas').select('id,fecha_inicio,estatus,polizas_catalogo(categoria)').eq('cliente_cartera_id',cartera.id).neq('id',id).neq('estatus','CERRADA');
+    superada=(hermanas||[]).some(h=>h.polizas_catalogo?.categoria===c.polizas_catalogo.categoria&&(h.fecha_inicio||'')>(c.fecha_inicio||''));
+  }
   // Historial anterior a la app (Jp, 2026-09-08): el control NO es por
   // cliente, es por PÓLIZA — un mismo cliente puede tener 2+ pólizas (cada
   // una con su propia vigencia por tiempo y por banco de horas), así que
@@ -11258,8 +11288,8 @@ async function abrirDetallePoliza(id){
     ${c.estatus==='CERRADA'?`<div style="margin-bottom:12px;padding:8px 12px;background:rgba(100,116,139,0.1);border-radius:6px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:10px;">
       <span>📁 Esta póliza está cerrada — se ve aquí y en "🗂 Histórico de pólizas", ya no en la lista principal de "📋 Pólizas".</span>
       <button onclick="reabrirPoliza('${id}')" style="background:#fff;border:1px solid var(--border);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">↺ Reabrir</button>
-    </div>`:(est.vencida||est.agotada)?`<div style="margin-bottom:12px;padding:8px 12px;background:rgba(232,64,64,0.06);border-radius:6px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:10px;">
-      <span>${est.agotada?'⚠ Se acabó el banco de horas.':'⚠ Venció por fecha.'} Si ya no va a seguir usándose, puedes cerrarla — se saca de "📋 Pólizas" y queda archivada en "🗂 Histórico de pólizas".</span>
+    </div>`:(est.vencida||est.agotada||superada)?`<div style="margin-bottom:12px;padding:8px 12px;background:rgba(232,64,64,0.06);border-radius:6px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:10px;">
+      <span>${est.agotada?'⚠ Se acabó el banco de horas.':est.vencida?'⚠ Venció por fecha.':'⚠ Ya existe otra póliza del mismo tipo para este cliente, con fecha de inicio más reciente — es probable que esta ya esté reemplazada.'} Si ya no va a seguir usándose, puedes cerrarla — se saca de "📋 Pólizas" y queda archivada en "🗂 Histórico de pólizas".</span>
       <button onclick="cerrarPoliza('${id}')" style="background:var(--red);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">📁 Cerrar póliza</button>
     </div>`:''}
     ${cartera?`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(0,169,157,0.06);border-radius:6px;font-size:11px;">
