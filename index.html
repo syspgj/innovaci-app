@@ -11939,6 +11939,17 @@ function verDetalleHistorico(id){
 // en `clientes_polizas`. Distinta de "📜 Historial", que busca servicios
 // sueltos — aquí cada resultado es una póliza completa (con su tramo de
 // fechas y, si tiene fila en la app, su estatus/horas reales).
+// Listado COMPLETO de pólizas (Jp, 2026-09-09, después de retractar la
+// detección automática por palabra clave — "no funcionó, me mandaste
+// pólizas que no son de resguardo, a resguardo, y no tengo manera de
+// regresarlas"): "necesito que me aparezcan absolutamente todas las
+// pólizas... necesito poder ordenarlas por número de póliza... también por
+// cliente... número de póliza, cliente, póliza [tipo], vigencia, estatus...
+// hay un campo que no me estás colocando... que es el de tipo de póliza."
+// Ya NO requiere escribir una búsqueda primero — carga TODO (paginado) y el
+// cuadro de texto filtra sobre lo ya cargado, en el navegador.
+let ophSort={col:'vigencia',dir:'desc'};
+let ophFiltroTexto='';
 async function renderOpsPolizasHistorico(){
   const body=document.getElementById('opsBody');
   body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
@@ -11946,78 +11957,114 @@ async function renderOpsPolizasHistorico(){
   // recargan siempre al entrar a esta pestaña para no arrastrar datos
   // viejos de otra sesión de la tabla.
   await opsCargarMapasMinutos();
+  const pageSize=1000;
+  // TODAS las pólizas con fila en la app (paginado por si acaso pasan de 1000).
+  let appRows=[];
+  for(let from=0;;from+=pageSize){
+    const {data,error}=await sb.from('clientes_polizas').select('id,cliente_nombre,fecha_inicio,fecha_vencimiento,estatus,horas_totales,poliza_numero_legacy,cliente_cartera_id,seccion_manual,polizas_catalogo(nombre,categoria,horas_incluidas)').range(from,from+pageSize-1);
+    if(error){body.innerHTML=`<div style="color:var(--red);">Error: ${error.message}</div>`;return;}
+    appRows=appRows.concat(data||[]);
+    if(!data||data.length<pageSize) break;
+  }
+  // Clasificación manual guardada para pólizas SOLO históricas (sin fila en
+  // la app — no tienen id de clientes_polizas al cual amarrar seccion_manual).
+  const {data:clasifHist}=await sb.from('historico_poliza_clasificacion').select('poliza_numero,seccion');
+  const clasifHistMap={};
+  (clasifHist||[]).forEach(r=>{clasifHistMap[String(r.poliza_numero)]=r.seccion;});
+  window._ophClasifHistMap=clasifHistMap;
+  // TODO el historial 2019-2026 (8,649 filas), agrupado por número de
+  // póliza, para armar el listado completo — no solo lo que casa con una
+  // búsqueda puntual.
+  const histPorPoliza={};
+  for(let from=0;;from+=pageSize){
+    const {data,error}=await sb.from('servicios_historicos').select('poliza_numero,poliza_texto,cliente_nombre,fecha_registro').not('poliza_numero','is',null).range(from,from+pageSize-1);
+    if(error){body.innerHTML=`<div style="color:var(--red);">Error: ${error.message}</div>`;return;}
+    (data||[]).forEach(r=>{
+      if(!histPorPoliza[r.poliza_numero]) histPorPoliza[r.poliza_numero]={numero:r.poliza_numero,texto:r.poliza_texto,cliente:r.cliente_nombre,count:0,min:r.fecha_registro,max:r.fecha_registro};
+      const p=histPorPoliza[r.poliza_numero];
+      p.count++;
+      if(r.fecha_registro<p.min) p.min=r.fecha_registro;
+      if(r.fecha_registro>p.max) p.max=r.fecha_registro;
+    });
+    if(!data||data.length<pageSize) break;
+  }
+  // Si una póliza histórica ya tiene fila en la app (poliza_numero_legacy
+  // asignado), no se repite aparte — se ve dentro de esa fila "app".
+  const legacyLigados=new Set(appRows.map(p=>p.poliza_numero_legacy).filter(Boolean));
+  const soloHistoricas=Object.values(histPorPoliza).filter(p=>!legacyLigados.has(p.numero));
+  window._ophTodas=[
+    ...appRows.map(p=>({tipo:'app',id:p.id,numero:p.poliza_numero_legacy,cliente:p.cliente_nombre,tipoPoliza:p.polizas_catalogo?.nombre||'Sin catálogo',fecha:p.fecha_vencimiento||p.fecha_inicio,est:opsEstadoPoliza(p),raw:p})),
+    ...soloHistoricas.map(p=>({tipo:'historico',numero:p.numero,cliente:p.cliente,tipoPoliza:p.texto||'—',fecha:p.max,count:p.count,min:p.min,seccion:clasifHistMap[String(p.numero)]||null})),
+  ];
   body.innerHTML=`
-    <div style="font-size:11px;color:var(--text3);margin-bottom:14px;">Busca por cliente o por número de póliza (ej. "POL1998" o solo "1998") entre TODAS las pólizas que han existido — vigentes, vencidas, agotadas o cerradas hace años, tengan o no una fila propia en la app.</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px;">Listado completo de TODAS las pólizas que han existido — vigentes, vencidas, agotadas o cerradas hace años, tengan o no una fila propia en la app. Haz clic en los encabezados para ordenar.</div>
     <div style="display:flex;gap:10px;margin-bottom:10px;">
-      <input id="ophBuscar" type="text" placeholder="Buscar cliente o POL####..." style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
-      <button onclick="buscarOpsPolizasHistorico()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Buscar</button>
+      <input id="ophBuscar" type="text" placeholder="Filtrar por cliente, tipo de póliza o POL####..." value="${(ophFiltroTexto||'').replace(/"/g,'')}" oninput="ophFiltroTexto=this.value;ophPintar();" style="flex:1;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
     </div>
     <div id="ophResultados"></div>`;
-  document.getElementById('ophBuscar')?.addEventListener('keydown',e=>{ if(e.key==='Enter') buscarOpsPolizasHistorico(); });
+  ophPintar();
 }
-
-async function buscarOpsPolizasHistorico(){
-  const qRaw=(document.getElementById('ophBuscar')?.value||'').trim();
+function ophOrdenar(col){
+  if(ophSort.col===col){ ophSort.dir=ophSort.dir==='asc'?'desc':'asc'; }
+  else { ophSort={col,dir:'asc'}; }
+  ophPintar();
+}
+function ophTh(col,label,alinear){
+  const activa=ophSort.col===col;
+  const flecha=activa?(ophSort.dir==='asc'?' ▲':' ▼'):'';
+  return `<th style="padding:7px 8px;cursor:pointer;user-select:none;white-space:nowrap;text-align:${alinear||'left'};" onclick="ophOrdenar('${col}')">${label}${flecha}</th>`;
+}
+function ophPintar(){
   const cont=document.getElementById('ophResultados');
-  if(!qRaw){cont.innerHTML='';return;}
-  cont.innerHTML='<div class="loading"><div class="spinner"></div></div>';
-  const qNumero=qRaw.replace(/^pol/i,'').trim();
-  const [{data:app,error:errApp},{data:hist,error:errHist}]=await Promise.all([
-    sb.from('clientes_polizas').select('id,cliente_nombre,fecha_inicio,fecha_vencimiento,horas_totales,poliza_numero_legacy,cliente_cartera_id,polizas_catalogo(nombre,categoria,horas_incluidas)')
-      .or(`cliente_nombre.ilike.%${qRaw}%,poliza_numero_legacy.ilike.%${qNumero}%`)
-      .order('fecha_vencimiento',{ascending:false}).limit(100),
-    sb.from('servicios_historicos').select('poliza_numero,poliza_texto,cliente_nombre,cliente_cartera_id,fecha_registro')
-      .or(`cliente_nombre.ilike.%${qRaw}%,poliza_numero.ilike.%${qNumero}%`)
-      .not('poliza_numero','is',null).limit(3000)
-  ]);
-  if(errApp||errHist){cont.innerHTML=`<div style="color:var(--red);">Error: ${(errApp||errHist).message}</div>`;return;}
-  const appRows=app||[];
-  // Si una póliza histórica ya tiene fila en la app (poliza_numero_legacy
-  // asignado), no se repite como resultado "solo histórico" — se ve dentro
-  // de esa fila.
-  const legacyLigados=new Set(appRows.map(p=>p.poliza_numero_legacy).filter(Boolean));
-  const porPoliza={};
-  (hist||[]).forEach(r=>{
-    if(!porPoliza[r.poliza_numero]) porPoliza[r.poliza_numero]={numero:r.poliza_numero,texto:r.poliza_texto,cliente:r.cliente_nombre,count:0,min:r.fecha_registro,max:r.fecha_registro};
-    const p=porPoliza[r.poliza_numero];
-    p.count++;
-    if(r.fecha_registro<p.min) p.min=r.fecha_registro;
-    if(r.fecha_registro>p.max) p.max=r.fecha_registro;
+  if(!cont) return;
+  const todas=window._ophTodas||[];
+  const q=(ophFiltroTexto||'').trim().toLowerCase();
+  const qNumero=q.replace(/^pol/i,'');
+  let filtradas=todas;
+  if(q){
+    filtradas=todas.filter(r=>(r.cliente||'').toLowerCase().includes(q)||(r.tipoPoliza||'').toLowerCase().includes(q)||(r.numero&&String(r.numero).toLowerCase().includes(qNumero)));
+  }
+  const dir=ophSort.dir==='asc'?1:-1;
+  const val=(r,col)=>{
+    if(col==='numero') return parseInt(r.numero)||-1;
+    if(col==='cliente') return (r.cliente||'').toLowerCase();
+    if(col==='tipo') return (r.tipoPoliza||'').toLowerCase();
+    if(col==='vigencia') return r.fecha||'';
+    if(col==='estatus') return r.tipo==='app'?r.est.label:'Solo histórico';
+    return '';
+  };
+  filtradas=[...filtradas].sort((a,b)=>{
+    const va=val(a,ophSort.col),vb=val(b,ophSort.col);
+    if(va<vb) return -1*dir; if(va>vb) return 1*dir; return 0;
   });
-  const soloHistoricas=Object.values(porPoliza).filter(p=>!legacyLigados.has(p.numero));
-  window._ophResultados={app:appRows,historicas:soloHistoricas};
-  const combinado=[
-    ...appRows.map(p=>({tipo:'app',id:p.id,numero:p.poliza_numero_legacy,cliente:p.cliente_nombre,detalle:p.polizas_catalogo?.nombre||'Sin catálogo',fecha:p.fecha_vencimiento||p.fecha_inicio,est:opsEstadoPoliza(p)})),
-    ...soloHistoricas.map(p=>({tipo:'historico',numero:p.numero,cliente:p.cliente,detalle:p.texto||'',fecha:p.max,count:p.count,min:p.min})),
-  ].sort((a,b)=>String(b.fecha||'').localeCompare(String(a.fecha||'')));
-  if(combinado.length===0){cont.innerHTML='<div style="color:var(--text3);font-size:12px;padding:12px;">Sin resultados para "'+qRaw+'".</div>';return;}
-  cont.innerHTML=`<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${combinado.length} póliza(s) encontradas — ${appRows.length} en la app, ${soloHistoricas.length} solo en el historial 2019-2026.</div>
+  if(filtradas.length===0){cont.innerHTML='<div style="color:var(--text3);font-size:12px;padding:12px;">Sin resultados.</div>';return;}
+  cont.innerHTML=`<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${filtradas.length} de ${todas.length} póliza(s) — ${todas.filter(r=>r.tipo==='app').length} en la app, ${todas.filter(r=>r.tipo==='historico').length} solo en el historial 2019-2026.</div>
   <div class="card" style="overflow-x:auto;">
   <table style="width:100%;border-collapse:collapse;font-size:12px;">
     <thead><tr style="background:var(--bg2,#f5f6f8);">
-      <th style="padding:6px 8px;text-align:center;">POL#</th><th style="padding:6px 8px;text-align:left;">Cliente</th>
-      <th style="padding:6px 8px;text-align:left;">Póliza</th><th style="padding:6px 8px;text-align:center;">Vigencia / actividad</th>
-      <th style="padding:6px 8px;text-align:center;">Estatus</th><th style="padding:6px 8px;text-align:center;">Ajustes</th>
+      ${ophTh('numero','POL#','center')}${ophTh('cliente','Cliente')}${ophTh('tipo','Tipo de póliza')}${ophTh('vigencia','Vigencia','center')}${ophTh('estatus','Estatus','center')}
+      <th style="padding:7px 8px;text-align:center;">Ajustes</th>
     </tr></thead>
     <tbody>
-      ${combinado.map(r=>{
+      ${filtradas.map(r=>{
         if(r.tipo==='app'){
           return `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="abrirDetallePoliza('${r.id}')">
             <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--teal);">${r.numero?'POL'+r.numero:'—'}</td>
             <td style="padding:6px 8px;font-weight:600;">${r.cliente}</td>
-            <td style="padding:6px 8px;">${r.detalle}</td>
+            <td style="padding:6px 8px;">${r.tipoPoliza}</td>
             <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${r.fecha||'—'}</td>
             <td style="padding:6px 8px;text-align:center;"><span style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${r.est.color}22;color:${r.est.color};">${r.est.label} · en la app</span></td>
             <td style="padding:6px 8px;text-align:center;"><button onclick="event.stopPropagation();abrirClasificarPoliza('${r.id}')" title="Clasificar Soporte/Resguardo${userProfile?.rol==='director'?' · re-ligar cuenta':''}" style="background:none;border:1px solid var(--border);border-radius:6px;padding:4px 8px;cursor:pointer;font-size:12px;">⚙</button></td>
           </tr>`;
         }
+        const seccionBadge=r.seccion==='resguardo'?' · 💾 Resguardo':r.seccion==='soporte'?' · 🛠 Soporte':'';
         return `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="verHistoricoPorPolizaNumero('${r.numero}','${(r.cliente||'').replace(/'/g,"\\'")}')">
           <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;color:#94a3b8;">${r.numero?'POL'+r.numero:'—'}</td>
           <td style="padding:6px 8px;font-weight:600;">${r.cliente||'—'}</td>
-          <td style="padding:6px 8px;">${r.detalle}</td>
+          <td style="padding:6px 8px;">${r.tipoPoliza}</td>
           <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${(r.min||'').slice(0,10)} a ${(r.fecha||'').slice(0,10)}</td>
-          <td style="padding:6px 8px;text-align:center;"><span style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:#94a3b822;color:#64748b;">Solo histórico · ${r.count} servicios</span></td>
-          <td style="padding:6px 8px;"></td>
+          <td style="padding:6px 8px;text-align:center;"><span style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:#94a3b822;color:#64748b;">Solo histórico · ${r.count} servicios${seccionBadge}</span></td>
+          <td style="padding:6px 8px;text-align:center;"><button onclick="event.stopPropagation();abrirClasificarHistorico('${r.numero}','${(r.cliente||'').replace(/'/g,"\\'")}')" title="Clasificar Soporte/Resguardo" style="background:none;border:1px solid var(--border);border-radius:6px;padding:4px 8px;cursor:pointer;font-size:12px;">⚙</button></td>
         </tr>`;
       }).join('')}
     </tbody>
@@ -12074,7 +12121,43 @@ async function guardarClasificarPoliza(){
   if(error){alert('Error al guardar: '+error.message);return;}
   document.getElementById('modalClasificarPoliza')?.remove();
   opsSincronizarPolizaEnLista(id,campos);
-  if(document.getElementById('ophResultados')) buscarOpsPolizasHistorico();
+  const row=(window._ophTodas||[]).find(r=>r.tipo==='app'&&r.id===id);
+  if(row&&row.raw){ Object.assign(row.raw,campos); row.est=opsEstadoPoliza(row.raw); }
+  if(document.getElementById('ophResultados')) ophPintar();
+  alert('Cambios guardados.');
+}
+
+// Clasificar una póliza que SOLO existe en el historial viejo (sin fila en
+// clientes_polizas) — se guarda por poliza_numero en una tabla aparte
+// (historico_poliza_clasificacion) porque no hay ningún id al cual amarrar
+// seccion_manual.
+async function abrirClasificarHistorico(numero,cliente){
+  window._clasificarHistNumero=numero;
+  const actual=(window._ophClasifHistMap||{})[String(numero)];
+  const seccionActual=actual==='resguardo'?'Resguardo':actual==='soporte'?'Soporte':'— Sin clasificar —';
+  const html=`
+    <div style="font-size:12px;margin-bottom:10px;"><strong>${cliente||'Cliente'}</strong> · POL${numero}</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Esta póliza solo existe en el historial 2019-2026 (no tiene fila propia en la app).</div>
+    ${fld('Sección', sel('chSeccion',['— Sin clasificar —','Soporte','Resguardo'],seccionActual))}`;
+  mkModal('modalClasificarHistorico','Clasificar póliza histórica',html,'guardarClasificarHistorico','Guardar',false);
+}
+async function guardarClasificarHistorico(){
+  const numero=window._clasificarHistNumero;
+  const selVal=document.getElementById('chSeccion')?.value||'';
+  const seccion=selVal==='Resguardo'?'resguardo':selVal==='Soporte'?'soporte':null;
+  let error;
+  if(seccion===null){
+    ({error}=await sb.from('historico_poliza_clasificacion').delete().eq('poliza_numero',numero));
+  } else {
+    ({error}=await sb.from('historico_poliza_clasificacion').upsert({poliza_numero:numero,seccion,updated_at:new Date().toISOString()}));
+  }
+  if(error){alert('Error al guardar: '+error.message);return;}
+  document.getElementById('modalClasificarHistorico')?.remove();
+  if(!window._ophClasifHistMap) window._ophClasifHistMap={};
+  if(seccion===null) delete window._ophClasifHistMap[String(numero)]; else window._ophClasifHistMap[String(numero)]=seccion;
+  const row=(window._ophTodas||[]).find(r=>r.tipo==='historico'&&String(r.numero)===String(numero));
+  if(row) row.seccion=seccion;
+  ophPintar();
   alert('Cambios guardados.');
 }
 
