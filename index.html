@@ -10702,7 +10702,12 @@ let opsPolizasSort={col:'fecha_vencimiento',dir:'asc'};
 // 2+ filas desde el Lote 5), pero separadas en 2 sub-pestañas dentro de
 // "📋 Pólizas" para que no se mezclen ni confundan visualmente.
 let opsPolizasSeccion='soporte';
-function opsEsResguardo(c){ return (c.polizas_catalogo?.categoria||'').toUpperCase().includes('RESGUARDO'); }
+function opsEsResguardo(c){
+  if((c.polizas_catalogo?.categoria||'').toUpperCase().includes('RESGUARDO')) return true;
+  if(window._opsResguardoIdsApp&&window._opsResguardoIdsApp.has(c.id)) return true;
+  if(c.poliza_numero_legacy&&window._opsResguardoNumsHist&&window._opsResguardoNumsHist.has(String(c.poliza_numero_legacy))) return true;
+  return false;
+}
 function swPolizasSeccion(seccion){
   opsPolizasSeccion=seccion;
   opsPolizasFiltro={grupo:null,tipo:null,q:opsPolizasFiltro.q};
@@ -10971,6 +10976,33 @@ async function opsCargarMapasMinutos(){
   window._opsMinutosApp=minutosApp;
   window._opsMinutosHist=minutosHist;
 }
+// Detección automática de pólizas de resguardo por su histórico de
+// servicios (Jp, 2026-09-09): "mandar automáticamente todas las pólizas
+// que tengan histórico de servicios que ligan el detalle a resguardos...
+// a la sección de pólizas de resguardo" — no todas las pólizas de
+// resguardo están marcadas así en `polizas_catalogo.categoria` (algunas
+// vienen de antes de que existiera ese catálogo), así que además de la
+// categoría se revisa si algún ticket (app o histórico) de esa póliza
+// menciona "resguardo" en su descripción/tipo de servicio.
+async function opsCargarDeteccionResguardo(){
+  const idsApp=new Set(), numsHist=new Set();
+  try{
+    const {data:app}=await sb.from('servicios_ejecutados').select('cliente_poliza_id')
+      .not('cliente_poliza_id','is',null)
+      .or('descripcion_solicitud.ilike.%resguardo%,trabajo_realizado.ilike.%resguardo%,servicio_adicional.ilike.%resguardo%,servicio_pendiente.ilike.%resguardo%')
+      .limit(5000);
+    (app||[]).forEach(r=>idsApp.add(r.cliente_poliza_id));
+  }catch(e){}
+  try{
+    const {data:hist}=await sb.from('servicios_historicos').select('poliza_numero')
+      .not('poliza_numero','is',null)
+      .or('servicio_realizado.ilike.%resguardo%,tipo_ticket.ilike.%resguardo%,forma_servicio.ilike.%resguardo%,poliza_texto.ilike.%resguardo%')
+      .limit(5000);
+    (hist||[]).forEach(r=>numsHist.add(String(r.poliza_numero)));
+  }catch(e){}
+  window._opsResguardoIdsApp=idsApp;
+  window._opsResguardoNumsHist=numsHist;
+}
 // Convierte horas decimales a "Xh Ymin" para mostrar junto al valor
 // redondeado (Jp, 2026-09-09): "me gustaría que se le agregara... el
 // tiempo en minutos... entre paréntesis".
@@ -10986,7 +11018,8 @@ async function renderOpsContratos(){
   const [{data:contratos,error},{data:polizas}]=await Promise.all([
     sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,horas_incluidas), clientes_cartera(razon_social,vendedor_asignado,telefono,correo_principal,telefono_whatsapp)').order('fecha_vencimiento'),
     sb.from('polizas_catalogo').select('id,categoria,nombre,modalidad,horas_incluidas,precio,vigencia_meses').eq('activo',true).order('categoria').order('precio'),
-    opsCargarMapasMinutos()
+    opsCargarMapasMinutos(),
+    opsCargarDeteccionResguardo()
   ]);
   if(error){body.innerHTML=`<div style="color:var(--red);">Error: ${error.message}</div>`;return;}
   window._opsPolizasCat=polizas||[];
