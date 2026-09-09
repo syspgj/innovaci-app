@@ -11107,10 +11107,11 @@ async function guardarContratoPoliza(){
 // el detalle" — cliente, cartera vinculada, fechas/horas, y el historial de
 // servicios (tickets) que se han cobrado contra esta póliza.
 async function abrirDetallePoliza(id){
-  const [{data:c,error},{data:tickets},{data:ticketsTodos}]=await Promise.all([
+  const [{data:c,error},{data:tickets},{data:ticketsTodos},{data:vendedores}]=await Promise.all([
     sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,modalidad,horas_incluidas,prioridad_codigo,prioridad_nombre,resp_horas_min,resp_horas_max,horario_atencion,resguardos_incluidos,beneficios), clientes_cartera(id,razon_social,vendedor_asignado,telefono,num_cliente,correo_principal,telefono_whatsapp)').eq('id',id).single(),
     sb.from('servicios_ejecutados').select('id,folio_ticket,fecha_asignada,asesor_nombre,estatus,duracion_facturada_min,descripcion_solicitud,created_at').eq('cliente_poliza_id',id).order('created_at',{ascending:false}).limit(50),
-    sb.from('servicios_ejecutados').select('duracion_facturada_min').eq('cliente_poliza_id',id)
+    sb.from('servicios_ejecutados').select('duracion_facturada_min').eq('cliente_poliza_id',id),
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre')
   ]);
   if(error||!c){alert('No se pudo cargar el detalle: '+(error?.message||'póliza no encontrada'));return;}
   const est=opsEstadoPoliza(c);
@@ -11205,14 +11206,18 @@ async function abrirDetallePoliza(id){
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
         <div>
           <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Tipo de póliza</div>
-          <select id="dpCatalogo" style="${INP}">
+          <select id="dpCatalogo" style="${INP}" onchange="actualizarHorasEdicionPoliza()">
             <option value="">— Sin catálogo —</option>
-            ${cat.map(p=>`<option value="${p.id}" ${p.id===c.poliza_catalogo_id?'selected':''}>${p.categoria} — ${p.nombre} (${p.modalidad})</option>`).join('')}
+            ${cat.map(p=>`<option value="${p.id}" data-horas="${p.horas_incluidas||0}" ${p.id===c.poliza_catalogo_id?'selected':''}>${p.categoria} — ${p.nombre} (${p.modalidad})</option>`).join('')}
           </select>
         </div>
         <div>
           <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Vendedor</div>
-          <input id="dpVendedor" type="text" value="${(c.vendedor||'').replace(/"/g,'&quot;')}" style="${INP}">
+          <select id="dpVendedor" style="${INP}">
+            <option value="">— Sin asignar —</option>
+            ${(vendedores||[]).map(v=>`<option value="${v.nombre}" ${v.nombre===c.vendedor?'selected':''}>${v.nombre}</option>`).join('')}
+            ${c.vendedor&&!(vendedores||[]).some(v=>v.nombre===c.vendedor)?`<option value="${c.vendedor}" selected>${c.vendedor} (no está en la lista activa)</option>`:''}
+          </select>
         </div>
         <div>
           <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Fecha de inicio</div>
@@ -11287,6 +11292,17 @@ async function abrirDetallePoliza(id){
       </table>
     </div>`;
   mkModal('modalDetallePoliza',`Detalle de póliza — ${c.cliente_nombre}`,html,null,'Cerrar',true);
+}
+// Autollena "Horas que incluye la póliza" al elegir el tipo de póliza en
+// el detalle (Jp, 2026-09-09): "las horas las debes de colocar en
+// automatico al seleccionar el tipo de poliza, ya tienes esos datos" —
+// mismo patrón que actualizarHorasContrato() para "+ Nuevo contrato".
+function actualizarHorasEdicionPoliza(){
+  const sel=document.getElementById('dpCatalogo');
+  const opt=sel?.selectedOptions[0];
+  const horasInput=document.getElementById('dpHorasTotales');
+  if(!opt||!horasInput) return;
+  horasInput.value=opt.dataset.horas||0;
 }
 // Guarda los campos editables del detalle de póliza (Jp, 2026-09-09):
 // "ademas de lo anterior deben ser campos modificables" — tipo de póliza,
