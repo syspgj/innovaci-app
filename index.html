@@ -10716,6 +10716,7 @@ function opsEsResguardo(c){
 function swPolizasSeccion(seccion){
   opsPolizasSeccion=seccion;
   opsPolizasFiltro={grupo:null,tipo:null,q:opsPolizasFiltro.q};
+  opsPintarPolizasSeccionToggle();
   opsPintarPolizas();
 }
 // Tickets: filtro instantáneo por tipo de servicio (Jp: "servicios y tickets
@@ -11005,13 +11006,8 @@ async function renderOpsContratos(){
   // quitan de la tabla/fichas normales de "📋 Pólizas"; siguen siendo
   // buscables en "🗂 Histórico de pólizas".
   window._opsPolizas=(contratos||[]).filter(c=>c.estatus!=='CERRADA');
-  const nSoporte=window._opsPolizas.filter(c=>!opsEsResguardo(c)).length;
-  const nResguardo=window._opsPolizas.filter(c=>opsEsResguardo(c)).length;
   body.innerHTML=`
-    <div style="display:flex;gap:8px;margin-bottom:14px;">
-      <button onclick="swPolizasSeccion('soporte')" style="padding:6px 14px;border-radius:16px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid ${opsPolizasSeccion==='soporte'?'var(--teal)':'var(--border)'};font-family:'Inter',sans-serif;background:${opsPolizasSeccion==='soporte'?'rgba(0,169,157,0.1)':'#fff'};color:${opsPolizasSeccion==='soporte'?'var(--teal)':'var(--text2)'};">🛠 Soporte <span style="opacity:0.6;">(${nSoporte})</span></button>
-      <button onclick="swPolizasSeccion('resguardo')" style="padding:6px 14px;border-radius:16px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid ${opsPolizasSeccion==='resguardo'?'var(--teal)':'var(--border)'};font-family:'Inter',sans-serif;background:${opsPolizasSeccion==='resguardo'?'rgba(0,169,157,0.1)':'#fff'};color:${opsPolizasSeccion==='resguardo'?'var(--teal)':'var(--text2)'};">💾 Resguardo <span style="opacity:0.6;">(${nResguardo})</span></button>
-    </div>
+    <div id="opsPolizasSeccionToggle" style="display:flex;gap:8px;margin-bottom:14px;"></div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
       <input id="opsPolizasBuscar" type="text" placeholder="Buscar cliente o POL####..." value="${opsPolizasFiltro.q||''}" oninput="opsPolizasFiltro.q=this.value;opsPintarPolizas();" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;min-width:220px;">
       <button onclick="abrirNuevoContratoPoliza()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Nuevo contrato</button>
@@ -11019,7 +11015,26 @@ async function renderOpsContratos(){
     <div id="opsPolizasFichas"></div>
     <div id="opsPolizasTiposFichas" style="margin-bottom:14px;"></div>
     <div id="opsPolizasTablaCont"></div>`;
+  opsPintarPolizasSeccionToggle();
   opsPintarPolizas();
+}
+// Bug visual (Jp, 2026-09-09): "cuando yo selecciono soporte, se sombrea en
+// verde resguardo, y cuando yo selecciono resguardo, se queda ahí mismo en
+// verde resguardo" — swPolizasSeccion() solo repintaba las fichas/tabla
+// (opsPintarPolizas), pero el botón Soporte/Resguardo vivía en el
+// body.innerHTML de renderOpsContratos, que solo se genera UNA vez al
+// entrar a la pestaña — el clic cambiaba el estado real (el filtrado sí
+// funcionaba) pero el botón se quedaba pintado con el color de la primera
+// vez que se dibujó. Se separa en su propia función con su propio
+// contenedor (#opsPolizasSeccionToggle), repintada en cada cambio.
+function opsPintarPolizasSeccionToggle(){
+  const cont=document.getElementById('opsPolizasSeccionToggle');
+  if(!cont) return;
+  const nSoporte=(window._opsPolizas||[]).filter(c=>!opsEsResguardo(c)).length;
+  const nResguardo=(window._opsPolizas||[]).filter(c=>opsEsResguardo(c)).length;
+  cont.innerHTML=`
+    <button onclick="swPolizasSeccion('soporte')" style="padding:6px 14px;border-radius:16px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid ${opsPolizasSeccion==='soporte'?'var(--teal)':'var(--border)'};font-family:'Inter',sans-serif;background:${opsPolizasSeccion==='soporte'?'rgba(0,169,157,0.1)':'#fff'};color:${opsPolizasSeccion==='soporte'?'var(--teal)':'var(--text2)'};">🛠 Soporte <span style="opacity:0.6;">(${nSoporte})</span></button>
+    <button onclick="swPolizasSeccion('resguardo')" style="padding:6px 14px;border-radius:16px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid ${opsPolizasSeccion==='resguardo'?'var(--teal)':'var(--border)'};font-family:'Inter',sans-serif;background:${opsPolizasSeccion==='resguardo'?'rgba(0,169,157,0.1)':'#fff'};color:${opsPolizasSeccion==='resguardo'?'var(--teal)':'var(--text2)'};">💾 Resguardo <span style="opacity:0.6;">(${nResguardo})</span></button>`;
 }
 
 function opsFiltrarPolizasGrupo(grupo){
@@ -11041,6 +11056,21 @@ function opsThPolizas(col,label,alinear){
   return `<th style="padding:7px 8px;cursor:pointer;user-select:none;white-space:nowrap;text-align:${alinear||'left'};" onclick="opsOrdenarPolizas('${col}')">${label}${flecha}</th>`;
 }
 
+// Orden de las fichas de "tipo de póliza" por prioridad de negocio (Jp,
+// 2026-09-09): "quisiera que fueran ordenadas por prioridad, que sería
+// elite, infinito, mi empresa, profesionista y emprendedor" — antes salían
+// alfabético (Object.keys(...).sort()). Match por palabra clave dentro del
+// nombre real del catálogo (no por texto exacto, porque esta sesión no
+// puede confirmar la ortografía exacta capturada) — cualquier tipo que no
+// case con ninguna palabra clave (ej. "Sin catálogo", o los de Resguardo
+// cuando se filtra por error) se queda al final, en orden alfabético entre sí.
+const OPS_PRIORIDAD_TIPO=['elite','infinito','mi empresa','profesionista','emprendedor'];
+function opsCompararTipoPrioridad(a,b){
+  const rango=t=>{ const tl=(t||'').toLowerCase(); const i=OPS_PRIORIDAD_TIPO.findIndex(k=>tl.includes(k)); return i===-1?OPS_PRIORIDAD_TIPO.length:i; };
+  const ra=rango(a),rb=rango(b);
+  if(ra!==rb) return ra-rb;
+  return (a||'').localeCompare(b||'');
+}
 function opsPintarPolizas(){
   const contDom=document.getElementById('opsPolizasFichas');
   if(!contDom) return;
@@ -11065,7 +11095,7 @@ function opsPintarPolizas(){
     <div class="thc" style="cursor:pointer;${!opsPolizasFiltro.grupo?'border:1px solid var(--navy);':''}" onclick="opsPolizasFiltro.grupo=null;opsPintarPolizas();"><div class="th-lbl">Todas</div><div class="th-val">${todas.length}</div></div>
   </div>`;
   const tiposDom=document.getElementById('opsPolizasTiposFichas');
-  const tipos=Object.keys(porTipo).sort();
+  const tipos=Object.keys(porTipo).sort(opsCompararTipoPrioridad);
   if(tiposDom) tiposDom.innerHTML=`<div style="display:flex;gap:8px;flex-wrap:wrap;">
     ${tipos.map(t=>`<span onclick="opsFiltrarPolizasTipo('${t.replace(/'/g,"\\'")}')" style="cursor:pointer;padding:4px 12px;border-radius:14px;font-size:11px;font-weight:600;border:1px solid ${opsPolizasFiltro.tipo===t?'var(--teal)':'var(--border)'};background:${opsPolizasFiltro.tipo===t?'rgba(0,169,157,0.1)':'#fff'};color:${opsPolizasFiltro.tipo===t?'var(--teal)':'var(--text2)'};">${t} <span style="opacity:0.6;">(${porTipo[t]})</span></span>`).join('')}
   </div>`;
