@@ -11227,6 +11227,9 @@ async function abrirDetallePoliza(id){
         ${cartera.telefono_whatsapp?`<a href="https://wa.me/52${cartera.telefono_whatsapp}" target="_blank" style="color:#25D366;font-weight:600;">💬 WhatsApp ${cartera.telefono_whatsapp}</a>`:''}
         ${!cartera.correo_principal&&!cartera.telefono_whatsapp?'<span style="color:var(--text3);">Sin correo/WhatsApp capturados en Cartera de Cuentas.</span>':''}
       </div>
+      <div style="margin-top:8px;">
+        <a href="#" onclick="event.preventDefault();abrirPolizasDeCliente('${cartera.id}','${(c.cliente_nombre||'').replace(/'/g,"\\'")}')" style="color:var(--navy);font-weight:600;">📁 Ver todas las pólizas de este cliente (histórico completo)</a>
+      </div>
     </div>`:`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(232,64,64,0.06);border-radius:6px;font-size:11px;color:var(--red);">⚠ Sin cuenta ligada en Cartera de Cuentas (revisar nombre del cliente).</div>`}
 
     <div style="margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:8px;">
@@ -11258,7 +11261,7 @@ async function abrirDetallePoliza(id){
         </div>
         <div>
           <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Horas que incluye la póliza</div>
-          <input id="dpHorasTotales" type="number" step="0.5" value="${c.horas_totales||0}" style="${INP}">
+          <input id="dpHorasTotales" type="number" step="0.5" value="${c.horas_totales>0?c.horas_totales:(c.polizas_catalogo?.horas_incluidas||0)}" style="${INP}">
         </div>
         <div>
           <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Precio contratado</div>
@@ -11374,6 +11377,85 @@ function opsSincronizarPolizaEnLista(id,campos){
   const fila=(window._opsPolizas||[]).find(c=>c.id===id);
   if(fila) Object.assign(fila,campos);
   if(document.getElementById('opsPolizasFichas')) opsPintarPolizas();
+}
+// "Cliente 360" — todas las pólizas de una cuenta, vigentes o no (Jp,
+// 2026-09-09): "hay clientes que tienen diferentes pólizas... necesito
+// tener aquí mismo una sección que se llame clientes y yo ver todas las
+// pólizas que he tenido, aunque ya estén vencidas... porque necesito el
+// histórico y necesito consultar los servicios." El detalle de una póliza
+// puntual (abrirDetallePoliza) solo muestra ESA póliza; esto junta TODAS
+// las de `clientes_polizas` para la cuenta (activas, vencidas, agotadas)
+// más los números de póliza del historial 2019-2026 que todavía no están
+// ligados a ninguna de ellas, para no perder de vista pólizas viejas que
+// ya ni siquiera existen como fila en la app.
+async function abrirPolizasDeCliente(carteraId,nombreCliente){
+  const [{data:polizasApp},{data:historicos}]=await Promise.all([
+    sb.from('clientes_polizas').select('id,cliente_nombre,fecha_inicio,fecha_vencimiento,horas_totales,poliza_numero_legacy,polizas_catalogo(nombre,categoria,horas_incluidas)').eq('cliente_cartera_id',carteraId).order('fecha_vencimiento',{ascending:false}),
+    sb.from('servicios_historicos').select('poliza_numero,poliza_texto,fecha_registro').eq('cliente_cartera_id',carteraId).not('poliza_numero','is',null)
+  ]);
+  const app=polizasApp||[];
+  const legacyLigados=new Set(app.map(p=>p.poliza_numero_legacy).filter(Boolean));
+  const porPoliza={};
+  (historicos||[]).forEach(r=>{
+    if(!porPoliza[r.poliza_numero]) porPoliza[r.poliza_numero]={numero:r.poliza_numero,texto:r.poliza_texto,count:0,min:r.fecha_registro,max:r.fecha_registro};
+    const p=porPoliza[r.poliza_numero];
+    p.count++;
+    if(r.fecha_registro<p.min) p.min=r.fecha_registro;
+    if(r.fecha_registro>p.max) p.max=r.fecha_registro;
+  });
+  const soloHistoricas=Object.values(porPoliza).filter(p=>!legacyLigados.has(p.numero)).sort((a,b)=>String(b.max).localeCompare(String(a.max)));
+  const html=`
+    <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">Todas las pólizas de <b>${nombreCliente}</b>, activas o no — clic en cualquiera para ver su detalle y servicios.</div>
+    <div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:8px;">Pólizas en la app (${app.length})</div>
+    ${app.length===0?'<div style="font-size:11px;color:var(--text3);margin-bottom:14px;">Sin pólizas registradas en la app para esta cuenta.</div>':`
+    <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px;">
+      ${app.map(p=>{
+        const est=opsEstadoPoliza(p);
+        return `<div onclick="document.getElementById('modalPolizasCliente')?.remove();abrirDetallePoliza('${p.id}')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;background:var(--bg2,#f5f6f8);border-radius:6px;padding:8px 10px;font-size:11px;">
+          <div>
+            ${p.poliza_numero_legacy?`<span style="padding:1px 7px;border-radius:5px;font-size:10px;font-weight:800;background:var(--navy);color:#fff;font-family:'JetBrains Mono',monospace;margin-right:6px;">POL${p.poliza_numero_legacy}</span>`:''}
+            <b>${p.polizas_catalogo?.nombre||'Sin catálogo'}</b> · ${p.fecha_inicio||'—'} a ${p.fecha_vencimiento||'—'}
+          </div>
+          <span style="padding:2px 8px;border-radius:10px;font-size:9px;font-weight:700;background:${est.color}22;color:${est.color};white-space:nowrap;">${est.label}</span>
+        </div>`;
+      }).join('')}
+    </div>`}
+    <div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:8px;">Pólizas del historial 2019-2026 sin fila en la app (${soloHistoricas.length})</div>
+    ${soloHistoricas.length===0?'<div style="font-size:11px;color:var(--text3);">Ninguna — todo lo que hay en el historial ya está ligado a alguna póliza de arriba.</div>':`
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      ${soloHistoricas.map(p=>`<div onclick="document.getElementById('modalPolizasCliente')?.remove();verHistoricoPorPolizaNumero('${p.numero}','${(nombreCliente||'').replace(/'/g,"\\'")}')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;gap:8px;background:rgba(148,163,184,0.12);border-radius:6px;padding:8px 10px;font-size:11px;">
+        <div><b>${p.numero?'POL'+p.numero:'—'}</b> — ${p.texto||''}</div>
+        <span style="color:var(--text3);white-space:nowrap;">${p.count} servicios · ${(p.min||'').slice(0,10)} a ${(p.max||'').slice(0,10)}</span>
+      </div>`).join('')}
+    </div>`}`;
+  mkModal('modalPolizasCliente',`Pólizas de ${nombreCliente}`,html,null,'Cerrar',true);
+}
+// Historial completo de una póliza vieja que ya no tiene fila en
+// `clientes_polizas` (por ejemplo, una póliza anterior ya vencida y
+// reemplazada) — mismo patrón de tabla que abrirDetallePoliza, pero de
+// solo lectura porque no hay una póliza de la app a la cual editar.
+async function verHistoricoPorPolizaNumero(numero,nombreCliente){
+  const {data:historicos}=await sb.from('servicios_historicos').select('id,fecha_registro,asesor_nombre,servicio_realizado,forma_servicio,tipo_ticket').eq('poliza_numero',numero).order('fecha_registro',{ascending:false});
+  const rows=historicos||[];
+  const html=`
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Historial 2019-2026 de <b>POL${numero}</b> — ${nombreCliente} · sin fila propia en la app, solo lectura.</div>
+    <div style="max-height:340px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead><tr style="background:var(--bg2,#f5f6f8);position:sticky;top:0;">
+          <th style="padding:6px 8px;text-align:left;">Fecha</th><th style="padding:6px 8px;text-align:left;">Detalle</th>
+          <th style="padding:6px 8px;text-align:left;">Asesor</th>
+        </tr></thead>
+        <tbody>
+          ${rows.length===0?'<tr><td colspan="3" style="text-align:center;padding:12px;color:var(--text3);">Sin servicios registrados</td></tr>':''}
+          ${rows.map(h=>`<tr style="border-top:1px solid var(--border);cursor:pointer;" onclick="verDetalleHistoricoDesdeModal('${h.id}')">
+            <td style="padding:6px 8px;font-family:'JetBrains Mono',monospace;">${(h.fecha_registro||'—').toString().slice(0,10)}</td>
+            <td style="padding:6px 8px;">${h.servicio_realizado||h.forma_servicio||'—'}</td>
+            <td style="padding:6px 8px;">${h.asesor_nombre||'—'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  mkModal('modalHistoricoPoliza',`Historial — POL${numero}`,html,null,'Cerrar',true);
 }
 // Ver un registro histórico completo desde el modal de detalle de póliza
 // (aquí solo se trajeron campos resumidos, así que se pide el registro
