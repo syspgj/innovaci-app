@@ -5076,7 +5076,7 @@ function swCartera(sub){
 
   let filtrados=clientes.filter(cl=>{
     // Filtro de texto
-    const matchQ=!q||(cl.razon_social||'').toLowerCase().includes(q)||(cl.rfc||'').toLowerCase().includes(q)||(cl.num_cliente||'').toLowerCase().includes(q);
+    const matchQ=!q||(cl.razon_social||'').toLowerCase().includes(q)||(cl.rfc||'').toLowerCase().includes(q)||(cl.num_cliente||'').toLowerCase().includes(q)||(cl.alias_nombres||[]).some(a=>(a||'').toLowerCase().includes(q));
     // Filtro de producto (al menos una suscripción con ese producto)
     const matchProd=!prod||(cl._suscripciones||[]).some(s=>s.producto===prod);
     if(!matchQ||!matchProd) return false;
@@ -5154,6 +5154,7 @@ function fichaClienteCartera(cl,sub){
         ${cl.tipo_cliente?`<div><span style="color:var(--text3);">Tipo:</span> ${cl.tipo_cliente}</div>`:''}
         ${cl.telefono2?`<div><span style="color:var(--text3);">Tel. 2:</span> ${cl.telefono2}</div>`:''}
         ${cl.escritorio_servicios?`<div style="grid-column:1/-1;"><span style="color:var(--text3);">Escritorio:</span> <span style="font-family:'JetBrains Mono',monospace;font-size:11px;">${cl.escritorio_servicios}</span></div>`:''}
+        ${(cl.alias_nombres||[]).length?`<div style="grid-column:1/-1;"><span style="color:var(--text3);">También aparece como:</span> ${cl.alias_nombres.join(', ')}</div>`:''}
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">
         <button onclick="abrirFichaClienteModal('${cl.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:5px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">✏️ Editar ficha completa</button>
@@ -5302,6 +5303,8 @@ async function abrirFichaClienteModal(clienteId){
             <div id="fcPadreSugs" style="display:none;border:1px solid var(--border);border-radius:var(--radsm);background:#fff;max-height:120px;overflow-y:auto;position:relative;z-index:10;"></div>
             ${cl.cliente_padre_id?`<span style="font-size:10px;color:var(--red);cursor:pointer;" onclick="document.getElementById('fcPadreId').value='';document.getElementById('fcPadreSearch').value=''">✕ Quitar</span>`:''}
           </div>
+          <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Alias / otros nombres <span style="font-weight:400;">(separados por coma — cuando el cliente aparece con otra razón social en pólizas o tickets viejos, sin tener cuenta propia en el CRM)</span></label>
+            <input id="fcAlias" type="text" value="${(cl.alias_nombres||[]).join(', ')}" placeholder="ej. ALI MAYA, OTRO NOMBRE" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
         </div>
         <div id="fichaClienteMsg" style="font-size:11px;color:var(--red);margin-top:8px;"></div>
       </div>
@@ -5353,6 +5356,7 @@ async function guardarFichaClienteCompleta(id){
     link_crm:document.getElementById('fcLinkCrm')?.value.trim()||null,
     vendedor_asignado:document.getElementById('fcVendedor')?.value||null,
     cliente_padre_id:document.getElementById('fcPadreId')?.value||null,
+    alias_nombres:(document.getElementById('fcAlias')?.value||'').split(',').map(s=>s.trim()).filter(Boolean),
     updated_at:new Date().toISOString()
   };
   if(payload.cliente_padre_id){
@@ -5417,6 +5421,7 @@ async function guardarFichaCliente(id){
     link_crm:document.getElementById('fcLinkCrm')?.value.trim()||null,
     vendedor_asignado:document.getElementById('fcVendedor')?.value||null,
     cliente_padre_id:document.getElementById('fcPadreId')?.value||null,
+    alias_nombres:(document.getElementById('fcAlias')?.value||'').split(',').map(s=>s.trim()).filter(Boolean),
     updated_at:new Date().toISOString()
   };
   // Si se vincula a padre, heredar datos de contacto
@@ -5860,7 +5865,7 @@ function renderDirCarteraContenido(){
   const vend=dirCarteraVendedorFiltro;
 
   let filtrados=clientes.filter(cl=>{
-    const matchQ=!q||(cl.razon_social||'').toLowerCase().includes(q)||(cl.rfc||'').toLowerCase().includes(q)||(cl.num_cliente||'').toLowerCase().includes(q);
+    const matchQ=!q||(cl.razon_social||'').toLowerCase().includes(q)||(cl.rfc||'').toLowerCase().includes(q)||(cl.num_cliente||'').toLowerCase().includes(q)||(cl.alias_nombres||[]).some(a=>(a||'').toLowerCase().includes(q));
     const matchProd=!prod||(cl._suscripciones||[]).some(s=>s.producto===prod);
     const matchVend=!vend||(vend==='__sin_asignar__'?!cl.vendedor_asignado:cl.vendedor_asignado===vend);
     return matchQ&&matchProd&&matchVend;
