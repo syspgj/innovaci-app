@@ -12005,7 +12005,7 @@ async function renderOpsPolizasHistorico(){
   // TODAS las pólizas con fila en la app (paginado por si acaso pasan de 1000).
   let appRows=[];
   for(let from=0;;from+=pageSize){
-    const {data,error}=await sb.from('clientes_polizas').select('id,cliente_nombre,fecha_inicio,fecha_vencimiento,estatus,horas_totales,poliza_numero_legacy,cliente_cartera_id,seccion_manual,polizas_catalogo(nombre,categoria,horas_incluidas)').range(from,from+pageSize-1);
+    const {data,error}=await sb.from('clientes_polizas').select('id,cliente_nombre,fecha_inicio,fecha_vencimiento,estatus,horas_totales,poliza_numero_legacy,numero_proyecto_crm,cliente_cartera_id,seccion_manual,polizas_catalogo(nombre,categoria,horas_incluidas)').range(from,from+pageSize-1);
     if(error){body.innerHTML=`<div style="color:var(--red);">Error: ${error.message}</div>`;return;}
     appRows=appRows.concat(data||[]);
     if(!data||data.length<pageSize) break;
@@ -12037,7 +12037,15 @@ async function renderOpsPolizasHistorico(){
   const legacyLigados=new Set(appRows.map(p=>p.poliza_numero_legacy).filter(Boolean));
   const soloHistoricas=Object.values(histPorPoliza).filter(p=>!legacyLigados.has(p.numero));
   window._ophTodas=[
-    ...appRows.map(p=>({tipo:'app',id:p.id,numero:p.poliza_numero_legacy,cliente:p.cliente_nombre,tipoPoliza:p.polizas_catalogo?.nombre||'Sin catálogo',fecha:p.fecha_vencimiento||p.fecha_inicio,est:opsEstadoPoliza(p),raw:p})),
+    // "numero" (columna POL#): prioriza poliza_numero_legacy (el vínculo
+    // al historial de servicios 2019-2026, ver Lote 5) — pero si la
+    // póliza no tiene ese vínculo (normal en pólizas nuevas que nunca
+    // aparecieron en ese historial), se usa su propio numero_proyecto_crm
+    // del CRM como respaldo, en vez de dejar la columna en "—". Antes
+    // esta columna se quedaba vacía aunque la póliza sí tuviera su
+    // número real del CRM, lo que hacía parecer que faltaba el dato Y
+    // que la búsqueda por POL#### no la encontrara en este listado.
+    ...appRows.map(p=>({tipo:'app',id:p.id,numero:p.poliza_numero_legacy||(p.numero_proyecto_crm?p.numero_proyecto_crm.replace(/^POL/i,''):null),cliente:p.cliente_nombre,tipoPoliza:p.polizas_catalogo?.nombre||'Sin catálogo',fecha:p.fecha_vencimiento||p.fecha_inicio,est:opsEstadoPoliza(p),raw:p})),
     ...soloHistoricas.map(p=>({tipo:'historico',numero:p.numero,cliente:p.cliente,tipoPoliza:p.texto||'—',fecha:p.max,count:p.count,min:p.min,seccion:clasifHistMap[String(p.numero)]||null})),
   ];
   body.innerHTML=`
