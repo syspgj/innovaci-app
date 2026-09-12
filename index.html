@@ -11844,9 +11844,47 @@ function calcularDuracionFacturada(){
   document.getElementById('tdDuracionFact').value=real>0?Math.ceil(real/15)*15:0;
 }
 
+// Jp (2026-09-12): "el plan es de que del servicio pendiente, si es que
+// hay texto, se genere una nueva solicitud para que me sale del
+// seguimiento. Porque actualmente, como viene todo completo, cierran el
+// ticket y ya no hay un seguimiento." -- si "servicio pendiente" trae
+// texto real (no un N/A o equivalente) se filtra aquí; mismo criterio de
+// normalización ya validado sobre el historial completo de tickets
+// (Lote 12): quita guiones/espacios al inicio antes de comparar contra
+// las variantes de "no aplica".
+function esPendienteReal(texto){
+  if(!texto) return false;
+  const t=texto.trim().replace(/^[-–—\s]+/,'').trim().toUpperCase();
+  if(!t) return false;
+  const NA=['N/A','N.A.','NA','NINGUNO','NINGUNA','NO APLICA','NO HAY PENDIENTE','NO HAY PENDIENTES','SIN PENDIENTE','SIN PENDIENTES','NO'];
+  return !NA.includes(t);
+}
+
+// Genera un ticket NUEVO y completo, sin asignar, en la cola normal de
+// Servicios/tickets (no una alerta aparte) -- confirmado con Jp vía
+// AskUserQuestion: "Ticket nuevo sin asignar (Recomendado)". Aplica solo
+// hacia adelante, a partir de tickets que se cierren desde ahora
+// (confirmado: "Solo hacia adelante (Recomendado)", sin generar de forma
+// retroactiva para los 242 tickets históricos con pendiente real).
+async function generarSeguimientoPendiente(origen){
+  const {count}=await sb.from('servicios_ejecutados').select('id',{count:'exact',head:true}).gte('created_at',`${currentYear}-01-01`);
+  const folio=`TCK-${currentYear}-${String((count||0)+1).padStart(5,'0')}`;
+  const payload={
+    folio_ticket:folio,
+    cliente_poliza_id:origen.cliente_poliza_id||null,
+    tipo_servicio:origen.tipo_servicio||null,
+    cliente_nombre:origen.cliente_nombre,
+    solicitado_por:`Seguimiento automático del ticket ${origen.folio_ticket}`,
+    descripcion_solicitud:origen.servicio_pendiente,
+    estatus:'PENDIENTE'
+  };
+  const {error}=await sb.from('servicios_ejecutados').insert(payload);
+  if(error) console.error('No se pudo generar el ticket de seguimiento automático:',error.message);
+}
+
 async function guardarDetalleTicket(){
   const id=window._tdTicketId;
-  const {data:tActual}=await sb.from('servicios_ejecutados').select('cliente_poliza_id,ticket_cerrado').eq('id',id).single();
+  const {data:tActual}=await sb.from('servicios_ejecutados').select('cliente_poliza_id,ticket_cerrado,folio_ticket,tipo_servicio').eq('id',id).single();
   const asesorSel=document.getElementById('tdAsesor');
   const asesorId=asesorSel?.value||null;
   const asesorNombre=asesorId?asesorSel.selectedOptions[0].dataset.nombre:null;
@@ -11877,6 +11915,20 @@ async function guardarDetalleTicket(){
     const {data:cp}=await sb.from('clientes_polizas').select('horas_consumidas').eq('id',tActual.cliente_poliza_id).single();
     const nuevasHoras=(cp?.horas_consumidas||0)+duracionFact/60;
     await sb.from('clientes_polizas').update({horas_consumidas:nuevasHoras,updated_at:new Date().toISOString()}).eq('id',tActual.cliente_poliza_id);
+  }
+
+  // Seguimiento automático: solo la primera vez que se cierra el ticket
+  // (mismo guard que el descuento de horas, para no duplicar el
+  // seguimiento si el ticket se abre/cierra otra vez), y solo si
+  // "servicio pendiente" trae contenido real.
+  if(cerradoAhora&&!tActual.ticket_cerrado&&esPendienteReal(payload.servicio_pendiente)){
+    await generarSeguimientoPendiente({
+      folio_ticket:tActual.folio_ticket,
+      tipo_servicio:tActual.tipo_servicio,
+      cliente_poliza_id:tActual.cliente_poliza_id,
+      cliente_nombre:payload.cliente_nombre,
+      servicio_pendiente:payload.servicio_pendiente
+    });
   }
 
   document.getElementById('modalDetalleTicket')?.remove();
