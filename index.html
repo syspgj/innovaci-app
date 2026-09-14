@@ -11751,6 +11751,11 @@ async function abrirNuevoTicket(){
   const {data:contratos}=await sb.from('clientes_polizas').select('id,cliente_nombre,horas_totales,horas_consumidas').eq('estatus','VIGENTE').order('cliente_nombre');
   const today=todayLocal();
   const html=`
+    <div style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px;background:#f8fafb;">
+      <label for="tkImagenInput" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#fff;background:var(--teal);padding:7px 14px;border-radius:6px;cursor:pointer;">📷 Cargar desde imagen</label>
+      <input type="file" id="tkImagenInput" accept="image/*" style="display:none;" onchange="opsExtraerSolicitudDesdeImagen(this)">
+      <span id="tkImagenEstado" style="font-size:11px;color:var(--text3);margin-left:10px;">Captura de Telegram — se intentan llenar los campos de abajo, siempre revisa antes de guardar.</span>
+    </div>
     <div style="margin-bottom:10px;">${fld('Tipo de servicio',`<select id="tkTipo" style="${INP}" onchange="toggleTipoTicket()">
       <option value="SOPORTE_POLIZA">Soporte de póliza (banco de horas)</option>
       <option value="EVENTO">Servicio por evento</option>
@@ -11779,6 +11784,56 @@ function autollenarClienteTicket(){
   const sel=document.getElementById('tkContrato');
   const opt=sel?.selectedOptions[0];
   if(opt&&opt.dataset.cliente) document.getElementById('tkCliente').value=opt.dataset.cliente;
+}
+
+// Lee una captura (ej. la que manda Ventas/el cliente por Telegram pidiendo
+// un servicio) y llena los campos del modal "Nueva solicitud de servicio"
+// automáticamente — Jp, 2026-09-04: "evaluar integrar Telegram (hoy las
+// solicitudes llegan por ahí y se copian a mano)", Nivel 1 confirmado en el
+// Lote 12 (2026-09-14). Mismo patrón exacto que
+// academiaExtraerAsistenteDesdeImagen (api/mesa-control-extraer-
+// solicitud.js llama a Claude con visión, la API key vive solo en el
+// servidor). SIEMPRE se deja para revisión manual antes de Guardar — nunca
+// guarda solo con lo que salga de la imagen.
+async function opsExtraerSolicitudDesdeImagen(inputEl){
+  const file=inputEl.files?.[0];
+  if(!file) return;
+  const estado=document.getElementById('tkImagenEstado');
+  if(estado){estado.textContent='Leyendo imagen...';estado.style.color='var(--teal)';}
+  try{
+    const b64=await new Promise((resolve,reject)=>{
+      const reader=new FileReader();
+      reader.onload=()=>resolve(String(reader.result).split(',')[1]||'');
+      reader.onerror=reject;
+      reader.readAsDataURL(file);
+    });
+    const resp=await fetch('/api/mesa-control-extraer-solicitud',{
+      method:'POST',
+      headers:{'content-type':'application/json'},
+      body:JSON.stringify({imagenBase64:b64,mediaType:file.type||'image/png'}),
+    });
+    let data={};
+    try{data=await resp.json();}catch(e){/* respuesta no-JSON, se maneja abajo */}
+    if(!resp.ok||!data.ok){
+      if(estado){estado.textContent='No se pudo leer la imagen: '+(data.error||'error desconocido')+'. Puedes capturar los datos a mano.';estado.style.color='#c0392b';}
+      return;
+    }
+    const d=data.datos||{};
+    if(d.cliente) document.getElementById('tkCliente').value=d.cliente;
+    if(d.solicitado_por) document.getElementById('tkSolicitante').value=d.solicitado_por;
+    if(d.descripcion) document.getElementById('tkDescripcion').value=d.descripcion;
+    if(d.tipo_sugerido&&['SOPORTE_POLIZA','EVENTO','CURSO_EMPRESARIAL'].includes(d.tipo_sugerido)&&document.getElementById('tkTipo')){
+      document.getElementById('tkTipo').value=d.tipo_sugerido;
+      toggleTipoTicket();
+    }
+    if(d.fecha_sugerida&&/^\d{4}-\d{2}-\d{2}$/.test(d.fecha_sugerida)&&document.getElementById('tkFecha')) document.getElementById('tkFecha').value=d.fecha_sugerida;
+    if(estado){
+      estado.style.color='var(--text2)';
+      estado.textContent='✅ Datos cargados — revisa cada campo antes de guardar.';
+    }
+  }catch(e){
+    if(estado){estado.textContent='Error al procesar la imagen: '+(e?.message||e);estado.style.color='#c0392b';}
+  }
 }
 
 async function guardarNuevoTicket(){
