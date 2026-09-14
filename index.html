@@ -11772,6 +11772,7 @@ function renderOpsTicketsTabla(){
 //    cliente/POL#/tipo/póliza/prioridad/solicitante/asesor/fecha-hora/
 //    nota, para confirmar antes de Guardar.
 async function abrirNuevoTicket(){
+  window._tkContactoExtraido=null;
   const asesores=window._opsAsesores||[];
   await opsCargarMapasMinutos();
   const {data:contratosRaw}=await sb.from('clientes_polizas')
@@ -11866,6 +11867,42 @@ async function autollenarClienteTicket(){
 // personas_autorizadas (texto libre de lotes anteriores) que aún no
 // tengan un contacto estructurado con el mismo nombre, para no perder
 // datos ya capturados.
+// Compara el contacto extraído de la imagen de Telegram (window.
+// _tkContactoExtraido: {nombre,telefono,correo}) contra la lista de
+// contactos YA guardados de la cuenta, para reconocerlo automáticamente
+// en vez de forzar a Jp a repetir la captura (pedido explícito de Jp,
+// 2026-09-14 parte 2: "que el sistema busque si hay algún contacto que
+// se asemeje... para que lo agregue"). Match por teléfono (últimos 10
+// dígitos) tiene prioridad; si no hay teléfono o no coincide, compara
+// nombres normalizados (sin acentos/mayúsculas) por coincidencia de al
+// menos 2 palabras (o todas, si el nombre extraído es corto) -- así
+// "C.P. Marisol Meraz" sí reconoce a un contacto guardado como
+// "Marisol Meraz".
+function tkNormalizarTexto(s){
+  return (s||'').toString().normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
+}
+function tkTelefonosCoinciden(a,b){
+  const da=(a||'').replace(/\D/g,''), db=(b||'').replace(/\D/g,'');
+  if(!da||!db||da.length<7||db.length<7) return false;
+  return da.slice(-10)===db.slice(-10);
+}
+function tkBuscarContactoParecido(contactos,extraido){
+  if(!extraido||!(extraido.nombre||extraido.telefono)) return null;
+  for(const ct of contactos){
+    if(tkTelefonosCoinciden(ct.telefono,extraido.telefono)) return ct;
+  }
+  const nombreNorm=tkNormalizarTexto(extraido.nombre);
+  if(!nombreNorm) return null;
+  const palabrasExtraido=nombreNorm.split(' ').filter(w=>w.length>2);
+  if(!palabrasExtraido.length) return null;
+  for(const ct of contactos){
+    const palabrasCt=tkNormalizarTexto(ct.nombre).split(' ').filter(w=>w.length>2);
+    if(!palabrasCt.length) continue;
+    const coincidencias=palabrasExtraido.filter(w=>palabrasCt.includes(w)).length;
+    if(coincidencias>=Math.min(2,palabrasExtraido.length)) return ct;
+  }
+  return null;
+}
 async function tkRenderSolicitante(c){
   const wrap=document.getElementById('tkSolicitanteWrap');
   if(!wrap) return;
@@ -11880,6 +11917,24 @@ async function tkRenderSolicitante(c){
   ]);
   window._tkCuentaContactos=cuentaContactos||[];
   window._tkAutorizados=new Set((autorizados||[]).map(a=>a.contacto_id));
+
+  // Reconocimiento automático del contacto extraído de la imagen (si hay
+  // uno pendiente de esta carga). Si coincide con un contacto ya
+  // guardado, se autoriza automáticamente para esta póliza (si no lo
+  // estaba) para poder seleccionarlo. Si no coincide con ninguno, se
+  // deja para sugerir el alta después de pintar el select.
+  const extraido=window._tkContactoExtraido;
+  let contactoMatch=null, contactoNuevoSugerido=null;
+  if(extraido){
+    contactoMatch=tkBuscarContactoParecido(window._tkCuentaContactos,extraido);
+    if(contactoMatch&&!window._tkAutorizados.has(contactoMatch.id)){
+      await sb.from('clientes_polizas_contactos_autorizados').upsert({cliente_poliza_id:c.id,contacto_id:contactoMatch.id},{onConflict:'cliente_poliza_id,contacto_id'});
+      window._tkAutorizados.add(contactoMatch.id);
+    } else if(!contactoMatch){
+      contactoNuevoSugerido=extraido;
+    }
+  }
+
   const autorizadosList=window._tkCuentaContactos.filter(ct=>window._tkAutorizados.has(ct.id));
   const nombresLegacy=(c.personas_autorizadas||'').split(/[,;\n\/]+/).map(s=>s.trim()).filter(Boolean)
     .filter(n=>!window._tkCuentaContactos.some(ct=>(ct.nombre||'').trim().toLowerCase()===n.toLowerCase()));
@@ -11898,7 +11953,29 @@ async function tkRenderSolicitante(c){
     <button type="button" onclick="tkToggleGestionContactos()" style="font-size:11px;color:var(--teal);background:none;border:none;cursor:pointer;padding:0;margin-top:6px;text-decoration:underline;">⚙ Gestionar contactos autorizados de esta cuenta</button>
     <div id="tkGestionContactos" style="display:none;margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#f8fafb;"></div>
   `;
+  if(contactoMatch){
+    const selEl=document.getElementById('tkSolicitante');
+    if(selEl&&selEl.tagName==='SELECT') selEl.value=contactoMatch.nombre;
+  }
   tkActualizarPreview();
+  if(contactoNuevoSugerido){
+    // Ya se reconoció que este contacto de la imagen NO está guardado --
+    // se marca como consumido (para no volver a preguntar si se re-dibuja
+    // el select por otra acción) y se ofrece darlo de alta ya autorizado
+    // para esta póliza (pedido de Jp: "si no lo tiene, que en automático
+    // lo sugiera y pregunte si desean guardarlo").
+    window._tkContactoExtraido=null;
+    const nombreTxt=contactoNuevoSugerido.nombre||'(sin nombre)';
+    const detalleTxt=[contactoNuevoSugerido.telefono,contactoNuevoSugerido.correo].filter(Boolean).join(' · ');
+    tkToggleGestionContactos();
+    const nombreInput=document.getElementById('tkNuevoContactoNombre'); if(nombreInput) nombreInput.value=contactoNuevoSugerido.nombre||'';
+    const correoInput=document.getElementById('tkNuevoContactoCorreo'); if(correoInput) correoInput.value=contactoNuevoSugerido.correo||'';
+    const telInput=document.getElementById('tkNuevoContactoTelefono'); if(telInput) telInput.value=contactoNuevoSugerido.telefono||'';
+    const guardar=confirm(`Se detectó un contacto en la captura que no está guardado para esta cuenta: ${nombreTxt}${detalleTxt?' ('+detalleTxt+')':''}.\n\n¿Agregarlo como contacto autorizado para solicitar servicio en esta póliza?`);
+    if(guardar){ await tkAgregarContacto(); }
+  } else if(contactoMatch){
+    window._tkContactoExtraido=null;
+  }
 }
 function tkToggleSolicitanteOtro(){
   const sel=document.getElementById('tkSolicitante');
@@ -12061,11 +12138,28 @@ async function opsExtraerSolicitudDesdeImagen(inputEl){
     }
     if(d.descripcion) document.getElementById('tkDescripcion').value=d.descripcion;
     if(d.nota) document.getElementById('tkNota').value=d.nota;
+    // Contacto del cliente (quien recibe el servicio, distinto de
+    // "solicitado por") -- ya NO se mete en la nota (Jp, 2026-09-14 parte
+    // 2: "quitas la parte del contacto en la nota, porque ese dato ya se
+    // va a capturar en otro lado"). Se guarda aparte para que
+    // tkRenderSolicitante() lo reconozca contra los contactos ya
+    // guardados de la cuenta en cuanto Jp elija la póliza (o ahora mismo,
+    // si ya había una póliza elegida antes de subir la imagen).
+    if(d.contacto_nombre||d.contacto_telefono||d.contacto_correo){
+      window._tkContactoExtraido={nombre:d.contacto_nombre||null,telefono:d.contacto_telefono||null,correo:d.contacto_correo||null};
+    } else {
+      window._tkContactoExtraido=null;
+    }
     if(d.tipo_sugerido&&['SOPORTE_POLIZA','EVENTO','CURSO_EMPRESARIAL'].includes(d.tipo_sugerido)&&document.getElementById('tkTipo')){
       document.getElementById('tkTipo').value=d.tipo_sugerido;
       await toggleTipoTicket();
     }
     if(d.fecha_sugerida&&/^\d{4}-\d{2}-\d{2}$/.test(d.fecha_sugerida)&&document.getElementById('tkFecha')) document.getElementById('tkFecha').value=d.fecha_sugerida;
+    // Si ya había una póliza elegida (raro, pero posible si Jp cambia la
+    // imagen tras elegir), se intenta el reconocimiento de contacto de
+    // una vez -- si no, queda pendiente y se dispara en cuanto elija la
+    // póliza (autollenarClienteTicket -> tkRenderSolicitante).
+    if(window._tkContactoExtraido&&window._tkContratoActual) await tkRenderSolicitante(window._tkContratoActual);
     tkActualizarPreview();
     if(estado){
       estado.style.color='var(--text2)';
