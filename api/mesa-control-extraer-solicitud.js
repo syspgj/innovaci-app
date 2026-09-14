@@ -1,12 +1,20 @@
 // Mesa de Control: extraer datos de una solicitud de servicio desde una
-// imagen (Jp, 2026-09-04 / Lote 12, 2026-09-14) — "Nivel 1" de la
-// integración con Telegram: las solicitudes llegan hoy por Telegram y se
-// copian a mano al abrir un ticket nuevo. Este endpoint recibe la captura
-// desde el modal "Nueva solicitud de servicio" (index.html) y usa Claude
-// (con visión) para leerla y devolver los campos ya estructurados, para
-// precargar el formulario — Jp SIEMPRE revisa/edita antes de dar clic en
-// Guardar, esto solo ahorra la captura manual. Mismo patrón exacto que
+// imagen (Jp, 2026-09-04 / Lote 12, 2026-09-14 / Lote 13, 2026-09-14) —
+// "Nivel 1" de la integración con Telegram: las solicitudes llegan hoy
+// por Telegram y se copian a mano al abrir un ticket nuevo. Este
+// endpoint recibe la captura desde el modal "Nueva solicitud de
+// servicio" (index.html) y usa Claude (con visión) para leerla y
+// devolver los campos ya estructurados, para precargar el formulario —
+// Jp SIEMPRE revisa/edita antes de dar clic en Guardar, esto solo ahorra
+// la captura manual. Mismo patrón exacto que
 // api/academia-extraer-asistente.js (Academia, ya en producción).
+//
+// Lote 13 (2026-09-14, parte 2): el contacto del cliente (contacto_
+// nombre/contacto_telefono/contacto_correo) se extrae en campos propios,
+// separados de "nota" -- index.html los usa para reconocer
+// automáticamente contra los contactos ya guardados de la cuenta
+// (clientes_cartera_contactos) y sugerir el alta si no coincide con
+// ninguno, en vez de solo dejarlos como texto suelto dentro de la nota.
 //
 // Requiere la misma variable de entorno ya configurada en Vercel:
 // ANTHROPIC_API_KEY (Project Settings → Environment Variables). Sin esa
@@ -52,8 +60,11 @@ Extrae ÚNICAMENTE los datos que puedas leer con certeza en la imagen y responde
 {
   "cliente": string o null,          // nombre de la empresa/cliente para quien es el servicio (busca después de "CLIENTE:" o similar)
   "solicitado_por": string o null,   // quién MANDA el mensaje/la solicitud (ej. el vendedor o asesor que escribe, no el contacto del cliente)
+  "contacto_nombre": string o null,  // nombre de la persona de CONTACTO del cliente (busca después de "CONTACTO:" o similar) -- es alguien del lado del cliente, NO quien manda el mensaje por Telegram
+  "contacto_telefono": string o null,// teléfono de esa persona de contacto (busca después de "TEL:" o similar), tal cual está escrito
+  "contacto_correo": string o null,  // correo de esa persona de contacto, si aparece
   "descripcion": string o null,      // la solicitud en sí, qué necesita el cliente (busca después de "SOLICITUD:" o similar), tal cual está escrito
-  "nota": string o null,             // información APARTE de la solicitud misma: contacto del cliente y teléfono si aparecen (ej. "Contacto: Marisol Meraz, tel 5537105935"), comentarios del cliente, preferencia de día/hora para el servicio, tipo de póliza mencionado explícitamente, o cualquier otro dato adicional que no sea la solicitud en sí — concatena todo lo que aplique en un solo texto breve
+  "nota": string o null,             // información APARTE de la solicitud y del contacto: comentarios del cliente, preferencia de día/hora para el servicio, tipo de póliza mencionado explícitamente, o cualquier otro dato adicional que no sea la solicitud en sí — concatena todo lo que aplique en un solo texto breve. IMPORTANTE: NO repitas aquí el nombre/teléfono/correo del contacto, esos van solo en contacto_nombre/contacto_telefono/contacto_correo.
   "tipo_sugerido": "SOPORTE_POLIZA" o "EVENTO" o "CURSO_EMPRESARIAL" o null,  // SOPORTE_POLIZA si es un problema/duda de soporte técnico cotidiano, EVENTO si es un servicio puntual fuera de póliza, CURSO_EMPRESARIAL si piden capacitación — null si no es claro
   "fecha_sugerida": string o null    // fecha en formato YYYY-MM-DD si la solicitud menciona una fecha específica para el servicio, si no null
 }
