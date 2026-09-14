@@ -11746,11 +11746,49 @@ function renderOpsTicketsTabla(){
   </table></div>`;
 }
 
+// Nueva solicitud de servicio (rediseñado, Jp 2026-09-14, feedback en 6
+// puntos sobre este modal):
+// 1. El selector de póliza solo debe mostrar las REALMENTE vigentes hoy
+//    (no solo estatus='VIGENTE' en la BD, que no baja solo a
+//    vencida/agotada -- se recalcula con opsEstadoPoliza(), mismo
+//    criterio que "📋 Pólizas", por eso se llama opsCargarMapasMinutos()
+//    aquí también).
+// 2. El dato principal para elegir la póliza es el POL#, buscable por
+//    POL# o por nombre de cliente -- input+datalist (mismo patrón ya
+//    usado en "Nuevo contrato", ver cpCarteraList), no un <select> plano.
+// 3. "Cliente" pasa a ser solo informativo (readonly) cuando el tipo es
+//    Soporte de póliza -- se deriva de la póliza elegida, no se edita.
+// 4. "Solicitado por" pasa de texto libre a un <select> con las personas
+//    autorizadas de esa póliza (`clientes_polizas.personas_autorizadas`,
+//    separado por comas/saltos de línea) -- confirmado con Jp vía
+//    AskUserQuestion: usar ese campo ya existente en vez de construir un
+//    catálogo de contactos nuevo. Incluye "Otro" por si el campo no trae
+//    a la persona real. Para Evento/Curso (sin póliza) sigue siendo texto
+//    libre, porque no hay de dónde sacar la lista.
+// 5. Se agrega "Nota" (aparte de "Descripción de la solicitud") y "Hora
+//    asignada" (aparte de la fecha) -- ver mesa_control_ticket_hora_
+//    nota.sql.
+// 6. Panel de vista previa a la derecha (tkActualizarPreview()) con
+//    cliente/POL#/tipo/póliza/prioridad/solicitante/asesor/fecha-hora/
+//    nota, para confirmar antes de Guardar.
 async function abrirNuevoTicket(){
   const asesores=window._opsAsesores||[];
-  const {data:contratos}=await sb.from('clientes_polizas').select('id,cliente_nombre,horas_totales,horas_consumidas').eq('estatus','VIGENTE').order('cliente_nombre');
+  await opsCargarMapasMinutos();
+  const {data:contratosRaw}=await sb.from('clientes_polizas')
+    .select('id,cliente_nombre,numero_proyecto_crm,horas_totales,horas_consumidas,personas_autorizadas,fecha_inicio,fecha_vencimiento,poliza_numero_legacy,estatus,contacto_telefono,contacto_correo,polizas_catalogo(nombre,prioridad_codigo,prioridad_nombre,resp_horas_min,resp_horas_max)')
+    .eq('estatus','VIGENTE')
+    .order('cliente_nombre');
+  const contratos=(contratosRaw||[]).filter(c=>{
+    const est=opsEstadoPoliza(c);
+    return est.grupo==='vigente'||est.grupo==='porvencer'||est.grupo==='nueva';
+  });
+  window._tkContratos={};
+  contratos.forEach(c=>{ window._tkContratos[`${c.numero_proyecto_crm||'S/N'} — ${c.cliente_nombre}`]=c; });
+  window._tkContratoActual=null;
   const today=todayLocal();
   const html=`
+    <div style="display:grid;grid-template-columns:1fr 250px;gap:18px;">
+    <div>
     <div style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px;background:#f8fafb;">
       <label for="tkImagenInput" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#fff;background:var(--teal);padding:7px 14px;border-radius:6px;cursor:pointer;">📷 Cargar desde imagen</label>
       <input type="file" id="tkImagenInput" accept="image/*" style="display:none;" onchange="opsExtraerSolicitudDesdeImagen(this)">
@@ -11761,29 +11799,117 @@ async function abrirNuevoTicket(){
       <option value="EVENTO">Servicio por evento</option>
       <option value="CURSO_EMPRESARIAL">Curso empresarial</option>
     </select>`)}</div>
-    <div id="tkContratoWrap" style="margin-bottom:10px;">${fld('Contrato con banco de horas',`<select id="tkContrato" style="${INP}" onchange="autollenarClienteTicket()">
-      <option value="">-- Selecciona --</option>
-      ${(contratos||[]).map(c=>`<option value="${c.id}" data-cliente="${(c.cliente_nombre||'').replace(/"/g,'&quot;')}">${c.cliente_nombre} (${Math.max((c.horas_totales||0)-(c.horas_consumidas||0),0)}h restantes)</option>`).join('')}
-    </select>`)}</div>
-    <div style="margin-bottom:10px;">${fld('Cliente',inp('tkCliente','text','Nombre del cliente'))}</div>
-    <div style="margin-bottom:10px;">${fld('Solicitado por',inp('tkSolicitante','text','Ej. Dulce (ventas), o el cliente directo'))}</div>
-    <div style="margin-bottom:10px;">${fld('Descripción de la solicitud',inp('tkDescripcion','text','Qué necesita el cliente'))}</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      ${fld('Asesor',`<select id="tkAsesor" style="${INP}"><option value="">-- Sin asignar todavía --</option>${asesores.map(a=>`<option value="${a.id}" data-nombre="${a.nombre}">${a.nombre}</option>`).join('')}</select>`)}
-      ${fld('Fecha asignada',inp('tkFecha','date','',today))}
+    <div id="tkContratoWrap" style="margin-bottom:10px;">${fld('Contrato con banco de horas (busca por POL# o cliente)',`
+      <input id="tkContrato" list="tkContratoList" style="${INP}" placeholder="Escribe el POL# o el nombre del cliente..." autocomplete="off" oninput="autollenarClienteTicket()">
+      <datalist id="tkContratoList">${Object.keys(window._tkContratos).map(label=>`<option value="${label.replace(/"/g,'&quot;')}">`).join('')}</datalist>
+      <input type="hidden" id="tkContratoId">
+    `)}</div>
+    <div style="margin-bottom:10px;">${fld('Cliente',`<input id="tkCliente" type="text" placeholder="Nombre del cliente" style="${INP}" oninput="tkActualizarPreview()">`)}</div>
+    <div id="tkSolicitanteWrap" style="margin-bottom:10px;">${fld('Solicitado por',`<input id="tkSolicitante" type="text" placeholder="Ej. Dulce (ventas), o el cliente directo" style="${INP}" oninput="tkActualizarPreview()">`)}</div>
+    <div style="margin-bottom:10px;">${fld('Descripción de la solicitud',`<input id="tkDescripcion" type="text" placeholder="Qué necesita el cliente" style="${INP}" oninput="tkActualizarPreview()">`)}</div>
+    <div style="margin-bottom:10px;">${fld('Nota (aparte de la solicitud — ej. preferencia de día/hora, comentarios del cliente)',`<input id="tkNota" type="text" placeholder="Opcional" style="${INP}" oninput="tkActualizarPreview()">`)}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Asesor',`<select id="tkAsesor" style="${INP}" onchange="tkActualizarPreview()"><option value="">-- Sin asignar todavía --</option>${asesores.map(a=>`<option value="${a.id}" data-nombre="${a.nombre}">${a.nombre}</option>`).join('')}</select>`)}
+      ${fld('Fecha asignada',`<input id="tkFecha" type="date" value="${today}" style="${INP}" oninput="tkActualizarPreview()">`)}
+      ${fld('Hora asignada',`<input id="tkHora" type="time" style="${INP}" oninput="tkActualizarPreview()">`)}
+    </div>
+    </div>
+    <div>
+      <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">VISTA PREVIA</div>
+      <div id="tkPreview" style="background:#f8fafb;border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;line-height:1.6;color:var(--text2);"></div>
+    </div>
     </div>`;
-  mkModal('modalNuevoTicket','Nueva solicitud de servicio',html,'guardarNuevoTicket');
+  mkModal('modalNuevoTicket','Nueva solicitud de servicio',html,'guardarNuevoTicket','Guardar','920px');
   toggleTipoTicket();
+  tkActualizarPreview();
 }
 function toggleTipoTicket(){
   const tipo=document.getElementById('tkTipo')?.value;
+  const esPoliza=tipo==='SOPORTE_POLIZA';
   const w=document.getElementById('tkContratoWrap');
-  if(w) w.style.display=tipo==='SOPORTE_POLIZA'?'block':'none';
+  if(w) w.style.display=esPoliza?'block':'none';
+  const clienteInput=document.getElementById('tkCliente');
+  if(clienteInput){
+    clienteInput.readOnly=esPoliza;
+    clienteInput.style.background=esPoliza?'#eef1f3':'#fff';
+    clienteInput.placeholder=esPoliza?'Se llena al elegir el contrato':'Nombre del cliente';
+    if(!esPoliza&&clienteInput.dataset.autoPoliza){ clienteInput.value=''; delete clienteInput.dataset.autoPoliza; }
+  }
+  tkRenderSolicitante(esPoliza?window._tkContratoActual:null);
+  tkActualizarPreview();
 }
+// Al elegir un contrato del datalist (texto exacto = llave en
+// window._tkContratos), resuelve el id real, llena Cliente (solo
+// informativo) y arma "Solicitado por" con las personas autorizadas de
+// ESA póliza.
 function autollenarClienteTicket(){
-  const sel=document.getElementById('tkContrato');
-  const opt=sel?.selectedOptions[0];
-  if(opt&&opt.dataset.cliente) document.getElementById('tkCliente').value=opt.dataset.cliente;
+  const input=document.getElementById('tkContrato');
+  const c=window._tkContratos?.[input?.value]||null;
+  const hidden=document.getElementById('tkContratoId');
+  if(hidden) hidden.value=c?c.id:'';
+  window._tkContratoActual=c;
+  const clienteInput=document.getElementById('tkCliente');
+  if(clienteInput&&clienteInput.readOnly){
+    clienteInput.value=c?c.cliente_nombre:'';
+    clienteInput.dataset.autoPoliza=c?'1':'';
+  }
+  tkRenderSolicitante(c);
+  tkActualizarPreview();
+}
+// Arma el campo "Solicitado por": <select> con las personas_autorizadas
+// de la póliza (si trae algo capturado) + "Otro", o texto libre si no hay
+// póliza elegida o el campo viene vacío.
+function tkRenderSolicitante(c){
+  const wrap=document.getElementById('tkSolicitanteWrap');
+  if(!wrap) return;
+  const nombres=(c?.personas_autorizadas||'').split(/[,;\n\/]+/).map(s=>s.trim()).filter(Boolean);
+  if(nombres.length){
+    wrap.innerHTML=fld('Solicitado por',`<select id="tkSolicitante" style="${INP}" onchange="tkToggleSolicitanteOtro();tkActualizarPreview();">
+      <option value="">-- Selecciona --</option>
+      ${nombres.map(n=>`<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`).join('')}
+      <option value="__otro__">Otro (especificar)</option>
+    </select>
+    <input id="tkSolicitanteOtro" type="text" placeholder="Nombre de quien solicita" style="${INP};margin-top:6px;display:none;" oninput="tkActualizarPreview()">`);
+  } else {
+    wrap.innerHTML=fld('Solicitado por',`<input id="tkSolicitante" type="text" placeholder="${c?'Esta póliza no tiene personas autorizadas capturadas — escribe quién solicita':'Ej. Dulce (ventas), o el cliente directo'}" style="${INP}" oninput="tkActualizarPreview()">`);
+  }
+}
+function tkToggleSolicitanteOtro(){
+  const sel=document.getElementById('tkSolicitante');
+  const otro=document.getElementById('tkSolicitanteOtro');
+  if(otro) otro.style.display=(sel&&sel.value==='__otro__')?'block':'none';
+}
+function tkLeerSolicitante(){
+  const el=document.getElementById('tkSolicitante');
+  if(!el) return null;
+  if(el.tagName==='SELECT'&&el.value==='__otro__') return document.getElementById('tkSolicitanteOtro')?.value?.trim()||null;
+  return el.value?.trim()||null;
+}
+function tkActualizarPreview(){
+  const cont=document.getElementById('tkPreview');
+  if(!cont) return;
+  const c=window._tkContratoActual;
+  const tipoLabel={SOPORTE_POLIZA:'Soporte de póliza',EVENTO:'Servicio por evento',CURSO_EMPRESARIAL:'Curso empresarial'};
+  const tipo=document.getElementById('tkTipo')?.value;
+  const cliente=document.getElementById('tkCliente')?.value;
+  const asesorSel=document.getElementById('tkAsesor');
+  const asesorNombre=asesorSel?.value?asesorSel.selectedOptions[0].dataset.nombre:'Sin asignar todavía';
+  const fecha=document.getElementById('tkFecha')?.value;
+  const hora=document.getElementById('tkHora')?.value;
+  const solicitante=tkLeerSolicitante();
+  const nota=document.getElementById('tkNota')?.value;
+  const cat=c?.polizas_catalogo;
+  cont.innerHTML=`
+    <div style="margin-bottom:6px;"><b>Cliente:</b> ${cliente||'—'}</div>
+    ${c?.numero_proyecto_crm?`<div style="margin-bottom:6px;"><b>POL#:</b> ${c.numero_proyecto_crm}</div>`:''}
+    <div style="margin-bottom:6px;"><b>Tipo:</b> ${tipoLabel[tipo]||'—'}</div>
+    ${cat?.nombre?`<div style="margin-bottom:6px;"><b>Póliza:</b> ${cat.nombre}</div>`:''}
+    ${cat?.prioridad_nombre?`<div style="margin-bottom:6px;"><b>Prioridad:</b> ${cat.prioridad_nombre}${cat.prioridad_codigo?' ('+cat.prioridad_codigo+')':''}${(cat.resp_horas_min||cat.resp_horas_max)?` · resp. ${cat.resp_horas_min??'?'}–${cat.resp_horas_max??'?'}h`:''}</div>`:''}
+    <div style="margin-bottom:6px;"><b>Solicitado por:</b> ${solicitante||'—'}</div>
+    <div style="margin-bottom:6px;"><b>Asesor:</b> ${asesorNombre}</div>
+    <div style="margin-bottom:6px;"><b>Fecha:</b> ${fecha||'—'}${hora?' · '+hora:''}</div>
+    ${nota?`<div style="margin-bottom:0;"><b>Nota:</b> ${nota}</div>`:''}
+  `;
 }
 
 // Lee una captura (ej. la que manda Ventas/el cliente por Telegram pidiendo
@@ -11819,17 +11945,33 @@ async function opsExtraerSolicitudDesdeImagen(inputEl){
       return;
     }
     const d=data.datos||{};
-    if(d.cliente) document.getElementById('tkCliente').value=d.cliente;
-    if(d.solicitado_por) document.getElementById('tkSolicitante').value=d.solicitado_por;
+    // "Cliente" ahora depende del tipo: si es Soporte de póliza, el campo
+    // es solo informativo y se deriva de elegir la póliza en el buscador
+    // (tkContrato) -- así que la IA ayuda a buscar ahí, no lo escribe
+    // directo. Si es Evento/Curso, sí es editable y se llena directo.
+    if(d.cliente){
+      const contratoInput=document.getElementById('tkContrato');
+      if(contratoInput) contratoInput.value=d.cliente;
+      const clienteInput=document.getElementById('tkCliente');
+      if(clienteInput&&!clienteInput.readOnly) clienteInput.value=d.cliente;
+    }
+    if(d.solicitado_por){
+      const solEl=document.getElementById('tkSolicitante');
+      if(solEl&&solEl.tagName!=='SELECT') solEl.value=d.solicitado_por;
+      // Si ya es un <select> (póliza con personas_autorizadas), no se
+      // fuerza -- Jp revisa y elige de la lista o usa "Otro".
+    }
     if(d.descripcion) document.getElementById('tkDescripcion').value=d.descripcion;
+    if(d.nota) document.getElementById('tkNota').value=d.nota;
     if(d.tipo_sugerido&&['SOPORTE_POLIZA','EVENTO','CURSO_EMPRESARIAL'].includes(d.tipo_sugerido)&&document.getElementById('tkTipo')){
       document.getElementById('tkTipo').value=d.tipo_sugerido;
       toggleTipoTicket();
     }
     if(d.fecha_sugerida&&/^\d{4}-\d{2}-\d{2}$/.test(d.fecha_sugerida)&&document.getElementById('tkFecha')) document.getElementById('tkFecha').value=d.fecha_sugerida;
+    tkActualizarPreview();
     if(estado){
       estado.style.color='var(--text2)';
-      estado.textContent='✅ Datos cargados — revisa cada campo antes de guardar.';
+      estado.textContent='✅ Datos cargados — revisa cada campo (y elige la póliza correcta en el buscador si aplica) antes de guardar.';
     }
   }catch(e){
     if(estado){estado.textContent='Error al procesar la imagen: '+(e?.message||e);estado.style.color='#c0392b';}
@@ -11837,8 +11979,12 @@ async function opsExtraerSolicitudDesdeImagen(inputEl){
 }
 
 async function guardarNuevoTicket(){
+  const tipo=document.getElementById('tkTipo').value;
+  const contratoId=document.getElementById('tkContratoId')?.value||null;
+  if(tipo==='SOPORTE_POLIZA'&&!contratoId){alert('Selecciona una póliza válida de la lista (busca por POL# o cliente).');return;}
   const cliente=document.getElementById('tkCliente')?.value.trim();
   if(!cliente){alert('El cliente es obligatorio.');return;}
+  const solicitante=tkLeerSolicitante();
   const asesorSel=document.getElementById('tkAsesor');
   const asesorId=asesorSel?.value||null;
   const asesorNombre=asesorId?asesorSel.selectedOptions[0].dataset.nombre:null;
@@ -11846,14 +11992,16 @@ async function guardarNuevoTicket(){
   const folio=`TCK-${currentYear}-${String((count||0)+1).padStart(5,'0')}`;
   const payload={
     folio_ticket:folio,
-    cliente_poliza_id:document.getElementById('tkContrato')?.value||null,
-    tipo_servicio:document.getElementById('tkTipo').value,
+    cliente_poliza_id:contratoId,
+    tipo_servicio:tipo,
     cliente_nombre:cliente,
-    solicitado_por:document.getElementById('tkSolicitante')?.value||null,
+    solicitado_por:solicitante,
     descripcion_solicitud:document.getElementById('tkDescripcion')?.value||null,
+    nota:document.getElementById('tkNota')?.value||null,
     asesor_id:asesorId,
     asesor_nombre:asesorNombre,
     fecha_asignada:document.getElementById('tkFecha')?.value||null,
+    hora_asignada:document.getElementById('tkHora')?.value||null,
     estatus:asesorId?'ASIGNADO':'PENDIENTE'
   };
   const {error}=await sb.from('servicios_ejecutados').insert(payload);
@@ -11870,9 +12018,11 @@ async function abrirDetalleTicket(id){
     <div style="font-size:12px;color:var(--text3);margin-bottom:10px;">Folio: <b>${t.folio_ticket}</b> · Solicitado por: ${t.solicitado_por||'—'}</div>
     <div style="margin-bottom:10px;">${fld('Cliente',inp('tdCliente','text','',t.cliente_nombre))}</div>
     <div style="margin-bottom:10px;">${fld('Descripción de la solicitud',inp('tdDescripcion','text','',t.descripcion_solicitud||''))}</div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+    <div style="margin-bottom:10px;">${fld('Nota',inp('tdNota','text','',t.nota||''))}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Asesor',`<select id="tdAsesor" style="${INP}"><option value="">-- Sin asignar --</option>${asesores.map(a=>`<option value="${a.id}" data-nombre="${a.nombre}" ${a.id===t.asesor_id?'selected':''}>${a.nombre}</option>`).join('')}</select>`)}
       ${fld('Fecha asignada',inp('tdFecha','date','',t.fecha_asignada||''))}
+      ${fld('Hora asignada',inp('tdHora','time','',t.hora_asignada||''))}
     </div>
     <div style="margin-bottom:10px;">${fld('Estatus',`<select id="tdEstatus" style="${INP}">${['PENDIENTE','ASIGNADO','EN_CURSO','CONCLUIDO','NO_CONCLUIDO','CANCELADO_INASISTENCIA'].map(e=>`<option value="${e}" ${e===t.estatus?'selected':''}>${e}</option>`).join('')}</select>`)}</div>
     <div style="margin-bottom:10px;">${fld('Comentarios del asesor',inp('tdComentarios','text','',t.comentarios_asesor||''))}</div>
@@ -11950,8 +12100,10 @@ async function guardarDetalleTicket(){
   const payload={
     cliente_nombre:document.getElementById('tdCliente').value.trim(),
     descripcion_solicitud:document.getElementById('tdDescripcion')?.value||null,
+    nota:document.getElementById('tdNota')?.value||null,
     asesor_id:asesorId, asesor_nombre:asesorNombre,
     fecha_asignada:document.getElementById('tdFecha')?.value||null,
+    hora_asignada:document.getElementById('tdHora')?.value||null,
     estatus,
     comentarios_asesor:document.getElementById('tdComentarios')?.value||null,
     trabajo_realizado:document.getElementById('tdTrabajo')?.value||null,
@@ -14008,7 +14160,8 @@ function mkModal(id,titulo,contenido,onSave,saveLabel='Guardar',wide=false){
   const m=document.createElement('div');
   m.id=id;
   m.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow-y:auto;';
-  m.innerHTML=`<div style="background:#fff;border-radius:12px;padding:24px;width:${wide?'700px':'520px'};max-width:98vw;margin:auto;">
+  const modalWidth=wide===true?'700px':(typeof wide==='string'&&wide?wide:'520px');
+  m.innerHTML=`<div style="background:#fff;border-radius:12px;padding:24px;width:${modalWidth};max-width:98vw;margin:auto;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
       <div style="font-size:15px;font-weight:700;color:var(--navy);">${titulo}</div>
       <button onclick="document.getElementById('${id}').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);">✕</button>
