@@ -11775,7 +11775,7 @@ async function abrirNuevoTicket(){
   const asesores=window._opsAsesores||[];
   await opsCargarMapasMinutos();
   const {data:contratosRaw}=await sb.from('clientes_polizas')
-    .select('id,cliente_nombre,numero_proyecto_crm,horas_totales,horas_consumidas,personas_autorizadas,fecha_inicio,fecha_vencimiento,poliza_numero_legacy,estatus,contacto_telefono,contacto_correo,polizas_catalogo(nombre,prioridad_codigo,prioridad_nombre,resp_horas_min,resp_horas_max)')
+    .select('id,cliente_nombre,cliente_cartera_id,numero_proyecto_crm,horas_totales,horas_consumidas,personas_autorizadas,fecha_inicio,fecha_vencimiento,poliza_numero_legacy,estatus,contacto_telefono,contacto_correo,polizas_catalogo(nombre,prioridad_codigo,prioridad_nombre,resp_horas_min,resp_horas_max)')
     .eq('estatus','VIGENTE')
     .order('cliente_nombre');
   const contratos=(contratosRaw||[]).filter(c=>{
@@ -11820,10 +11820,10 @@ async function abrirNuevoTicket(){
     </div>
     </div>`;
   mkModal('modalNuevoTicket','Nueva solicitud de servicio',html,'guardarNuevoTicket','Guardar','920px');
-  toggleTipoTicket();
+  await toggleTipoTicket();
   tkActualizarPreview();
 }
-function toggleTipoTicket(){
+async function toggleTipoTicket(){
   const tipo=document.getElementById('tkTipo')?.value;
   const esPoliza=tipo==='SOPORTE_POLIZA';
   const w=document.getElementById('tkContratoWrap');
@@ -11835,14 +11835,14 @@ function toggleTipoTicket(){
     clienteInput.placeholder=esPoliza?'Se llena al elegir el contrato':'Nombre del cliente';
     if(!esPoliza&&clienteInput.dataset.autoPoliza){ clienteInput.value=''; delete clienteInput.dataset.autoPoliza; }
   }
-  tkRenderSolicitante(esPoliza?window._tkContratoActual:null);
+  await tkRenderSolicitante(esPoliza?window._tkContratoActual:null);
   tkActualizarPreview();
 }
 // Al elegir un contrato del datalist (texto exacto = llave en
 // window._tkContratos), resuelve el id real, llena Cliente (solo
-// informativo) y arma "Solicitado por" con las personas autorizadas de
-// ESA póliza.
-function autollenarClienteTicket(){
+// informativo) y arma "Solicitado por" con los contactos AUTORIZADOS
+// para ESA póliza (ver tkRenderSolicitante).
+async function autollenarClienteTicket(){
   const input=document.getElementById('tkContrato');
   const c=window._tkContratos?.[input?.value]||null;
   const hidden=document.getElementById('tkContratoId');
@@ -11853,26 +11853,52 @@ function autollenarClienteTicket(){
     clienteInput.value=c?c.cliente_nombre:'';
     clienteInput.dataset.autoPoliza=c?'1':'';
   }
-  tkRenderSolicitante(c);
+  await tkRenderSolicitante(c);
   tkActualizarPreview();
 }
-// Arma el campo "Solicitado por": <select> con las personas_autorizadas
-// de la póliza (si trae algo capturado) + "Otro", o texto libre si no hay
-// póliza elegida o el campo viene vacío.
-function tkRenderSolicitante(c){
+// Arma el campo "Solicitado por" (Jp, 2026-09-14, diseño final en 2
+// niveles): la lista general de contactos vive por CUENTA
+// (clientes_cartera_contactos, nombre+correo+teléfono), y cuáles de esos
+// contactos están autorizados a pedir servicio se decide POR PÓLIZA
+// (clientes_polizas_contactos_autorizados) -- así un mismo cliente puede
+// tener gente distinta autorizada en cada póliza, sin recapturar el
+// contacto cada vez. Se combina con los nombres sueltos de
+// personas_autorizadas (texto libre de lotes anteriores) que aún no
+// tengan un contacto estructurado con el mismo nombre, para no perder
+// datos ya capturados.
+async function tkRenderSolicitante(c){
   const wrap=document.getElementById('tkSolicitanteWrap');
   if(!wrap) return;
-  const nombres=(c?.personas_autorizadas||'').split(/[,;\n\/]+/).map(s=>s.trim()).filter(Boolean);
-  if(nombres.length){
-    wrap.innerHTML=fld('Solicitado por',`<select id="tkSolicitante" style="${INP}" onchange="tkToggleSolicitanteOtro();tkActualizarPreview();">
+  if(!c){
+    window._tkCuentaContactos=[]; window._tkAutorizados=new Set();
+    wrap.innerHTML=fld('Solicitado por',`<input id="tkSolicitante" type="text" placeholder="Ej. Dulce (ventas), o el cliente directo" style="${INP}" oninput="tkActualizarPreview()">`);
+    return;
+  }
+  const [{data:cuentaContactos},{data:autorizados}]=await Promise.all([
+    sb.from('clientes_cartera_contactos').select('*').eq('cliente_cartera_id',c.cliente_cartera_id).order('nombre'),
+    sb.from('clientes_polizas_contactos_autorizados').select('contacto_id').eq('cliente_poliza_id',c.id)
+  ]);
+  window._tkCuentaContactos=cuentaContactos||[];
+  window._tkAutorizados=new Set((autorizados||[]).map(a=>a.contacto_id));
+  const autorizadosList=window._tkCuentaContactos.filter(ct=>window._tkAutorizados.has(ct.id));
+  const nombresLegacy=(c.personas_autorizadas||'').split(/[,;\n\/]+/).map(s=>s.trim()).filter(Boolean)
+    .filter(n=>!window._tkCuentaContactos.some(ct=>(ct.nombre||'').trim().toLowerCase()===n.toLowerCase()));
+  const opciones=[
+    ...autorizadosList.map(ct=>({value:ct.nombre,label:ct.nombre+(ct.telefono?' · '+ct.telefono:''),correo:ct.correo||'',telefono:ct.telefono||''})),
+    ...nombresLegacy.map(n=>({value:n,label:n+' (sin datos de contacto)',correo:'',telefono:''}))
+  ];
+  wrap.innerHTML=`
+    ${fld('Solicitado por',opciones.length?`<select id="tkSolicitante" style="${INP}" onchange="tkToggleSolicitanteOtro();tkActualizarPreview();">
       <option value="">-- Selecciona --</option>
-      ${nombres.map(n=>`<option value="${n.replace(/"/g,'&quot;')}">${n}</option>`).join('')}
+      ${opciones.map(o=>`<option value="${o.value.replace(/"/g,'&quot;')}" data-correo="${o.correo}" data-telefono="${o.telefono}">${o.label}</option>`).join('')}
       <option value="__otro__">Otro (especificar)</option>
     </select>
-    <input id="tkSolicitanteOtro" type="text" placeholder="Nombre de quien solicita" style="${INP};margin-top:6px;display:none;" oninput="tkActualizarPreview()">`);
-  } else {
-    wrap.innerHTML=fld('Solicitado por',`<input id="tkSolicitante" type="text" placeholder="${c?'Esta póliza no tiene personas autorizadas capturadas — escribe quién solicita':'Ej. Dulce (ventas), o el cliente directo'}" style="${INP}" oninput="tkActualizarPreview()">`);
-  }
+    <input id="tkSolicitanteOtro" type="text" placeholder="Nombre de quien solicita" style="${INP};margin-top:6px;display:none;" oninput="tkActualizarPreview()">`
+    :`<input id="tkSolicitante" type="text" placeholder="Esta póliza no tiene contactos autorizados todavía — escribe quién solicita" style="${INP}" oninput="tkActualizarPreview()">`)}
+    <button type="button" onclick="tkToggleGestionContactos()" style="font-size:11px;color:var(--teal);background:none;border:none;cursor:pointer;padding:0;margin-top:6px;text-decoration:underline;">⚙ Gestionar contactos autorizados de esta cuenta</button>
+    <div id="tkGestionContactos" style="display:none;margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:6px;background:#f8fafb;"></div>
+  `;
+  tkActualizarPreview();
 }
 function tkToggleSolicitanteOtro(){
   const sel=document.getElementById('tkSolicitante');
@@ -11884,6 +11910,71 @@ function tkLeerSolicitante(){
   if(!el) return null;
   if(el.tagName==='SELECT'&&el.value==='__otro__') return document.getElementById('tkSolicitanteOtro')?.value?.trim()||null;
   return el.value?.trim()||null;
+}
+function tkToggleGestionContactos(){
+  const panel=document.getElementById('tkGestionContactos');
+  if(!panel) return;
+  const abrir=panel.style.display==='none';
+  panel.style.display=abrir?'block':'none';
+  if(abrir) tkRenderGestionContactos();
+}
+// Panel "⚙ Gestionar contactos": checklist de TODOS los contactos de la
+// cuenta (autorizar/quitar para esta póliza con un clic) + formulario
+// para dar de alta un contacto nuevo (nombre/correo/teléfono) que se
+// autoriza automáticamente para la póliza actual (Jp, 2026-09-14: "que
+// las puedan dar de alta... nombre, correo, teléfono").
+function tkRenderGestionContactos(){
+  const panel=document.getElementById('tkGestionContactos');
+  if(!panel) return;
+  const contactos=window._tkCuentaContactos||[];
+  const autorizados=window._tkAutorizados||new Set();
+  panel.innerHTML=`
+    <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:6px;">Contactos de esta cuenta</div>
+    ${contactos.length?contactos.map(ct=>`
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:6px;cursor:pointer;">
+        <input type="checkbox" ${autorizados.has(ct.id)?'checked':''} onchange="tkToggleAutorizarContacto('${ct.id}',this.checked)">
+        <span>${ct.nombre}${ct.correo?' · '+ct.correo:''}${ct.telefono?' · '+ct.telefono:''}</span>
+      </label>`).join(''):'<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Esta cuenta todavía no tiene contactos capturados.</div>'}
+    <div style="font-size:11px;font-weight:700;color:var(--text2);margin:10px 0 6px;">Agregar contacto nuevo</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:6px;">
+      <input id="tkNuevoContactoNombre" type="text" placeholder="Nombre" style="${INP}">
+      <input id="tkNuevoContactoCorreo" type="email" placeholder="Correo (opcional)" style="${INP}">
+      <input id="tkNuevoContactoTelefono" type="text" placeholder="Teléfono (opcional)" style="${INP}">
+    </div>
+    <button type="button" onclick="tkAgregarContacto()" style="font-size:11px;font-weight:600;color:#fff;background:var(--teal);border:none;border-radius:6px;padding:6px 12px;cursor:pointer;">+ Agregar y autorizar para esta póliza</button>
+  `;
+}
+async function tkToggleAutorizarContacto(contactoId,autorizar){
+  const c=window._tkContratoActual;
+  if(!c) return;
+  if(autorizar){
+    await sb.from('clientes_polizas_contactos_autorizados').upsert({cliente_poliza_id:c.id,contacto_id:contactoId},{onConflict:'cliente_poliza_id,contacto_id'});
+  } else {
+    await sb.from('clientes_polizas_contactos_autorizados').delete().eq('cliente_poliza_id',c.id).eq('contacto_id',contactoId);
+  }
+  await tkRenderSolicitante(c);
+  const panel=document.getElementById('tkGestionContactos');
+  if(panel) panel.style.display='block';
+  tkRenderGestionContactos();
+}
+async function tkAgregarContacto(){
+  const c=window._tkContratoActual;
+  if(!c){alert('Selecciona primero una póliza.');return;}
+  const nombre=document.getElementById('tkNuevoContactoNombre')?.value.trim();
+  if(!nombre){alert('El nombre es obligatorio.');return;}
+  const correo=document.getElementById('tkNuevoContactoCorreo')?.value.trim()||null;
+  const telefono=document.getElementById('tkNuevoContactoTelefono')?.value.trim()||null;
+  const {data:nuevo,error}=await sb.from('clientes_cartera_contactos').insert({cliente_cartera_id:c.cliente_cartera_id,nombre,correo,telefono}).select('id').single();
+  if(error){alert('Error al agregar el contacto: '+error.message);return;}
+  const {error:errAut}=await sb.from('clientes_polizas_contactos_autorizados').insert({cliente_poliza_id:c.id,contacto_id:nuevo.id});
+  if(errAut){alert('El contacto se creó pero no se pudo autorizar para esta póliza: '+errAut.message);}
+  await tkRenderSolicitante(c);
+  const panel=document.getElementById('tkGestionContactos');
+  if(panel) panel.style.display='block';
+  tkRenderGestionContactos();
+  const sel=document.getElementById('tkSolicitante');
+  if(sel&&sel.tagName==='SELECT') sel.value=nombre;
+  tkActualizarPreview();
 }
 function tkActualizarPreview(){
   const cont=document.getElementById('tkPreview');
@@ -11897,6 +11988,13 @@ function tkActualizarPreview(){
   const fecha=document.getElementById('tkFecha')?.value;
   const hora=document.getElementById('tkHora')?.value;
   const solicitante=tkLeerSolicitante();
+  const solEl=document.getElementById('tkSolicitante');
+  let contactoInfo='';
+  if(solEl&&solEl.tagName==='SELECT'&&solEl.value&&solEl.value!=='__otro__'){
+    const opt=solEl.selectedOptions[0];
+    const partes=[opt?.dataset.correo,opt?.dataset.telefono].filter(Boolean);
+    if(partes.length) contactoInfo=` (${partes.join(' · ')})`;
+  }
   const nota=document.getElementById('tkNota')?.value;
   const cat=c?.polizas_catalogo;
   cont.innerHTML=`
@@ -11905,7 +12003,7 @@ function tkActualizarPreview(){
     <div style="margin-bottom:6px;"><b>Tipo:</b> ${tipoLabel[tipo]||'—'}</div>
     ${cat?.nombre?`<div style="margin-bottom:6px;"><b>Póliza:</b> ${cat.nombre}</div>`:''}
     ${cat?.prioridad_nombre?`<div style="margin-bottom:6px;"><b>Prioridad:</b> ${cat.prioridad_nombre}${cat.prioridad_codigo?' ('+cat.prioridad_codigo+')':''}${(cat.resp_horas_min||cat.resp_horas_max)?` · resp. ${cat.resp_horas_min??'?'}–${cat.resp_horas_max??'?'}h`:''}</div>`:''}
-    <div style="margin-bottom:6px;"><b>Solicitado por:</b> ${solicitante||'—'}</div>
+    <div style="margin-bottom:6px;"><b>Solicitado por:</b> ${solicitante||'—'}${contactoInfo}</div>
     <div style="margin-bottom:6px;"><b>Asesor:</b> ${asesorNombre}</div>
     <div style="margin-bottom:6px;"><b>Fecha:</b> ${fecha||'—'}${hora?' · '+hora:''}</div>
     ${nota?`<div style="margin-bottom:0;"><b>Nota:</b> ${nota}</div>`:''}
@@ -11965,7 +12063,7 @@ async function opsExtraerSolicitudDesdeImagen(inputEl){
     if(d.nota) document.getElementById('tkNota').value=d.nota;
     if(d.tipo_sugerido&&['SOPORTE_POLIZA','EVENTO','CURSO_EMPRESARIAL'].includes(d.tipo_sugerido)&&document.getElementById('tkTipo')){
       document.getElementById('tkTipo').value=d.tipo_sugerido;
-      toggleTipoTicket();
+      await toggleTipoTicket();
     }
     if(d.fecha_sugerida&&/^\d{4}-\d{2}-\d{2}$/.test(d.fecha_sugerida)&&document.getElementById('tkFecha')) document.getElementById('tkFecha').value=d.fecha_sugerida;
     tkActualizarPreview();
