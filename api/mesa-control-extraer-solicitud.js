@@ -51,8 +51,9 @@ export default async function handler(req, res) {
 Extrae ÚNICAMENTE los datos que puedas leer con certeza en la imagen y responde EXCLUSIVAMENTE con un objeto JSON (sin texto alrededor, sin markdown, sin explicación) con estas claves:
 {
   "cliente": string o null,          // nombre de la empresa/cliente para quien es el servicio (busca después de "CLIENTE:" o similar)
-  "solicitado_por": string o null,   // quién manda la solicitud (vendedor, asesor, o el nombre de contacto si el cliente pide directo)
-  "descripcion": string o null,      // qué necesita el cliente, tal cual está escrito (resume si es muy largo, pero sin inventar)
+  "solicitado_por": string o null,   // quién MANDA el mensaje/la solicitud (ej. el vendedor o asesor que escribe, no el contacto del cliente)
+  "descripcion": string o null,      // la solicitud en sí, qué necesita el cliente (busca después de "SOLICITUD:" o similar), tal cual está escrito
+  "nota": string o null,             // información APARTE de la solicitud misma: contacto del cliente y teléfono si aparecen (ej. "Contacto: Marisol Meraz, tel 5537105935"), comentarios del cliente, preferencia de día/hora para el servicio, tipo de póliza mencionado explícitamente, o cualquier otro dato adicional que no sea la solicitud en sí — concatena todo lo que aplique en un solo texto breve
   "tipo_sugerido": "SOPORTE_POLIZA" o "EVENTO" o "CURSO_EMPRESARIAL" o null,  // SOPORTE_POLIZA si es un problema/duda de soporte técnico cotidiano, EVENTO si es un servicio puntual fuera de póliza, CURSO_EMPRESARIAL si piden capacitación — null si no es claro
   "fecha_sugerida": string o null    // fecha en formato YYYY-MM-DD si la solicitud menciona una fecha específica para el servicio, si no null
 }
