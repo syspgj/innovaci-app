@@ -1464,9 +1464,17 @@ let academiaAccesosFiltro={q:'',sistema:'',estado:''};
 // Ordenamiento de columnas (Jp, 2026-09-03: "todo cuando son columnas, debo
 // poder ordenarlas" — estándar para esta tabla y las que se agreguen después).
 let academiaAccesosSort={col:'numero',dir:'asc'};
-function academiaEmpresaEstado(asigVigente){
+// BUG CORREGIDO (Jp, 2026-09-17): "siempre_activo" (uso interno permanente)
+// solo se revisaba cuando YA había una asignación vigente ligada — si Jp
+// marcaba una empresa como uso interno pero no tenía (o ya no tenía) una
+// asignación vigente, el estado se calculaba como "disponible" y la app la
+// seguía ofreciendo para asignar. Ahora se revisa `empresa.siempre_activo`
+// de forma independiente, así que basta con marcar la casilla en "Editar"
+// para que deje de ofrecerse, tenga o no una asignación vigente.
+function academiaEmpresaEstado(asigVigente,empresa){
+  if((empresa||asigVigente?.empresa)?.siempre_activo) return 'permanente';
   if(!asigVigente) return 'disponible';
-  if(asigVigente.empresa?.siempre_activo || (!asigVigente.fecha_fin && asigVigente.status_original==='SIEMPRE ACTIVO')) return 'permanente';
+  if(!asigVigente.fecha_fin && asigVigente.status_original==='SIEMPRE ACTIVO') return 'permanente';
   return 'ocupada';
 }
 // Empresas libres de un sistema, ordenadas por número (Jp, 2026-09-03: "la app
@@ -1486,7 +1494,7 @@ async function academiaEmpresasDisponiblesSistema(sistemaId){
     const cubre=(!a.fecha_inicio||a.fecha_inicio<=hoy)&&(!a.fecha_fin||a.fecha_fin>=hoy);
     if(cubre) vigentePorEmpresa[a.empresa_id]=a;
   });
-  return empresas.filter(e=>academiaEmpresaEstado(vigentePorEmpresa[e.id]?{...vigentePorEmpresa[e.id],empresa:e}:null)==='disponible');
+  return empresas.filter(e=>academiaEmpresaEstado(vigentePorEmpresa[e.id]?{...vigentePorEmpresa[e.id],empresa:e}:null,e)==='disponible');
 }
 async function renderAcademiaAccesos(){
   const mc=document.getElementById('mainContent');
@@ -1540,7 +1548,7 @@ async function renderAcademiaAccesos(){
     const clave=e.sistema?.clave||'—';
     if(!porSistema[clave]) porSistema[clave]={clave,nombre:e.sistema?.nombre||'',servidor:e.servidor,ddns:e.sistema?.ddns||'',sistemaId:e.sistema_id,disponible:0,ocupada:0,permanente:0,total:0};
     const asig=vigentePorEmpresa[e.id];
-    porSistema[clave][academiaEmpresaEstado(asig?{...asig,empresa:e}:null)]++;
+    porSistema[clave][academiaEmpresaEstado(asig?{...asig,empresa:e}:null,e)]++;
     porSistema[clave].total++;
   });
   const fichasSistema=Object.values(porSistema).sort((a,b)=>a.clave.localeCompare(b.clave));
@@ -1601,7 +1609,7 @@ function academiaPintarAccesos(){
   let filas=(empresas||[]).filter(e=>{
     if(academiaAccesosFiltro.sistema && e.sistema?.clave!==academiaAccesosFiltro.sistema) return false;
     const asig=vigentePorEmpresa[e.id];
-    const estado=academiaEmpresaEstado(asig?{...asig,empresa:e}:null);
+    const estado=academiaEmpresaEstado(asig?{...asig,empresa:e}:null,e);
     if(academiaAccesosFiltro.estado && estado!==academiaAccesosFiltro.estado) return false;
     if(!q) return true;
     const hay=`${e.numero} ${e.usuario_empresa||''} ${asig?.participante_nombre||''} ${asig?.curso_taller||''}`.toLowerCase();
@@ -1614,7 +1622,7 @@ function academiaPintarAccesos(){
     const asig=vigentePorEmpresa[e.id];
     if(col==='sistema') return e.sistema?.clave||'';
     if(col==='numero') return e.numero||0;
-    if(col==='estado') return academiaEmpresaEstado(asig?{...asig,empresa:e}:null);
+    if(col==='estado') return academiaEmpresaEstado(asig?{...asig,empresa:e}:null,e);
     if(col==='ocupante') return asig?.participante_nombre||'';
     if(col==='curso') return asig?.curso_taller||'';
     if(col==='desde') return asig?.fecha_inicio||'';
@@ -1629,7 +1637,7 @@ function academiaPintarAccesos(){
   const conteos={disponible:0,ocupada:0,permanente:0};
   (empresas||[]).forEach(e=>{
     const asig=vigentePorEmpresa[e.id];
-    conteos[academiaEmpresaEstado(asig?{...asig,empresa:e}:null)]++;
+    conteos[academiaEmpresaEstado(asig?{...asig,empresa:e}:null,e)]++;
   });
 
   const focoActivo=document.activeElement?.id==='academiaAccBuscar';
@@ -1655,7 +1663,7 @@ function academiaPintarAccesos(){
       <tbody>
         ${filas.map(e=>{
           const asig=vigentePorEmpresa[e.id];
-          const estado=academiaEmpresaEstado(asig?{...asig,empresa:e}:null);
+          const estado=academiaEmpresaEstado(asig?{...asig,empresa:e}:null,e);
           const b=badge[estado];
           const ac=academiaAccent(e.sistema?.clave);
           return `<tr style="border-top:1px solid var(--border);cursor:pointer;" onclick="academiaVerEmpresaAcceso('${e.id}')">
@@ -1857,7 +1865,7 @@ async function academiaGuardarAsignarEmpresa(empresaId,seguirConSiguiente){
   if(seguirConSiguiente){
     const {empresas:empresasFrescas,vigentePorEmpresa}=window._academiaCache.accesos||{empresas:[],vigentePorEmpresa:{}};
     const mismoSistema=(empresasFrescas||[]).filter(x=>x.sistema_id===e?.sistema_id && x.id!==empresaId);
-    const disponibles=mismoSistema.filter(x=>academiaEmpresaEstado(vigentePorEmpresa[x.id]?{...vigentePorEmpresa[x.id],empresa:x}:null)==='disponible').sort((a,b)=>a.numero-b.numero);
+    const disponibles=mismoSistema.filter(x=>academiaEmpresaEstado(vigentePorEmpresa[x.id]?{...vigentePorEmpresa[x.id],empresa:x}:null,x)==='disponible').sort((a,b)=>a.numero-b.numero);
     const siguiente=disponibles.find(x=>x.numero>(e?.numero||0))||disponibles[0];
     if(siguiente) academiaAbrirAsignarEmpresa(siguiente.id);
     else alert('Ya no quedan empresas disponibles en este sistema.');
@@ -2591,19 +2599,28 @@ function academiaDatosAccesoLabBlock(insc,asigVinculada){
 }
 // Mensaje de "Enviar por WhatsApp" de Datos de acceso al laboratorio virtual
 // (texto exacto pedido por Jp, 2026-09-09 — sin emoji, con *negritas* estilo
-// WhatsApp) — solo acceso RDP (servidor/DDNS + usuario + contraseña); los
-// datos de Aspel NO van en este mensaje.
+// WhatsApp) — acceso RDP (servidor/DDNS + usuario + contraseña) y, cuando
+// existan, los datos de Aspel (empresa/usuario/contraseña) — Jp, 2026-09-17:
+// "el mensaje los tiene que incluir" (había un pedido anterior de quitarlos,
+// pero deben ir siempre que la inscripción/asignación los tenga capturados).
 function academiaPlantillaAccesoLab(insc,asigVinculada){
   const servidor=asigVinculada?(asigVinculada.servidor||asigVinculada.empresa?.servidor):insc.servidor;
   const ddns=(asigVinculada?asigVinculada.empresa?.sistema?.ddns:insc.generacion?.curso?.sistema?.ddns)||'';
   const servidorTexto=ddns||servidor||'—'; // el DDNS ya incluye el puerto (ej. cursosinnovaci.dynns.com:3131) — se muestra solo, sin repetir el número aparte
   const usuarioRdp=asigVinculada?asigVinculada.usuario_rdp:insc.usuario_rdp;
   const contrasenaRdp=asigVinculada?asigVinculada.contrasena_rdp:insc.contrasena_rdp;
+  const empresaAspel=asigVinculada?asigVinculada.empresa?.numero:insc.empresa_aspel;
+  const usuarioAspel=asigVinculada?asigVinculada.empresa?.usuario_empresa:insc.usuario_aspel;
+  const contrasenaAspel=asigVinculada?asigVinculada.empresa?.contrasena_empresa:insc.contrasena_aspel;
+  const hayAspel=(empresaAspel!=null&&empresaAspel!=='')||usuarioAspel||contrasenaAspel;
   return `Hola *${insc.participante?.nombre||''}*\n`+
     `Te compartimos tus accesos al *Laboratorio Virtual* correspondientes al programa *${insc.generacion?.curso?.nombre||''} (${insc.generacion?.clave||''})*.\n`+
     `Usuario: *${usuarioRdp||'—'}*\n`+
     `Contraseña: *${contrasenaRdp||'—'}*\n`+
     `Servidor: *${servidorTexto}*\n`+
+    (hayAspel?(`Empresa Aspel: *${empresaAspel??'—'}*\n`+
+    `Usuario Aspel: *${usuarioAspel||'—'}*\n`+
+    `Contraseña Aspel: *${contrasenaAspel||'—'}*\n`):'')+
     `Te recomendamos validar tu acceso con anticipación para confirmar que puedes ingresar correctamente.\n`+
     `*IMPORTANTE*: Si tienes dudas sobre cómo ingresar al Laboratorio Virtual, puedes consultar el manual de acceso que a continuación te hacemos llegar. Te recomendamos revisarlo antes de solicitar soporte.\n`+
     `Si después de consultar el manual presentas algún inconveniente, escríbenos y con gusto te apoyamos.\n`+
@@ -2636,12 +2653,26 @@ async function academiaAbrirEditarParticipante(participanteId,inscripcionId){
   if(!participanteId){alert('No se encontró el participante.');return;}
   const {data:p,error}=await sb.from('academia_participantes').select('*').eq('id',participanteId).single();
   if(error||!p){alert('No se pudo cargar el participante: '+(error?.message||''));return;}
+  // Nivel de acceso (Jp, 2026-09-17): es de la INSCRIPCIÓN, no del
+  // participante — solo tiene sentido editarlo aquí cuando el modal se abrió
+  // desde la ficha de una inscripción específica (no desde el expediente del
+  // Asistente, que agrupa varias). Corrige casos donde a alguien se le dio de
+  // alta como Esencial por error y en realidad es Plus/Premium (o viceversa).
+  let inscActual=null;
+  if(inscripcionId){
+    const {data:insc}=await sb.from('academia_inscripciones').select('nivel_acceso').eq('id',inscripcionId).single();
+    inscActual=insc;
+  }
   const html=`
     <div style="margin-bottom:10px;">${fld('Nombre completo',inp('epNombre','text','',p.nombre||''))}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
       ${fld('Correo',inp('epMail','email','',p.mail||''))}
       ${fld('Teléfono',inp('epTelefono','text','',p.telefono||''))}
-    </div>`;
+    </div>
+    ${inscripcionId?`
+    <div style="margin-top:10px;">${fld('Nivel de acceso (de esta inscripción)',`<select id="epNivelAcceso" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;"><option value="esencial" ${inscActual?.nivel_acceso==='esencial'?'selected':''}>esencial</option><option value="plus" ${inscActual?.nivel_acceso==='plus'?'selected':''}>plus</option><option value="premium" ${inscActual?.nivel_acceso==='premium'?'selected':''}>premium</option></select>`)}</div>
+    <div style="font-size:10px;color:var(--text3);margin-top:4px;">Si lo cambias de Esencial a Plus/Premium podrás asignarle empresa desde la ficha. Si lo cambias de Plus/Premium a Esencial y ya tenía empresa asignada, libérala aparte desde Accesos — este cambio no la quita solo.</div>
+    `:''}`;
   mkModal('modalEditarParticipante','Editar datos del participante',html,`academiaGuardarEditarParticipante('${participanteId}','${inscripcionId}')`);
 }
 async function academiaGuardarEditarParticipante(participanteId,inscripcionId){
@@ -2653,6 +2684,11 @@ async function academiaGuardarEditarParticipante(participanteId,inscripcionId){
     telefono:document.getElementById('epTelefono')?.value?.trim()||null,
   }).eq('id',participanteId);
   if(error){alert('Error al guardar: '+error.message);return;}
+  const nivelAccesoSel=document.getElementById('epNivelAcceso')?.value;
+  if(inscripcionId&&nivelAccesoSel){
+    const {error:errNivel}=await sb.from('academia_inscripciones').update({nivel_acceso:nivelAccesoSel}).eq('id',inscripcionId);
+    if(errNivel){alert('Los datos del participante se guardaron, pero no se pudo actualizar el nivel de acceso: '+errNivel.message);}
+  }
   document.getElementById('modalEditarParticipante')?.remove();
   // Jp, 2026-09-08: el mismo modal se abre desde la ficha de UNA inscripción
   // (refresca esa ficha) o desde el expediente del Asistente, que agrupa
