@@ -1225,6 +1225,10 @@ async function academiaAbrirNuevaGeneracion(){
   window._academiaCache.cursos=cursos||[];
   const cursoOpts=(cursos||[]).map(c=>`<option value="${c.id}" data-nombre="${(c.nombre||'').replace(/"/g,'&quot;')}" data-tipo="${c.tipo||''}" data-modalidad="${c.modalidad||''}" data-horas="${c.duracion_horas??''}">${c.nombre}</option>`).join('');
   const html=`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Clave de generación',inp('genClave','text','Ej. GMAY26'))}
+      ${fld('Sesiones totales',inp('genSesiones','number','','12'))}
+    </div>
     <div style="margin-bottom:10px;">${fld('Curso',`<select id="genCursoSel" onchange="academiaOnCambioCursoSel(this)" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;"><option value="">Selecciona un curso...</option>${cursoOpts}<option value="__nuevo__">+ Nuevo curso...</option></select>`)}</div>
     <div id="genCursoNuevoBox" style="display:none;background:rgba(0,169,157,0.06);border:1px dashed var(--teal);border-radius:8px;padding:12px;margin-bottom:10px;">
       <div id="genCursoBoxTitulo" style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DEL NUEVO CURSO</div>
@@ -1235,11 +1239,8 @@ async function academiaAbrirNuevaGeneracion(){
         ${fld('Modalidad',sel('genNuevoCursoModalidad',['en_vivo','24_7','in_company']))}
       </div>
       <div style="margin-bottom:8px;">${fld('Duración (horas)',inp('genNuevoCursoHoras','number','',''))}</div>
-      <div style="font-size:11px;color:var(--text3);">Tipo + Modalidad determinan la categoría del filtro "Tipo de curso" en Generaciones.</div>
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      ${fld('Clave de generación',inp('genClave','text','Ej. GMAY26'))}
-      ${fld('Sesiones totales',inp('genSesiones','number','','12'))}
+      <div id="genCursoCopiaNota" style="display:none;font-size:11px;color:var(--text3);">Esto va a crear un curso nuevo con estos datos como punto de partida — el curso original que elegiste arriba no se modifica ni se comparte con esta generación.</div>
+      <div id="genCursoNuevaNota" style="font-size:11px;color:var(--text3);">Tipo + Modalidad determinan la categoría del filtro "Tipo de curso" en Generaciones.</div>
     </div>
     <div style="margin-bottom:10px;">${fld('Cliente (solo cursos empresariales — nombre de la empresa)',inp('genCliente','text','Ej. Transportes Evomex'))}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
@@ -1254,19 +1255,25 @@ async function academiaAbrirNuevaGeneracion(){
   mkModal('modalNuevaGen','Nueva generación',html,'academiaGuardarNuevaGeneracion');
 }
 
-// Al elegir un curso ya existente, muestra el mismo bloque de datos del curso
-// (nombre, tipo, modalidad, horas) precargado, para poder corregirlo ahí mismo
-// sin tener que ir después a "Editar generación" — y al elegir "+ Nuevo curso"
-// lo muestra vacío para capturarlo desde cero.
+// Al elegir un curso ya existente, precarga el mismo bloque de datos del
+// curso (nombre, tipo, modalidad, horas) como PUNTO DE PARTIDA — pero (Jp,
+// 2026-09-17, tras el cruce de generaciones NOI/COI) ya NO se reusa ese
+// curso_id: academiaGuardarNuevaGeneracion siempre crea un curso NUEVO con
+// estos datos, así que dos generaciones nunca vuelven a compartir curso_id.
+// Al elegir "+ Nuevo curso" se muestra vacío para capturarlo desde cero.
 function academiaOnCambioCursoSel(selEl){
   const box=document.getElementById('genCursoNuevoBox');
   const sistemaWrap=document.getElementById('genCursoSistemaWrap');
   const titulo=document.getElementById('genCursoBoxTitulo');
+  const notaCopia=document.getElementById('genCursoCopiaNota');
+  const notaNueva=document.getElementById('genCursoNuevaNota');
   if(!selEl.value){ box.style.display='none'; return; }
   box.style.display='block';
   if(selEl.value==='__nuevo__'){
     sistemaWrap.style.display='block';
     titulo.textContent='DATOS DEL NUEVO CURSO';
+    notaCopia.style.display='none';
+    notaNueva.style.display='block';
     document.getElementById('genNuevoCursoNombre').value='';
     document.getElementById('genNuevoCursoTipo').value='diplomado_vip';
     document.getElementById('genNuevoCursoModalidad').value='en_vivo';
@@ -1274,7 +1281,9 @@ function academiaOnCambioCursoSel(selEl){
   } else {
     const opt=selEl.selectedOptions[0];
     sistemaWrap.style.display='none';
-    titulo.textContent='DATOS DEL CURSO (ajusta tipo/modalidad si hace falta)';
+    titulo.textContent='DATOS DEL CURSO (se copiarán a un curso nuevo — ajusta lo que haga falta)';
+    notaCopia.style.display='block';
+    notaNueva.style.display='none';
     document.getElementById('genNuevoCursoNombre').value=opt.dataset.nombre||'';
     document.getElementById('genNuevoCursoTipo').value=opt.dataset.tipo||'diplomado_vip';
     document.getElementById('genNuevoCursoModalidad').value=opt.dataset.modalidad||'en_vivo';
@@ -1305,15 +1314,27 @@ async function academiaGuardarNuevaGeneracion(){
     if(errCurso){alert('Error al crear el curso: '+errCurso.message);return;}
     cursoId=nuevoCurso.id;
   } else {
-    // Curso existente: guarda también cualquier ajuste de nombre/tipo/modalidad/horas
-    // hecho en el bloque "DATOS DEL CURSO" de este mismo modal.
-    const {error:errUpd}=await sb.from('academia_cursos').update({
+    // Curso existente elegido como PLANTILLA (Jp, 2026-09-17 — corrección del
+    // bug de cruce entre generaciones NOI/COI): ya NO se actualiza ese curso
+    // ni se reusa su curso_id. Se crea un curso NUEVO copiando sus datos (más
+    // los ajustes que se hayan hecho en el bloque "DATOS DEL CURSO"), y ese
+    // curso nuevo es el que queda ligado a esta generación — así dos
+    // generaciones nunca vuelven a compartir curso_id, sin perder la
+    // comodidad de partir de una plantilla existente (ej. cursos empresariales).
+    const cursoOriginal=(window._academiaCache.cursos||[]).find(c=>c.id===cursoSel);
+    if(!cursoOriginal){alert('No se encontró el curso original para copiarlo.');return;}
+    const {data:nuevoCurso,error:errClon}=await sb.from('academia_cursos').insert({
+      sistema_id:cursoOriginal.sistema_id,
       nombre:document.getElementById('genNuevoCursoNombre')?.value?.trim(),
       tipo:document.getElementById('genNuevoCursoTipo')?.value,
       modalidad:document.getElementById('genNuevoCursoModalidad')?.value,
       duracion_horas:parseFloat(document.getElementById('genNuevoCursoHoras')?.value)||null,
-    }).eq('id',cursoSel);
-    if(errUpd){alert('Error al actualizar el curso: '+errUpd.message);return;}
+      descripcion:cursoOriginal.descripcion||null,
+      competencias:cursoOriginal.competencias||null,
+      practicas_totales:cursoOriginal.practicas_totales||null,
+    }).select().single();
+    if(errClon){alert('Error al copiar el curso: '+errClon.message);return;}
+    cursoId=nuevoCurso.id;
   }
 
   const {error}=await sb.from('academia_generaciones').insert({
@@ -1797,8 +1818,22 @@ async function academiaAbrirAsignarEmpresa(empresaId){
   const e=(empresas||[]).find(x=>x.id===empresaId);
   if(!e) return;
   if(!window._academiaCache.generacionesParaAcceso){
-    const {data}=await sb.from('academia_generaciones').select('id,clave,curso:curso_id(nombre)').order('clave',{ascending:false}).limit(300);
-    window._academiaCache.generacionesParaAcceso=data||[];
+    // Jp, 2026-09-17: en el selector de "Asignar empresa" solo deben aparecer
+    // generaciones ACTIVAS — ya no las cerradas/históricas (mismo criterio de
+    // "archivada" que usa el Dashboard: marcada manual como archivada, o ya
+    // se le envió constancia/quedó con estatus final a TODOS sus inscritos).
+    const [{data:gens},{data:inscsArch}]=await Promise.all([
+      sb.from('academia_generaciones').select('id,clave,archivado_manual,curso:curso_id(nombre)').order('clave',{ascending:false}).limit(300),
+      sb.from('academia_inscripciones').select('generacion_id,estatus_final,constancias:academia_constancias(enviada)'),
+    ]);
+    const inscsPorGen={};
+    (inscsArch||[]).forEach(i=>{ (inscsPorGen[i.generacion_id]=inscsPorGen[i.generacion_id]||[]).push(i); });
+    window._academiaCache.generacionesParaAcceso=(gens||[]).filter(g=>{
+      if(g.archivado_manual) return false;
+      const suyas=inscsPorGen[g.id]||[];
+      if(!suyas.length) return true; // sin inscripciones aún: se considera activa
+      return !suyas.every(i=>(i.constancias||[]).some(c=>c.enviada)||!!i.estatus_final);
+    });
   }
   if(!window._academiaCache.inscripcionesParaAcceso){
     const {data}=await sb.from('academia_inscripciones').select('id,generacion_id,nivel_acceso,participante:participante_id(nombre)').order('created_at',{ascending:false}).limit(2000);
