@@ -845,10 +845,13 @@ async function renderAcademiaDashboard(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando resumen...</div>';
 
-  const [{data:generaciones,error:errG},{data:inscripciones,error:errI},{data:empresasAcc,error:errA}]=await Promise.all([
+  const [{data:generaciones,error:errG},{data:inscripciones,error:errI},{data:empresasAcc,error:errA},{data:notifsAcceso},{data:recordatorios},{data:sesionesGen}]=await Promise.all([
     sb.from('academia_generaciones').select('*,curso:curso_id(id,nombre,tipo,modalidad,ventana_practicas_dias,practicas_extension_dias,sistema:sistema_id(clave,nombre))').order('clave'),
-    sb.from('academia_inscripciones').select('id,generacion_id,practicas_extension,fecha_fin_laboratorio,estatus_final,participante:participante_id(nombre),constancias:academia_constancias(enviada)'),
+    sb.from('academia_inscripciones').select('id,generacion_id,nivel_acceso,practicas_extension,fecha_fin_laboratorio,estatus_final,participante:participante_id(nombre),constancias:academia_constancias(enviada)'),
     sb.from('academia_empresas_acceso').select('numero,sistema:sistema_id(clave),asignaciones:academia_empresas_asignaciones(participante_nombre,curso_taller,fecha_inicio,fecha_fin,created_at)'),
+    sb.from('academia_notificaciones_envios').select('inscripcion_id,tipo').eq('tipo','acceso_lab'),
+    sb.from('academia_generacion_recordatorios').select('generacion_id,enviado_en').order('enviado_en',{ascending:false}),
+    sb.from('academia_generacion_sesiones').select('generacion_id,numero_sesion,fecha').not('fecha','is',null),
   ]);
   if(errG||errI){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error cargando el resumen: ${(errG||errI).message}</div>`;return;}
   window._academiaCache.generaciones=generaciones||[];
@@ -953,10 +956,69 @@ async function renderAcademiaDashboard(){
     </tr>`;
   }
 
+  // ── Actividad operativa pendiente (Jp, 2026-09-17) ──
+  // Por generación activa (empresarial o 24/7): accesos sin notificar,
+  // constancias pendientes de gente que ya venció su ventana de prácticas.
+  // Solo para empresarial/en_vivo (igual que el botón de Recordatorios en la
+  // ficha de generación): último recordatorio enviado al grupo y alerta de
+  // "sesión próxima sin recordatorio" cuando hay fechas de sesión capturadas.
+  const accesosNotificadosSet=new Set((notifsAcceso||[]).map(n=>n.inscripcion_id));
+  const recordatorioUltimoPorGen={};
+  (recordatorios||[]).forEach(r=>{ if(!recordatorioUltimoPorGen[r.generacion_id]) recordatorioUltimoPorGen[r.generacion_id]=r.enviado_en; });
+  const sesionesPorGen={};
+  (sesionesGen||[]).forEach(s=>{ (sesionesPorGen[s.generacion_id]=sesionesPorGen[s.generacion_id]||[]).push(s); });
+
+  const activasTodas=[...empresarialesActivos,...veinticuatro7Activos];
+  const actividadFilas=activasTodas.map(g=>{
+    const suyas=filas.filter(f=>f.gen.id===g.id);
+    const accesosPend=suyas.filter(f=>f.insc.nivel_acceso && !accesosNotificadosSet.has(f.insc.id)).length;
+    const constanciasPend=suyas.filter(f=>f.vig?.estado==='vencido').length;
+    const esRecordatorioAplica=g.curso?.modalidad!=='24_7';
+    let recordatorioInfo=null;
+    if(esRecordatorioAplica){
+      const ultimo=recordatorioUltimoPorGen[g.id]||null;
+      const sesiones=(sesionesPorGen[g.id]||[]).slice().sort((a,b)=>a.fecha.localeCompare(b.fecha));
+      const hoyStr=new Date().toISOString().split('T')[0];
+      const proxima=sesiones.find(s=>s.fecha>=hoyStr);
+      let alerta=false,motivo='';
+      if(proxima){
+        const diasParaSesion=Math.round((new Date(proxima.fecha+'T00:00:00')-new Date(new Date().toDateString()))/86400000);
+        const recordatorioCubreSesion=ultimo && new Date(ultimo)>=new Date(new Date(proxima.fecha+'T00:00:00').getTime()-5*86400000);
+        if(diasParaSesion<=3 && !recordatorioCubreSesion){ alerta=true; motivo=`Sesión ${proxima.numero_sesion} el ${proxima.fecha} sin recordatorio`; }
+      } else if(!ultimo){
+        alerta=true; motivo='Sin recordatorios registrados';
+      } else {
+        const diasDesde=Math.round((new Date()-new Date(ultimo))/86400000);
+        if(diasDesde>14){ alerta=true; motivo=`Último recordatorio hace ${diasDesde} días`; }
+      }
+      recordatorioInfo={ultimo,alerta,motivo};
+    }
+    return {g,accesosPend,constanciasPend,recordatorioInfo};
+  }).filter(x=>x.accesosPend>0||x.constanciasPend>0||x.recordatorioInfo?.alerta);
+
+  function filaActividad(x){
+    const ac=academiaAccent(x.g.curso?.sistema?.clave);
+    return `<tr style="border-top:1px solid var(--border);cursor:pointer;" onclick="academiaVerGeneracion('${x.g.id}')">
+      <td style="padding:10px 12px;"><span style="color:${ac.c};font-weight:700;">${x.g.curso?.sistema?.clave||''}</span> ${x.g.curso?.nombre||''} · ${x.g.clave}</td>
+      <td>${x.accesosPend>0?`<span style="color:var(--red);font-weight:600;">${x.accesosPend} sin notificar</span>`:'<span style="color:var(--text3);">—</span>'}</td>
+      <td>${x.constanciasPend>0?`<span style="color:var(--red);font-weight:600;">${x.constanciasPend} pendiente${x.constanciasPend===1?'':'s'}</span>`:'<span style="color:var(--text3);">—</span>'}</td>
+      <td>${x.recordatorioInfo?(x.recordatorioInfo.alerta?`<span style="color:var(--red);font-weight:600;">⚠ ${x.recordatorioInfo.motivo}</span>`:`<span style="color:var(--green);">Al corriente</span>`):'<span style="color:var(--text3);">N/A</span>'}</td>
+    </tr>`;
+  }
+
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
     <div style="font-size:18px;font-weight:600;color:var(--text);">Resumen de Academia</div>
     <div style="font-size:12px;color:var(--text3);">Cursos activos y próximos vencimientos de prácticas.</div>
+  </div>
+  <div style="margin-bottom:20px;">
+    <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">📋 Actividad operativa pendiente (${actividadFilas.length})</div>
+    <div class="card" style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;"><th style="padding:8px 12px;">Generación</th><th>Accesos</th><th>Constancias</th><th>Recordatorio de sesión</th></tr></thead>
+        <tbody>${actividadFilas.map(filaActividad).join('')||'<tr><td colspan="4" style="padding:14px;color:var(--text3);">Sin pendientes por ahora — todo al corriente.</td></tr>'}</tbody>
+      </table>
+    </div>
   </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;">
     <div>
@@ -1251,7 +1313,10 @@ async function academiaAbrirNuevaGeneracion(){
       ${fld('Fecha de conclusión de prácticas (sugerida: +15 días)',inp('genFechaLimitePracticas','date','','',`oninput="this.dataset.tocado='1'"`))}
       ${fld('Fecha de conclusión con extensión (sugerida: +30 días)',inp('genFechaLimitePracticasExt','date','','',`oninput="this.dataset.tocado='1'"`))}
     </div>
-    <div style="margin-bottom:4px;">${fld('Número de prácticas',inp('genPracticas','number','','0'))}</div>`;
+    <div style="margin-bottom:14px;">${fld('Número de prácticas',inp('genPracticas','number','','0'))}</div>
+    ${academiaBloqueFechasSesion('gen')}`;
+  window._academiaSesFechasExistentes=window._academiaSesFechasExistentes||{};
+  window._academiaSesFechasExistentes['gen']=null; // generación nueva: sin fechas previas que precargar
   mkModal('modalNuevaGen','Nueva generación',html,'academiaGuardarNuevaGeneracion');
 }
 
@@ -1337,7 +1402,7 @@ async function academiaGuardarNuevaGeneracion(){
     cursoId=nuevoCurso.id;
   }
 
-  const {error}=await sb.from('academia_generaciones').insert({
+  const {data:nuevaGen,error}=await sb.from('academia_generaciones').insert({
     curso_id:cursoId,
     clave,
     fecha_inicio:document.getElementById('genFechaInicio')?.value||null,
@@ -1347,8 +1412,12 @@ async function academiaGuardarNuevaGeneracion(){
     fecha_limite_practicas:document.getElementById('genFechaLimitePracticas')?.value||null,
     fecha_limite_practicas_extension:document.getElementById('genFechaLimitePracticasExt')?.value||null,
     cliente_nombre:document.getElementById('genCliente')?.value?.trim()||null,
-  });
+  }).select().single();
   if(error){alert('Error al crear la generación (¿ya existe una con esta clave para este curso?): '+error.message);return;}
+  // Fechas de sesión (opcional, Jp 2026-09-17): se guardan aparte, ya con el
+  // id de la generación recién creada.
+  const fechasSesion=academiaLeerFechasSesion('gen');
+  if(fechasSesion.length) await academiaGuardarFechasSesion(nuevaGen.id,fechasSesion);
   document.getElementById('modalNuevaGen')?.remove();
   renderAcademiaGeneraciones();
 }
@@ -1373,6 +1442,103 @@ function academiaSugerirFechasPracticas(finId,limId,extId){
   if(!fin||!limEl||!extEl) return;
   if(!limEl.dataset.tocado) limEl.value=academiaSumarDias(fin,15);
   if(!extEl.dataset.tocado) extEl.value=academiaSumarDias(fin,30);
+}
+
+// ── AUDITORÍA DE ACTIVIDAD OPERATIVA (Jp, 2026-09-17) ───────────────────────
+// Tres piezas: (1) notificaciones de acceso enviadas — log automático al dar
+// clic en "Enviar por WhatsApp"; (2) recordatorios de sesión a grupos — log
+// manual por generación (empresariales y diplomados/talleres en vivo); (3)
+// fechas reales de sesión — OPCIONALES por generación, habilitan que el
+// recordatorio se pueda comparar contra la próxima sesión real.
+
+// Registro de "se dio clic para notificar" — no bloquea la navegación (el
+// link de WhatsApp se sigue abriendo de inmediato), es best-effort: si falla
+// el insert no se le avisa al usuario, para no interrumpirle el envío real.
+function academiaRegistrarNotificacion(inscripcionId,tipo){
+  sb.from('academia_notificaciones_envios').insert({
+    inscripcion_id:inscripcionId,tipo:tipo||'acceso_lab',enviada_por:currentUser?.id||null,
+  }).then(()=>{}).catch(()=>{});
+}
+
+// Bloque de "Fechas de sesión" (opcional) usado tanto en Nueva como en Editar
+// generación. `existentes` es un objeto {numero_sesion: 'YYYY-MM-DD'} para
+// precargar (viene de academia_generacion_sesiones al editar). Si no hay
+// fecha de inicio capturada, deja los campos vacíos para llenarlos a mano.
+function academiaGenerarFechasSesionUI(prefix,existentes){
+  const total=parseInt(document.getElementById(prefix+'Sesiones')?.value)||0;
+  const inicio=document.getElementById(prefix+'SesFechaInicio')?.value;
+  const cadencia=parseInt(document.getElementById(prefix+'SesCadencia')?.value)||7;
+  const cont=document.getElementById(prefix+'SesFechasCont');
+  if(!cont) return;
+  if(!total){ cont.innerHTML='<div style="font-size:11px;color:var(--text3);">Captura primero el número de sesiones.</div>'; return; }
+  let html='';
+  for(let n=1;n<=total;n++){
+    let fecha=(existentes&&existentes[n])||'';
+    if(!fecha && inicio) fecha=academiaSumarDias(inicio,(n-1)*cadencia);
+    html+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><span style="font-size:11px;color:var(--text3);width:64px;">Sesión ${n}</span><input type="date" id="${prefix}SesFecha_${n}" value="${fecha}" style="flex:1;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;"></div>`;
+  }
+  cont.innerHTML=html;
+}
+function academiaBloqueFechasSesion(prefix){
+  return `
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin:14px 0 8px;">FECHAS DE SESIÓN (opcional — para diplomados/talleres en vivo y cursos empresariales)</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Si las capturas, se muestran junto al número de sesión en Asistencia y habilitan un recordatorio comparado contra la fecha real. Para cursos 24/7 puedes dejarlo vacío.</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-bottom:8px;">
+      ${fld('Fecha de la 1ª sesión',inp(prefix+'SesFechaInicio','date'))}
+      ${fld('Cada cuántos días',inp(prefix+'SesCadencia','number','','7'))}
+      <button type="button" class="cartera-subtab" onclick="academiaGenerarFechasSesionUI('${prefix}',(window._academiaSesFechasExistentes||{})['${prefix}']||null)" style="height:34px;">Generar fechas</button>
+    </div>
+    <div id="${prefix}SesFechasCont" style="max-height:180px;overflow-y:auto;"></div>`;
+}
+// Junta los valores capturados en el bloque de arriba, listos para guardar
+// en academia_generacion_sesiones (solo las que sí tengan fecha).
+function academiaLeerFechasSesion(prefix){
+  const total=parseInt(document.getElementById(prefix+'Sesiones')?.value)||0;
+  const filas=[];
+  for(let n=1;n<=total;n++){
+    const v=document.getElementById(prefix+'SesFecha_'+n)?.value;
+    if(v) filas.push({numero_sesion:n,fecha:v});
+  }
+  return filas;
+}
+// Guarda las fechas de sesión de una generación: reemplaza por completo lo
+// que hubiera (borra + inserta) — es la forma más simple de sincronizar sin
+// tener que diffear fila por fila, y el volumen por generación es chico.
+async function academiaGuardarFechasSesion(generacionId,filas){
+  await sb.from('academia_generacion_sesiones').delete().eq('generacion_id',generacionId);
+  if(filas.length){
+    await sb.from('academia_generacion_sesiones').insert(filas.map(f=>({generacion_id:generacionId,numero_sesion:f.numero_sesion,fecha:f.fecha})));
+  }
+}
+
+// Recordatorios de sesión a grupos — modal con historial + alta de un nuevo
+// registro. Solo aplica a empresariales y diplomados/talleres EN VIVO (no
+// 24/7, Jp 2026-09-17), pero el botón que abre esto ya se gatea así donde se
+// invoca (ver academiaPintarParticipantes).
+async function academiaAbrirRecordatorios(generacionId){
+  const {data:recs}=await sb.from('academia_generacion_recordatorios')
+    .select('*,usuario:enviado_por(nombre)').eq('generacion_id',generacionId).order('enviado_en',{ascending:false}).limit(30);
+  const {data:sesFechas}=await sb.from('academia_generacion_sesiones').select('numero_sesion,fecha').eq('generacion_id',generacionId).order('numero_sesion');
+  const opcionesFecha=(sesFechas||[]).filter(s=>s.fecha).map(s=>`<option value="${s.fecha}">Sesión ${s.numero_sesion} — ${s.fecha}</option>`).join('');
+  const html=`
+    <div style="margin-bottom:10px;">${fld('Fecha de la sesión (opcional)',opcionesFecha?`<select id="recFechaSel" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;"><option value="">— Sin fecha de sesión particular —</option>${opcionesFecha}</select>`:inp('recFechaSel','date'))}</div>
+    <div style="margin-bottom:14px;">${fld('Observación (opcional)',`<textarea id="recObs" rows="2" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;" placeholder="Ej. recordatorio de la sesión del viernes mandado al grupo de WhatsApp"></textarea>`)}</div>
+    <button type="button" class="btn-primary" style="width:auto;padding:8px 16px;margin-bottom:16px;" onclick="academiaGuardarRecordatorio('${generacionId}')">+ Registrar recordatorio enviado</button>
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">HISTORIAL</div>
+    <div style="max-height:220px;overflow-y:auto;font-size:12px;color:var(--text2);display:flex;flex-direction:column;gap:6px;">
+      ${(recs||[]).map(r=>`<div style="border-bottom:1px solid var(--border);padding-bottom:6px;">${new Date(r.enviado_en).toLocaleString('es-MX')}${r.fecha_sesion?' · sesión del '+r.fecha_sesion:''}${r.usuario?.nombre?' · '+r.usuario.nombre:''}${r.observacion?'<br><span style="color:var(--text3);">'+r.observacion+'</span>':''}</div>`).join('')||'<div style="color:var(--text3);">Sin recordatorios registrados todavía.</div>'}
+    </div>`;
+  mkModal('modalRecordatorios','Recordatorios de sesión — '+(window._academiaCache.participantesGen?.gen?.clave||''),html,null,'Cerrar');
+}
+async function academiaGuardarRecordatorio(generacionId){
+  const fecha_sesion=document.getElementById('recFechaSel')?.value||null;
+  const observacion=document.getElementById('recObs')?.value?.trim()||null;
+  const {error}=await sb.from('academia_generacion_recordatorios').insert({
+    generacion_id:generacionId,fecha_sesion,observacion,enviado_por:currentUser?.id||null,
+  });
+  if(error){alert('Error al registrar el recordatorio: '+error.message);return;}
+  document.getElementById('modalRecordatorios')?.remove();
+  academiaAbrirRecordatorios(generacionId);
 }
 // Vigencia individual (24/7, Jp 2026-09-01): a partir de la fecha de compra de
 // CADA participante, se sugieren la fecha de fin de laboratorio (diasLab: 30
@@ -1410,6 +1576,10 @@ async function academiaAbrirEditarGeneracion(generacionId){
   const {data:g,error}=await sb.from('academia_generaciones').select('*,curso:curso_id(*)').eq('id',generacionId).single();
   if(error||!g){alert('No se pudo cargar la generación: '+(error?.message||''));return;}
   const c=g.curso||{};
+  const {data:sesFechas}=await sb.from('academia_generacion_sesiones').select('numero_sesion,fecha').eq('generacion_id',generacionId);
+  const sesFechasMap={}; (sesFechas||[]).forEach(s=>{ if(s.fecha) sesFechasMap[s.numero_sesion]=s.fecha; });
+  window._academiaSesFechasExistentes=window._academiaSesFechasExistentes||{};
+  window._academiaSesFechasExistentes['eg']=sesFechasMap;
   const html=`
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DEL CURSO</div>
     <div style="margin-bottom:10px;">${fld('Nombre del curso / generación',inp('egNombreCurso','text','',c.nombre||''))}</div>
@@ -1441,8 +1611,12 @@ async function academiaAbrirEditarGeneracion(generacionId){
     </label>
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin:14px 0 8px;">TEXTO DE LA CONSTANCIA (opcional — si se deja vacío, la constancia calcula un texto por default según la modalidad del curso)</div>
     <div style="margin-bottom:4px;">${fld('Formato',selPares('egFormato',ACADEMIA_OPCIONES_FORMATO,g.formato_texto||''))}</div>
-    <div style="font-size:11px;color:var(--text3);margin-top:10px;">El método de evaluación y el criterio de acreditación no se capturan aquí: la constancia los calcula solos según el tipo (Esencial → asistencia a sesiones · Plus/Premium → prácticas de laboratorio), porque en una misma generación aplican los dos a la vez.</div>`;
+    <div style="font-size:11px;color:var(--text3);margin-top:10px;">El método de evaluación y el criterio de acreditación no se capturan aquí: la constancia los calcula solos según el tipo (Esencial → asistencia a sesiones · Plus/Premium → prácticas de laboratorio), porque en una misma generación aplican los dos a la vez.</div>
+    ${academiaBloqueFechasSesion('eg')}`;
   mkModal('modalEditarGen','Editar generación',html,`academiaGuardarEditarGeneracion('${generacionId}','${c.id}')`);
+  // Precarga inmediata de las fechas de sesión que ya existieran, sin
+  // necesidad de dar clic en "Generar fechas".
+  if(Object.keys(sesFechasMap).length) academiaGenerarFechasSesionUI('eg',sesFechasMap);
 }
 
 async function academiaGuardarEditarGeneracion(generacionId,cursoId){
@@ -1470,6 +1644,10 @@ async function academiaGuardarEditarGeneracion(generacionId,cursoId){
     cliente_nombre:document.getElementById('egCliente')?.value?.trim()||null,
   }).eq('id',generacionId);
   if(errGen){alert('Error al actualizar la generación: '+errGen.message);return;}
+
+  // Fechas de sesión (opcional, Jp 2026-09-17): se reemplazan por completo
+  // con lo que quedó capturado en el modal (borra + inserta).
+  await academiaGuardarFechasSesion(generacionId,academiaLeerFechasSesion('eg'));
 
   document.getElementById('modalEditarGen')?.remove();
   renderAcademiaGeneraciones();
@@ -2059,7 +2237,10 @@ function academiaPintarParticipantes(){
       <div style="font-size:18px;font-weight:600;color:var(--text);margin-top:8px;">${gen?.curso?.nombre||''} — ${gen?.clave||''}</div>
       <div style="font-size:12px;color:var(--text3);">${filas.length} de ${(inscripciones||[]).length} participantes</div>
     </div>
-    <button class="cartera-subtab" style="background:var(--teal);color:#fff;" onclick="academiaAbrirNuevoAsistente('${cache.generacionId}')">+ Agregar asistente</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      ${gen?.curso?.modalidad!=='24_7'?`<button class="cartera-subtab" onclick="academiaAbrirRecordatorios('${cache.generacionId}')">📣 Recordatorios de sesión</button>`:''}
+      <button class="cartera-subtab" style="background:var(--teal);color:#fff;" onclick="academiaAbrirNuevoAsistente('${cache.generacionId}')">+ Agregar asistente</button>
+    </div>
   </div>
   <div class="card" style="padding:14px;margin-bottom:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
     <input id="academiaPartBuscar" placeholder="Buscar por nombre o folio..." value="${academiaPartFiltro.q||''}" oninput="academiaPartFiltro.q=this.value;academiaPintarParticipantes();" style="padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;min-width:220px;">
@@ -2318,9 +2499,14 @@ async function academiaVerFicha(inscripcionId){
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando ficha...</div>';
 
   const {data:insc,error}=await sb.from('academia_inscripciones')
-    .select('*,participante:participante_id(*,cliente:cliente_cartera_id(razon_social,num_cliente)),generacion:generacion_id(*,curso:curso_id(*,sistema:sistema_id(*))),asistencias:academia_asistencias(*),ligas:academia_inscripcion_ligas(*)')
+    .select('*,participante:participante_id(*,cliente:cliente_cartera_id(razon_social,num_cliente)),generacion:generacion_id(*,curso:curso_id(*,sistema:sistema_id(*)),sesiones:academia_generacion_sesiones(numero_sesion,fecha)),asistencias:academia_asistencias(*),ligas:academia_inscripcion_ligas(*)')
     .eq('id',inscripcionId).single();
   if(error||!insc){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error: ${error?.message||'no encontrado'}</div>`;return;}
+  const sesFechaMap={}; (insc.generacion?.sesiones||[]).forEach(s=>{ if(s.fecha) sesFechaMap[s.numero_sesion]=s.fecha; });
+  // Notificaciones de acceso ya enviadas (Jp, 2026-09-17) — historial completo
+  // más el último envío de tipo 'acceso_lab' para mostrarlo junto al botón.
+  const {data:notifs}=await sb.from('academia_notificaciones_envios').select('*').eq('inscripcion_id',inscripcionId).order('enviada_en',{ascending:false}).limit(10);
+  const ultimaNotifAcceso=(notifs||[]).find(n=>n.tipo==='acceso_lab');
 
   // Mensajes rápidos de WhatsApp (Jp, 2026-09-08): catálogo de plantillas
   // (bienvenida, manual de escritorio remoto, manual de Zoom, etc.) — se
@@ -2409,7 +2595,7 @@ async function academiaVerFicha(inscripcionId){
             const on=s?.asistio;
             const ev=s?.evidencia_path;
             return `<div style="display:flex;flex-direction:column;align-items:center;gap:3px;">
-              <div title="Sesión ${n} — clic para marcar/desmarcar" onclick="academiaToggleAsistencia('${inscripcionId}',${n},${!on})" style="width:28px;height:28px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;background:${on?ac.c:'#eee'};color:${on?'#fff':'#999'};">${n}</div>
+              <div title="Sesión ${n}${sesFechaMap[n]?' — '+sesFechaMap[n]:''} — clic para marcar/desmarcar" onclick="academiaToggleAsistencia('${inscripcionId}',${n},${!on})" style="width:28px;height:28px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;background:${on?ac.c:'#eee'};color:${on?'#fff':'#999'};">${n}</div>
               <label style="cursor:pointer;font-size:11px;line-height:1;" title="Adjuntar evidencia de la sesión ${n}">${ev?`<a href="#" onclick="event.preventDefault();academiaDescargarEvidencia('${ev}')">📎</a>`:`<span style="opacity:.4;">📎</span><input type="file" style="display:none" onchange="academiaSubirEvidenciaAsistencia('${inscripcionId}',${n},this)"></input>`}</label>
             </div>`;
           }).join('')}
@@ -2509,9 +2695,10 @@ async function academiaVerFicha(inscripcionId){
         <div><b>Empresa Aspel:</b> ${insc.empresa_aspel||'—'} · <b>Usuario Aspel:</b> ${insc.usuario_aspel||'—'} · <b>Contraseña Aspel:</b> ${insc.contrasena_aspel||'—'}</div>
         <div style="margin-top:4px;color:var(--text3);">No vinculado a Control de Accesos — datos capturados a mano.</div>
         `}
-        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
-          ${telLimpio?`<a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}?text=${encodeURIComponent(academiaPlantillaAccesoLab(insc,asigVinculada))}" target="_blank" style="background:#25D366;color:#fff;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;text-decoration:none;">Enviar por WhatsApp</a>`:''}
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          ${telLimpio?`<a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}?text=${encodeURIComponent(academiaPlantillaAccesoLab(insc,asigVinculada))}" target="_blank" onclick="academiaRegistrarNotificacion('${inscripcionId}','acceso_lab')" style="background:#25D366;color:#fff;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;text-decoration:none;">Enviar por WhatsApp</a>`:''}
           <button class="cartera-subtab" onclick="academiaCopiarPlantillaAccesoLab('${inscripcionId}')">Copiar plantilla</button>
+          ${ultimaNotifAcceso?`<span style="font-size:11px;color:var(--text3);">✓ Notificado ${new Date(ultimaNotifAcceso.enviada_en).toLocaleDateString('es-MX')}</span>`:`<span style="font-size:11px;color:#c0392b;">Aún no se ha notificado</span>`}
         </div>
       </div>
     </div>
@@ -2553,8 +2740,9 @@ async function academiaVerFicha(inscripcionId){
       <div style="display:flex;flex-wrap:wrap;gap:8px;">
         ${!telLimpio?'<div style="font-size:12px;color:var(--text3);">Este participante no tiene teléfono capturado.</div>'
           :!plantillasWhatsApp.length?'<div style="font-size:12px;color:var(--text3);">Sin plantillas configuradas todavía (tabla academia_whatsapp_plantillas en Supabase).</div>'
-          :plantillasWhatsApp.map(pl=>`<a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}?text=${encodeURIComponent(academiaSustituirPlantillaWhatsApp(pl.cuerpo,insc,asigVinculada))}" target="_blank" style="background:#25D366;color:#fff;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;text-decoration:none;">${pl.nombre}</a>`).join('')}
+          :plantillasWhatsApp.map(pl=>`<a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}?text=${encodeURIComponent(academiaSustituirPlantillaWhatsApp(pl.cuerpo,insc,asigVinculada))}" target="_blank" onclick="academiaRegistrarNotificacion('${inscripcionId}','${(pl.nombre||'').replace(/'/g,"\\'")}')" style="background:#25D366;color:#fff;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;text-decoration:none;">${pl.nombre}</a>`).join('')}
       </div>
+      ${(notifs||[]).length?`<div style="margin-top:10px;font-size:11px;color:var(--text3);">Últimas notificaciones: ${(notifs||[]).slice(0,5).map(n=>`${n.tipo} (${new Date(n.enviada_en).toLocaleDateString('es-MX')})`).join(' · ')}</div>`:''}
     </div>
 
     <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
