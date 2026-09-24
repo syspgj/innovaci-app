@@ -203,7 +203,11 @@ export default async function handler(req, res) {
     const cronSecret = process.env.CRON_SECRET;
     if (cronSecret) {
       const auth = req.headers['authorization'] || '';
-      if (auth !== `Bearer ${cronSecret}`) return res.status(401).json({ error: 'No autorizado' });
+      // También se acepta ?secret=... por query string, para poder probar el
+      // endpoint a mano desde el navegador (sin poder mandar headers custom).
+      const querySecret = req.query && req.query.secret;
+      const autorizado = auth === `Bearer ${cronSecret}` || querySecret === cronSecret;
+      if (!autorizado) return res.status(401).json({ error: 'No autorizado' });
     }
 
     const SKEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
