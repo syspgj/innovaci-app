@@ -6049,6 +6049,22 @@ async function guardarAltaCuenta(){
 
 // ── CARTERA DE CUENTAS — VISTA DIRECTOR (auditoría) ─────────────────────────
 let dirCarteraVendedorFiltro='';
+// Jp, 2026-09-24: las tarjetas de "sin reclamar/reclamadas/no renovadas" no
+// hacían nada al darles clic — se agregan como filtro real, más un filtro
+// aparte de "vencen este mes" (todas las cuentas, no solo las de un vendedor
+// — eso ya existía pero solo dentro de la vista del vendedor).
+let dirCarteraEstadoFiltro='';
+let dirCarteraVenceMesActivo=false;
+function dirCarteraSwEstado(estado){
+  dirCarteraEstadoFiltro=(dirCarteraEstadoFiltro===estado)?'':estado;
+  dirCarteraVenceMesActivo=false;
+  renderDirCarteraAuditoria();
+}
+function dirCarteraSwVenceMes(){
+  dirCarteraVenceMesActivo=!dirCarteraVenceMesActivo;
+  dirCarteraEstadoFiltro='';
+  renderDirCarteraAuditoria();
+}
 async function renderDirectorCartera(containerId){
   // containerId (Jp, Lote 10): permite embeber esta misma vista de Cartera
   // dentro de otro contenedor (ej. "opsBody" en Operaciones/Mesa de Control)
@@ -6351,13 +6367,25 @@ function renderDirCarteraAuditoria(){
   const sinRenovar=suscripciones.filter(s=>s.estado==='sin_reclamar').length;
   const reclamadas=suscripciones.filter(s=>['reclamada','en_revision'].includes(s.estado)).length;
   const noRenovadas=suscripciones.filter(s=>s.estado==='no_renovada').length;
+  const hoyDC=new Date();
+  const inicioMesDC=`${hoyDC.getFullYear()}-${String(hoyDC.getMonth()+1).padStart(2,'0')}-01`;
+  const finMesDC=new Date(hoyDC.getFullYear(),hoyDC.getMonth()+1,0).toISOString().split('T')[0];
+  const vencenMesDC=suscripciones.filter(s=>s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=inicioMesDC&&s.fecha_proxima_renovacion<=finMesDC).length;
+  const tarjeta=(label,valor,color,activo,onclick)=>`
+    <div class="card" onclick="${onclick}" style="padding:14px;cursor:pointer;${activo?`border:2px solid ${color};background:${color}11;`:''}">
+      <div style="font-size:11px;color:var(--text3);">${label}${activo?' · filtro activo (clic para quitar)':''}</div>
+      <div style="font-size:20px;font-weight:700;color:${color};">${valor}</div>
+    </div>`;
 
   mc.innerHTML=`
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
-    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Total clientes</div><div style="font-size:20px;font-weight:700;color:var(--text);">${totalClientes}</div></div>
-    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Suscripciones sin reclamar</div><div style="font-size:20px;font-weight:700;color:var(--gold);">${sinRenovar}</div></div>
-    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Reclamadas activas</div><div style="font-size:20px;font-weight:700;color:var(--teal);">${reclamadas}</div></div>
-    <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">No renovadas</div><div style="font-size:20px;font-weight:700;color:var(--red);">${noRenovadas}</div></div>
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px;">
+    <div class="card" onclick="dirCarteraEstadoFiltro='';dirCarteraVenceMesActivo=false;renderDirCarteraAuditoria();" style="padding:14px;cursor:pointer;">
+      <div style="font-size:11px;color:var(--text3);">Total clientes</div><div style="font-size:20px;font-weight:700;color:var(--text);">${totalClientes}</div>
+    </div>
+    ${tarjeta('Vencen este mes (todas)',vencenMesDC,'var(--navy)',dirCarteraVenceMesActivo,'dirCarteraSwVenceMes()')}
+    ${tarjeta('Suscripciones sin reclamar',sinRenovar,'var(--gold)',dirCarteraEstadoFiltro==='sin_reclamar',`dirCarteraSwEstado('sin_reclamar')`)}
+    ${tarjeta('Reclamadas activas',reclamadas,'var(--teal)',dirCarteraEstadoFiltro==='reclamada',`dirCarteraSwEstado('reclamada')`)}
+    ${tarjeta('No renovadas',noRenovadas,'var(--red)',dirCarteraEstadoFiltro==='no_renovada',`dirCarteraSwEstado('no_renovada')`)}
   </div>
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;">
     <div style="flex:1;min-width:200px;position:relative;">
@@ -6385,12 +6413,17 @@ function renderDirCarteraContenido(){
   const q=carteraFiltroTexto.toLowerCase();
   const prod=carteraFiltroProducto;
   const vend=dirCarteraVendedorFiltro;
+  const hoyDC2=new Date();
+  const inicioMesDC2=`${hoyDC2.getFullYear()}-${String(hoyDC2.getMonth()+1).padStart(2,'0')}-01`;
+  const finMesDC2=new Date(hoyDC2.getFullYear(),hoyDC2.getMonth()+1,0).toISOString().split('T')[0];
 
   let filtrados=clientes.filter(cl=>{
     const matchQ=!q||(cl.razon_social||'').toLowerCase().includes(q)||(cl.rfc||'').toLowerCase().includes(q)||(cl.num_cliente||'').toLowerCase().includes(q)||(cl.alias_nombres||[]).some(a=>(a||'').toLowerCase().includes(q));
     const matchProd=!prod||(cl._suscripciones||[]).some(s=>s.producto===prod);
     const matchVend=!vend||(vend==='__sin_asignar__'?!cl.vendedor_asignado:cl.vendedor_asignado===vend);
-    return matchQ&&matchProd&&matchVend;
+    const matchEstado=!dirCarteraEstadoFiltro||(cl._suscripciones||[]).some(s=>dirCarteraEstadoFiltro==='reclamada'?['reclamada','en_revision'].includes(s.estado):s.estado===dirCarteraEstadoFiltro);
+    const matchVenceMes=!dirCarteraVenceMesActivo||(cl._suscripciones||[]).some(s=>s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=inicioMesDC2&&s.fecha_proxima_renovacion<=finMesDC2);
+    return matchQ&&matchProd&&matchVend&&matchEstado&&matchVenceMes;
   });
 
   // Agrupar con subcuentas
@@ -6405,7 +6438,7 @@ function renderDirCarteraContenido(){
   subcuentas.filter(s=>!enAgrupados.has(s.id)).forEach(s=>agrupados.push(s));
 
   if(!agrupados.length){
-    cont.innerHTML=`<div style="text-align:center;padding:50px;color:var(--text3);">${q||prod||vend?'Ningún cliente coincide con los filtros.':'No hay clientes en la cartera.'}</div>`;
+    cont.innerHTML=`<div style="text-align:center;padding:50px;color:var(--text3);">${q||prod||vend||dirCarteraEstadoFiltro||dirCarteraVenceMesActivo?'Ningún cliente coincide con los filtros.':'No hay clientes en la cartera.'}</div>`;
     return;
   }
   cont.innerHTML=`<div style="display:grid;gap:8px;">${agrupados.map(cl=>fichaClienteCartera(cl,'todos')).join('')}</div>`;
