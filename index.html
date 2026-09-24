@@ -5295,18 +5295,21 @@ let carteraFiltroTexto='', carteraFiltroProducto='', carteraFiltroPeriodicidad='
 async function renderCarteraVendedor(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando cartera...</div>';
-  const [{data:clientes},{data:suscripciones},{data:vendedores}]=await Promise.all([
+  const [{data:clientes},{data:suscripciones},{data:vendedores},{data:sistemas}]=await Promise.all([
     sb.from('clientes_cartera').select('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)').order('razon_social'),
     sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
-    sb.from('usuarios').select('id,nombre').order('nombre')
+    sb.from('usuarios').select('id,nombre').order('nombre'),
+    sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden')
   ]);
   window._cartClientes=clientes||[];
   window._cartSuscripciones=suscripciones||[];
   window._carteraVendedores=vendedores||[];
+  window._suscSistemas=sistemas||[];
   // Adjuntar suscripciones a cada cliente
   window._cartClientes.forEach(cl=>{
     cl._suscripciones=(suscripciones||[]).filter(s=>s.cliente_id===cl.id);
   });
+  const totalPendientesVincular=(suscripciones||[]).filter(s=>!s.cliente_id).length;
   const productos=[...new Set((suscripciones||[]).map(s=>s.producto).filter(Boolean))].sort();
 
   mc.innerHTML=`
@@ -5319,7 +5322,8 @@ async function renderCarteraVendedor(){
     <button onclick="swCartera('mia')" id="carteraSub_mia" class="cartera-subtab">Mi cartera</button>
     <button onclick="swCartera('vencen')" id="carteraSub_vencen" class="cartera-subtab">Vencen este mes</button>
     <button onclick="swCartera('resueltas')" id="carteraSub_resueltas" class="cartera-subtab">Resueltas este mes</button>
-    <button onclick="abrirAltaCliente()" style="margin-left:auto;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nuevo cliente</button>
+    <button onclick="swCartera('pendientes')" id="carteraSub_pendientes" class="cartera-subtab">🔗 Pendientes de vincular${totalPendientesVincular?` (${totalPendientesVincular})`:''}</button>
+    <button onclick="abrirAltaCuenta()" style="margin-left:auto;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nuevo cliente</button>
   </div>
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;">
     <div style="flex:1;min-width:200px;position:relative;">
@@ -5339,10 +5343,11 @@ async function renderCarteraVendedor(){
 
 function swCartera(sub){
   currentCarteraSub=sub;
-  ['todos','mia','vencen','resueltas'].forEach(s=>{
+  ['todos','mia','vencen','resueltas','pendientes'].forEach(s=>{
     const btn=document.getElementById('carteraSub_'+s);
     if(btn) btn.classList.toggle('active',s===sub);
   });
+  if(sub==='pendientes'){ renderPendientesVincular('vendedor'); return; }
   const clientes=window._cartClientes||[];
   const hoy=new Date();
   const inicioMes=`${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}-01`;
@@ -6051,15 +6056,17 @@ async function renderDirectorCartera(containerId){
   // (uso original, desde Director → Ventas → Cartera).
   const mc=document.getElementById(containerId||'mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando cartera...</div>';
-  const [{data:clientes},{data:suscripciones},{data:vendedores}]=await Promise.all([
+  const [{data:clientes},{data:suscripciones},{data:vendedores},{data:sistemas}]=await Promise.all([
     sb.from('clientes_cartera').select('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)').order('razon_social'),
     sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
-    sb.from('usuarios').select('id,nombre').order('nombre')
+    sb.from('usuarios').select('id,nombre').order('nombre'),
+    sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden')
   ]);
   window._cartClientes=clientes||[];
   window._cartSuscripciones=suscripciones||[];
   window._carteraVendedores=vendedores||[];
   window._carteraTodas=clientes||[]; // compatibilidad
+  window._suscSistemas=sistemas||[];
   (clientes||[]).forEach(cl=>{
     cl._suscripciones=(suscripciones||[]).filter(s=>s.cliente_id===cl.id);
   });
@@ -6068,6 +6075,8 @@ async function renderDirectorCartera(containerId){
   const sinReclamar=(suscripciones||[]).filter(c=>c.estado==='sin_reclamar').length;
   const reclamadas=(suscripciones||[]).filter(c=>['reclamada','en_revision'].includes(c.estado)).length;
   const noRenovadas=(suscripciones||[]).filter(c=>c.estado==='no_renovada').length;
+  const totalPendientesVincular=(suscripciones||[]).filter(s=>!s.cliente_id).length;
+  const puedeCargarExcel=userProfile.rol==='director'||userProfile.rol==='administracion';
 
   mc.innerHTML=`
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
@@ -6075,9 +6084,11 @@ async function renderDirectorCartera(containerId){
       <div style="font-size:18px;font-weight:600;color:var(--text);">Cartera de cuentas</div>
       <div style="font-size:12px;color:var(--text3);">Auditoría y campañas de llamadas a clientes activos.</div>
     </div>
-    <div style="display:flex;gap:6px;">
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
       <button onclick="swDirCartera('auditoria')" id="dirCarteraTab_auditoria" class="cartera-subtab active">📊 Auditoría</button>
+      <button onclick="swDirCartera('pendientes')" id="dirCarteraTab_pendientes" class="cartera-subtab">🔗 Pendientes de vincular${totalPendientesVincular?` (${totalPendientesVincular})`:''}</button>
       <button onclick="swDirCartera('campanas')" id="dirCarteraTab_campanas" class="cartera-subtab">📞 Campañas de cartera</button>
+      ${puedeCargarExcel?`<button onclick="abrirCargaExcelSuscripciones()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📎 Cargar Excel de renovaciones</button>`:''}
     </div>
   </div>
   <div id="dirCarteraContenidoMain"></div>`;
@@ -6088,14 +6099,245 @@ async function renderDirectorCartera(containerId){
 let _dirCarteraSubActual='auditoria';
 function swDirCartera(sub){
   _dirCarteraSubActual=sub;
-  ['auditoria','campanas'].forEach(s=>{
+  ['auditoria','pendientes','campanas'].forEach(s=>{
     const btn=document.getElementById('dirCarteraTab_'+s);
     if(btn) btn.classList.toggle('active',s===sub);
   });
   const mc=document.getElementById('dirCarteraContenidoMain');
   if(!mc) return;
   if(sub==='auditoria') renderDirCarteraAuditoria();
+  else if(sub==='pendientes') renderPendientesVincular('director');
   else renderDirCarteraCampanas();
+}
+
+// ── SUSCRIPCIONES — catálogo, cola de vinculación y carga de Excel ─────────
+// Jp, 2026-09-23: el Excel de renovaciones que manda el ejecutivo Aspel no
+// siempre trae un RFC que ya exista en Cartera de Cuentas (en el archivo de
+// prueba, 56% no matcheó). En vez de crear cuentas a ciegas o perder esas
+// filas, la carga las guarda igual (con el RFC/razón social tal cual vino
+// del Excel) pero sin cliente_id — quedan en "Pendientes de vincular" hasta
+// que un vendedor o Dirección decida a qué cuenta pertenecen.
+
+function suscSistemaInfo(s){
+  const sis=(window._suscSistemas||[]).find(x=>x.id===s.sistema_id);
+  return {nombre:sis?sis.nombre:(s.producto||'Sistema no catalogado'),color:sis?sis.color_accent:'var(--text3)'};
+}
+
+function suscCuentasPermitidasParaVincular(){
+  // Director/Administración: cualquier cuenta. Vendedor: solo las suyas + sin asignar.
+  const todas=window._cartClientes||[];
+  if(userProfile.rol==='director'||userProfile.rol==='administracion') return todas;
+  return todas.filter(c=>c.vendedor_asignado===currentUser.id||!c.vendedor_asignado);
+}
+
+async function renderPendientesVincular(scope){
+  const contId=scope==='director'?'dirCarteraContenidoMain':'carteraContenido';
+  const cont=document.getElementById(contId);
+  if(!cont) return;
+  const pendientes=(window._cartSuscripciones||[]).filter(s=>!s.cliente_id);
+  if(!pendientes.length){
+    cont.innerHTML=`<div style="text-align:center;padding:50px 20px;color:var(--text3);font-size:13px;">No hay suscripciones pendientes de vincular. 🎉</div>`;
+    return;
+  }
+  cont.innerHTML=`
+    <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">
+      Estas suscripciones vinieron de un Excel de renovaciones pero su RFC no coincide con ninguna cuenta en Cartera. Vincúlalas a la cuenta correcta (si reconoces al cliente) o dalas de alta como cuenta nueva.
+    </div>
+    <div style="display:grid;gap:8px;">
+      ${pendientes.map(s=>{
+        const info=suscSistemaInfo(s);
+        return `<div class="card" style="padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:220px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="background:${info.color}22;color:${info.color};border-radius:4px;padding:1px 8px;font-size:10px;font-weight:700;">${info.nombre}</span>
+              <span style="font-size:13px;font-weight:600;color:var(--text);">${s.razon_social_reportada||'Sin razón social'}</span>
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-top:3px;font-family:'JetBrains Mono',monospace;">RFC ${s.rfc_reportado||'—'} · serie ${s.numserie||'—'}${s.monto?' · '+fmt(s.monto):''}</div>
+          </div>
+          <button onclick="abrirVincularSuscripcion('${s.id}','${scope}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:7px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Vincular</button>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+function abrirVincularSuscripcion(suscId,scope){
+  const susc=(window._cartSuscripciones||[]).find(s=>s.id===suscId);
+  if(!susc) return;
+  const cuentas=suscCuentasPermitidasParaVincular();
+  const html=`
+    <div style="margin-bottom:12px;padding:10px 14px;background:rgba(0,169,157,0.06);border-radius:8px;font-size:12px;">
+      <b>${susc.razon_social_reportada||'Sin razón social'}</b><br>
+      RFC ${susc.rfc_reportado||'—'} · serie ${susc.numserie||'—'}
+    </div>
+    <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Buscar cuenta en Cartera (por nombre, RFC o número)</label>
+      <input type="text" id="vincBuscarInput" placeholder="Escribe para buscar..." oninput="vincFiltrarCuentas('${suscId}')" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+    <div id="vincResultados" style="max-height:260px;overflow-y:auto;margin-top:8px;display:grid;gap:6px;"></div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border);font-size:11px;color:var(--text3);">
+      ¿No es ninguna cuenta existente? <a href="#" onclick="event.preventDefault();document.getElementById('modalVincularSusc').remove();abrirAltaCuenta();">Dar de alta como cuenta nueva</a> (después vuelve a esta cola para ligar la suscripción).
+    </div>`;
+  mkModal('modalVincularSusc','🔗 Vincular suscripción a una cuenta',html,null,'Cerrar',true);
+  window._vincCuentasCache=cuentas;
+}
+
+function vincFiltrarCuentas(suscId){
+  const q=(document.getElementById('vincBuscarInput')?.value||'').toLowerCase().trim();
+  const cont=document.getElementById('vincResultados');
+  if(!cont) return;
+  if(q.length<2){cont.innerHTML='<div style="font-size:11px;color:var(--text3);padding:8px;">Escribe al menos 2 letras para buscar.</div>';return;}
+  const cuentas=(window._vincCuentasCache||[]).filter(c=>(c.razon_social||'').toLowerCase().includes(q)||(c.rfc||'').toLowerCase().includes(q)||(c.num_cliente||'').toLowerCase().includes(q));
+  if(!cuentas.length){cont.innerHTML='<div style="font-size:11px;color:var(--text3);padding:8px;">Sin resultados entre las cuentas disponibles para ti.</div>';return;}
+  cont.innerHTML=cuentas.slice(0,25).map(c=>`
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;">
+      <div style="min-width:0;">
+        <div style="font-size:12px;font-weight:600;color:var(--text);">${c.razon_social||'Sin nombre'}</div>
+        <div style="font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;">${c.num_cliente||'—'} · ${c.rfc||'sin RFC'}</div>
+      </div>
+      <button onclick="ejecutarVinculacion('${suscId}','${c.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;flex-shrink:0;font-family:'Inter',sans-serif;">Vincular aquí</button>
+    </div>`).join('');
+}
+
+async function ejecutarVinculacion(suscId,cuentaId){
+  const susc=(window._cartSuscripciones||[]).find(s=>s.id===suscId);
+  const cuenta=(window._vincCuentasCache||window._cartClientes||[]).find(c=>c.id===cuentaId);
+  if(!susc||!cuenta) return;
+  const rfcSusc=(susc.rfc_reportado||'').trim().toUpperCase();
+  const rfcCuenta=(cuenta.rfc||'').trim().toUpperCase();
+  let clienteFinalId=cuentaId;
+  // Si el RFC de la suscripción es distinto al de la cuenta elegida, se crea
+  // como subcuenta (mismo cliente, otra razón social) — Jp, confirmado 2026-09-23.
+  if(rfcSusc&&rfcCuenta&&rfcSusc!==rfcCuenta){
+    const {data:subcuenta,error:errSub}=await sb.from('clientes_cartera').insert({
+      razon_social:susc.razon_social_reportada||cuenta.razon_social,
+      rfc:susc.rfc_reportado,
+      cliente_padre_id:cuenta.id,
+      vendedor_asignado:cuenta.vendedor_asignado,
+      num_cliente:'SUB-'+Date.now(),
+      origen:'vinculacion_suscripcion'
+    }).select().single();
+    if(errSub){alert('Error al crear subcuenta: '+errSub.message);return;}
+    clienteFinalId=subcuenta.id;
+  }
+  const {error}=await sb.from('suscripciones_cartera').update({
+    cliente_id:clienteFinalId,
+    vendedor_resuelto_por:currentUser.id,
+    fecha_vinculacion:new Date().toISOString()
+  }).eq('id',suscId);
+  if(error){alert('Error al vincular: '+error.message);return;}
+  document.getElementById('modalVincularSusc')?.remove();
+  const scope=userProfile.rol==='director'||userProfile.rol==='administracion'?'director':'vendedor';
+  if(scope==='director') renderDirectorCartera(); else renderCarteraVendedor();
+}
+
+function abrirCargaExcelSuscripciones(){
+  const hoy=new Date();
+  const meses=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const html=`
+    <div style="margin-bottom:14px;padding:12px 16px;background:rgba(0,169,157,0.07);border:1px dashed var(--teal);border-radius:8px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Mes al que corresponde este archivo</label>
+          <select id="cargaSuscMes" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+            ${meses.map((m,i)=>`<option value="${i+1}" ${i===hoy.getMonth()?'selected':''}>${m}</option>`).join('')}
+          </select></div>
+        <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Año</label>
+          <input type="number" id="cargaSuscAnio" value="${hoy.getFullYear()}" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+      </div>
+      <div style="font-size:12px;font-weight:600;color:var(--teal);margin-bottom:8px;">Sube el Excel de renovaciones (columnas: RFC_CLIENTE, RAZON_SOCIAL_CLIENTE, NUMERO DE SERIE, PRODUCTO, MESES, TOTAL_PROYECTADO_PL)</div>
+      <input type="file" id="cargaSuscExcel" accept=".xlsx,.xls" onchange="procesarExcelSuscripciones()" style="font-size:12px;width:100%;">
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;">No trae fecha exacta por fila, así que se usa el último día del mes que elijas arriba como fecha próxima de renovación de cada una.</div>
+    </div>
+    <div id="cargaSuscResumen"></div>
+    <div id="cargaSuscDetalle" style="max-height:360px;overflow-y:auto;"></div>`;
+  mkModal('modalCargaSuscripciones','📎 Cargar Excel de renovaciones',html,null,'Cerrar',true);
+}
+
+async function procesarExcelSuscripciones(){
+  const file=document.getElementById('cargaSuscExcel')?.files?.[0];
+  if(!file) return;
+  const resumen=document.getElementById('cargaSuscResumen');
+  const detalle=document.getElementById('cargaSuscDetalle');
+  resumen.innerHTML='<div style="text-align:center;padding:16px;color:var(--text3);">Procesando archivo...</div>';
+
+  const buf=await file.arrayBuffer();
+  const wb=XLSX.read(buf,{type:'array'});
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const filas=XLSX.utils.sheet_to_json(ws,{defval:null});
+
+  const sistemas=window._suscSistemas||[];
+  const clientes=window._cartClientes||[];
+  const buscarSistema=prod=>{
+    if(!prod) return null;
+    const p=String(prod).trim().toLowerCase();
+    return sistemas.find(s=>s.nombre.trim().toLowerCase()===p)||null;
+  };
+  const buscarCliente=rfc=>{
+    if(!rfc) return null;
+    const r=String(rfc).trim().toUpperCase();
+    return clientes.find(c=>(c.rfc||'').trim().toUpperCase()===r)||null;
+  };
+
+  const mes=parseInt(document.getElementById('cargaSuscMes').value);
+  const anio=parseInt(document.getElementById('cargaSuscAnio').value);
+  const finMes=new Date(anio,mes,0).toISOString().split('T')[0]; // último día del mes elegido
+
+  const registros=[];
+  let sinSerie=0, sinCatalogar=new Set();
+  filas.forEach(f=>{
+    const rfc=f['RFC_CLIENTE'];
+    const serie=f['NUMERO DE SERIE'];
+    if(!rfc&&!serie) return; // fila en blanco o fila de total
+    if(!serie){sinSerie++;return;}
+    const sistema=buscarSistema(f['PRODUCTO']);
+    if(f['PRODUCTO']&&!sistema) sinCatalogar.add(String(f['PRODUCTO']));
+    const cuenta=buscarCliente(rfc);
+    const meses=parseInt(f['MESES'])||null;
+    registros.push({
+      numserie:String(serie).trim(),
+      producto:f['PRODUCTO']?String(f['PRODUCTO']).trim():null,
+      sistema_id:sistema?sistema.id:null,
+      rfc_reportado:rfc?String(rfc).trim().toUpperCase():null,
+      razon_social_reportada:f['RAZON_SOCIAL_CLIENTE']?String(f['RAZON_SOCIAL_CLIENTE']).trim():null,
+      periodicidad:meses>=12?'anual':meses>=6?'semestral':'mensual',
+      monto:parseFloat(f['TOTAL_PROYECTADO_PL'])||null,
+      fecha_proxima_renovacion:finMes,
+      cliente_id:cuenta?cuenta.id:null,
+      estado:'sin_reclamar',
+      origen:'carga_excel',
+      archivo_origen:file.name,
+      mes_reportado:`${anio}-${String(mes).padStart(2,'0')}-01`
+    });
+  });
+
+  const vinculadas=registros.filter(r=>r.cliente_id).length;
+  const pendientes=registros.length-vinculadas;
+  window._cargaSuscRegistros=registros;
+
+  resumen.innerHTML=`
+    <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+      <button onclick="guardarCargaExcelSuscripciones()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">✅ Guardar ${registros.length} suscripciones</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
+      <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Filas leídas</div><div style="font-size:20px;font-weight:700;color:var(--text);">${registros.length}</div></div>
+      <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Vinculadas automático (RFC coincide)</div><div style="font-size:20px;font-weight:700;color:#27AE60;">${vinculadas}</div></div>
+      <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Quedarán pendientes de vincular</div><div style="font-size:20px;font-weight:700;color:var(--gold);">${pendientes}</div></div>
+    </div>
+    ${sinCatalogar.size?`<div style="font-size:11px;color:var(--red);margin-bottom:10px;">⚠ Productos sin catalogar (se guardan igual, pero sin color/sistema): ${[...sinCatalogar].join(', ')}</div>`:''}
+    ${sinSerie?`<div style="font-size:11px;color:var(--red);margin-bottom:10px;">⚠ ${sinSerie} fila(s) sin número de serie, ignoradas.</div>`:''}`;
+
+  detalle.innerHTML=`<div style="display:grid;gap:4px;">${registros.map(r=>`
+    <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:5px 8px;border-bottom:1px solid var(--border);">
+      <span>${r.razon_social_reportada||'—'} <span style="color:var(--text3);">(${r.rfc_reportado||'sin RFC'})</span></span>
+      <span style="color:${r.cliente_id?'#27AE60':'var(--gold)'};font-weight:600;">${r.cliente_id?'✓ vinculada':'pendiente'}</span>
+    </div>`).join('')}</div>`;
+}
+
+async function guardarCargaExcelSuscripciones(){
+  const registros=window._cargaSuscRegistros||[];
+  if(!registros.length){alert('No hay filas procesadas todavía.');return;}
+  const {error}=await sb.from('suscripciones_cartera').upsert(registros,{onConflict:'numserie'});
+  if(error){alert('Error al guardar: '+error.message);return;}
+  document.getElementById('modalCargaSuscripciones')?.remove();
+  alert(`✅ ${registros.length} suscripciones guardadas.`);
+  renderDirectorCartera();
 }
 
 function renderDirCarteraAuditoria(){
