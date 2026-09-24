@@ -4385,7 +4385,12 @@ async function renderVendorMiMes(){
   const hoy=new Date();
   const esEsteMes=hoy.getMonth()+1===currentMonth&&hoy.getFullYear()===currentYear;
   const diasHabiles=getDiasHabiles(currentYear,currentMonth);
-  const diasTrans=esEsteMes?Math.min(registros.length||getDiasTranscurridos(currentYear,currentMonth),diasHabiles):diasHabiles;
+  // Jp, 2026-09-24: esto usaba registros.length (cuántos días llenó "Registrar
+  // día") en vez del calendario real — si el vendedor se saltaba días, los
+  // "días hábiles restantes" salían inflados (más de los que realmente quedan).
+  // Se corrige para usar siempre el conteo real de días hábiles transcurridos,
+  // igual que en Proyección/Director/Anual (getDiasTranscurridos).
+  const diasTrans=esEsteMes?getDiasTranscurridos(currentYear,currentMonth):diasHabiles;
   const diasRest=Math.max(diasHabiles-diasTrans,0);
   // Build HTML
   const ringColor=svcPct>=1?'#00A99D':svcPct>=0.8?'#F5A623':'#E84040';
@@ -5430,6 +5435,7 @@ async function renderCarteraVendedor(){
     <button onclick="swCartera('vencen')" id="carteraSub_vencen" class="cartera-subtab">Vencen este mes</button>
     <button onclick="swCartera('resueltas')" id="carteraSub_resueltas" class="cartera-subtab">Resueltas este mes</button>
     <button onclick="swCartera('pendientes')" id="carteraSub_pendientes" class="cartera-subtab">🔗 Pendientes de vincular${totalPendientesVincular?` (${totalPendientesVincular})`:''}</button>
+    <button onclick="swCartera('suscripciones')" id="carteraSub_suscripciones" class="cartera-subtab">📋 Suscripciones</button>
     <button onclick="abrirAltaCuenta()" style="margin-left:auto;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nuevo cliente</button>
   </div>
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;">
@@ -5450,11 +5456,12 @@ async function renderCarteraVendedor(){
 
 function swCartera(sub){
   currentCarteraSub=sub;
-  ['todos','mia','vencen','resueltas','pendientes'].forEach(s=>{
+  ['todos','mia','vencen','resueltas','pendientes','suscripciones'].forEach(s=>{
     const btn=document.getElementById('carteraSub_'+s);
     if(btn) btn.classList.toggle('active',s===sub);
   });
   if(sub==='pendientes'){ renderPendientesVincular('vendedor'); return; }
+  if(sub==='suscripciones'){ renderTodasSuscripciones('vendedor'); return; }
   const clientes=window._cartClientes||[];
   const hoy=new Date();
   const inicioMes=`${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}-01`;
@@ -6210,6 +6217,7 @@ async function renderDirectorCartera(containerId){
     <div style="display:flex;gap:6px;flex-wrap:wrap;">
       <button onclick="swDirCartera('auditoria')" id="dirCarteraTab_auditoria" class="cartera-subtab active">📊 Auditoría</button>
       <button onclick="swDirCartera('pendientes')" id="dirCarteraTab_pendientes" class="cartera-subtab">🔗 Pendientes de vincular${totalPendientesVincular?` (${totalPendientesVincular})`:''}</button>
+      <button onclick="swDirCartera('suscripciones')" id="dirCarteraTab_suscripciones" class="cartera-subtab">📋 Suscripciones</button>
       <button onclick="swDirCartera('campanas')" id="dirCarteraTab_campanas" class="cartera-subtab">📞 Campañas de cartera</button>
       ${puedeCargarExcel?`<button onclick="abrirCargaExcelSuscripciones()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📎 Cargar Excel de renovaciones</button>`:''}
     </div>
@@ -6222,7 +6230,7 @@ async function renderDirectorCartera(containerId){
 let _dirCarteraSubActual='auditoria';
 function swDirCartera(sub){
   _dirCarteraSubActual=sub;
-  ['auditoria','pendientes','campanas'].forEach(s=>{
+  ['auditoria','pendientes','suscripciones','campanas'].forEach(s=>{
     const btn=document.getElementById('dirCarteraTab_'+s);
     if(btn) btn.classList.toggle('active',s===sub);
   });
@@ -6230,6 +6238,7 @@ function swDirCartera(sub){
   if(!mc) return;
   if(sub==='auditoria') renderDirCarteraAuditoria();
   else if(sub==='pendientes') renderPendientesVincular('director');
+  else if(sub==='suscripciones') renderTodasSuscripciones('director');
   else renderDirCarteraCampanas();
 }
 
@@ -6244,6 +6253,101 @@ function swDirCartera(sub){
 function suscSistemaInfo(s){
   const sis=(window._suscSistemas||[]).find(x=>x.id===s.sistema_id);
   return {nombre:sis?sis.nombre:(s.producto||'Sistema no catalogado'),color:sis?sis.color_accent:'var(--text3)'};
+}
+
+// ── Módulo "Suscripciones" — vista suscripción-primero, separada de la vista
+// cliente-primero de Cartera (Jp, 2026-09-24): buscar por número de serie no
+// funcionaba en Cartera (esa caja solo busca campos del CLIENTE, no de la
+// suscripción), y un caso real (L-MEX Imports, cuenta "SIN-90" sin vendedor
+// asignado desde la migración de junio) mostró que una suscripción ligada a
+// una cuenta sin vendedor queda invisible tanto en "Mi cartera" de cualquier
+// vendedor como en "Pendientes de vincular" (esa solo cubre cliente_id NULO,
+// no cliente-sin-vendedor) — solo aparecía buscando en "Todos los clientes".
+// Esta vista corrige ambos huecos: filtra/busca por la suscripción misma
+// (serie, RFC, razón social, sistema, estado), no por el cliente.
+let suscListFiltroTexto='', suscListFiltroEstado='';
+function onSuscListFiltroChange(scope){
+  suscListFiltroTexto=document.getElementById('suscListFiltroTextoInput')?.value||'';
+  renderTodasSuscripciones(scope);
+}
+function suscListSwEstado(scope,estado){
+  suscListFiltroEstado=(suscListFiltroEstado===estado)?'':estado;
+  renderTodasSuscripciones(scope);
+}
+async function renderTodasSuscripciones(scope){
+  const contId=scope==='director'?'dirCarteraContenidoMain':'carteraContenido';
+  const cont=document.getElementById(contId);
+  if(!cont) return;
+  const clientes=window._cartClientes||[];
+  const clientesPorId={};
+  clientes.forEach(cl=>{clientesPorId[cl.id]=cl;});
+  let suscs=(window._cartSuscripciones||[]).filter(s=>{
+    if(scope==='director') return true; // director/administración: todas, sin importar vendedor
+    if(!s.cliente_id) return false; // vendedor: las sin cuenta van en "Pendientes de vincular", no aquí
+    const cl=clientesPorId[s.cliente_id];
+    return cl&&cl.vendedor_asignado===currentUser.id;
+  });
+  const hoy=new Date();
+  const inicioMes=`${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}-01`;
+  const finMes=new Date(hoy.getFullYear(),hoy.getMonth()+1,0).toISOString().split('T')[0];
+  if(suscListFiltroEstado==='vencen_mes'){
+    suscs=suscs.filter(s=>s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=inicioMes&&s.fecha_proxima_renovacion<=finMes);
+  } else if(suscListFiltroEstado){
+    suscs=suscs.filter(s=>s.estado===suscListFiltroEstado);
+  }
+  const q=(suscListFiltroTexto||'').trim().toLowerCase();
+  if(q){
+    suscs=suscs.filter(s=>{
+      const cl=s.cliente_id?clientesPorId[s.cliente_id]:null;
+      const campos=[s.numserie,s.rfc_reportado,s.razon_social_reportada,cl?.razon_social,cl?.rfc,cl?.num_cliente,s.producto];
+      return campos.some(c=>(c||'').toLowerCase().includes(q));
+    });
+  }
+  const totalSinCta=suscs.filter(s=>!s.cliente_id).length;
+  const totalSinVendedor=scope==='director'?suscs.filter(s=>{const cl=s.cliente_id?clientesPorId[s.cliente_id]:null;return cl&&!cl.vendedor_asignado;}).length:0;
+  const tarjeta=(label,valor,color,key)=>`
+    <button onclick="suscListSwEstado('${scope}','${key}')" style="text-align:left;cursor:pointer;background:${suscListFiltroEstado===key?color+'18':'var(--surface-2,#f8f9fa)'};border:1px solid ${suscListFiltroEstado===key?color:'var(--border)'};border-radius:var(--radsm);padding:10px 12px;font-family:'Inter',sans-serif;">
+      <div style="font-size:10px;color:var(--text3);">${label}</div>
+      <div style="font-size:17px;font-weight:700;color:${color};">${valor}</div>
+    </button>`;
+  cont.innerHTML=`
+    <div style="font-size:12px;color:var(--text3);margin-bottom:10px;">
+      ${scope==='director'?'Todas las suscripciones registradas, tengan o no cuenta/vendedor asignado.':'Solo las suscripciones de tus cuentas asignadas.'}
+    </div>
+    <div style="position:relative;margin-bottom:10px;">
+      <input type="text" id="suscListFiltroTextoInput" placeholder="Buscar por número de serie, RFC, razón social o sistema..." value="${suscListFiltroTexto}" oninput="onSuscListFiltroChange('${scope}')" style="width:100%;padding:8px 36px 8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
+      ${suscListFiltroTexto?`<button onclick="suscListFiltroTexto='';document.getElementById('suscListFiltroTextoInput').value='';renderTodasSuscripciones('${scope}')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;line-height:1;">✕</button>`:''}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:14px;">
+      ${tarjeta('Vencen este mes',(window._cartSuscripciones||[]).filter(s=>{if(scope!=='director'){const cl=s.cliente_id?clientesPorId[s.cliente_id]:null;if(!cl||cl.vendedor_asignado!==currentUser.id)return false;}return s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=inicioMes&&s.fecha_proxima_renovacion<=finMes;}).length,'#F5A623','vencen_mes')}
+      ${tarjeta('Sin reclamar',suscs.filter(s=>s.estado==='sin_reclamar').length,'var(--text3)','sin_reclamar')}
+      ${tarjeta('Reclamadas',suscs.filter(s=>['reclamada','en_revision'].includes(s.estado)).length,'#2980B9','reclamada')}
+      ${tarjeta('Renovadas',suscs.filter(s=>s.estado==='renovada').length,'#27AE60','renovada')}
+      ${tarjeta('No renovadas',suscs.filter(s=>s.estado==='no_renovada').length,'#E84040','no_renovada')}
+    </div>
+    ${scope==='director'&&(totalSinVendedor>0||totalSinCta>0)?`<div style="font-size:11px;color:#B8740A;background:rgba(245,166,35,0.1);border:1px solid rgba(245,166,35,0.3);border-radius:6px;padding:6px 10px;margin-bottom:10px;">⚠ ${totalSinCta>0?`${totalSinCta} sin cuenta ligada (usa "🔗 Vincular"). `:''}${totalSinVendedor>0?`${totalSinVendedor} de cuentas SIN vendedor asignado — nadie las ve en su cartera hoy.`:''}</div>`:''}
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${suscs.length} suscripción${suscs.length===1?'':'es'}${suscListFiltroEstado||q?' (filtradas)':''}</div>
+    <div style="display:grid;gap:6px;">
+      ${suscs.length?suscs.map(s=>{
+        const info=suscSistemaInfo(s);
+        const cl=s.cliente_id?clientesPorId[s.cliente_id]:null;
+        const vend=cl&&cl.vendedor_asignado?(window._carteraVendedores||[]).find(v=>v.id===cl.vendedor_asignado):null;
+        const estadoInfo={sin_reclamar:['Sin reclamar','var(--text3)'],reclamada:['Reclamada','#2980B9'],en_revision:['En revisión','#2980B9'],renovada:['Renovada','#27AE60'],no_renovada:['No renovada','#E84040']}[s.estado]||[s.estado||'—','var(--text3)'];
+        return `<div class="card" style="padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:240px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="background:${info.color}22;color:${info.color};border-radius:4px;padding:1px 8px;font-size:10px;font-weight:700;">${info.nombre}</span>
+              <span style="font-size:13px;font-weight:600;color:var(--text);">${cl?cl.razon_social:(s.razon_social_reportada||'Sin razón social')}</span>
+              <span style="font-size:10px;padding:1px 8px;border-radius:4px;background:${estadoInfo[1]}18;color:${estadoInfo[1]};font-weight:600;">${estadoInfo[0]}</span>
+              ${!cl?'<span style="font-size:10px;padding:1px 8px;border-radius:4px;background:rgba(232,64,64,0.1);color:#E84040;font-weight:600;">Sin cuenta</span>':!cl.vendedor_asignado&&scope==='director'?'<span style="font-size:10px;padding:1px 8px;border-radius:4px;background:rgba(245,166,35,0.12);color:#B8740A;font-weight:600;">Sin vendedor</span>':''}
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-top:3px;font-family:'JetBrains Mono',monospace;">RFC ${(cl?cl.rfc:s.rfc_reportado)||'—'} · serie ${s.numserie||'—'}${s.monto?' · '+fmt(s.monto):''}${s.fecha_proxima_renovacion?' · vence '+fmtFecha(s.fecha_proxima_renovacion):''}${scope==='director'&&vend?' · '+vend.nombre:''}</div>
+          </div>
+          ${cl?`<button onclick="abrirFichaClienteModal('${cl.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:7px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Ver ficha</button>`
+              :`<button onclick="abrirVincularSuscripcion('${s.id}','${scope}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:7px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Vincular</button>`}
+        </div>`;
+      }).join(''):'<div style="text-align:center;padding:40px 20px;color:var(--text3);font-size:13px;">Sin resultados.</div>'}
+    </div>`;
 }
 
 function suscCuentasPermitidasParaVincular(){
