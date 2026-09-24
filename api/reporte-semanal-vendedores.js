@@ -148,10 +148,14 @@ function construirHtml({ nombre, mesNombre, anio, ventaActual, svcMeta, faltante
       <div style="font-size:11px;color:${aplica ? '#27AE60' : '#999'};margin-top:2px;">${aplica ? `✓ Comisión activa (${(tasa * 100).toFixed(0)}% sobre el total)` : (deptoAlcanzado && vendedorCumplioMeta ? 'Aún no alcanza la meta del bono' : 'Retenido — falta cumplir la meta principal de Servicios (depto y/o individual)')}</div>
     </div>`;
 
-  const estadoLabel = { sin_reclamar: ['Sin reclamar', '#999'], reclamada: ['Reclamada', '#2980B9'], en_revision: ['En revisión', '#2980B9'], renovada: ['Renovada', '#27AE60'], no_renovada: ['No renovada', '#E84040'] };
+  // Nota: los colores aquí deben ser hex de 6 dígitos (no shorthand de 3) porque
+  // el badge les concatena "18" para simular opacidad (ej. "#2980B9"+"18" -> hex
+  // de 8 dígitos válido). "#999"+"18" da "#99918", que es inválido y el navegador
+  // lo ignora — por eso se usa "#999999" aquí, no "#999".
+  const estadoLabel = { sin_reclamar: ['Sin reclamar', '#999999'], reclamada: ['Reclamada', '#2980B9'], en_revision: ['En revisión', '#2980B9'], renovada: ['Renovada', '#27AE60'], no_renovada: ['No renovada', '#E84040'] };
   const suscHtml = suscripciones.length
     ? suscripciones.map(s => {
-        const [lbl, col] = estadoLabel[s.estado] || [s.estado || '—', '#999'];
+        const [lbl, col] = estadoLabel[s.estado] || [s.estado || '—', '#999999'];
         return `<div style="padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:12px;">
           <strong>${s.cliente || s.razon_social_reportada || 'Sin razón social'}</strong>
           <span style="float:right;background:${col}18;color:${col};padding:1px 8px;border-radius:4px;font-size:11px;font-weight:600;">${lbl}</span>
