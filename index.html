@@ -966,7 +966,11 @@ async function renderAcademiaDashboard(){
   }
   function filaVencIndividual(f){
     const ac=academiaAccent(f.gen.curso?.sistema?.clave);
-    return `<tr style="border-top:1px solid var(--border);">
+    // Bug reportado por Jp (2026-09-26): esta fila no tenía onclick — a diferencia
+    // de todas las demás filas/tarjetas del Resumen — así que no había forma de
+    // entrar a la ficha del participante desde aquí. Corregido para que abra la
+    // ficha igual que el resto de la tabla de "Próximos vencimientos".
+    return `<tr style="border-top:1px solid var(--border);cursor:pointer;" onclick="academiaVerFicha('${f.insc.id}')">
       <td style="padding:10px 12px;">${f.insc.participante?.nombre||'—'}</td>
       <td><span style="color:${ac.c};font-weight:700;">${f.gen.curso?.sistema?.clave||''}</span> ${f.gen.curso?.nombre||''} · ${f.gen.clave}</td>
       <td>${academiaVigenciaBadge(f.vig)}</td>
@@ -1496,6 +1500,29 @@ function academiaRegistrarNotificacion(inscripcionId,tipo){
   sb.from('academia_notificaciones_envios').insert({
     inscripcion_id:inscripcionId,tipo:tipo||'acceso_lab',enviada_por:currentUser?.id||null,
   }).then(()=>{}).catch(()=>{});
+}
+// Toggle manual de "ya se notificó" (Jp, 2026-09-26): hasta ahora la única forma
+// de que quedara registrado un acceso como notificado era dando clic en el botón
+// de WhatsApp DESDE la app — si Jp/el asesor ya se lo había notificado por otro
+// medio (llamada, en persona, o antes de que existiera este botón), no había
+// forma de marcarlo y seguía apareciendo en "Actividad operativa pendiente" del
+// Resumen. Mismo patrón que academiaToggleEnviada (constancias): a diferencia de
+// ese caso (una columna boolean), aquí el registro es un log de filas en
+// academia_notificaciones_envios, así que "marcar" inserta una fila manual y
+// "desmarcar" borra TODAS las filas tipo='acceso_lab' de esa inscripción (no
+// solo la más reciente) para que el badge no siga mostrando un envío viejo.
+async function academiaToggleNotificacionAcceso(inscripcionId,marcar){
+  if(marcar){
+    const {error}=await sb.from('academia_notificaciones_envios').insert({
+      inscripcion_id:inscripcionId,tipo:'acceso_lab',enviada_por:currentUser?.id||null,
+    });
+    if(error){alert('Error al marcar como notificado: '+error.message);return;}
+  }else{
+    const {error}=await sb.from('academia_notificaciones_envios').delete()
+      .eq('inscripcion_id',inscripcionId).eq('tipo','acceso_lab');
+    if(error){alert('Error al desmarcar: '+error.message);return;}
+  }
+  academiaVerFicha(inscripcionId);
 }
 
 // Bloque de "Fechas de sesión" (opcional) usado tanto en Nueva como en Editar
@@ -2736,7 +2763,7 @@ async function academiaVerFicha(inscripcionId){
         <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
           ${telLimpio?`<a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}?text=${encodeURIComponent(academiaPlantillaAccesoLab(insc,asigVinculada))}" target="_blank" onclick="academiaRegistrarNotificacion('${inscripcionId}','acceso_lab')" style="background:#25D366;color:#fff;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;text-decoration:none;">Enviar por WhatsApp</a>`:''}
           <button class="cartera-subtab" onclick="academiaCopiarPlantillaAccesoLab('${inscripcionId}')">Copiar plantilla</button>
-          ${ultimaNotifAcceso?`<span style="font-size:11px;color:var(--text3);">✓ Notificado ${new Date(ultimaNotifAcceso.enviada_en).toLocaleDateString('es-MX')}</span>`:`<span style="font-size:11px;color:#c0392b;">Aún no se ha notificado</span>`}
+          ${ultimaNotifAcceso?`<span style="font-size:11px;color:var(--text3);">✓ Notificado ${new Date(ultimaNotifAcceso.enviada_en).toLocaleDateString('es-MX')}</span><button class="cartera-subtab" onclick="academiaToggleNotificacionAcceso('${inscripcionId}',false)">Desmarcar</button>`:`<span style="font-size:11px;color:#c0392b;">Aún no se ha notificado</span><button class="cartera-subtab" onclick="academiaToggleNotificacionAcceso('${inscripcionId}',true)">Ya se le notificó</button>`}
         </div>
       </div>
     </div>
