@@ -4218,7 +4218,7 @@ function buildVendorUI(){
   // Fila 2 (consulta/referencia): Cartera, Proyección, Histórico, Promociones, Reglas de comisión
   const _tabsBottom=[];
   if(esVendedor)_tabsBottom.push({l:'💼 Cartera',v:'cartera'});
-  _tabsBottom.push({l:'Proyección',v:'proyeccion'},{l:'Histórico',v:'historico'},{l:'🏷 Promociones',v:'promos'},{l:'📜 Reglas de comisión',v:'reglas'});
+  _tabsBottom.push({l:'Proyección',v:'proyeccion'},{l:'Histórico',v:'historico'},{l:'🏷 Promociones',v:'promos'},{l:'📜 Reglas de comisión',v:'reglas'},{l:'🖥 Servidores',v:'servidores'});
   if(_tabsBottom.length){
     _t2.style.display='flex';
     _t2.innerHTML='';
@@ -4252,6 +4252,7 @@ function swV(id){
   else if(id==='proyeccion')renderProyeccion();
   else if(id==='promos')renderVistaPromociones();
   else if(id==='reglas')renderReglasComision();
+  else if(id==='servidores')renderCatalogoServidores();
   else renderHistorico();
 }
 
@@ -4263,7 +4264,131 @@ async function renderVendor(){
   else if(currentVendTab==='proyeccion')renderProyeccion();
   else if(currentVendTab==='historico')renderHistorico();
   else if(currentVendTab==='promos')renderVistaPromociones();
+  else if(currentVendTab==='servidores')renderCatalogoServidores();
   else renderVendorMiMes();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CATÁLOGO DE SERVIDORES — "Productos Innovaci" (Jp, 2026-09-27)
+// Vista de tarjetas para que cualquier vendedor consulte specs/precios de los
+// servidores Cloud (arrendados con IONOS) y Cloud Esencial (recursos propios).
+// Solo el director puede editar precios/specs — el resto es de solo lectura,
+// igual que Reglas de comisión/Promociones. Precios trimestral/semestral/anual
+// se calculan del precio mensual (5%/8%/10% de descuento, confirmado con el
+// Excel de Jp: mensual×meses×(1-desc), no se capturan aparte).
+// ──────────────────────────────────────────────────────────────────────────────
+const CATSERV_DESC={trimestral:{meses:3,desc:0.05,label:'Trimestral'},semestral:{meses:6,desc:0.08,label:'Semestral'},anual:{meses:12,desc:0.10,label:'Anual'}};
+let catServFiltro='todos';
+
+async function renderCatalogoServidores(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando catálogo...</div>';
+  const {data,error}=await sb.from('productos_servidores').select('*').eq('activo',true).order('categoria').order('orden');
+  if(error){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error cargando el catálogo: ${error.message}</div>`;return;}
+  window._catServRows=data||[];
+  catServPintar();
+}
+
+function catServPintar(){
+  const mc=document.getElementById('mainContent');
+  const esDirector=userProfile?.rol==='director';
+  const rows=(window._catServRows||[]).filter(r=>catServFiltro==='todos'||r.categoria===catServFiltro);
+  function tarjeta(p){
+    const periodos=Object.entries(CATSERV_DESC).map(([key,c])=>{
+      const totalSinDesc=p.precio_mensual*c.meses;
+      const total=totalSinDesc*(1-c.desc);
+      const ahorro=totalSinDesc-total;
+      return `<div style="display:flex;justify-content:space-between;align-items:baseline;padding:4px 0;border-top:1px solid rgba(255,255,255,0.12);">
+        <span style="font-size:11px;opacity:0.85;">${c.label} <span style="opacity:0.6;">(-${Math.round(c.desc*100)}%)</span></span>
+        <span style="text-align:right;"><b>${fmt(total)}</b><br><span style="font-size:10px;opacity:0.7;">ahorras ${fmt(ahorro)}</span></span>
+      </div>`;
+    }).join('');
+    return `<div class="card" style="padding:0;overflow:hidden;display:flex;flex-direction:column;">
+      <div style="padding:14px 16px;background:${p.categoria==='cloud'?'var(--navy)':'#3d5a6c'};color:#fff;">
+        <div style="font-size:14px;font-weight:700;">${p.nombre}</div>
+        <div style="font-size:10px;opacity:0.75;text-transform:uppercase;letter-spacing:.05em;">${p.categoria==='cloud'?'Cloud (IONOS)':'Cloud Esencial (recursos propios)'}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);text-align:center;padding:10px 8px;background:var(--bg2,#f5f6f8);font-size:11px;">
+        <div><div style="color:var(--text3);">vCPU</div><div style="font-weight:700;font-size:15px;">${p.vcpu??'—'}</div></div>
+        <div><div style="color:var(--text3);">RAM (GB)</div><div style="font-weight:700;font-size:15px;">${p.ram_gb??'—'}</div></div>
+        <div><div style="color:var(--text3);">SSD (GB)</div><div style="font-weight:700;font-size:15px;">${p.ssd_gb??'—'}</div></div>
+      </div>
+      <div style="padding:10px 16px;font-size:11px;color:var(--text2);line-height:1.7;flex:1;">
+        ${(p.specs||[]).map(s=>`• ${s}`).join('<br>')}
+      </div>
+      <div style="padding:12px 16px;background:var(--navy);color:#fff;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;">
+          <span style="font-size:11px;opacity:0.8;">Mensual</span>
+          <span style="font-size:18px;font-weight:800;">${fmt(p.precio_mensual)}</span>
+        </div>
+        ${periodos}
+      </div>
+      ${esDirector?`<div style="padding:8px 16px;"><button class="cartera-subtab" style="width:100%;" onclick="catServAbrirEditar('${p.id}')">✎ Editar</button></div>`:''}
+    </div>`;
+  }
+  mc.innerHTML=`
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:16px;">
+    <div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);">🖥 Catálogo de servidores</div>
+      <div style="font-size:12px;color:var(--text3);">Productos Innovaci — specs y precios para consultar con el cliente.</div>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="cartera-subtab ${catServFiltro==='todos'?'active':''}" onclick="catServFiltrar('todos')" style="${catServFiltro==='todos'?'background:var(--navy);color:#fff;':''}">Todos</button>
+      <button class="cartera-subtab" onclick="catServFiltrar('cloud')" style="${catServFiltro==='cloud'?'background:var(--navy);color:#fff;':''}">Cloud</button>
+      <button class="cartera-subtab" onclick="catServFiltrar('esencial')" style="${catServFiltro==='esencial'?'background:var(--navy);color:#fff;':''}">Cloud Esencial</button>
+      ${esDirector?`<button class="cartera-subtab" style="background:var(--teal);color:#fff;" onclick="catServAbrirEditar(null)">+ Nuevo servidor</button>`:''}
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;">
+    ${rows.map(tarjeta).join('')||'<div style="color:var(--text3);font-size:13px;">Sin servidores en esta categoría.</div>'}
+  </div>`;
+}
+
+function catServFiltrar(cat){ catServFiltro=cat; catServPintar(); }
+
+function catServAbrirEditar(id){
+  const p=id?(window._catServRows||[]).find(x=>x.id===id):null;
+  const html=`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Nombre',inp('csNombre','text','Ej. CLOUD INNOXL 1',p?.nombre||''))}
+      ${fld('Categoría',sel('csCategoria',['cloud','esencial'],p?.categoria||'cloud'))}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;">
+      ${fld('vCPU',inp('csVcpu','number','',p?.vcpu??'','min=0'))}
+      ${fld('RAM (GB)',inp('csRam','number','',p?.ram_gb??'','min=0'))}
+      ${fld('SSD (GB)',inp('csSsd','number','',p?.ssd_gb??'','min=0'))}
+      ${fld('RDP usuarios',inp('csRdp','number','',p?.rdp_usuarios??'','min=0'))}
+    </div>
+    <div style="margin-bottom:10px;">${fld('Specs (una por línea)',`<textarea id="csSpecs" rows="6" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${(p?.specs||[]).join('\n')}</textarea>`)}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      ${fld('Precio mensual',inp('csPrecio','number','0',p?.precio_mensual??'','min=0 step=0.01'))}
+      ${fld('Estatus',sel('csActivo',['activo','inactivo'],p?.activo===false?'inactivo':'activo'))}
+    </div>
+    <input type="hidden" id="csId" value="${id||''}">`;
+  mkModal('modalCatServ',id?'Editar servidor':'Nuevo servidor',html,'catServGuardar',undefined,true);
+}
+
+async function catServGuardar(){
+  const id=document.getElementById('csId')?.value||null;
+  const payload={
+    nombre:document.getElementById('csNombre')?.value.trim(),
+    categoria:document.getElementById('csCategoria')?.value||'cloud',
+    vcpu:parseInt(document.getElementById('csVcpu')?.value)||null,
+    ram_gb:parseInt(document.getElementById('csRam')?.value)||null,
+    ssd_gb:parseInt(document.getElementById('csSsd')?.value)||null,
+    rdp_usuarios:parseInt(document.getElementById('csRdp')?.value)||null,
+    specs:(document.getElementById('csSpecs')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean),
+    precio_mensual:parseFloat(document.getElementById('csPrecio')?.value)||0,
+    activo:document.getElementById('csActivo')?.value!=='inactivo',
+    updated_at:new Date().toISOString(),
+  };
+  if(!payload.nombre){alert('El nombre es obligatorio.');return;}
+  let error;
+  if(id){ ({error}=await sb.from('productos_servidores').update(payload).eq('id',id)); }
+  else { const maxOrden=Math.max(0,...(window._catServRows||[]).map(r=>r.orden||0)); ({error}=await sb.from('productos_servidores').insert({...payload,orden:maxOrden+1})); }
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalCatServ')?.remove();
+  renderCatalogoServidores();
 }
 
 async function renderVendorMiMes(){
@@ -7188,6 +7313,7 @@ const VENTAS_SUBTABS=[
   {id:'cartera',label:'💼 Cartera'},
   {id:'proyecciondir',label:'📊 Proyección'},
   {id:'promociones',label:'🏷 Promociones'},
+  {id:'servidores',label:'🖥 Servidores'},
 ];
 let currentDirArea='ventas';
 let currentDirTab='resumen';
@@ -7241,6 +7367,7 @@ function renderDirectorTab(){
   else if(id==='cartera')renderDirectorCartera();
   else if(id==='proyecciondir')renderDirectorProyeccion();
   else if(id==='promociones')renderDirectorPromociones();
+  else if(id==='servidores')renderCatalogoServidores();
   else renderDirectorResumen();
 }
 
