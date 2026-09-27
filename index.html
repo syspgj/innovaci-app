@@ -15222,10 +15222,14 @@ async function fiAsegurarCacheAlumnos(){
 // Todo lo de abajo acepta un prefijo de ids (por default 'fi', la modal de
 // "Nueva factura"; la modal de Editar factura pasa 'eii' para no chocar ids
 // si algún día ambas modales llegaran a convivir en el DOM).
-async function fiSugerirClienteCartera(p='fi'){
+// esFoco=true (al entrar al campo con clic): solo muestra sugerencias, sin
+// desligar la cuenta ya ligada — para que Jp pueda re-abrir la lista sin
+// perder la liga con solo dar clic en el campo. Escribir (oninput) sí
+// desliga, porque el nombre ya no coincide con lo ligado.
+async function fiSugerirClienteCartera(p='fi',esFoco=false){
   const q=(document.getElementById(p+'Cliente')?.value||'').trim().toLowerCase();
   const box=document.getElementById(p+'ClienteSugs');
-  document.getElementById(p+'ClienteCarteraId').value='';
+  if(!esFoco) fiQuitarLigaCliente(p,false);
   if(!box||q.length<3){ if(box)box.style.display='none'; return; }
   await fiAsegurarCacheClientes();
   const rmAcentos=s=>s.normalize('NFD').replace(/[̀-ͯ]/g,'');
@@ -15234,9 +15238,36 @@ async function fiSugerirClienteCartera(p='fi'){
     const n=rmAcentos((c.razon_social||'').toLowerCase());
     return n.includes(qn)||(c.rfc||'').toLowerCase().includes(q)||(c.alias_nombres||[]).some(a=>(a||'').toLowerCase().includes(q));
   }).slice(0,6);
-  if(!res.length){ box.style.display='none'; return; }
-  box.innerHTML=res.map(c=>`<div style="padding:6px 10px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--border);" onmousedown="event.preventDefault();document.getElementById('${p}Cliente').value='${(c.razon_social||'').replace(/'/g,"\\'")}';document.getElementById('${p}ClienteCarteraId').value='${c.id}';document.getElementById('${p}ClienteSugs').style.display='none';document.getElementById('${p}ClienteLigado').style.display='inline';">${c.razon_social}${c.num_cliente?` <span style="color:var(--text3);">· ${c.num_cliente}</span>`:''}</div>`).join('');
+  if(!res.length){ box.innerHTML='<div style="padding:6px 10px;font-size:11px;color:var(--text3);">Sin coincidencias en Cartera — se guardará solo como texto.</div>'; box.style.display='block'; return; }
+  box.innerHTML=res.map(c=>`<div style="padding:6px 10px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--border);" onmousedown="event.preventDefault();fiLigarCliente('${p}','${c.id}','${(c.razon_social||'').replace(/'/g,"\\'")}')">${c.razon_social}${c.num_cliente?` <span style="color:var(--text3);">· ${c.num_cliente}</span>`:''}</div>`).join('');
   box.style.display='block';
+}
+function fiLigarCliente(p,id,razonSocial){
+  document.getElementById(p+'Cliente').value=razonSocial;
+  document.getElementById(p+'ClienteCarteraId').value=id;
+  document.getElementById(p+'ClienteSugs').style.display='none';
+  document.getElementById(p+'ClienteLigado').style.display='inline';
+  document.getElementById(p+'ClienteLigadoNombre').textContent=razonSocial;
+  document.getElementById(p+'ClienteSinLigar').style.display='none';
+}
+function fiQuitarLigaCliente(p,ocultarSugs=true){
+  document.getElementById(p+'ClienteCarteraId').value='';
+  const ligado=document.getElementById(p+'ClienteLigado'); if(ligado) ligado.style.display='none';
+  const sinLigar=document.getElementById(p+'ClienteSinLigar'); if(sinLigar) sinLigar.style.display='inline';
+  if(ocultarSugs){ const box=document.getElementById(p+'ClienteSugs'); if(box) box.style.display='none'; }
+}
+
+function fiClienteCarteraHtml(p='fi',cliente='',clienteCarteraId='',clienteCarteraNombre=''){
+  return `
+    <div style="margin-bottom:10px;position:relative;">
+      ${fld('Cliente',inp(p+'Cliente','text','Nombre del cliente',cliente,`oninput="fiSugerirClienteCartera('${p}')" onfocus="fiSugerirClienteCartera('${p}',true)"`))}
+      <div id="${p}ClienteSugs" style="display:none;position:absolute;z-index:20;background:#fff;border:1px solid var(--border);border-radius:6px;width:100%;max-height:200px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.1);"></div>
+      <input id="${p}ClienteCarteraId" type="hidden" value="${clienteCarteraId||''}">
+      <div style="margin-top:4px;font-size:11px;">
+        <span id="${p}ClienteLigado" style="display:${clienteCarteraId?'inline':'none'};color:var(--teal);font-weight:600;">🔗 Ligado a Cartera: <span id="${p}ClienteLigadoNombre">${clienteCarteraNombre}</span> · <a href="#" onmousedown="event.preventDefault();fiQuitarLigaCliente('${p}')" style="color:var(--text3);">quitar liga</a></span>
+        <span id="${p}ClienteSinLigar" style="display:${clienteCarteraId?'none':'inline'};color:var(--text3);">Sin ligar a Cartera de Cuentas — escribe o da clic aquí para buscar (opcional)</span>
+      </div>
+    </div>`;
 }
 
 function fiToggleAlumnoBlock(p='fi'){
@@ -15292,15 +15323,10 @@ function abrirNuevaFactIngreso(){
       ${fld('Fecha',inp('fiFecha','date','',today))}
       ${fld('Folio',inp('fiFolio','text','Ej. INN215'))}
     </div>
-    <div style="margin-bottom:10px;position:relative;">
-      ${fld('Cliente',inp('fiCliente','text','Nombre del cliente','','oninput="fiSugerirClienteCartera()"'))}
-      <div id="fiClienteSugs" style="display:none;position:absolute;z-index:20;background:#fff;border:1px solid var(--border);border-radius:6px;width:100%;max-height:200px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.1);"></div>
-      <input id="fiClienteCarteraId" type="hidden" value="">
-      <span id="fiClienteLigado" style="display:none;font-size:10px;color:var(--teal);font-weight:600;">🔗 ligado a Cartera de Cuentas</span>
-    </div>
+    ${fiClienteCarteraHtml('fi')}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Vendedor',sel('fiVendedor',['','DULCE SOLANO','MANUEL PEÑA','MIREYA','EDUARDO','CARLOS','GUILLERMO BLANCAS']))}
-      ${fld('Rubro',`<select id="fiRubroSel" onchange="if(this.value==='OTRO'){document.getElementById('fiRubroOtro').style.display='block'}else{document.getElementById('fiRubroOtro').style.display='none';document.getElementById('fiRubro').value=this.value};fiToggleAlumnoBlock()" style="${INP}">${rubros.map(r=>`<option>${r}</option>`).join('')}<option value="OTRO">+ Otro...</option></select><input id="fiRubroOtro" type="text" placeholder="Nuevo rubro..." oninput="fiToggleAlumnoBlock()" style="${INP}margin-top:4px;display:none;"><input id="fiRubro" type="hidden" value="${rubros[0]}">`)}}
+      ${fld('Rubro',`<select id="fiRubroSel" onchange="if(this.value==='OTRO'){document.getElementById('fiRubroOtro').style.display='block'}else{document.getElementById('fiRubroOtro').style.display='none';document.getElementById('fiRubro').value=this.value};fiToggleAlumnoBlock()" style="${INP}">${rubros.map(r=>`<option>${r}</option>`).join('')}<option value="OTRO">+ Otro...</option></select><input id="fiRubroOtro" type="text" placeholder="Nuevo rubro..." oninput="fiToggleAlumnoBlock()" style="${INP}margin-top:4px;display:none;"><input id="fiRubro" type="hidden" value="${rubros[0]}">`)}
     </div>
     <div style="margin-bottom:10px;">${fld('Concepto',inp('fiConcepto','text','Descripción del servicio'))}</div>
     ${fiAlumnoHtml()}
@@ -15552,16 +15578,16 @@ async function editarIngreso(id){
   await fiAsegurarCacheClientes();
   const clienteCarteraPrevio=r.cliente_cartera_id?(window._cartClientes||[]).find(c=>c.id===r.cliente_cartera_id):null;
   const html=`
+    <div style="background:rgba(0,169,157,0.06);border:1px dashed var(--teal);border-radius:8px;padding:10px 12px;margin-bottom:12px;display:flex;align-items:center;gap:10px;">
+      <span style="font-size:12px;font-weight:600;color:var(--teal);">📎 ${r.xml_path?'Reemplazar XML SAT':'Cargar XML SAT'}</span>
+      <input type="file" id="eiiXmlFile" accept=".xml" onchange="editarIngresoParsearXml()" style="font-size:11px;flex:1;">
+      ${r.xml_path?'<span style="font-size:10px;color:var(--teal);font-weight:600;">🔗 ya tiene XML</span>':''}
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha',inp('eiiFecha','date','',r.fecha||''))}
       ${fld('Folio',inp('eiiFolio','text','',r.folio||''))}
     </div>
-    <div style="margin-bottom:10px;position:relative;">
-      ${fld('Cliente',inp('eiiCliente','text','',r.cliente||'','oninput="fiSugerirClienteCartera(\'eii\')"'))}
-      <div id="eiiClienteSugs" style="display:none;position:absolute;z-index:20;background:#fff;border:1px solid var(--border);border-radius:6px;width:100%;max-height:200px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.1);"></div>
-      <input id="eiiClienteCarteraId" type="hidden" value="${r.cliente_cartera_id||''}">
-      <span id="eiiClienteLigado" style="display:${clienteCarteraPrevio?'inline':'none'};font-size:10px;color:var(--teal);font-weight:600;">🔗 ligado a Cartera de Cuentas${clienteCarteraPrevio?' — '+clienteCarteraPrevio.razon_social:''}</span>
-    </div>
+    ${fiClienteCarteraHtml('eii',r.cliente||'',r.cliente_cartera_id||'',clienteCarteraPrevio?.razon_social||'')}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Vendedor',sel('eiiVendedor',['','DULCE SOLANO','MANUEL PEÑA','MIREYA','EDUARDO','CARLOS','GUILLERMO BLANCAS'],r.vendedor||''))}
       ${fld('Rubro',(()=>{const opts=(window._rubrosIng||[]);const hasOther=r.rubro&&!opts.includes(r.rubro);return`<select id="eiiRubroSel" onchange="document.getElementById('eiiRubro').value=this.value==='__otro__'?'':this.value;document.getElementById('eiiRubroOtro').style.display=this.value==='__otro__'?'block':'none';fiToggleAlumnoBlock('eii')" style="${INP}"><option value="">-- Seleccionar --</option>${opts.map(o=>`<option value="${o}" ${r.rubro===o?'selected':''}>${o}</option>`).join('')}<option value="__otro__" ${hasOther?'selected':''}>+ Otro...</option></select><input id="eiiRubroOtro" type="text" value="${hasOther?r.rubro:''}" placeholder="Nuevo rubro..." oninput="fiToggleAlumnoBlock('eii')" style="${INP}margin-top:4px;display:${hasOther?'block':'none'};"><input id="eiiRubro" type="hidden" value="${r.rubro||''}">`;})())}
@@ -15623,12 +15649,41 @@ async function guardarEdicionIngreso(){
     complemento_pago:document.getElementById('eiiComplemento')?.value.trim()||null,
   };
   payload.cobrado=payload.estatus==='PAGADA';
+  // XML subido desde Editar factura (Jp, 2026-09-27): se sube a Storage igual
+  // que en "Nueva factura" y se liga con xml_path.
+  if(window._eiiXmlText){
+    const path=await subirXMLStorage(window._eiiXmlText,'ingresos',payload.folio);
+    if(path) payload.xml_path=path;
+    window._eiiXmlText=null;
+  }
   const {error}=await sb.from('fact_ingresos').update(payload).eq('id',id);
   if(error){alert('Error: '+error.message);return;}
   const row=(window._fiRows||[]).find(r=>r.id===id);
   if(row) Object.assign(row,payload);
   document.getElementById('modalIngEdit')?.remove();
   renderIngresosTabla();
+}
+
+// Prellena Folio/Concepto/UUID/Cliente al subir el XML desde Editar factura —
+// solo rellena lo que esté vacío para no pisar lo que ya se haya capturado
+// a mano; el UUID sí se sobreescribe siempre porque viene tal cual del SAT.
+async function editarIngresoParsearXml(){
+  const file=document.getElementById('eiiXmlFile')?.files?.[0];
+  if(!file)return;
+  const txt=await file.text();
+  window._eiiXmlText=txt;
+  const d=parsearCFDI(txt);
+  const setIfEmpty=(elId,val)=>{ const el=document.getElementById(elId); if(el && !el.value?.trim() && val) el.value=val; };
+  setIfEmpty('eiiFolio',d.folio);
+  setIfEmpty('eiiConcepto',d.concepto);
+  setIfEmpty('eiiSubOrig',d.subtotal||'');
+  setIfEmpty('eiiIva',d.ivaTras||'');
+  setIfEmpty('eiiTotal',d.total||'');
+  if(document.getElementById('eiiComplemento')&&d.uuid) document.getElementById('eiiComplemento').value=d.uuid;
+  if(d.cliente && !document.getElementById('eiiCliente')?.value?.trim()){
+    document.getElementById('eiiCliente').value=d.cliente;
+    fiSugerirClienteCartera('eii');
+  }
 }
 
 // ─── MODAL EGRESO NUEVO ───────────────────────────────────────────────────────
