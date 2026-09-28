@@ -2503,8 +2503,26 @@ async function academiaGuardarNuevoAsistente(generacionId){
   const gen=cache?.gen;
   const empresa=document.getElementById('naEmpresa')?.value?.trim()||nombre;
 
-  const {data:clienteId,error:errCliente}=await sb.rpc('academia_find_or_create_cliente',{p_razon_social:empresa});
-  if(errCliente){alert('Error al buscar/crear la cuenta en Cartera: '+errCliente.message);return;}
+  // Desde Academia ya NO se dan de alta cuentas nuevas en Cartera (Jp,
+  // 2026-09-27): el alumno solo se liga a una cuenta que YA exista (dada de
+  // alta desde Facturación). Si no se encuentra, el participante se guarda
+  // sin cuenta ligada — se liga manualmente después (Finanzas/Cartera) en
+  // cuanto Facturación la dé de alta.
+  let clienteId=null;
+  if(empresa){
+    const {data:matchCliente,error:errBuscar}=await sb.from('clientes_cartera')
+      .select('id,razon_social,num_cliente')
+      .ilike('razon_social',empresa)
+      .limit(1)
+      .maybeSingle();
+    if(errBuscar){alert('Error al buscar la cuenta en Cartera: '+errBuscar.message);return;}
+    if(matchCliente){
+      clienteId=matchCliente.id;
+    }else{
+      const continuar=confirm('La empresa/razón social "'+empresa+'" todavía no existe en Cartera de Cuentas (probablemente aún no se ha facturado/dado de alta desde Facturación).\n\nEl participante se guardará SIN cuenta principal ligada. En cuanto exista en Facturación, se podrá ligar manualmente desde Finanzas o Cartera.\n\n¿Continuar de todas formas?');
+      if(!continuar)return;
+    }
+  }
 
   const {data:participanteId,error:errPart}=await sb.rpc('academia_find_or_create_participante',{
     p_nombre:nombre,
@@ -15538,6 +15556,13 @@ async function guardarFactIngreso(){
     if(errAlum){alert('La factura se va a guardar, pero no se pudo dar de alta al alumno nuevo: '+errAlum.message+'. Puedes ligarlo después editando la factura.');}
     else academia_participante_id=pid;
   }
+  // Sincroniza la cuenta principal del alumno con la de esta factura (Jp,
+  // 2026-09-27): si el alumno ya existía en Academia con otra cuenta ligada
+  // (o ninguna), se actualiza para que su ficha siempre refleje la cuenta
+  // correcta y no quede apuntando a una cuenta vieja/duplicada.
+  if(academia_participante_id && cliente_cartera_id){
+    await sb.from('academia_participantes').update({cliente_cartera_id}).eq('id',academia_participante_id);
+  }
   const {data:newRow,error}=await sb.from('fact_ingresos').insert({
     anio:currentYear,mes:currentMonth,fecha,folio,serie,cliente,vendedor,concepto,rubro,
     subtotal_original,descuento,subtotal_final,iva,total,forma_pago,estatus,fecha_pago,cobrado,conciliado:false,
@@ -15756,6 +15781,12 @@ async function guardarEdicionIngreso(){
     });
     if(errAlum){alert('Se va a guardar la factura, pero no se pudo dar de alta al alumno nuevo: '+errAlum.message);}
     else academia_participante_id=pid;
+  }
+  // Sincroniza la cuenta principal del alumno con la de esta factura (Jp,
+  // 2026-09-27): evita que la ficha del alumno quede apuntando a una cuenta
+  // vieja/duplicada cuando aquí se liga o corrige la cuenta correcta.
+  if(academia_participante_id && cliente_cartera_id){
+    await sb.from('academia_participantes').update({cliente_cartera_id}).eq('id',academia_participante_id);
   }
   const payload={
     fecha:document.getElementById('eiiFecha')?.value||null,
