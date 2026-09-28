@@ -424,7 +424,7 @@ function calcBonoTrimestral(svcPorMes, metaPorMes){
 // candado que la comisión base (depto Y meta individual de Servicios cumplidos).
 // Se paga sobre el TOTAL facturado del mes en cuanto se alcanza la meta (no solo
 // el excedente) — confirmado con Jp.
-const META_ASPEL_CRUZADA=50000, TASA_ASPEL_CRUZADA=0.03; // rubros: RENTA ASPEL + TIMBRES
+const META_ASPEL_CRUZADA=50000, TASA_ASPEL_CRUZADA=0.03; // rubros: SISTEMA ASPEL + TIMBRES (Jp, 2026-09-28 — antes decía RENTA ASPEL por error)
 const META_CURSOS247=40000, TASA_CURSOS247=0.05; // rubro: 24/7
 
 function calcBonoAspelCruzada(montoAspel, deptoAlcanzo, vendedorCumplioMetaIndividual){
@@ -432,7 +432,7 @@ function calcBonoAspelCruzada(montoAspel, deptoAlcanzo, vendedorCumplioMetaIndiv
   if(!deptoAlcanzo) return {monto:0, aplica:false, motivo:'Depto no ha alcanzado su meta — bono retenido'};
   if(!vendedorCumplioMetaIndividual) return {monto:0, aplica:false, motivo:'Meta individual de Servicios no cumplida — bono retenido'};
   if(m<META_ASPEL_CRUZADA) return {monto:0, aplica:false, motivo:`${fmt(m)} de ${fmt(META_ASPEL_CRUZADA)} — falta ${fmt(META_ASPEL_CRUZADA-m)}`};
-  return {monto:m*TASA_ASPEL_CRUZADA, aplica:true, motivo:`3% sobre ${fmt(m)} facturado (Renta Aspel + Timbres)`};
+  return {monto:m*TASA_ASPEL_CRUZADA, aplica:true, motivo:`3% sobre ${fmt(m)} facturado, sin IVA (Sistema Aspel + Timbres)`};
 }
 
 function calcBonoCursos247(monto247, deptoAlcanzo, vendedorCumplioMetaIndividual){
@@ -4654,13 +4654,20 @@ async function renderVendorMiMes(){
   const vendFiltroFact=vendedorFactIngresosFiltro(userProfile);
   let montoAspelCruzada=0, monto247=0;
   if(vendFiltroFact){
-    const {data:factMes}=await sb.from('fact_ingresos').select('rubro,total,vendedor,cobrado')
+    const {data:factMes}=await sb.from('fact_ingresos').select('rubro,total,subtotal_original,descuento,vendedor,cobrado')
       .eq('anio',currentYear).eq('mes',currentMonth).eq('cobrado',true)
       .ilike('vendedor','%'+vendFiltroFact+'%');
     (factMes||[]).forEach(r=>{
       const rub=(r.rubro||'').toUpperCase();
-      if(rub==='RENTA ASPEL'||rub==='TIMBRES') montoAspelCruzada+=r.total||0;
-      else if(rub==='24/7') monto247+=r.total||0;
+      // Base = Subtotal - Descuento (sin IVA), confirmado con Jp 2026-09-28 —
+      // antes se sumaba r.total (con IVA), lo que inflaba el bono.
+      const base=(r.subtotal_original||0)-(r.descuento||0);
+      // Rubros de venta cruzada Aspel = SISTEMA ASPEL + TIMBRES (Jp, 2026-09-28).
+      // "RENTA ASPEL" y "POLIZA ASPEL" quedan fuera explícitamente — antes se
+      // buscaba 'RENTA ASPEL', que casi no se usa, y por eso se perdían las
+      // facturas reales de SISTEMA ASPEL.
+      if(rub==='SISTEMA ASPEL'||rub==='TIMBRES') montoAspelCruzada+=base;
+      else if(rub==='24/7') monto247+=base;
     });
   }
   const vendedorCumplioMetaSvc=tot.svc>=svcMeta;
