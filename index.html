@@ -4236,7 +4236,7 @@ function buildVendorUI(){
   // Fila 2 (consulta/referencia): Cartera, Proyección, Histórico, Promociones, Reglas de comisión
   const _tabsBottom=[];
   if(esVendedor)_tabsBottom.push({l:'💼 Cartera',v:'cartera'});
-  _tabsBottom.push({l:'Proyección',v:'proyeccion'},{l:'Histórico',v:'historico'},{l:'🏷 Promociones',v:'promos'},{l:'📜 Reglas de comisión',v:'reglas'},{l:'🖥 Servidores',v:'servidores'});
+  _tabsBottom.push({l:'Proyección',v:'proyeccion'},{l:'Histórico',v:'historico'},{l:'🏷 Promociones',v:'promos'},{l:'📜 Reglas de comisión',v:'reglas'},{l:'🖥 Servidores',v:'servidores'},{l:'🔑 Licencias TS Plus',v:'tsplus'});
   if(_tabsBottom.length){
     _t2.style.display='flex';
     _t2.innerHTML='';
@@ -4271,6 +4271,7 @@ function swV(id){
   else if(id==='promos')renderVistaPromociones();
   else if(id==='reglas')renderReglasComision();
   else if(id==='servidores')renderCatalogoServidores();
+  else if(id==='tsplus')renderCatalogoTSPlus();
   else renderHistorico();
 }
 
@@ -4283,6 +4284,7 @@ async function renderVendor(){
   else if(currentVendTab==='historico')renderHistorico();
   else if(currentVendTab==='promos')renderVistaPromociones();
   else if(currentVendTab==='servidores')renderCatalogoServidores();
+  else if(currentVendTab==='tsplus')renderCatalogoTSPlus();
   else renderVendorMiMes();
 }
 
@@ -4407,6 +4409,166 @@ async function catServGuardar(){
   if(error){alert('Error: '+error.message);return;}
   document.getElementById('modalCatServ')?.remove();
   renderCatalogoServidores();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CATÁLOGO DE LICENCIAS TS PLUS — "Productos Innovaci" (Jp, 2026-09-28)
+// Precios de lista del proveedor (Asciende Computación / TS Plus LATAM) en USD.
+// Se muestran a ventas ya convertidos a MXN: precio_usd × tipo de cambio × (1 +
+// margen%). Tipo de cambio y margen son editables por el director (ts_plus_config,
+// fila única). TS Plus no maneja "renovaciones" sino actualización de póliza —
+// mientras se sigue pagando, da derecho a las actualizaciones (Jp, 2026-09-28).
+// ──────────────────────────────────────────────────────────────────────────────
+let tsPlusTipo='nueva';
+
+async function renderCatalogoTSPlus(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando licencias...</div>';
+  const [{data:rows,error:errRows},{data:cfgRow,error:errCfg}]=await Promise.all([
+    sb.from('productos_ts_plus').select('*').eq('activo',true).order('orden'),
+    sb.from('ts_plus_config').select('*').eq('id',1).maybeSingle(),
+  ]);
+  if(errRows){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error cargando licencias: ${errRows.message}</div>`;return;}
+  window._tsPlusRows=rows||[];
+  window._tsPlusConfig=cfgRow||{tipo_cambio:21,margen_pct:15};
+  tsPlusPintar();
+}
+
+function tsPlusMXN(precioUsd){
+  const cfg=window._tsPlusConfig||{tipo_cambio:21,margen_pct:15};
+  return precioUsd*cfg.tipo_cambio*(1+(cfg.margen_pct||0)/100);
+}
+
+function tsPlusTablaAnios(rowsCat,tituloCol){
+  const grupos=[];
+  rowsCat.forEach(r=>{
+    const key=r.usuarios?`${r.edicion} — ${r.usuarios}`:r.edicion;
+    let g=grupos.find(x=>x.key===key);
+    if(!g){g={key,anios:{}};grupos.push(g);}
+    g.anios[r.anios||1]=r;
+  });
+  const aniosCols=[...new Set(rowsCat.map(r=>r.anios||1))].sort((a,b)=>a-b);
+  const esDirector=userProfile?.rol==='director';
+  return `<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:4px;">
+    <thead><tr style="background:var(--bg2,#f5f6f8);">
+      <th style="text-align:left;padding:6px 10px;">${tituloCol}</th>
+      ${aniosCols.map(a=>`<th style="text-align:right;padding:6px 10px;">${a===1&&rowsCat.some(r=>r.categoria==='remote_support')?'Suscripción':a+' año'+(a>1?'s':'')}</th>`).join('')}
+    </tr></thead>
+    <tbody>
+      ${grupos.map(g=>`<tr style="border-top:1px solid var(--border);">
+        <td style="padding:6px 10px;">${g.key}</td>
+        ${aniosCols.map(a=>{
+          const r=g.anios[a];
+          if(!r)return '<td style="padding:6px 10px;text-align:right;color:var(--text3);">—</td>';
+          const mxn=tsPlusMXN(r.precio);
+          return `<td style="padding:6px 10px;text-align:right;${esDirector?'cursor:pointer;text-decoration:underline dotted;':''}" ${esDirector?`onclick="tsPlusEditarPrecio('${r.id}')" title="Precio lista: $${r.precio} USD — clic para editar"`:`title="Precio lista: $${r.precio} USD"`}>${fmt(mxn)}</td>`;
+        }).join('')}
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
+function tsPlusPintar(){
+  const mc=document.getElementById('mainContent');
+  const esDirector=userProfile?.rol==='director';
+  const rows=window._tsPlusRows||[];
+  const cfg=window._tsPlusConfig||{tipo_cambio:21,margen_pct:15};
+  const lic=rows.filter(r=>r.seccion==='licencias' && r.tipo===tsPlusTipo);
+  const instalacion=rows.filter(r=>r.seccion==='instalacion');
+
+  const remoteAccess=lic.filter(r=>r.categoria==='remote_access');
+  const advSec=lic.filter(r=>r.categoria==='advanced_security');
+  const dosFA=lic.filter(r=>r.categoria==='2fa');
+  const monitoring=lic.filter(r=>r.categoria==='server_monitoring');
+  const remoteSupport=lic.filter(r=>r.categoria==='remote_support');
+
+  function bloque(titulo,desc,rowsCat,tituloCol){
+    if(!rowsCat.length)return '';
+    return `<div class="card" style="padding:14px 16px;margin-bottom:14px;">
+      <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:2px;">${titulo}</div>
+      ${desc?`<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${desc}</div>`:''}
+      ${tsPlusTablaAnios(rowsCat,tituloCol)}
+    </div>`;
+  }
+
+  mc.innerHTML=`
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+    <div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);">🔑 Licencias TS Plus</div>
+      <div style="font-size:12px;color:var(--text3);">Productos Innovaci — escritorio remoto para los servidores en la nube. Precios en pesos, ya con margen.</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button class="cartera-subtab ${tsPlusTipo==='nueva'?'active':''}" style="${tsPlusTipo==='nueva'?'background:var(--navy);color:#fff;':''}" onclick="tsPlusToggleTipo('nueva')">Licencias nuevas</button>
+      <button class="cartera-subtab ${tsPlusTipo==='actualizacion'?'active':''}" style="${tsPlusTipo==='actualizacion'?'background:var(--navy);color:#fff;':''}" onclick="tsPlusToggleTipo('actualizacion')">Actualización de póliza</button>
+    </div>
+  </div>
+  ${tsPlusTipo==='actualizacion'?`<div style="font-size:11px;color:var(--text3);margin-bottom:10px;">TS Plus no maneja "renovaciones": mientras se sigue pagando la actualización anual, se tiene derecho a las nuevas versiones. Este es el costo de esa actualización.</div>`:''}
+  ${esDirector?`<div style="font-size:11px;color:var(--text3);margin-bottom:14px;padding:8px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+    <span>Tipo de cambio: <b>$${Number(cfg.tipo_cambio).toFixed(2)}</b> MXN/USD &nbsp;·&nbsp; Margen: <b>${Number(cfg.margen_pct)}%</b></span>
+    <button class="cartera-subtab" onclick="tsPlusAbrirConfig()">⚙️ Editar tipo de cambio / margen</button>
+  </div>`:''}
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:14px;align-items:start;">
+    <div>
+      ${bloque('🖥 TS Remote Access','Licencia de usuarios para conexión remota. Desktop, Web Mobile o Enterprise.',remoteAccess,'Edición — usuarios')}
+      ${bloque('🛡 Advanced Security (Servidor)','Bloqueo anti-hackers, licencia por servidor.',advSec,'Edición')}
+      ${bloque('🔐 2FA (Servidor)','Autenticación de 2 factores.',dosFA,'Edición')}
+    </div>
+    <div>
+      ${bloque('📊 Server Monitoring','Supervisión de servicios y recursos del servidor.',monitoring,'Plan')}
+      ${bloque('🎧 Remote Support','Soporte remoto con sesiones compartidas — suscripción anual.',remoteSupport,'Plan — conexiones')}
+    </div>
+  </div>
+
+  <div class="card" style="padding:14px 16px;margin-top:18px;">
+    <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:2px;">🛠 Servicios de instalación</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Configuración e implementación — en pesos mexicanos, ya con IVA, tal cual el proveedor (no lleva tipo de cambio ni margen).</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <tbody>
+        ${instalacion.map(r=>`<tr style="border-top:1px solid var(--border);">
+          <td style="padding:6px 10px;">${r.edicion}${r.usuarios?` — ${r.usuarios}`:''}</td>
+          <td style="padding:6px 10px;text-align:right;${esDirector?'cursor:pointer;text-decoration:underline dotted;':''}" ${esDirector?`onclick="tsPlusEditarPrecio('${r.id}')"`:''}>${r.precio!=null?(r.notas==='Desde'?'Desde ':'')+fmt(r.precio):(r.notas||'—')}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function tsPlusToggleTipo(t){ tsPlusTipo=t; tsPlusPintar(); }
+
+function tsPlusAbrirConfig(){
+  const cfg=window._tsPlusConfig||{tipo_cambio:21,margen_pct:15};
+  const html=`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      ${fld('Tipo de cambio (MXN por USD)',inp('tpcTipoCambio','number',21,cfg.tipo_cambio,'min=0 step=0.01'))}
+      ${fld('Margen (%)',inp('tpcMargen','number',15,cfg.margen_pct,'min=0 step=0.1'))}
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin-top:8px;">Precio mostrado a ventas = precio lista (USD) × tipo de cambio × (1 + margen%).</div>`;
+  mkModal('modalTsPlusConfig','⚙️ Tipo de cambio y margen — Licencias TS Plus',html,'tsPlusGuardarConfig',undefined,false);
+}
+
+async function tsPlusGuardarConfig(){
+  const tipo_cambio=parseFloat(document.getElementById('tpcTipoCambio')?.value)||21;
+  const margen_pct=parseFloat(document.getElementById('tpcMargen')?.value)||0;
+  const {error}=await sb.from('ts_plus_config').update({tipo_cambio,margen_pct,updated_at:new Date().toISOString()}).eq('id',1);
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalTsPlusConfig')?.remove();
+  renderCatalogoTSPlus();
+}
+
+function tsPlusEditarPrecio(id){
+  const r=(window._tsPlusRows||[]).find(x=>x.id===id);
+  if(!r)return;
+  const label=`${r.edicion}${r.usuarios?' — '+r.usuarios:''}${r.anios?' — '+r.anios+' año(s)':''} (${r.moneda})`;
+  const actual=r.precio==null?'':r.precio;
+  const nuevo=prompt('Nuevo precio de lista para:\n'+label+'\n\n(en '+r.moneda+', tal como lo da el proveedor)',actual);
+  if(nuevo===null)return;
+  const val=nuevo.trim()===''?null:parseFloat(nuevo);
+  if(nuevo.trim()!==''&&isNaN(val)){alert('Precio inválido.');return;}
+  sb.from('productos_ts_plus').update({precio:val,updated_at:new Date().toISOString()}).eq('id',id).then(({error})=>{
+    if(error){alert('Error: '+error.message);return;}
+    renderCatalogoTSPlus();
+  });
 }
 
 async function renderVendorMiMes(){
@@ -7332,6 +7494,7 @@ const VENTAS_SUBTABS=[
   {id:'proyecciondir',label:'📊 Proyección'},
   {id:'promociones',label:'🏷 Promociones'},
   {id:'servidores',label:'🖥 Servidores'},
+  {id:'tsplus',label:'🔑 Licencias TS Plus'},
 ];
 let currentDirArea='ventas';
 let currentDirTab='resumen';
@@ -7386,6 +7549,7 @@ function renderDirectorTab(){
   else if(id==='proyecciondir')renderDirectorProyeccion();
   else if(id==='promociones')renderDirectorPromociones();
   else if(id==='servidores')renderCatalogoServidores();
+  else if(id==='tsplus')renderCatalogoTSPlus();
   else renderDirectorResumen();
 }
 
