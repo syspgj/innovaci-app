@@ -12734,7 +12734,10 @@ async function renderOpsTickets(){
   body.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
       <div style="font-size:12px;color:var(--text3);">Hoy: <b>${hoy.length}</b> servicio(s) programado(s)</div>
-      <button onclick="abrirNuevoTicket()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Nueva solicitud</button>
+      <div style="display:flex;gap:8px;">
+        <button id="opsTelegramBtn" onclick="abrirTelegramPendientesModal()" style="display:none;background:#fff;color:#2AABEE;border:1px solid #2AABEE;border-radius:6px;padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📨 Solicitudes de Telegram</button>
+        <button onclick="abrirNuevoTicket()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Nueva solicitud</button>
+      </div>
     </div>
     <div style="margin-bottom:14px;">
       <input id="opsTicketsBuscar" type="text" placeholder="Buscar folio, cliente o descripción, de cualquier asesor..." value="${window._opsTicketsBuscar||''}" oninput="window._opsTicketsBuscar=this.value;renderOpsTicketsTabla();" style="width:100%;box-sizing:border-box;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
@@ -12749,6 +12752,75 @@ async function renderOpsTickets(){
     <div id="opsTicketsTiposFichas" style="margin-bottom:14px;"></div>
     <div id="opsTicketsTabla"></div>`;
   renderOpsTicketsTabla();
+  refrescarBadgeTelegramPendientes();
+}
+
+// "Nivel 2" de Telegram (Jp, 2026-09-28): el botón de arriba solo se muestra
+// si hay solicitudes que el webhook (api/telegram-webhook.js) ya extrajo y
+// están esperando revisión -- nunca se crea el ticket solo.
+async function refrescarBadgeTelegramPendientes(){
+  const btn=document.getElementById('opsTelegramBtn');
+  if(!btn) return;
+  const {count}=await sb.from('mesa_control_telegram_solicitudes').select('id',{count:'exact',head:true}).eq('estado','pendiente');
+  if(count>0){
+    btn.style.display='inline-block';
+    btn.textContent=`📨 Solicitudes de Telegram (${count})`;
+  } else {
+    btn.style.display='none';
+  }
+}
+
+async function abrirTelegramPendientesModal(){
+  const {data:rows}=await sb.from('mesa_control_telegram_solicitudes').select('*').eq('estado','pendiente').order('created_at',{ascending:false});
+  window._tgPendientes={};
+  (rows||[]).forEach(r=>{window._tgPendientes[r.id]=r;});
+  const html=`
+    <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">Mensajes recibidos por el canal de Telegram, ya leídos por la IA. Revisa cada uno y da clic en "Usar" para precargar el formulario de "Nueva solicitud" (siempre puedes editar antes de guardar), o "Descartar" si no aplica.</div>
+    ${(rows||[]).length===0?'<div style="text-align:center;padding:20px;color:var(--text3);">No hay solicitudes pendientes de revisión.</div>':''}
+    ${(rows||[]).map(r=>{
+      const d=r.datos_extraidos||{};
+      return `<div class="card" style="padding:12px;margin-bottom:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+          <div style="font-size:11px;color:var(--text3);">${r.telegram_chat_titulo||'Canal de Telegram'} · ${new Date(r.created_at).toLocaleString('es-MX')} ${r.tipo_mensaje==='foto'?'· 📷 captura':''}</div>
+          <div style="display:flex;gap:6px;flex-shrink:0;">
+            <button onclick="usarSolicitudTelegramPendiente('${r.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;">Usar</button>
+            <button onclick="descartarSolicitudTelegramPendiente('${r.id}')" style="background:#fff;color:var(--red);border:1px solid var(--red);border-radius:5px;padding:5px 10px;font-size:11px;cursor:pointer;">Descartar</button>
+          </div>
+        </div>
+        ${r.error_extraccion?`<div style="margin-top:6px;font-size:11px;color:#c0392b;">⚠ ${r.error_extraccion}</div>`:''}
+        <div style="margin-top:8px;font-size:12px;color:var(--text2);line-height:1.6;">
+          ${d.cliente?`<div><b>Cliente:</b> ${d.cliente}</div>`:''}
+          ${d.solicitado_por?`<div><b>Solicitado por:</b> ${d.solicitado_por}</div>`:''}
+          ${d.contacto_nombre?`<div><b>Contacto:</b> ${d.contacto_nombre} ${d.contacto_telefono||''}</div>`:''}
+          ${d.descripcion?`<div><b>Solicitud:</b> ${d.descripcion}</div>`:''}
+          ${d.nota?`<div><b>Nota:</b> ${d.nota}</div>`:''}
+        </div>
+        ${r.texto_original?`<details style="margin-top:6px;"><summary style="font-size:10px;color:var(--text3);cursor:pointer;">Ver mensaje original</summary><div style="font-size:11px;color:var(--text3);white-space:pre-wrap;margin-top:4px;">${r.texto_original}</div></details>`:''}
+      </div>`;
+    }).join('')}
+  `;
+  mkModal('modalTelegramPendientes','Solicitudes de Telegram por revisar',html,null,'Cerrar',true);
+}
+
+async function descartarSolicitudTelegramPendiente(id){
+  if(!confirm('¿Descartar esta solicitud? No se creará ningún ticket a partir de ella.'))return;
+  await sb.from('mesa_control_telegram_solicitudes').update({estado:'descartado',procesado_at:new Date().toISOString()}).eq('id',id);
+  document.getElementById('modalTelegramPendientes')?.remove();
+  refrescarBadgeTelegramPendientes();
+}
+
+// Abre "Nueva solicitud de servicio" ya precargado con lo que extrajo la IA
+// del mensaje de Telegram -- misma revisión manual obligatoria que la carga
+// por imagen (tkPrefillDesdeIA), nunca se guarda solo.
+async function usarSolicitudTelegramPendiente(id){
+  const r=window._tgPendientes?.[id];
+  if(!r)return;
+  document.getElementById('modalTelegramPendientes')?.remove();
+  await abrirNuevoTicket();
+  window._tkTelegramPendienteId=id;
+  await tkPrefillDesdeIA(r.datos_extraidos||{});
+  const estado=document.getElementById('tkImagenEstado');
+  if(estado){estado.style.color='var(--text2)';estado.textContent='✅ Datos precargados desde Telegram — revisa cada campo antes de guardar.';}
 }
 
 function filtrarOpsTickets(f){
@@ -12872,6 +12944,7 @@ function renderOpsTicketsTabla(){
 //    nota, para confirmar antes de Guardar.
 async function abrirNuevoTicket(){
   window._tkContactoExtraido=null;
+  window._tkTelegramPendienteId=null;
   const asesores=window._opsAsesores||[];
   await opsCargarMapasMinutos();
   const {data:contratosRaw}=await sb.from('clientes_polizas')
@@ -13218,48 +13291,7 @@ async function opsExtraerSolicitudDesdeImagen(inputEl){
       if(estado){estado.textContent='No se pudo leer la imagen: '+(data.error||'error desconocido')+'. Puedes capturar los datos a mano.';estado.style.color='#c0392b';}
       return;
     }
-    const d=data.datos||{};
-    // "Cliente" ahora depende del tipo: si es Soporte de póliza, el campo
-    // es solo informativo y se deriva de elegir la póliza en el buscador
-    // (tkContrato) -- así que la IA ayuda a buscar ahí, no lo escribe
-    // directo. Si es Evento/Curso, sí es editable y se llena directo.
-    if(d.cliente){
-      const contratoInput=document.getElementById('tkContrato');
-      if(contratoInput) contratoInput.value=d.cliente;
-      const clienteInput=document.getElementById('tkCliente');
-      if(clienteInput&&!clienteInput.readOnly) clienteInput.value=d.cliente;
-    }
-    if(d.solicitado_por){
-      const solEl=document.getElementById('tkSolicitante');
-      if(solEl&&solEl.tagName!=='SELECT') solEl.value=d.solicitado_por;
-      // Si ya es un <select> (póliza con personas_autorizadas), no se
-      // fuerza -- Jp revisa y elige de la lista o usa "Otro".
-    }
-    if(d.descripcion) document.getElementById('tkDescripcion').value=d.descripcion;
-    if(d.nota) document.getElementById('tkNota').value=d.nota;
-    // Contacto del cliente (quien recibe el servicio, distinto de
-    // "solicitado por") -- ya NO se mete en la nota (Jp, 2026-09-14 parte
-    // 2: "quitas la parte del contacto en la nota, porque ese dato ya se
-    // va a capturar en otro lado"). Se guarda aparte para que
-    // tkRenderSolicitante() lo reconozca contra los contactos ya
-    // guardados de la cuenta en cuanto Jp elija la póliza (o ahora mismo,
-    // si ya había una póliza elegida antes de subir la imagen).
-    if(d.contacto_nombre||d.contacto_telefono||d.contacto_correo){
-      window._tkContactoExtraido={nombre:d.contacto_nombre||null,telefono:d.contacto_telefono||null,correo:d.contacto_correo||null};
-    } else {
-      window._tkContactoExtraido=null;
-    }
-    if(d.tipo_sugerido&&['SOPORTE_POLIZA','EVENTO','CURSO_EMPRESARIAL'].includes(d.tipo_sugerido)&&document.getElementById('tkTipo')){
-      document.getElementById('tkTipo').value=d.tipo_sugerido;
-      await toggleTipoTicket();
-    }
-    if(d.fecha_sugerida&&/^\d{4}-\d{2}-\d{2}$/.test(d.fecha_sugerida)&&document.getElementById('tkFecha')) document.getElementById('tkFecha').value=d.fecha_sugerida;
-    // Si ya había una póliza elegida (raro, pero posible si Jp cambia la
-    // imagen tras elegir), se intenta el reconocimiento de contacto de
-    // una vez -- si no, queda pendiente y se dispara en cuanto elija la
-    // póliza (autollenarClienteTicket -> tkRenderSolicitante).
-    if(window._tkContactoExtraido&&window._tkContratoActual) await tkRenderSolicitante(window._tkContratoActual);
-    tkActualizarPreview();
+    await tkPrefillDesdeIA(data.datos||{});
     if(estado){
       estado.style.color='var(--text2)';
       estado.textContent='✅ Datos cargados — revisa cada campo (y elige la póliza correcta en el buscador si aplica) antes de guardar.';
@@ -13267,6 +13299,56 @@ async function opsExtraerSolicitudDesdeImagen(inputEl){
   }catch(e){
     if(estado){estado.textContent='Error al procesar la imagen: '+(e?.message||e);estado.style.color='#c0392b';}
   }
+}
+
+// Llena los campos del modal "Nueva solicitud de servicio" a partir del
+// mismo JSON estructurado que devuelve la IA -- factorizado (Jp, 2026-09-28)
+// para que Nivel 1 (imagen pegada a mano) y Nivel 2 (webhook de Telegram,
+// api/telegram-webhook.js) compartan exactamente el mismo llenado y la
+// misma revisión manual obligatoria antes de Guardar.
+async function tkPrefillDesdeIA(d){
+  d=d||{};
+  // "Cliente" ahora depende del tipo: si es Soporte de póliza, el campo
+  // es solo informativo y se deriva de elegir la póliza en el buscador
+  // (tkContrato) -- así que la IA ayuda a buscar ahí, no lo escribe
+  // directo. Si es Evento/Curso, sí es editable y se llena directo.
+  if(d.cliente){
+    const contratoInput=document.getElementById('tkContrato');
+    if(contratoInput) contratoInput.value=d.cliente;
+    const clienteInput=document.getElementById('tkCliente');
+    if(clienteInput&&!clienteInput.readOnly) clienteInput.value=d.cliente;
+  }
+  if(d.solicitado_por){
+    const solEl=document.getElementById('tkSolicitante');
+    if(solEl&&solEl.tagName!=='SELECT') solEl.value=d.solicitado_por;
+    // Si ya es un <select> (póliza con personas_autorizadas), no se
+    // fuerza -- Jp revisa y elige de la lista o usa "Otro".
+  }
+  if(d.descripcion) document.getElementById('tkDescripcion').value=d.descripcion;
+  if(d.nota) document.getElementById('tkNota').value=d.nota;
+  // Contacto del cliente (quien recibe el servicio, distinto de
+  // "solicitado por") -- ya NO se mete en la nota (Jp, 2026-09-14 parte
+  // 2: "quitas la parte del contacto en la nota, porque ese dato ya se
+  // va a capturar en otro lado"). Se guarda aparte para que
+  // tkRenderSolicitante() lo reconozca contra los contactos ya
+  // guardados de la cuenta en cuanto Jp elija la póliza (o ahora mismo,
+  // si ya había una póliza elegida antes de subir la imagen).
+  if(d.contacto_nombre||d.contacto_telefono||d.contacto_correo){
+    window._tkContactoExtraido={nombre:d.contacto_nombre||null,telefono:d.contacto_telefono||null,correo:d.contacto_correo||null};
+  } else {
+    window._tkContactoExtraido=null;
+  }
+  if(d.tipo_sugerido&&['SOPORTE_POLIZA','EVENTO','CURSO_EMPRESARIAL'].includes(d.tipo_sugerido)&&document.getElementById('tkTipo')){
+    document.getElementById('tkTipo').value=d.tipo_sugerido;
+    await toggleTipoTicket();
+  }
+  if(d.fecha_sugerida&&/^\d{4}-\d{2}-\d{2}$/.test(d.fecha_sugerida)&&document.getElementById('tkFecha')) document.getElementById('tkFecha').value=d.fecha_sugerida;
+  // Si ya había una póliza elegida (raro, pero posible si Jp cambia la
+  // imagen tras elegir), se intenta el reconocimiento de contacto de
+  // una vez -- si no, queda pendiente y se dispara en cuanto elija la
+  // póliza (autollenarClienteTicket -> tkRenderSolicitante).
+  if(window._tkContactoExtraido&&window._tkContratoActual) await tkRenderSolicitante(window._tkContratoActual);
+  tkActualizarPreview();
 }
 
 async function guardarNuevoTicket(){
@@ -13295,8 +13377,19 @@ async function guardarNuevoTicket(){
     hora_asignada:document.getElementById('tkHora')?.value||null,
     estatus:asesorId?'ASIGNADO':'PENDIENTE'
   };
-  const {error}=await sb.from('servicios_ejecutados').insert(payload);
+  const {data:inserted,error}=await sb.from('servicios_ejecutados').insert(payload).select('id').single();
   if(error){alert('Error: '+error.message);return;}
+  // Si este ticket vino de una solicitud de Telegram (Nivel 2), se marca
+  // como convertida y se liga al ticket real -- así no se vuelve a mostrar
+  // como pendiente de revisión (Jp, 2026-09-28).
+  if(window._tkTelegramPendienteId){
+    await sb.from('mesa_control_telegram_solicitudes').update({
+      estado:'convertido',
+      servicio_ejecutado_id:inserted?.id||null,
+      procesado_at:new Date().toISOString()
+    }).eq('id',window._tkTelegramPendienteId);
+    window._tkTelegramPendienteId=null;
+  }
   document.getElementById('modalNuevoTicket')?.remove();
   renderOpsTickets();
 }
