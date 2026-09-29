@@ -977,26 +977,32 @@ async function renderAcademiaDashboard(){
     </tr>`;
   }
 
-  // ── Accesos por vencer / vencidos (Jp, 2026-09-03; filtro de ruido histórico 2026-09-29) ──
-  // Última asignación de cada empresa (tenga o no la ventana cubierta hoy —
-  // aquí SÍ nos interesan las que ya vencieron, a diferencia de la pestaña
-  // Accesos que solo muestra la ocupación vigente hoy).
-  // Se excluyen las asignaciones SIN inscripcion_id: son residuo de la carga
-  // masiva del Excel de Control de Accesos (Lote 15, 2026-09-03), donde a
-  // varias filas sin fecha de fin real en el archivo se les puso una fecha
-  // de cierre "de relleno" (día de la importación, o +17 días) solo para no
-  // dejarlas abiertas — no corresponden a un vencimiento real de un alumno.
-  // Desde el Lote 18, toda asignación nueva SIEMPRE trae inscripcion_id (ya
-  // no se puede guardar sin ligar a un participante real), así que este
-  // filtro no afecta nada capturado de aquí en adelante — solo esconde el
-  // ruido de esa importación de origen.
+  // ── Accesos por vencer (Jp, 2026-09-03; corregido 2026-09-29) ──
+  // Última asignación de cada empresa. Solo mostramos "por_vencer" (sigue
+  // ocupada hoy, pero vence pronto — alerta real y accionable). Ya NO se
+  // muestran los "vencido": por diseño, en cuanto fecha_fin queda en el
+  // pasado la empresa se considera libre/disponible automáticamente en
+  // TODA la app (Accesos, sugerencia de empresa libre, ficha del
+  // participante) — así que un "vencido" nunca es algo pendiente de
+  // liberar, siempre ya se liberó solo. Mostrarlo aquí era ruido, no una
+  // alerta real (caso detectado por Jp: empresa NOI #11 / Arturo Cortés
+  // Mota, vencida el 2026-09-28 y ya "Disponible" en Accesos, pero seguía
+  // apareciendo en esta lista como si necesitara acción).
+  // Se excluyen además las asignaciones SIN inscripcion_id: son residuo de
+  // la carga masiva del Excel de Control de Accesos (Lote 15, 2026-09-03),
+  // donde a varias filas sin fecha de fin real en el archivo se les puso
+  // una fecha de cierre "de relleno" (día de la importación, o +17 días)
+  // solo para no dejarlas abiertas — no corresponden a un vencimiento real
+  // de un alumno. Desde el Lote 18, toda asignación nueva SIEMPRE trae
+  // inscripcion_id, así que este filtro no afecta nada capturado de aquí
+  // en adelante.
   const vencAccesos=(empresasAcc||[]).map(e=>{
     const asigs=[...(e.asignaciones||[])].sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
     const ultima=asigs[0];
     if(!ultima?.fecha_fin) return null;
     if(!ultima.inscripcion_id) return null;
     const vig=academiaVigenciaSimple(ultima.fecha_fin);
-    if(!vig || (vig.estado!=='vencido'&&vig.estado!=='por_vencer')) return null;
+    if(!vig || vig.estado!=='por_vencer') return null;
     return {e,asig:ultima,vig};
   }).filter(Boolean).sort((a,b)=>a.vig.diasRestantes-b.vig.diasRestantes);
   function filaVencAcceso(x){
@@ -1114,7 +1120,7 @@ async function renderAcademiaDashboard(){
     </div>
   </div>
   <div style="margin-top:20px;">
-    <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">🔐 Accesos por vencer / vencidos (${vencAccesos.length})</div>
+    <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">🔐 Accesos por vencer (${vencAccesos.length})</div>
     <div class="card" style="overflow-x:auto;">
       <table style="width:100%;border-collapse:collapse;font-size:12px;">
         <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;"><th style="padding:8px 12px;">Empresa</th><th>Ocupante</th><th>Vence</th></tr></thead>
