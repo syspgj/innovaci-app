@@ -49,7 +49,7 @@ function getBonoKpiExtra(alcance) {
   for (const t of BONO_KPI_TABLE) if (alcance >= t.min && alcance <= t.max) return t.extra;
   return 0;
 }
-const META_ASPEL_CRUZADA = 50000, TASA_ASPEL_CRUZADA = 0.03; // rubros: RENTA ASPEL + TIMBRES
+const META_ASPEL_CRUZADA = 50000, TASA_ASPEL_CRUZADA = 0.03; // rubros: SISTEMA ASPEL + TIMBRES (Jp, 2026-09-28 — antes decía RENTA ASPEL por error, ver index.html)
 const META_CURSOS247 = 40000, TASA_CURSOS247 = 0.05; // rubro: 24/7
 
 function calcBonoAspelCruzada(montoAspel, deptoAlcanzo, vendedorCumplioMeta) {
@@ -273,11 +273,14 @@ export default async function handler(req, res) {
       const filtroFact = filtroFactIngresos(u.email);
       let montoAspel = 0, monto247 = 0;
       if (filtroFact) {
-        const fact = await sb(`fact_ingresos?select=rubro,total,vendedor,cobrado&anio=eq.${anio}&mes=eq.${mes}&cobrado=eq.true&vendedor=ilike.*${filtroFact}*`, SKEY);
+        const fact = await sb(`fact_ingresos?select=rubro,total,subtotal_original,descuento,vendedor,cobrado&anio=eq.${anio}&mes=eq.${mes}&cobrado=eq.true&vendedor=ilike.*${filtroFact}*`, SKEY);
         for (const r of fact) {
           const rub = (r.rubro || '').toUpperCase();
-          if (rub === 'RENTA ASPEL' || rub === 'TIMBRES') montoAspel += r.total || 0;
-          else if (rub === '24/7') monto247 += r.total || 0;
+          // Base = Subtotal - Descuento (sin IVA), igual que en index.html
+          // (confirmado con Jp 2026-09-28).
+          const base = (r.subtotal_original || 0) - (r.descuento || 0);
+          if (rub === 'SISTEMA ASPEL' || rub === 'TIMBRES') montoAspel += base;
+          else if (rub === '24/7') monto247 += base;
         }
       }
       const bonoAspel = calcBonoAspelCruzada(montoAspel, deptoAlcanzado, vendedorCumplioMeta);
