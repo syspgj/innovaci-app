@@ -2501,9 +2501,19 @@ async function academiaAbrirNuevoAsistente(generacionId){
   // Sugerencia de empresa libre (Jp, 2026-09-03: "al dar de alta al participante
   // la app podría sugerir qué empresa asignarle, siempre y cuando esté libre").
   const sistemaId=gen?.curso?.sistema_id;
-  const disponibles=await academiaEmpresasDisponiblesSistema(sistemaId);
+  // Vendedor: lista desplegable de vendedores ACTIVOS (Jp, 2026-09-30: "no
+  // quiero texto libre, quiero que pueda yo elegir alguno de los dos
+  // vendedores") — antes era texto libre; se lee de `usuarios` (rol
+  // vendedor, activo=true) en vez de dejar los nombres fijos en el código,
+  // para que si algún día cambia el equipo (como ya pasó con Mireya, que
+  // quedó inactiva) el desplegable se actualice solo, sin tocar el código.
+  const [disponibles,{data:vendedoresActivos}]=await Promise.all([
+    academiaEmpresasDisponiblesSistema(sistemaId),
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre'),
+  ]);
   window._academiaAsistenteDisponibles=disponibles;
   const empresaOpts=disponibles.map(e=>`<option value="${e.id}">Empresa #${e.numero}${e.servidor?` (servidor ${e.servidor})`:''}</option>`).join('');
+  const vendedorOpts=`<option value="">— Elegir —</option>`+(vendedoresActivos||[]).map(v=>`<option value="${v.nombre}">${v.nombre}</option>`).join('');
   const html=`
     <div style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px;background:#f8fafb;">
       <label for="naImagenInput" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#fff;background:var(--teal);padding:7px 14px;border-radius:6px;cursor:pointer;">📷 Cargar desde imagen</label>
@@ -2526,7 +2536,7 @@ async function academiaAbrirNuevoAsistente(generacionId){
       ${fld('Tipo',sel('naTipo',['entero','cortesia']))}
       ${fld('Prefijo de folio (sistema+versión)',inp('naPrefijo','text','Ej. NOI11',prefijoSugerido))}
     </div>
-    <div style="margin-bottom:10px;">${fld('Vendedor (nombre)',inp('naVendedor','text',''))}</div>
+    <div style="margin-bottom:10px;">${fld('Vendedor',`<select id="naVendedor" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${vendedorOpts}</select>`)}</div>
     <div id="naEmpresaBlockWrap" style="display:none;">
       <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">EMPRESA DE PRÁCTICA (Control de Accesos)</div>
       ${disponibles.length?`
@@ -2682,21 +2692,32 @@ async function academiaBuscarClienteEmpresa(){
     cont.innerHTML='<div style="font-size:11px;color:var(--text3);">Sin coincidencias en Cartera — se guardará sin cuenta ligada (puedes ligarla después desde Finanzas/Cartera).</div>';
     return;
   }
+  // Guardamos los resultados y referenciamos cada uno por ÍNDICE (no por su
+  // texto embebido en el onclick) — bug real encontrado (Jp, 2026-09-30:
+  // "lo selecciono, pero no pasa nada"): antes se pasaba el nombre de la
+  // cuenta directo dentro del atributo onclick="..." (con JSON.stringify),
+  // pero ese atributo también usa comillas dobles, así que en cuanto el
+  // nombre de la cuenta traía alguna razón para romper el escapado, el HTML
+  // quedaba mal formado y el clic no hacía nada. Con un índice numérico este
+  // problema desaparece por completo, sin importar qué caracteres tenga el
+  // nombre de la cuenta.
+  window._naEmpresaMatches=matches;
   cont.innerHTML=`<div style="font-size:11px;color:var(--text3);margin-bottom:4px;">¿Es alguna de estas cuentas? Elige una, o "Ninguna" si no aplica:</div>`+
-    matches.map(m=>`<div onclick="academiaElegirClienteEmpresa('${m.id}',${JSON.stringify(m.razon_social||'')},${JSON.stringify(m.num_cliente||'')})" style="cursor:pointer;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:4px;background:#f8fafb;" onmouseover="this.style.background='#eef6f6'" onmouseout="this.style.background='#f8fafb'">${m.razon_social||'(sin nombre)'}${m.num_cliente?` · #${m.num_cliente}`:''}</div>`).join('')+
-    `<div onclick="academiaElegirClienteEmpresa('','','')" style="cursor:pointer;padding:5px 8px;font-size:11px;color:var(--text3);">Ninguna de estas — continuar sin ligar cuenta</div>`;
+    matches.map((m,i)=>`<div onclick="academiaElegirClienteEmpresa(${i})" style="cursor:pointer;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:4px;background:#f8fafb;" onmouseover="this.style.background='#eef6f6'" onmouseout="this.style.background='#f8fafb'">${m.razon_social||'(sin nombre)'}${m.num_cliente?` · #${m.num_cliente}`:''}</div>`).join('')+
+    `<div onclick="academiaElegirClienteEmpresa(-1)" style="cursor:pointer;padding:5px 8px;font-size:11px;color:var(--text3);">Ninguna de estas — continuar sin ligar cuenta</div>`;
 }
-function academiaElegirClienteEmpresa(clienteId,razonSocial,numCliente){
+function academiaElegirClienteEmpresa(indice){
   const input=document.getElementById('naEmpresa');
   const cont=document.getElementById('naEmpresaMatches');
+  const m=indice>=0?(window._naEmpresaMatches||[])[indice]:null;
   if(input){
     input.dataset.clienteConfirmado='1';
-    input.dataset.clienteId=clienteId||'';
+    input.dataset.clienteId=m?.id||'';
     input.dataset.clienteTexto=input.value;
   }
   if(cont){
-    cont.innerHTML=clienteId
-      ?`<div style="font-size:11px;color:var(--teal);font-weight:600;">✓ Se ligará a: ${razonSocial}${numCliente?` (#${numCliente})`:''} — <span style="cursor:pointer;text-decoration:underline;font-weight:400;" onclick="academiaBuscarClienteEmpresa()">cambiar</span></span></div>`
+    cont.innerHTML=m
+      ?`<div style="font-size:11px;color:var(--teal);font-weight:600;">✓ Se ligará a: ${m.razon_social}${m.num_cliente?` (#${m.num_cliente})`:''} — <span style="cursor:pointer;text-decoration:underline;font-weight:400;" onclick="academiaBuscarClienteEmpresa()">cambiar</span></span></div>`
       :`<div style="font-size:11px;color:var(--text3);">Se guardará SIN cuenta ligada — <span style="cursor:pointer;text-decoration:underline;" onclick="academiaBuscarClienteEmpresa()">buscar de nuevo</span></div>`;
   }
 }
