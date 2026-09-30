@@ -804,6 +804,7 @@ const ACADEMIA_SUBTABS=[
   {id:'generaciones',label:'🎓 Generaciones'},
   {id:'asistentes',label:'👤 Asistentes'},
   {id:'practicas',label:'🧪 Prácticas'},
+  {id:'evaluaciones',label:'⏱️ Evaluaciones'},
   {id:'accesos',label:'🔐 Accesos'},
   {id:'constancias',label:'📜 Constancias'},
   {id:'mensajes',label:'💬 Mensajes'},
@@ -869,6 +870,7 @@ function renderAcademiaTab(){
   else if(currentAcademiaTab==='generaciones') renderAcademiaGeneraciones();
   else if(currentAcademiaTab==='asistentes') renderAcademiaAsistentes();
   else if(currentAcademiaTab==='practicas') renderAcademiaPracticasHome();
+  else if(currentAcademiaTab==='evaluaciones') renderAcademiaEvaluaciones();
   else if(currentAcademiaTab==='accesos') renderAcademiaAccesos();
   else if(currentAcademiaTab==='constancias') renderAcademiaConstancias();
   else if(currentAcademiaTab==='mensajes') renderAcademiaMensajes();
@@ -880,6 +882,7 @@ function renderAcademiaTab(){
 // período de prácticas no está vencido (vigente o por vencer) — así deja de
 // aparecer solo cuando ya no le queda nadie con acceso corriendo.
 async function renderAcademiaDashboard(){
+  academiaDispararChequeoEvaluaciones();
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando resumen...</div>';
 
@@ -1130,6 +1133,91 @@ async function renderAcademiaDashboard(){
   </div>`;
 }
 
+// ── Evaluaciones pendientes (Jp, 2026-09-29) ──────────────────────────────────
+// Cola de trabajo dedicada para Capacitación: en cuanto vence el acceso al
+// laboratorio de un participante Plus/Premium, toca evaluar sus prácticas
+// (el grid que ya existe en la ficha) dentro de un plazo de 72 horas, para
+// poder emitir su constancia. Esta pantalla muestra UNA FILA POR
+// PARTICIPANTE (a diferencia de "Actividad operativa pendiente" del
+// Resumen, que solo cuenta por generación) con cuánto tiempo lleva vencido
+// y una alerta roja si ya se pasó del plazo. El mismo criterio de vigencia
+// que usa el resto de la app (academiaVigenciaInfo) y el mismo conteo de
+// prácticas marcadas (academia_practicas_sesiones) — nada nuevo que se
+// pueda desincronizar. El envío de avisos a Telegram vive aparte, en
+// api/academia-evaluaciones-check.js (Vercel Cron + este mismo tab lo
+// dispara en segundo plano al abrirse, ver academiaDispararChequeoEvaluaciones).
+async function renderAcademiaEvaluaciones(){
+  academiaDispararChequeoEvaluaciones();
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando evaluaciones pendientes...</div>';
+
+  const [{data:generaciones,error:errG},{data:inscripciones,error:errI},{data:sesiones}]=await Promise.all([
+    sb.from('academia_generaciones').select('*,curso:curso_id(nombre,practicas_totales,sistema:sistema_id(clave))'),
+    sb.from('academia_inscripciones').select('id,generacion_id,nivel_acceso,practicas_extension,fecha_fin_laboratorio,estatus_final,participante:participante_id(nombre),constancias:academia_constancias(enviada)').in('nivel_acceso',['plus','premium']),
+    sb.from('academia_practicas_sesiones').select('inscripcion_id,numero_practica'),
+  ]);
+  if(errG||errI){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error cargando evaluaciones: ${(errG||errI).message}</div>`;return;}
+
+  const gensById={};
+  (generaciones||[]).forEach(g=>gensById[g.id]=g);
+  const marcadasPorInscripcion={};
+  (sesiones||[]).forEach(s=>{marcadasPorInscripcion[s.inscripcion_id]=(marcadasPorInscripcion[s.inscripcion_id]||0)+1;});
+
+  const ahora=new Date();
+  const pendientes=(inscripciones||[]).map(insc=>{
+    const archivada=(insc.constancias||[]).some(c=>c.enviada)||!!insc.estatus_final;
+    if(archivada) return null;
+    const gen=gensById[insc.generacion_id];
+    const vig=gen?academiaVigenciaInfo(gen,insc):null;
+    if(!vig||vig.estado!=='vencido') return null; // aún no vence, no entra a la cola
+    const totalPracticas=gen?.practicas_totales||gen?.curso?.practicas_totales||0;
+    if(!totalPracticas) return null; // curso sin prácticas definidas, no aplica
+    const marcadas=marcadasPorInscripcion[insc.id]||0;
+    if(marcadas>=totalPracticas) return null; // ya evaluado completo, no es pendiente
+    const vencioEn=new Date(vig.fecha+'T00:00:00');
+    const horasVencido=Math.floor((ahora-vencioEn)/3600000);
+    return {insc,gen,marcadas,totalPracticas,horasVencido,fechaVenc:vig.fecha};
+  }).filter(Boolean).sort((a,b)=>b.horasVencido-a.horasVencido);
+
+  const urgentes=pendientes.filter(p=>p.horasVencido>=72);
+
+  function horasTexto(h){
+    if(h<24) return `${h} h`;
+    const dias=Math.floor(h/24), resto=h%24;
+    return `${dias} d ${resto} h`;
+  }
+  function fila(p){
+    const ac=academiaAccent(p.gen?.curso?.sistema?.clave);
+    const urgente=p.horasVencido>=72;
+    return `<tr style="border-top:1px solid var(--border);${urgente?'background:var(--red-bg);':''}cursor:pointer;" onclick="academiaVerFicha('${p.insc.id}')">
+      <td style="padding:10px 12px;font-weight:600;">${p.insc.participante?.nombre||'—'}</td>
+      <td><span style="color:${ac.c};font-weight:700;">${p.gen?.curso?.sistema?.clave||''}</span> ${p.gen?.curso?.nombre||''} · ${p.gen?.clave||''}</td>
+      <td>${academiaAccesoLabel(p.insc.nivel_acceso)}</td>
+      <td>${p.fechaVenc}</td>
+      <td>${p.marcadas}/${p.totalPracticas}</td>
+      <td style="color:${urgente?'var(--red)':'var(--gold)'};font-weight:700;">${urgente?'🚨 ':'⏱️ '}${horasTexto(p.horasVencido)}${urgente?' — plazo vencido':''}</td>
+    </tr>`;
+  }
+
+  mc.innerHTML=`
+  <div style="margin-bottom:16px;">
+    <div style="font-size:18px;font-weight:600;color:var(--text);">⏱️ Evaluaciones pendientes</div>
+    <div style="font-size:12px;color:var(--text3);">Participantes Plus/Premium cuyo acceso al laboratorio ya venció y siguen sin evaluación completa de prácticas. Plazo: 72 horas desde el vencimiento para evaluar y poder emitir la constancia. Clic en una fila para ir directo a la ficha y evaluar.</div>
+  </div>
+  <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+    <div class="card" style="padding:12px 16px;"><div style="font-size:11px;color:var(--text3);">TOTAL PENDIENTES</div><div style="font-size:22px;font-weight:700;color:var(--navy);">${pendientes.length}</div></div>
+    <div class="card" style="padding:12px 16px;${urgentes.length?'border:1px solid var(--red);':''}"><div style="font-size:11px;color:var(--text3);">FUERA DE PLAZO (&gt;72h)</div><div style="font-size:22px;font-weight:700;color:${urgentes.length?'var(--red)':'var(--navy)'};">${urgentes.length}</div></div>
+  </div>
+  <div class="card" style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;">
+        <th style="padding:10px 12px;">Participante</th><th>Curso/generación</th><th>Nivel</th><th>Venció</th><th>Prácticas</th><th>Tiempo transcurrido</th>
+      </tr></thead>
+      <tbody>${pendientes.map(fila).join('')||'<tr><td colspan="6" style="padding:16px;color:var(--text3);">Sin evaluaciones pendientes por ahora — todo al corriente.</td></tr>'}</tbody>
+    </table>
+  </div>`;
+}
+
 // ── Utilidades ───────────────────────────────────────────────────────────────
 function academiaAccesoLabel(n){return n==='premium'?'Premium':n==='plus'?'Plus':'Esencial';}
 function academiaEstatusFinalLabel(v){return v==='baja'?'Baja':'No acreditado';}
@@ -1148,6 +1236,19 @@ function academiaBarraProgreso(pct,color){
   return `<div style="height:6px;border-radius:3px;background:#eee;overflow:hidden;"><div style="height:100%;width:${p}%;background:${color||'var(--teal)'};transition:width .3s;"></div></div>`;
 }
 const ACADEMIA_VIGENCIA_ALERTA_DIAS=3; // días antes del vencimiento para marcar en naranja ("por vencer")
+// Evaluaciones pendientes (Jp, 2026-09-29): el endpoint que manda los avisos
+// de Telegram a Capacitación corre por Vercel Cron cada hora, pero además lo
+// disparamos en segundo plano cada vez que alguien abre el Resumen o la
+// pestaña de Evaluaciones — así, mientras el equipo tiene la app abierta,
+// los avisos salen casi al momento sin depender de qué tan seguido corra el
+// cron en el plan de Vercel del proyecto. Nunca bloquea la pantalla ni
+// muestra error si falla — es puramente best-effort.
+let _academiaChequeoEvalDisparado=false;
+function academiaDispararChequeoEvaluaciones(){
+  if(_academiaChequeoEvalDisparado) return; // una vez por sesión de pantalla basta
+  _academiaChequeoEvalDisparado=true;
+  fetch('/api/academia-evaluaciones-check').catch(()=>{});
+}
 // Vigencia de prácticas: preferentemente se captura por GENERACIÓN, como fecha
 // explícita (fecha_limite_practicas / fecha_limite_practicas_extension — Jp,
 // 2026-08-31, sugeridas en automático al capturar fecha_fin pero editables a
@@ -2515,6 +2616,25 @@ async function academiaGuardarNuevoAsistente(generacionId){
   if(!nombre){alert('El nombre del participante es obligatorio.');return;}
   if(!prefijo){alert('Falta el prefijo de folio (sistema+versión, ej. "NOI11"). Revisa el folio de otro participante de esta misma generación si no lo sabes.');return;}
 
+  // Protección contra doble clic (Jp, 2026-09-30): el botón "Guardar" de este
+  // modal no se deshabilitaba mientras se guardaba, así que un doble clic (o
+  // un clic impaciente mientras cargaba) disparaba esta función dos veces:
+  // la primera alta quedaba bien, y la segunda volvía a encontrar al mismo
+  // participante (por correo/teléfono) e intentaba inscribirlo otra vez en la
+  // misma generación — lo cual la base de datos bloqueaba correctamente con
+  // el error "duplicate key value violates unique constraint
+  // academia_inscripciones_participante_id_generacion_id_key" (caso real:
+  // Susana Patricia Arias Báez, generación NOI 11-D248-2026). No era una
+  // inscripción duplicada real; era el mismo clic ejecutándose dos veces.
+  const btnGuardar=document.querySelector('#modalNuevoAsistente button[onclick^="academiaGuardarNuevoAsistente"]');
+  if(btnGuardar){
+    if(btnGuardar.disabled) return; // ya se está guardando, ignora el segundo clic
+    btnGuardar.disabled=true;
+    btnGuardar.dataset.textoOriginal=btnGuardar.textContent;
+    btnGuardar.textContent='Guardando...';
+  }
+  try{
+
   const cache=window._academiaCache.participantesGen;
   const gen=cache?.gen;
   const empresa=document.getElementById('naEmpresa')?.value?.trim()||nombre;
@@ -2597,6 +2717,16 @@ async function academiaGuardarNuevoAsistente(generacionId){
 
   document.getElementById('modalNuevoAsistente')?.remove();
   academiaVerGeneracion(generacionId);
+  }finally{
+    // Si algo falló arriba (cualquiera de los "return"), el modal sigue
+    // abierto y hay que reactivar el botón para que se pueda reintentar. Si
+    // todo salió bien, el modal ya se eliminó justo arriba y esto no hace
+    // nada (btnGuardar ya no está en el DOM).
+    if(btnGuardar && document.body.contains(btnGuardar)){
+      btnGuardar.disabled=false;
+      btnGuardar.textContent=btnGuardar.dataset.textoOriginal||'Guardar';
+    }
+  }
 }
 
 // ── FICHA DE PARTICIPANTE (asistencia + prácticas + constancia) ────────────
