@@ -2088,10 +2088,13 @@ function academiaAbrirEditarEmpresaAcceso(empresaId){
   const html=`
     <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${e.sistema?.clave||''} · Empresa #${e.numero}</div>
     <div style="margin-bottom:10px;">${fld('Servidor',inp('eaServidor','text','',e.servidor||''))}</div>
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DE ASPEL DE ESTA EMPRESA DE PRÁCTICA</div>
+    <div style="margin-bottom:10px;">${fld('Empresa Aspel (nombre de la compañía cargada)',inp('eaEmpresaAspel','text','',e.empresa_aspel||''))}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      ${fld('Usuario / acceso de la empresa',inp('eaUsuario','text','',e.usuario_empresa||''))}
-      ${fld('Contraseña',inp('eaContrasena','text','',e.contrasena_empresa||''))}
+      ${fld('Usuario Aspel',inp('eaUsuario','text','',e.usuario_empresa||''))}
+      ${fld('Contraseña Aspel',inp('eaContrasena','text','',e.contrasena_empresa||''))}
     </div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px;">Estos 3 datos se autocompletan solos en "+ Agregar asistente" en cuanto se elige/sugiere esta empresa (Jp, 2026-09-30) — captúralos una vez aquí.</div>
     <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;">
       <input type="checkbox" id="eaSiempreActivo" ${e.siempre_activo?'checked':''}> Uso interno permanente (nunca se libera sola)
     </label>`;
@@ -2100,6 +2103,7 @@ function academiaAbrirEditarEmpresaAcceso(empresaId){
 async function academiaGuardarEditarEmpresaAcceso(empresaId){
   const {error}=await sb.from('academia_empresas_acceso').update({
     servidor:document.getElementById('eaServidor')?.value?.trim()||null,
+    empresa_aspel:document.getElementById('eaEmpresaAspel')?.value?.trim()||null,
     usuario_empresa:document.getElementById('eaUsuario')?.value?.trim()||null,
     contrasena_empresa:document.getElementById('eaContrasena')?.value?.trim()||null,
     siempre_activo:!!document.getElementById('eaSiempreActivo')?.checked,
@@ -2508,7 +2512,10 @@ async function academiaAbrirNuevoAsistente(generacionId){
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Nombre completo',inp('naNombre','text','Nombre del participante'))}
-      ${fld('Empresa / razón social',inp('naEmpresa','text','Cuenta principal en Cartera'))}
+      <div>
+        ${fld('Empresa / razón social',inp('naEmpresa','text','Cuenta principal en Cartera','','oninput="academiaBuscarClienteEmpresaDebounced()"'))}
+        <div id="naEmpresaMatches" style="margin-top:4px;"></div>
+      </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Correo',inp('naMail','email',''))}
@@ -2526,7 +2533,7 @@ async function academiaAbrirNuevoAsistente(generacionId){
       <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:8px;">
         <input type="checkbox" id="naAsignarEmpresa" checked onchange="document.getElementById('naEmpresaSel').disabled=!this.checked;"> Asignarle una empresa libre ahora mismo
       </label>
-      <div style="margin-bottom:14px;">${fld('Empresa sugerida (puedes elegir otra)',`<select id="naEmpresaSel" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${empresaOpts}</select>`)}</div>
+      <div style="margin-bottom:14px;">${fld('Empresa sugerida (puedes elegir otra)',`<select id="naEmpresaSel" onchange="academiaAutoRellenarPorEmpresa(this.value)" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${empresaOpts}</select>`)}</div>
       `:`<div style="font-size:11px;color:var(--text3);margin-bottom:14px;">${sistemaId?'No hay empresas disponibles ahora mismo en este sistema — se puede asignar después desde Accesos.':'No se identificó el sistema de este curso — asigna la empresa después desde Accesos.'}</div>`}
     </div>
     <div id="naEmpresaBlockEsencialNota" style="font-size:11px;color:var(--text3);margin-bottom:14px;">El acceso Esencial no hace prácticas de laboratorio — no necesita empresa asignada.</div>
@@ -2549,6 +2556,39 @@ async function academiaAbrirNuevoAsistente(generacionId){
     </div>`;
   mkModal('modalNuevoAsistente',`Agregar asistente — ${gen?.curso?.nombre||''} ${gen?.clave||''}`,html,`academiaGuardarNuevoAsistente('${generacionId}')`,'Guardar',true);
   academiaToggleEmpresaBlockPorAcceso();
+  // Autocompletar Servidor + Aspel con la empresa ya preseleccionada por
+  // default (Jp, 2026-09-30: "el sistema debería... automáticamente jalar
+  // el servidor... cargar el usuario... también podría generar los datos de
+  // Aspel"). Usuario/Contraseña RDP NO se autocompletan — son por-participante
+  // (cada quien tiene su propia cuenta de Windows en el servidor compartido,
+  // por eso existe el generador 🎲 en vez de un valor fijo), pero Servidor y
+  // los 3 datos de Aspel SÍ son fijos por empresa numerada y se reutilizan
+  // entre todos los que pasan por ella.
+  if(disponibles.length) academiaAutoRellenarPorEmpresa(disponibles[0].id);
+}
+// Copia Servidor + Empresa/Usuario/Contraseña Aspel de la empresa elegida (o
+// sugerida) en "+ Agregar asistente" — esos 4 datos viven en
+// academia_empresas_acceso (catálogo de Control de Accesos) y son los mismos
+// para cualquier participante que pase por esa empresa numerada, así que no
+// tiene caso volver a teclearlos cada vez. Solo pisa el campo si está vacío o
+// si el valor actual es el que había puesto el autofill anterior — así no se
+// borra algo que Jp ya escribió a mano antes de cambiar de empresa.
+function academiaAutoRellenarPorEmpresa(empresaId){
+  const disponibles=window._academiaAsistenteDisponibles||[];
+  const e=disponibles.find(x=>x.id===empresaId);
+  if(!e) return;
+  const set=(id,val)=>{
+    const el=document.getElementById(id);
+    if(!el) return;
+    if(!el.value||el.dataset.autorelleno==='1'){
+      el.value=val||'';
+      el.dataset.autorelleno='1';
+    }
+  };
+  set('naServidor',e.servidor);
+  set('naEmpresaAspel',e.empresa_aspel);
+  set('naUsuarioAspel',e.usuario_empresa);
+  set('naPassAspel',e.contrasena_empresa);
 }
 
 // Lee una captura (ej. la que manda Ventas por Telegram con los datos de alta)
@@ -2586,7 +2626,7 @@ async function academiaExtraerAsistenteDesdeImagen(inputEl){
     if(d.nombre) document.getElementById('naNombre').value=d.nombre;
     if(d.correo) document.getElementById('naMail').value=d.correo;
     if(d.telefono) document.getElementById('naTelefono').value=d.telefono;
-    if(d.cliente_empresa) document.getElementById('naEmpresa').value=d.cliente_empresa;
+    if(d.cliente_empresa){ document.getElementById('naEmpresa').value=d.cliente_empresa; academiaBuscarClienteEmpresa(); }
     if(d.vendedor) document.getElementById('naVendedor').value=d.vendedor;
     if(d.nivel_acceso&&['esencial','plus','premium'].includes(d.nivel_acceso)&&document.getElementById('naAcceso')) document.getElementById('naAcceso').value=d.nivel_acceso;
 
@@ -2606,6 +2646,58 @@ async function academiaExtraerAsistenteDesdeImagen(inputEl){
     }
   }catch(e){
     if(estado){estado.textContent='Error al procesar la imagen: '+(e?.message||e);estado.style.color='#c0392b';}
+  }
+}
+
+// Liga de "Empresa / razón social" a una cuenta real de Cartera (Jp,
+// 2026-09-30): antes el guardado buscaba una coincidencia EXACTA de texto
+// contra clientes_cartera.razon_social, así que un nombre parcial (como lo
+// que a veces lee la IA de la imagen, o lo que Jp teclea de memoria) nunca
+// hacía match aunque la cuenta sí existiera — y el alta se guardaba SIN
+// cuenta ligada sin que quedara claro por qué. Ahora se busca por
+// coincidencia PARCIAL mientras se escribe (debounced) y se muestran las
+// cuentas candidatas para que Jp elija la correcta a mano — nunca se liga
+// solo, para no ligar por accidente a una cuenta equivocada por un nombre
+// genérico ("diseño" podría ser cualquiera de varias empresas).
+let _naEmpresaBuscarTimer=null;
+function academiaBuscarClienteEmpresaDebounced(){
+  const input=document.getElementById('naEmpresa');
+  if(input){ delete input.dataset.clienteConfirmado; delete input.dataset.clienteId; delete input.dataset.clienteTexto; }
+  clearTimeout(_naEmpresaBuscarTimer);
+  _naEmpresaBuscarTimer=setTimeout(academiaBuscarClienteEmpresa,400);
+}
+async function academiaBuscarClienteEmpresa(){
+  const input=document.getElementById('naEmpresa');
+  const cont=document.getElementById('naEmpresaMatches');
+  if(!input||!cont) return;
+  const texto=input.value?.trim();
+  if(!texto){ cont.innerHTML=''; return; }
+  cont.innerHTML='<div style="font-size:11px;color:var(--text3);">Buscando en Cartera...</div>';
+  const {data:matches,error}=await sb.from('clientes_cartera')
+    .select('id,razon_social,num_cliente')
+    .ilike('razon_social',`%${texto}%`)
+    .limit(6);
+  if(error){ cont.innerHTML=`<div style="font-size:11px;color:#c0392b;">Error buscando en Cartera: ${error.message}</div>`; return; }
+  if(!matches?.length){
+    cont.innerHTML='<div style="font-size:11px;color:var(--text3);">Sin coincidencias en Cartera — se guardará sin cuenta ligada (puedes ligarla después desde Finanzas/Cartera).</div>';
+    return;
+  }
+  cont.innerHTML=`<div style="font-size:11px;color:var(--text3);margin-bottom:4px;">¿Es alguna de estas cuentas? Elige una, o "Ninguna" si no aplica:</div>`+
+    matches.map(m=>`<div onclick="academiaElegirClienteEmpresa('${m.id}',${JSON.stringify(m.razon_social||'')},${JSON.stringify(m.num_cliente||'')})" style="cursor:pointer;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:4px;background:#f8fafb;" onmouseover="this.style.background='#eef6f6'" onmouseout="this.style.background='#f8fafb'">${m.razon_social||'(sin nombre)'}${m.num_cliente?` · #${m.num_cliente}`:''}</div>`).join('')+
+    `<div onclick="academiaElegirClienteEmpresa('','','')" style="cursor:pointer;padding:5px 8px;font-size:11px;color:var(--text3);">Ninguna de estas — continuar sin ligar cuenta</div>`;
+}
+function academiaElegirClienteEmpresa(clienteId,razonSocial,numCliente){
+  const input=document.getElementById('naEmpresa');
+  const cont=document.getElementById('naEmpresaMatches');
+  if(input){
+    input.dataset.clienteConfirmado='1';
+    input.dataset.clienteId=clienteId||'';
+    input.dataset.clienteTexto=input.value;
+  }
+  if(cont){
+    cont.innerHTML=clienteId
+      ?`<div style="font-size:11px;color:var(--teal);font-weight:600;">✓ Se ligará a: ${razonSocial}${numCliente?` (#${numCliente})`:''} — <span style="cursor:pointer;text-decoration:underline;font-weight:400;" onclick="academiaBuscarClienteEmpresa()">cambiar</span></span></div>`
+      :`<div style="font-size:11px;color:var(--text3);">Se guardará SIN cuenta ligada — <span style="cursor:pointer;text-decoration:underline;" onclick="academiaBuscarClienteEmpresa()">buscar de nuevo</span></div>`;
   }
 }
 
@@ -2644,19 +2736,38 @@ async function academiaGuardarNuevoAsistente(generacionId){
   // alta desde Facturación). Si no se encuentra, el participante se guarda
   // sin cuenta ligada — se liga manualmente después (Finanzas/Cartera) en
   // cuanto Facturación la dé de alta.
+  //
+  // Emparejamiento de cuenta (Jp, 2026-09-30): antes buscaba un texto
+  // IDÉNTICO contra razon_social, así que casi nunca hacía match (ni con lo
+  // que lee la imagen, ni con lo que Jp teclea de memoria) y el alta se
+  // guardaba sin cuenta ligada sin que quedara claro por qué. Ahora, si Jp ya
+  // eligió una cuenta del mini-buscador de abajo del campo (o confirmó
+  // explícitamente "ninguna"), se usa esa elección tal cual. Si escribió algo
+  // y todavía no eligió nada del buscador (por ejemplo, guardó muy rápido),
+  // se hace una búsqueda parcial aquí mismo: si no hay ninguna coincidencia
+  // se sigue el mismo flujo de siempre (confirmar que se guarda sin cuenta);
+  // si hay una o más coincidencias, se detiene el guardado y se le pide a Jp
+  // elegir del listado — nunca se liga solo a una cuenta sin que él la
+  // confirme, para no ligar por accidente a la empresa equivocada.
   let clienteId=null;
+  const empresaInput=document.getElementById('naEmpresa');
   if(empresa){
-    const {data:matchCliente,error:errBuscar}=await sb.from('clientes_cartera')
-      .select('id,razon_social,num_cliente')
-      .ilike('razon_social',empresa)
-      .limit(1)
-      .maybeSingle();
-    if(errBuscar){alert('Error al buscar la cuenta en Cartera: '+errBuscar.message);return;}
-    if(matchCliente){
-      clienteId=matchCliente.id;
+    if(empresaInput?.dataset.clienteConfirmado==='1'&&empresaInput.dataset.clienteTexto===empresaInput.value){
+      clienteId=empresaInput.dataset.clienteId||null;
     }else{
-      const continuar=confirm('La empresa/razón social "'+empresa+'" todavía no existe en Cartera de Cuentas (probablemente aún no se ha facturado/dado de alta desde Facturación).\n\nEl participante se guardará SIN cuenta principal ligada. En cuanto exista en Facturación, se podrá ligar manualmente desde Finanzas o Cartera.\n\n¿Continuar de todas formas?');
-      if(!continuar)return;
+      const {data:matches,error:errBuscar}=await sb.from('clientes_cartera')
+        .select('id,razon_social,num_cliente')
+        .ilike('razon_social',`%${empresa}%`)
+        .limit(6);
+      if(errBuscar){alert('Error al buscar la cuenta en Cartera: '+errBuscar.message);return;}
+      if(!matches?.length){
+        const continuar=confirm('La empresa/razón social "'+empresa+'" todavía no existe en Cartera de Cuentas (probablemente aún no se ha facturado/dado de alta desde Facturación).\n\nEl participante se guardará SIN cuenta principal ligada. En cuanto exista en Facturación, se podrá ligar manualmente desde Finanzas o Cartera.\n\n¿Continuar de todas formas?');
+        if(!continuar)return;
+      }else{
+        academiaBuscarClienteEmpresa();
+        alert('Encontré '+matches.length+' cuenta(s) en Cartera que podrían ser "'+empresa+'". Elige la correcta (o "Ninguna de estas") en el listado que aparece justo debajo del campo Empresa, y vuelve a dar clic en Guardar.');
+        return;
+      }
     }
   }
 
@@ -2924,7 +3035,7 @@ async function academiaVerFicha(inscripcionId){
         ${asigVinculada?`
         <div><b>Sistema:</b> ${asigVinculada.empresa?.sistema?.clave||'—'} · <b>Empresa:</b> #${asigVinculada.empresa?.numero??'—'} · <b>Servidor:</b> ${asigVinculada.servidor||asigVinculada.empresa?.servidor||'—'}${asigVinculada.empresa?.sistema?.ddns?` · <b>DDNS:</b> ${asigVinculada.empresa.sistema.ddns}`:''}</div>
         <div><b>Usuario RDP:</b> ${asigVinculada.usuario_rdp||'—'} · <b>Contraseña RDP:</b> ${asigVinculada.contrasena_rdp||'—'}</div>
-        <div><b>Usuario Aspel (empresa):</b> ${asigVinculada.empresa?.usuario_empresa||'—'} · <b>Contraseña Aspel:</b> ${asigVinculada.empresa?.contrasena_empresa||'—'}</div>
+        <div><b>Empresa Aspel:</b> ${asigVinculada.empresa?.empresa_aspel||'—'} · <b>Usuario Aspel:</b> ${asigVinculada.empresa?.usuario_empresa||'—'} · <b>Contraseña Aspel:</b> ${asigVinculada.empresa?.contrasena_empresa||'—'}</div>
         <div style="margin-top:4px;">${asigVigenteAcc?`<span style="color:var(--green);font-weight:700;">● Vigente</span> desde ${asigVinculada.fecha_inicio||'—'}${asigVinculada.fecha_fin?' hasta '+asigVinculada.fecha_fin:''}`:`<span style="color:var(--text3);">Asignación anterior — ya no vigente (${asigVinculada.fecha_fin?'liberada el '+asigVinculada.fecha_fin:'sin fecha'})</span>`}</div>
         `:`
         <div><b>Servidor:</b> ${insc.servidor||'—'}${insc.generacion?.curso?.sistema?.ddns?` (DDNS: ${insc.generacion.curso.sistema.ddns})`:''} · <b>Usuario RDP:</b> ${insc.usuario_rdp||'—'} · <b>Contraseña RDP:</b> ${insc.contrasena_rdp||'—'}</div>
