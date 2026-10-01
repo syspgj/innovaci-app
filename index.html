@@ -2554,7 +2554,7 @@ async function academiaAbrirNuevoAsistente(generacionId){
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Servidor',inp('naServidor','text',''))}
       ${fld('Usuario RDP',inp('naUsuarioRdp','text',''))}
-      ${fld('Contraseña RDP',academiaCampoPasswordConGenerador('naPassRdp',`'${gen?.clave||''}'`))}
+      ${fld('Contraseña RDP',academiaCampoPasswordConGenerador('naPassRdp',`'${gen?.clave||''}'`,'','academiaSincronizarPassAspelDesdeRdp()'))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
       ${fld('Empresa Aspel',inp('naEmpresaAspel','text',''))}
@@ -2579,13 +2579,20 @@ async function academiaAbrirNuevoAsistente(generacionId){
   // entre todos los que pasan por ella.
   if(disponibles.length) academiaAutoRellenarPorEmpresa(disponibles[0].id);
 }
-// Copia Servidor + Empresa/Usuario/Contraseña Aspel de la empresa elegida (o
-// sugerida) en "+ Agregar asistente" — esos 4 datos viven en
-// academia_empresas_acceso (catálogo de Control de Accesos) y son los mismos
-// para cualquier participante que pase por esa empresa numerada, así que no
-// tiene caso volver a teclearlos cada vez. Solo pisa el campo si está vacío o
-// si el valor actual es el que había puesto el autofill anterior — así no se
-// borra algo que Jp ya escribió a mano antes de cambiar de empresa.
+// Copia Servidor + Usuario RDP + Empresa/Usuario Aspel de la empresa elegida
+// (o sugerida) en "+ Agregar asistente" — Jp aclaró 2026-10-01 que TODO está
+// amarrado al número de la empresa numerada, corrigiendo lo que se había
+// entendido en el Lote 23/25: Usuario RDP NO es una cuenta personal por
+// participante — es fija y predefinida, igual que Usuario Aspel, con el
+// patrón "USxx" (xx = número de empresa, ej. empresa #73 → "US73" para
+// ambos). "Empresa Aspel" tampoco es un nombre de compañía capturado aparte
+// (esa idea del Lote 23 estaba equivocada) — es simplemente ese mismo número
+// de empresa. Solo la Contraseña RDP sigue siendo aleatoria por participante
+// (se genera con el dado 🎲), y la Contraseña Aspel se deriva de ESA
+// contraseña (ver `academiaSincronizarPassAspelDesdeRdp`), no se copia aquí.
+// Solo pisa un campo si está vacío o si el valor actual es el que había
+// puesto el autofill anterior — así no se borra algo que Jp ya escribió a
+// mano antes de cambiar de empresa.
 function academiaAutoRellenarPorEmpresa(empresaId){
   const disponibles=window._academiaAsistenteDisponibles||[];
   const e=disponibles.find(x=>x.id===empresaId);
@@ -2599,9 +2606,19 @@ function academiaAutoRellenarPorEmpresa(empresaId){
     }
   };
   set('naServidor',e.servidor);
-  set('naEmpresaAspel',e.empresa_aspel);
+  set('naEmpresaAspel',e.numero!=null?String(e.numero):'');
   set('naUsuarioAspel',e.usuario_empresa);
-  set('naPassAspel',e.contrasena_empresa);
+  set('naUsuarioRdp',e.usuario_empresa);
+}
+// Contraseña Aspel = últimos 6 caracteres de la Contraseña RDP (Jp,
+// 2026-10-01: "ocupen de la contraseña RDP que se genere, los últimos seis
+// dígitos, esos son los que ocupamos de la contraseña Aspel") — se
+// sincroniza en vivo cada vez que cambia Contraseña RDP en "+ Agregar
+// asistente", ya sea tecleada a mano o generada con el dado 🎲.
+function academiaSincronizarPassAspelDesdeRdp(){
+  const rdp=document.getElementById('naPassRdp')?.value||'';
+  const aspel=document.getElementById('naPassAspel');
+  if(aspel) aspel.value=rdp.slice(-6);
 }
 
 // Lee una captura (ej. la que manda Ventas por Telegram con los datos de alta)
@@ -15877,8 +15894,11 @@ function sel(id,opts,val=''){return `<select id="${id}" style="width:100%;paddin
 // navegador da la clave de la generación en ese momento — a veces es fija
 // (ya se conoce al construir el modal) y a veces hay que leerla de un <select>
 // que el usuario puede cambiar (por eso se evalúa al hacer clic, no antes).
-function academiaCampoPasswordConGenerador(id,claveExprJs,valorInicial=''){
-  return `<div style="display:flex;gap:4px;">${inp(id,'text','',valorInicial)}<button type="button" title="Generar contraseña segura" onclick="academiaGenerarPasswordRdp('${id}',${claveExprJs})" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-size:13px;flex-shrink:0;">🎲</button></div>`;
+// `onAfter` (opcional): JS extra a ejecutar cada vez que el valor cambia —
+// usado en "+ Agregar asistente" para sincronizar Contraseña Aspel con los
+// últimos 6 caracteres de esta Contraseña RDP (Jp, 2026-10-01).
+function academiaCampoPasswordConGenerador(id,claveExprJs,valorInicial='',onAfter=''){
+  return `<div style="display:flex;gap:4px;">${inp(id,'text','',valorInicial,onAfter?`oninput="${onAfter}"`:'')}<button type="button" title="Generar contraseña segura" onclick="academiaGenerarPasswordRdp('${id}',${claveExprJs});${onAfter}" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;background:none;cursor:pointer;font-size:13px;flex-shrink:0;">🎲</button></div>`;
 }
 function academiaGenerarPasswordSegura(prefijo){
   const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sin caracteres ambiguos (O/0, I/1, l)
