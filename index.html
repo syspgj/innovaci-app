@@ -317,6 +317,9 @@ table.daily td{padding:8px 12px;vertical-align:middle;}
       <label>Código</label>
       <input type="text" id="mfaCode" placeholder="000000" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
     </div>
+    <label style="display:flex;align-items:center;gap:7px;font-size:12px;color:var(--text2);cursor:pointer;margin:2px 0 14px;">
+      <input type="checkbox" id="mfaRecordarDispositivo" checked> Confiar en este dispositivo por 30 días (no volver a pedir el código aquí)
+    </label>
     <button class="btn-primary" id="btnMfaVerify" onclick="verificarMfaLogin()">Verificar</button>
     <div class="login-err" id="mfaErr"></div>
     <button onclick="cancelarMfaLogin()" style="margin-top:10px;background:none;border:none;color:var(--text3,#888);font-size:12px;cursor:pointer;text-decoration:underline;">Cancelar e iniciar sesión de nuevo</button>
@@ -623,6 +626,13 @@ async function doLogin(){
   const {data:aal}=await sb.auth.mfa.getAuthenticatorAssuranceLevel();
   btn.disabled=false;btn.textContent='Entrar';
   if(aal&&aal.nextLevel==='aal2'&&aal.nextLevel!==aal.currentLevel){
+    // ¿este dispositivo ya quedó marcado como confiable (últimos 30 días)? si sí, nos saltamos el código
+    const confiable=await verificarDispositivoConfiable(data.user.id);
+    if(confiable){
+      await initApp(data.user);
+      iniciarMonitorInactividad();
+      return;
+    }
     document.getElementById('loginCardMain').style.display='none';
     document.getElementById('mfaCard').style.display='block';
     document.getElementById('mfaCode').focus();
@@ -630,6 +640,43 @@ async function doLogin(){
   }
   await initApp(data.user);
   iniciarMonitorInactividad();
+}
+
+// ─── DISPOSITIVOS CONFIABLES (saltar 2FA 30 días en este dispositivo) ──────
+function claveDispositivoConfiable(userId){ return 'innovaci_td_'+userId; }
+function generarTokenDispositivo(){
+  const arr=new Uint8Array(24);
+  crypto.getRandomValues(arr);
+  return Array.from(arr).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+async function verificarDispositivoConfiable(userId){
+  const token=localStorage.getItem(claveDispositivoConfiable(userId));
+  if(!token) return false;
+  try{
+    const {data,error}=await sb.from('usuarios_dispositivos_confiables').select('id,expira_en').eq('user_id',userId).eq('token',token).maybeSingle();
+    if(error||!data) return false;
+    if(new Date(data.expira_en)<new Date()) return false;
+    sb.from('usuarios_dispositivos_confiables').update({ultimo_uso:new Date().toISOString()}).eq('id',data.id).then(()=>{},()=>{});
+    return true;
+  }catch(e){ return false; }
+}
+async function recordarDispositivoConfiable(userId){
+  try{
+    const token=generarTokenDispositivo();
+    const expira=new Date(Date.now()+30*24*60*60*1000).toISOString();
+    const {error}=await sb.from('usuarios_dispositivos_confiables').insert({user_id:userId,token,expira_en:expira,nombre_dispositivo:(navigator.userAgent||'').slice(0,120)});
+    if(!error) localStorage.setItem(claveDispositivoConfiable(userId),token);
+  }catch(e){ /* best-effort, no bloquea el login */ }
+}
+async function olvidarDispositivosConfiables(){
+  if(!confirm('¿Olvidar todos los dispositivos confiables? La próxima vez que inicies sesión en cualquier dispositivo (incluido este) se te volverá a pedir el código de verificación.')) return;
+  const {data:userData}=await sb.auth.getUser();
+  const uid=userData?.user?.id;
+  if(!uid) return;
+  try{ await sb.from('usuarios_dispositivos_confiables').delete().eq('user_id',uid); }catch(e){}
+  localStorage.removeItem(claveDispositivoConfiable(uid));
+  document.getElementById('modalSeguridad')?.remove();
+  alert('Listo. Se olvidaron todos los dispositivos confiables.');
 }
 
 async function verificarMfaLogin(){
@@ -650,6 +697,9 @@ async function verificarMfaLogin(){
   document.getElementById('mfaCard').style.display='none';
   document.getElementById('mfaCode').value='';
   const {data:userData}=await sb.auth.getUser();
+  if(document.getElementById('mfaRecordarDispositivo')?.checked){
+    await recordarDispositivoConfiable(userData.user.id);
+  }
   await initApp(userData.user);
   iniciarMonitorInactividad();
 }
@@ -681,7 +731,11 @@ async function abrirPanelSeguridad(){
         <div style="background:rgba(39,174,96,0.08);border:1px solid rgba(39,174,96,0.3);border-radius:8px;padding:12px;margin-bottom:12px;">
           <div style="font-size:13px;font-weight:600;color:#27AE60;">✅ Verificación en dos pasos activada</div>
         </div>
-        <button onclick="desactivarMfa('${totp.id}')" style="background:none;border:1px solid var(--red);color:var(--red);border-radius:6px;padding:8px 14px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;">Desactivar 2FA</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button onclick="desactivarMfa('${totp.id}')" style="background:none;border:1px solid var(--red);color:var(--red);border-radius:6px;padding:8px 14px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;">Desactivar 2FA</button>
+          <button onclick="olvidarDispositivosConfiables()" style="background:none;border:1px solid var(--border);color:var(--text2);border-radius:6px;padding:8px 14px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;">Olvidar dispositivos confiables</button>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:8px;line-height:1.5;">Si marcaste "Confiar en este dispositivo" al verificar tu código, no se te vuelve a pedir en ese mismo dispositivo durante 30 días. Usa "Olvidar dispositivos confiables" si quieres que se vuelva a pedir en todos, por ejemplo si usaste un equipo compartido.</div>
       `:`
         <div style="font-size:12px;color:var(--text3);margin-bottom:12px;line-height:1.6;">Agrega una capa extra de seguridad: además de tu contraseña, se pedirá un código de tu app de autenticación (Google Authenticator, Authy, etc.) al iniciar sesión.</div>
         <button onclick="iniciarEnrolamientoMfa()" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:9px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Activar verificación en dos pasos</button>
@@ -725,6 +779,14 @@ async function desactivarMfa(factorId){
   if(!confirm('¿Seguro que quieres desactivar la verificación en dos pasos?')) return;
   const {error}=await sb.auth.mfa.unenroll({factorId});
   if(error){alert('Error: '+error.message);return;}
+  try{
+    const {data:userData}=await sb.auth.getUser();
+    const uid=userData?.user?.id;
+    if(uid){
+      await sb.from('usuarios_dispositivos_confiables').delete().eq('user_id',uid);
+      localStorage.removeItem(claveDispositivoConfiable(uid));
+    }
+  }catch(e){ /* limpieza best-effort */ }
   document.getElementById('modalSeguridad')?.remove();
   alert('Verificación en dos pasos desactivada.');
 }
