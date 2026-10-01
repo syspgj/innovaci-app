@@ -2540,10 +2540,13 @@ async function academiaAbrirNuevoAsistente(generacionId){
     <div id="naEmpresaBlockWrap" style="display:none;">
       <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">EMPRESA DE PRÁCTICA (Control de Accesos)</div>
       ${disponibles.length?`
-      <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:8px;">
-        <input type="checkbox" id="naAsignarEmpresa" checked onchange="document.getElementById('naEmpresaSel').disabled=!this.checked;"> Asignarle una empresa libre ahora mismo
-      </label>
-      <div style="margin-bottom:14px;">${fld('Empresa sugerida (puedes elegir otra)',`<select id="naEmpresaSel" onchange="academiaAutoRellenarPorEmpresa(this.value)" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${empresaOpts}</select>`)}</div>
+      <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px;background:#fffdf5;">
+        <label style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;color:var(--text2);cursor:pointer;margin-bottom:6px;">
+          <input type="checkbox" id="naAsignarEmpresa" onchange="document.getElementById('naEmpresaSel').disabled=!this.checked;"> Sí, asignarle esta empresa AHORA MISMO
+        </label>
+        <div style="margin-bottom:8px;">${fld('Empresa sugerida (puedes elegir otra)',`<select id="naEmpresaSel" disabled onchange="academiaAutoRellenarPorEmpresa(this.value)" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${empresaOpts}</select>`)}</div>
+        <div style="font-size:11px;color:var(--text3);">Si NO marcas la casilla, no se asigna ninguna empresa — el participante se guarda sin empresa de práctica, y se asigna después desde Accesos cuando sí corresponda.</div>
+      </div>
       `:`<div style="font-size:11px;color:var(--text3);margin-bottom:14px;">${sistemaId?'No hay empresas disponibles ahora mismo en este sistema — se puede asignar después desde Accesos.':'No se identificó el sistema de este curso — asigna la empresa después desde Accesos.'}</div>`}
     </div>
     <div id="naEmpresaBlockEsencialNota" style="font-size:11px;color:var(--text3);margin-bottom:14px;">El acceso Esencial no hace prácticas de laboratorio — no necesita empresa asignada.</div>
@@ -2800,6 +2803,26 @@ async function academiaGuardarNuevoAsistente(generacionId){
   });
   if(errPart){alert('Error al buscar/crear el participante: '+errPart.message);return;}
 
+  // Verificación de correo/teléfono ya registrado (Jp, 2026-09-30): el
+  // participante se busca por correo o teléfono (nunca por nombre), así que
+  // si esos datos ya pertenecen a OTRO participante que ya está inscrito en
+  // esta misma generación, el alta se bloquea aquí con un mensaje claro — en
+  // vez de dejar que truene el error crudo de Postgres ("duplicate key value
+  // violates unique constraint academia_inscripciones_participante_id_generacion_id_key")
+  // que nadie entendía (caso real: Julieta Fonseca Rojas capturada con el
+  // correo/teléfono que ya tenía registrados Celia Macías Aguado).
+  const {data:yaInscrito,error:errCheck}=await sb.from('academia_inscripciones')
+    .select('folio')
+    .eq('participante_id',participanteId)
+    .eq('generacion_id',generacionId)
+    .maybeSingle();
+  if(errCheck){alert('Error al verificar si ya está inscrito: '+errCheck.message);return;}
+  if(yaInscrito){
+    const {data:pReg}=await sb.from('academia_participantes').select('nombre').eq('id',participanteId).maybeSingle();
+    alert('Este correo y/o teléfono ya están registrados en el sistema a nombre de "'+(pReg?.nombre||'otro participante')+'" (folio '+yaInscrito.folio+'), quien ya está inscrito en esta generación.\n\nNo se puede registrar a un participante nuevo con el mismo correo o teléfono de otro participante que ya existe.\n\nValida los datos: si "'+nombre+'" es una persona distinta, corrige su correo y/o teléfono (puede que el registro existente los tenga mal capturados) y vuelve a dar clic en Guardar.');
+    return;
+  }
+
   const {data:folio,error:errFolio}=await sb.rpc('academia_generar_folio',{
     p_sistema:prefijo, p_generacion:gen?.clave, p_acceso:academiaAccesoLetra(nivelAcceso),
   });
@@ -2822,7 +2845,13 @@ async function academiaGuardarNuevoAsistente(generacionId){
     fecha_fin_laboratorio:document.getElementById('naFechaFinLab')?.value||null,
     fecha_fin_sesion_privada:document.getElementById('naFechaFinSesion')?.value||null,
   }).select('id').single();
-  if(errInsc){alert('El participante se creó (folio '+folio+') pero no se pudo inscribir a la generación: '+errInsc.message);return;}
+  if(errInsc){
+    const mensajeAmigable=errInsc.message?.includes('academia_inscripciones_participante_id_generacion_id_key')
+      ?'Este correo y/o teléfono ya pertenecen a otro participante que ya está inscrito en esta generación. Valida los datos e inténtalo de nuevo.'
+      :errInsc.message;
+    alert('El participante se creó (folio '+folio+') pero no se pudo inscribir a la generación: '+mensajeAmigable);
+    return;
+  }
 
   // Si aceptó la sugerencia de empresa, la asignación queda ligada a esta
   // inscripción desde el momento del alta — así ya aparece en su ficha sin
