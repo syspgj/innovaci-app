@@ -17,7 +17,8 @@
 //   SUPABASE_SERVICE_ROLE_KEY
 //   GOOGLE_CALENDAR_SERVICE_ACCOUNT_EMAIL   (de la cuenta de servicio)
 //   GOOGLE_CALENDAR_SERVICE_ACCOUNT_KEY     (private_key del JSON, con \n literales está bien, se reemplazan abajo)
-//   GOOGLE_CALENDAR_ID                      (el calendario de la cuenta de Gmail de ventas, compartido con la cuenta de servicio)
+//   VENTAS_GOOGLE_CALENDAR_ID               (el calendario de la cuenta de Gmail de ventas, compartido con la cuenta de servicio;
+//                                            nombre distinto de GOOGLE_CALENDAR_ID porque ese ya existía para otra integración)
 //   VENTAS_CALENDARIO_CRON_SECRET           (cadena inventada, igual patrón que TELEGRAM_WEBHOOK_SECRET; protege el endpoint)
 
 import crypto from 'crypto';
@@ -172,12 +173,26 @@ export default async function handler(req, res) {
       );
       resultado.detectadas += ventas.length;
 
+      // Ajuste 2026-10-02: si un mismo cliente tiene más de una venta de este
+      // tipo (ej. compró una póliza en enero y la volvió a comprar/renovar en
+      // agosto), solo nos interesa la más reciente — las anteriores ya fueron
+      // superadas por esa renovación y no deben generar su propio recordatorio.
+      const masRecientePorCliente = new Map();
+      for (const v of ventas) {
+        if (!v.fecha) continue;
+        const claveCliente = v.cliente_cartera_id || (v.cliente ? String(v.cliente).trim().toUpperCase() : null);
+        if (!claveCliente) continue; // sin cliente identificable, no se puede agrupar
+        const actual = masRecientePorCliente.get(claveCliente);
+        if (!actual || v.fecha > actual.fecha) masRecientePorCliente.set(claveCliente, v);
+      }
+      const ventasVigentes = Array.from(masRecientePorCliente.values());
+
       const yaRegistradas = await sb(
         `ventas_calendario_recordatorios?select=fact_ingreso_id&origen_tipo=eq.${tipo}`
       );
       const idsRegistrados = new Set(yaRegistradas.map((r) => r.fact_ingreso_id));
 
-      const nuevas = ventas.filter((v) => v.fecha && !idsRegistrados.has(v.id));
+      const nuevas = ventasVigentes.filter((v) => !idsRegistrados.has(v.id));
       for (const v of nuevas) {
         const fechaVencimiento = sumarMeses(v.fecha, cfg.meses_vigencia);
         const fechaRecordatorio = restarDias(fechaVencimiento, cfg.dias_anticipacion);
@@ -209,8 +224,8 @@ export default async function handler(req, res) {
 
     if (pendientes.length > 0) {
       const accessToken = await obtenerAccessTokenGoogle();
-      const calendarId = process.env.GOOGLE_CALENDAR_ID;
-      if (!calendarId) throw new Error('Falta GOOGLE_CALENDAR_ID en las variables de entorno.');
+      const calendarId = process.env.VENTAS_GOOGLE_CALENDAR_ID;
+      if (!calendarId) throw new Error('Falta VENTAS_GOOGLE_CALENDAR_ID en las variables de entorno.');
 
       for (const rec of pendientes) {
         const cfg = CONFIG_RECORDATORIOS[rec.origen_tipo];
