@@ -1926,6 +1926,70 @@ async function academiaGuardarEditarGeneracion(generacionId,cursoId){
   renderAcademiaGeneraciones();
 }
 
+// ── PORTAL DEL CLIENTE (Lote 26, Jp 2026-10-03): para cursos empresariales,
+// la empresa que contrató el curso puede entrar a un portal público
+// (portal-empresa.html, mismo patrón que Verifica) con RFC + código de
+// acceso para dar seguimiento a su equipo: avance de asistencia/prácticas
+// mientras el curso está en marcha, y al marcarlo "finalizado" aquí,
+// también ve resultados de acreditación, las observaciones de la
+// instructora y puede descargar el reporte general en PDF. El RFC/código
+// y los dos textos narrativos (análisis/recomendaciones) viven en
+// academia_generaciones — ver academia_lote26_portal_empresarial.sql.
+function academiaGenerarCodigoPortal(){
+  const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sin 0/O/1/I para evitar confusión al dictarlo
+  let codigo='';
+  for(let i=0;i<6;i++) codigo+=chars[Math.floor(Math.random()*chars.length)];
+  const el=document.getElementById('apCodigo');
+  if(el) el.value=codigo;
+  academiaActualizarEnlacePortal();
+}
+function academiaActualizarEnlacePortal(){
+  const rfc=(document.getElementById('apRfc')?.value||'').trim().toUpperCase();
+  const codigo=(document.getElementById('apCodigo')?.value||'').trim().toUpperCase();
+  const prevEl=document.getElementById('apEnlacePreview');
+  if(!prevEl) return;
+  if(rfc&&codigo){
+    const url=`https://os.innovaci.com.mx/portal-empresa.html?rfc=${encodeURIComponent(rfc)}&codigo=${encodeURIComponent(codigo)}`;
+    prevEl.innerHTML=`<div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Enlace para compartir con el cliente (ya incluye RFC y código):</div><div style="display:flex;gap:6px;"><input id="apEnlaceTexto" readonly value="${url}" style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:'JetBrains Mono',monospace;background:var(--bg);"><button type="button" class="cartera-subtab" onclick="navigator.clipboard.writeText(document.getElementById('apEnlaceTexto').value);this.textContent='✓ Copiado';setTimeout(()=>this.textContent='Copiar',1500);">Copiar</button></div>`;
+  } else {
+    prevEl.innerHTML='<div style="font-size:11px;color:var(--text3);">Captura RFC y código (o genera uno) para obtener el enlace.</div>';
+  }
+}
+async function academiaAbrirPortalEmpresa(generacionId){
+  const {data:g,error}=await sb.from('academia_generaciones').select('clave,cliente_nombre,portal_rfc,portal_codigo,portal_finalizado,portal_texto_analisis,portal_texto_recomendaciones').eq('id',generacionId).single();
+  if(error||!g){alert('No se pudo cargar la generación: '+(error?.message||''));return;}
+  const html=`
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">ACCESO (${g.cliente_nombre||g.clave||''})</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('RFC de la empresa',inp('apRfc','text','Ej. ABC010101AB1',g.portal_rfc||'','oninput="academiaActualizarEnlacePortal()"'))}
+      ${fld('Código de acceso',inp('apCodigo','text','',g.portal_codigo||'','oninput="academiaActualizarEnlacePortal()"'))}
+    </div>
+    <button type="button" class="cartera-subtab" style="margin-bottom:10px;" onclick="academiaGenerarCodigoPortal()">🎲 Generar código nuevo</button>
+    <div id="apEnlacePreview" style="margin-bottom:16px;"></div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:14px;">
+      <input type="checkbox" id="apFinalizado" ${g.portal_finalizado?'checked':''}> Curso finalizado — mostrar resultados de acreditación, observaciones y habilitar el reporte descargable en el portal
+    </label>
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">REPORTE — TEXTO DE LA INSTRUCTORA</div>
+    <div style="margin-bottom:10px;">${fld('Análisis general del grupo',`<textarea id="apAnalisis" rows="4" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${g.portal_texto_analisis||''}</textarea>`)}</div>
+    <div style="margin-bottom:4px;">${fld('Recomendaciones estratégicas',`<textarea id="apRecomendaciones" rows="4" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${g.portal_texto_recomendaciones||''}</textarea>`)}</div>
+    <div style="font-size:11px;color:var(--text3);margin-top:8px;">Estos dos textos y el checkbox de "finalizado" se ven en el portal del cliente y en el reporte PDF que puede descargar ahí — se capturan a mano porque son un juicio de la instructora, no se calculan solos.</div>`;
+  mkModal('modalPortalEmpresa','Portal del cliente',html,`academiaGuardarPortalEmpresa('${generacionId}')`);
+  academiaActualizarEnlacePortal();
+}
+async function academiaGuardarPortalEmpresa(generacionId){
+  const rfc=(document.getElementById('apRfc')?.value||'').trim().toUpperCase().replace(/\s+/g,'')||null;
+  const codigo=(document.getElementById('apCodigo')?.value||'').trim().toUpperCase().replace(/\s+/g,'')||null;
+  const {error}=await sb.from('academia_generaciones').update({
+    portal_rfc:rfc,
+    portal_codigo:codigo,
+    portal_finalizado:!!document.getElementById('apFinalizado')?.checked,
+    portal_texto_analisis:document.getElementById('apAnalisis')?.value?.trim()||null,
+    portal_texto_recomendaciones:document.getElementById('apRecomendaciones')?.value?.trim()||null,
+  }).eq('id',generacionId);
+  if(error){alert('Error al guardar el portal del cliente: '+error.message);return;}
+  document.getElementById('modalPortalEmpresa')?.remove();
+}
+
 // ── CONTROL DE ACCESOS (Jp, 2026-09-03): inventario de "empresas" (ambientes
 // de práctica virtual) por sistema — quién tiene cada una asignada y desde
 // cuándo. Igual que vigencia/archivado, "disponible"/"ocupada" NUNCA se
@@ -2516,6 +2580,7 @@ function academiaPintarParticipantes(){
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       ${gen?.curso?.modalidad!=='24_7'?`<button class="cartera-subtab" onclick="academiaAbrirRecordatorios('${cache.generacionId}')">📣 Recordatorios de sesión</button>`:''}
+      ${gen?.curso?.tipo==='empresarial'?`<button class="cartera-subtab" onclick="academiaAbrirPortalEmpresa('${cache.generacionId}')">🔗 Portal del cliente</button>`:''}
       <button class="cartera-subtab" style="background:var(--teal);color:#fff;" onclick="academiaAbrirNuevoAsistente('${cache.generacionId}')">+ Agregar asistente</button>
     </div>
   </div>
