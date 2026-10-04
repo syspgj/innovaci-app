@@ -1529,12 +1529,14 @@ function academiaPintarGeneraciones(){
 
 // ── NUEVA GENERACIÓN ─────────────────────────────────────────────────────────
 async function academiaAbrirNuevaGeneracion(){
-  const [{data:sistemas},{data:cursos}]=await Promise.all([
+  const [{data:sistemas},{data:cursos},{data:firmantes}]=await Promise.all([
     sb.from('academia_sistemas').select('*').order('clave'),
     sb.from('academia_cursos').select('*').order('nombre'),
+    sb.from('academia_firmantes').select('id,nombre,cargo').order('nombre'),
   ]);
   window._academiaCache.sistemas=sistemas||[];
   window._academiaCache.cursos=cursos||[];
+  window._academiaCache.firmantes=firmantes||[];
   const cursoOpts=(cursos||[]).map(c=>`<option value="${c.id}" data-nombre="${(c.nombre||'').replace(/"/g,'&quot;')}" data-tipo="${c.tipo||''}" data-modalidad="${c.modalidad||''}" data-horas="${c.duracion_horas??''}">${c.nombre}</option>`).join('');
   const html=`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
@@ -1554,7 +1556,10 @@ async function academiaAbrirNuevaGeneracion(){
       <div id="genCursoCopiaNota" style="display:none;font-size:11px;color:var(--text3);">Esto va a crear un curso nuevo con estos datos como punto de partida — el curso original que elegiste arriba no se modifica ni se comparte con esta generación.</div>
       <div id="genCursoNuevaNota" style="font-size:11px;color:var(--text3);">Tipo + Modalidad determinan la categoría del filtro "Tipo de curso" en Generaciones.</div>
     </div>
-    <div style="margin-bottom:10px;">${fld('Cliente (solo cursos empresariales — nombre de la empresa)',inp('genCliente','text','Ej. Transportes Evomex'))}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${academiaBloqueClienteCartera('gen',null,'')}
+      ${fld('Instructor(a) que firma/da seguimiento',academiaSelectFirmante('genFirmante',firmantes,null))}
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha de inicio',inp('genFechaInicio','date'))}
       ${fld('Fecha de fin',inp('genFechaFin','date','','',`onchange="academiaSugerirFechasPracticas('genFechaFin','genFechaLimitePracticas','genFechaLimitePracticasExt')"`))}
@@ -1567,7 +1572,7 @@ async function academiaAbrirNuevaGeneracion(){
     ${academiaBloqueFechasSesion('gen')}`;
   window._academiaSesFechasExistentes=window._academiaSesFechasExistentes||{};
   window._academiaSesFechasExistentes['gen']=null; // generación nueva: sin fechas previas que precargar
-  mkModal('modalNuevaGen','Nueva generación',html,'academiaGuardarNuevaGeneracion');
+  mkModal('modalNuevaGen','Nueva generación',html,'academiaGuardarNuevaGeneracion','Guardar','900px');
 }
 
 // Al elegir un curso ya existente, precarga el mismo bloque de datos del
@@ -1652,6 +1657,7 @@ async function academiaGuardarNuevaGeneracion(){
     cursoId=nuevoCurso.id;
   }
 
+  const clienteCartera=academiaClienteCarteraLeer('gen');
   const {data:nuevaGen,error}=await sb.from('academia_generaciones').insert({
     curso_id:cursoId,
     clave,
@@ -1661,7 +1667,9 @@ async function academiaGuardarNuevaGeneracion(){
     practicas_totales:parseInt(document.getElementById('genPracticas')?.value)||null,
     fecha_limite_practicas:document.getElementById('genFechaLimitePracticas')?.value||null,
     fecha_limite_practicas_extension:document.getElementById('genFechaLimitePracticasExt')?.value||null,
-    cliente_nombre:document.getElementById('genCliente')?.value?.trim()||null,
+    cliente_nombre:clienteCartera.cliente_nombre,
+    cliente_cartera_id:clienteCartera.cliente_cartera_id,
+    firmante_instructor_id:document.getElementById('genFirmante')?.value||null,
   }).select().single();
   if(error){alert('Error al crear la generación (¿ya existe una con esta clave para este curso?): '+error.message);return;}
   // Fechas de sesión (opcional, Jp 2026-09-17): se guardan aparte, ya con el
@@ -1846,13 +1854,15 @@ const ACADEMIA_OPCIONES_FORMATO=[
 // examen), que es exactamente esa misma regla aplicada por constancia.
 
 async function academiaAbrirEditarGeneracion(generacionId){
-  const {data:g,error}=await sb.from('academia_generaciones').select('*,curso:curso_id(*)').eq('id',generacionId).single();
+  const {data:g,error}=await sb.from('academia_generaciones').select('*,curso:curso_id(*),cliente_cartera:cliente_cartera_id(id,razon_social,num_cliente)').eq('id',generacionId).single();
   if(error||!g){alert('No se pudo cargar la generación: '+(error?.message||''));return;}
   const c=g.curso||{};
   const {data:sesFechas}=await sb.from('academia_generacion_sesiones').select('numero_sesion,fecha').eq('generacion_id',generacionId);
   const sesFechasMap={}; (sesFechas||[]).forEach(s=>{ if(s.fecha) sesFechasMap[s.numero_sesion]=s.fecha; });
   window._academiaSesFechasExistentes=window._academiaSesFechasExistentes||{};
   window._academiaSesFechasExistentes['eg']=sesFechasMap;
+  const {data:firmantes}=await sb.from('academia_firmantes').select('id,nombre,cargo').order('nombre');
+  window._academiaCache.firmantes=firmantes||[];
   const html=`
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DEL CURSO</div>
     <div style="margin-bottom:10px;">${fld('Nombre del curso / generación',inp('egNombreCurso','text','',c.nombre||''))}</div>
@@ -1860,16 +1870,22 @@ async function academiaAbrirEditarGeneracion(generacionId){
       ${fld('Tipo',sel('egTipo',['diplomado_vip','24_7','empresarial','taller','desde_cero'],c.tipo))}
       ${fld('Modalidad',sel('egModalidad',['en_vivo','24_7','in_company'],c.modalidad))}
     </div>
-    <div style="margin-bottom:10px;">${fld('Duración (horas)',inp('egHoras','number','',c.duracion_horas??''))}</div>
-    <div style="font-size:11px;color:var(--text3);margin:-4px 0 10px;">Tipo + Modalidad determinan la categoría que se usa en el filtro de "Tipo de curso" de Generaciones (ej. Tipo=taller + Modalidad=24_7 → "Talleres de especialización 24/7").</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px;">
+      ${fld('Duración (horas)',inp('egHoras','number','',c.duracion_horas??''))}
+      ${fld('Número de prácticas',inp('egPracticas','number','',g.practicas_totales??''))}
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin:0 0 10px;">Tipo + Modalidad determinan la categoría que se usa en el filtro de "Tipo de curso" de Generaciones (ej. Tipo=taller + Modalidad=24_7 → "Talleres de especialización 24/7").</div>
     <div style="margin-bottom:10px;">${fld('Descripción (aparece debajo del nombre del curso en la constancia — máximo 4 líneas, se recomienda no pasar de ~320 caracteres para que quepa completa)',`<textarea id="egDescripcion" rows="3" maxlength="400" oninput="document.getElementById('egDescripcionContador').textContent=this.value.length+'/400'" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${c.descripcion||''}</textarea><div id="egDescripcionContador" style="font-size:10px;color:var(--text3);text-align:right;margin-top:2px;">${(c.descripcion||'').length}/400</div>`)}</div>
-    <div style="margin-bottom:14px;">${fld('Competencias desarrolladas (una por línea)',`<textarea id="egCompetencias" rows="4" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${(c.competencias||[]).join('\n')}</textarea>`)}</div>
+    <div style="margin-bottom:14px;">${fld('Competencias desarrolladas (una por línea)',`<textarea id="egCompetencias" rows="3" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${(c.competencias||[]).join('\n')}</textarea>`)}</div>
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DE LA GENERACIÓN (${g.clave||''})</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Clave',inp('egClave','text','',g.clave||''))}
       ${fld('Sesiones totales',inp('egSesiones','number','',g.sesiones_totales??''))}
     </div>
-    <div style="margin-bottom:10px;">${fld('Cliente (solo cursos empresariales — nombre de la empresa)',inp('egCliente','text','Ej. Transportes Evomex',g.cliente_nombre||''))}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${academiaBloqueClienteCartera('eg',g.cliente_cartera||null,g.cliente_nombre||'')}
+      ${fld('Instructor(a) que firma/da seguimiento',academiaSelectFirmante('egFirmante',firmantes,g.firmante_instructor_id))}
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha de inicio',inp('egFechaInicio','date','',g.fecha_inicio||''))}
       ${fld('Fecha de fin',inp('egFechaFin','date','',g.fecha_fin||'',`onchange="academiaSugerirFechasPracticas('egFechaFin','egFechaLimitePracticas','egFechaLimitePracticasExt')"`))}
@@ -1878,7 +1894,6 @@ async function academiaAbrirEditarGeneracion(generacionId){
       ${fld('Fecha de conclusión de prácticas (sugerida: +15 días)',inp('egFechaLimitePracticas','date','',g.fecha_limite_practicas||'',`oninput="this.dataset.tocado='1'" ${g.fecha_limite_practicas?`data-tocado="1"`:''}`))}
       ${fld('Fecha de conclusión con extensión (sugerida: +30 días)',inp('egFechaLimitePracticasExt','date','',g.fecha_limite_practicas_extension||'',`oninput="this.dataset.tocado='1'" ${g.fecha_limite_practicas_extension?`data-tocado="1"`:''}`))}
     </div>
-    <div style="margin-bottom:10px;">${fld('Número de prácticas',inp('egPracticas','number','',g.practicas_totales??''))}</div>
     <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:10px;">
       <input type="checkbox" id="egArchivadoManual" ${g.archivado_manual?'checked':''}> Generación archivada (no la muestres entre las vigentes — histórico)
     </label>
@@ -1886,10 +1901,14 @@ async function academiaAbrirEditarGeneracion(generacionId){
     <div style="margin-bottom:4px;">${fld('Formato',selPares('egFormato',ACADEMIA_OPCIONES_FORMATO,g.formato_texto||''))}</div>
     <div style="font-size:11px;color:var(--text3);margin-top:10px;">El método de evaluación y el criterio de acreditación no se capturan aquí: la constancia los calcula solos según el tipo (Esencial → asistencia a sesiones · Plus/Premium → prácticas de laboratorio), porque en una misma generación aplican los dos a la vez.</div>
     ${academiaBloqueFechasSesion('eg')}`;
-  mkModal('modalEditarGen','Editar generación',html,`academiaGuardarEditarGeneracion('${generacionId}','${c.id}')`);
+  mkModal('modalEditarGen','Editar generación',html,`academiaGuardarEditarGeneracion('${generacionId}','${c.id}')`,'Guardar','900px');
   // Precarga inmediata de las fechas de sesión que ya existieran, sin
   // necesidad de dar clic en "Generar fechas".
   if(Object.keys(sesFechasMap).length) academiaGenerarFechasSesionUI('eg',sesFechasMap);
+  // Precarga inmediata de la cuenta de Cartera ya ligada (si existía) — sin
+  // esto, al reabrir el modal se vería como si no hubiera nada ligado aunque
+  // sí lo esté (Jp, Lote 28).
+  academiaClienteCarteraPrecargar('eg',g.cliente_cartera||null);
 }
 
 async function academiaGuardarEditarGeneracion(generacionId,cursoId){
@@ -1904,6 +1923,7 @@ async function academiaGuardarEditarGeneracion(generacionId,cursoId){
   }).eq('id',cursoId);
   if(errCurso){alert('Error al actualizar el curso: '+errCurso.message);return;}
 
+  const clienteCartera=academiaClienteCarteraLeer('eg');
   const {error:errGen}=await sb.from('academia_generaciones').update({
     clave:document.getElementById('egClave')?.value?.trim(),
     sesiones_totales:parseInt(document.getElementById('egSesiones')?.value)||null,
@@ -1914,7 +1934,9 @@ async function academiaGuardarEditarGeneracion(generacionId,cursoId){
     formato_texto:document.getElementById('egFormato')?.value?.trim()||null,
     fecha_limite_practicas:document.getElementById('egFechaLimitePracticas')?.value||null,
     fecha_limite_practicas_extension:document.getElementById('egFechaLimitePracticasExt')?.value||null,
-    cliente_nombre:document.getElementById('egCliente')?.value?.trim()||null,
+    cliente_nombre:clienteCartera.cliente_nombre,
+    cliente_cartera_id:clienteCartera.cliente_cartera_id,
+    firmante_instructor_id:document.getElementById('egFirmante')?.value||null,
   }).eq('id',generacionId);
   if(errGen){alert('Error al actualizar la generación: '+errGen.message);return;}
 
@@ -1924,6 +1946,102 @@ async function academiaGuardarEditarGeneracion(generacionId,cursoId){
 
   document.getElementById('modalEditarGen')?.remove();
   renderAcademiaGeneraciones();
+}
+
+// ── CLIENTE (CARTERA) EN NUEVA/EDITAR GENERACIÓN (Lote 28, Jp 2026-10-04):
+// mismo patrón de autocompletado/picker que "Empresa / razón social" en "+
+// Agregar asistente" (academiaBuscarClienteEmpresa), reutilizado aquí contra
+// `prefix+'Cliente'` para que sirva tanto en Nueva ('gen') como en Editar
+// ('eg') generación sin duplicar el código. Guarda cliente_cartera_id cuando
+// se liga a una cuenta real; si no hay match o se elige "ninguna de estas",
+// se sigue guardando cliente_nombre como texto libre (sin cambio de
+// comportamiento para ese caso).
+let _clienteCarteraBuscarTimer={};
+function academiaBloqueClienteCartera(prefix,clienteCarteraActual,clienteNombreActual){
+  const valorInicial=clienteCarteraActual?.razon_social||clienteNombreActual||'';
+  return `<div>
+    ${fld('Cliente (solo cursos empresariales — nombre de la empresa)',inp(prefix+'Cliente','text','Ej. Transportes Evomex',valorInicial,`oninput="academiaClienteCarteraBuscarDebounced('${prefix}')"`))}
+    <div id="${prefix}ClienteMatches" style="margin-top:4px;"></div>
+  </div>`;
+}
+// Precarga el estado "✓ ligado a..." cuando la generación YA tenía una cuenta
+// de Cartera guardada — sin esto, al reabrir el modal se ve como si no
+// hubiera nada ligado aunque sí lo esté.
+function academiaClienteCarteraPrecargar(prefix,clienteCarteraActual){
+  if(!clienteCarteraActual) return;
+  const input=document.getElementById(prefix+'Cliente');
+  const cont=document.getElementById(prefix+'ClienteMatches');
+  if(input){
+    input.dataset.clienteConfirmado='1';
+    input.dataset.clienteId=clienteCarteraActual.id;
+    input.dataset.clienteTexto=input.value;
+  }
+  if(cont){
+    cont.innerHTML=`<div style="font-size:11px;color:var(--teal);font-weight:600;">✓ Ligado a: ${clienteCarteraActual.razon_social||''}${clienteCarteraActual.num_cliente?` (#${clienteCarteraActual.num_cliente})`:''} — <span style="cursor:pointer;text-decoration:underline;font-weight:400;" onclick="academiaClienteCarteraBuscar('${prefix}')">cambiar</span></div>`;
+  }
+}
+function academiaClienteCarteraBuscarDebounced(prefix){
+  const input=document.getElementById(prefix+'Cliente');
+  if(input){ delete input.dataset.clienteConfirmado; delete input.dataset.clienteId; delete input.dataset.clienteTexto; }
+  clearTimeout(_clienteCarteraBuscarTimer[prefix]);
+  _clienteCarteraBuscarTimer[prefix]=setTimeout(()=>academiaClienteCarteraBuscar(prefix),400);
+}
+async function academiaClienteCarteraBuscar(prefix){
+  const input=document.getElementById(prefix+'Cliente');
+  const cont=document.getElementById(prefix+'ClienteMatches');
+  if(!input||!cont) return;
+  const texto=input.value?.trim();
+  if(!texto){ cont.innerHTML=''; return; }
+  cont.innerHTML='<div style="font-size:11px;color:var(--text3);">Buscando en Cartera...</div>';
+  const {data:matches,error}=await sb.from('clientes_cartera')
+    .select('id,razon_social,num_cliente')
+    .ilike('razon_social',`%${texto}%`)
+    .limit(6);
+  if(error){ cont.innerHTML=`<div style="font-size:11px;color:#c0392b;">Error buscando en Cartera: ${error.message}</div>`; return; }
+  if(!matches?.length){
+    cont.innerHTML='<div style="font-size:11px;color:var(--text3);">Sin coincidencias en Cartera — se guardará como texto libre.</div>';
+    return;
+  }
+  window._clienteCarteraMatches=window._clienteCarteraMatches||{};
+  window._clienteCarteraMatches[prefix]=matches;
+  cont.innerHTML=`<div style="font-size:11px;color:var(--text3);margin-bottom:4px;">¿Es alguna de estas cuentas? Elige una, o "Ninguna de estas" si no aplica:</div>`+
+    matches.map((m,i)=>`<div onclick="academiaClienteCarteraElegir('${prefix}',${i})" style="cursor:pointer;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:4px;background:#f8fafb;" onmouseover="this.style.background='#eef6f6'" onmouseout="this.style.background='#f8fafb'">${m.razon_social||'(sin nombre)'}${m.num_cliente?` · #${m.num_cliente}`:''}</div>`).join('')+
+    `<div onclick="academiaClienteCarteraElegir('${prefix}',-1)" style="cursor:pointer;padding:5px 8px;font-size:11px;color:var(--text3);">Ninguna de estas — dejar como texto libre</div>`;
+}
+function academiaClienteCarteraElegir(prefix,indice){
+  const input=document.getElementById(prefix+'Cliente');
+  const cont=document.getElementById(prefix+'ClienteMatches');
+  const m=indice>=0?((window._clienteCarteraMatches||{})[prefix]||[])[indice]:null;
+  if(input){
+    if(m) input.value=m.razon_social||input.value;
+    input.dataset.clienteConfirmado='1';
+    input.dataset.clienteId=m?.id||'';
+    input.dataset.clienteTexto=input.value;
+  }
+  if(cont){
+    cont.innerHTML=m
+      ?`<div style="font-size:11px;color:var(--teal);font-weight:600;">✓ Se ligará a: ${m.razon_social}${m.num_cliente?` (#${m.num_cliente})`:''} — <span style="cursor:pointer;text-decoration:underline;font-weight:400;" onclick="academiaClienteCarteraBuscar('${prefix}')">cambiar</span></span></div>`
+      :`<div style="font-size:11px;color:var(--text3);">Se guardará como texto libre — <span style="cursor:pointer;text-decoration:underline;" onclick="academiaClienteCarteraBuscar('${prefix}')">buscar de nuevo</span></div>`;
+  }
+}
+// Lee el valor final del bloque de Cliente al guardar: si quedó confirmada
+// una cuenta de Cartera (y el texto no cambió desde que se elegió), usa su
+// id; si no, cliente_cartera_id queda null y cliente_nombre es el texto tal
+// cual se haya capturado (comportamiento sin cambios para ese caso).
+function academiaClienteCarteraLeer(prefix){
+  const input=document.getElementById(prefix+'Cliente');
+  const texto=input?.value?.trim()||'';
+  let clienteCarteraId=null;
+  if(input?.dataset.clienteConfirmado==='1'&&input.dataset.clienteTexto===input.value){
+    clienteCarteraId=input.dataset.clienteId||null;
+  }
+  return {cliente_nombre:texto||null,cliente_cartera_id:clienteCarteraId||null};
+}
+// Select de "Instructor(a)" poblado desde academia_firmantes (mismo patrón
+// que el <select> de Vendedor que se llena desde usuarios) — Lote 28.
+function academiaSelectFirmante(id,firmantes,valorActual){
+  const opts=(firmantes||[]).map(f=>`<option value="${f.id}" ${f.id===valorActual?'selected':''}>${f.nombre}${f.cargo?` (${f.cargo})`:''}</option>`).join('');
+  return `<select id="${id}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;"><option value="">— Elegir —</option>${opts}</select>`;
 }
 
 // ── PORTAL DEL CLIENTE (Lote 26, Jp 2026-10-03): para cursos empresariales,
@@ -1955,19 +2073,64 @@ function academiaActualizarEnlacePortal(){
     prevEl.innerHTML='<div style="font-size:11px;color:var(--text3);">Captura RFC y código (o genera uno) para obtener el enlace.</div>';
   }
 }
+// Plantilla del mensaje de WhatsApp para avisarle a la empresa su acceso al
+// portal de seguimiento (Lote 28, Jp 2026-10-04) — mismo patrón que
+// academiaPlantillaAccesoLab: texto fijo, *negritas* estilo WhatsApp.
+function academiaPlantillaAccesoPortal(g,rfc,codigo){
+  const url=`https://os.innovaci.com.mx/portal-empresa.html?rfc=${encodeURIComponent(rfc)}&codigo=${encodeURIComponent(codigo)}`;
+  return `Hola${g.cliente_nombre?` *${g.cliente_nombre}*`:''}\n`+
+    `Te compartimos el acceso al *Portal de seguimiento* de su programa *${g.clave||''}* con Grupo Innovaci.\n`+
+    `Ahí pueden dar seguimiento al avance de su equipo (asistencia y prácticas) mientras el curso está en marcha, y al finalizar verán resultados, observaciones de la instructora y podrán descargar el reporte general.\n\n`+
+    `RFC: *${rfc}*\n`+
+    `Código de acceso: *${codigo}*\n`+
+    `Enlace: ${url}\n\n`+
+    `Cualquier duda, quedamos a tus órdenes.\n`+
+    `*Grupo Innovaci*`;
+}
+async function academiaEnviarPortalWhatsApp(generacionId){
+  const rfc=(document.getElementById('apRfc')?.value||'').trim().toUpperCase();
+  const codigo=(document.getElementById('apCodigo')?.value||'').trim().toUpperCase();
+  if(!rfc||!codigo){alert('Captura (o genera) el RFC y el código de acceso antes de enviar.');return;}
+  const g=window._academiaPortalCache||{};
+  let tel=(g.cliente_cartera?.telefono_whatsapp||'').replace(/[^0-9]/g,'');
+  if(!tel){
+    tel=(prompt('Esta cuenta no tiene teléfono de WhatsApp capturado en Cartera (o no está ligada a una cuenta). Captura el número a mano para este envío (no se guarda en ningún lado):')||'').replace(/[^0-9]/g,'');
+    if(!tel) return;
+  }
+  const numero=tel.length===10?'52'+tel:tel;
+  const msg=academiaPlantillaAccesoPortal(g,rfc,codigo);
+  window.open(`https://wa.me/${numero}?text=${encodeURIComponent(msg)}`,'_blank');
+}
+async function academiaCopiarPlantillaAccesoPortal(){
+  const rfc=(document.getElementById('apRfc')?.value||'').trim().toUpperCase();
+  const codigo=(document.getElementById('apCodigo')?.value||'').trim().toUpperCase();
+  if(!rfc||!codigo){alert('Captura (o genera) el RFC y el código de acceso antes de copiar.');return;}
+  const g=window._academiaPortalCache||{};
+  try{ await navigator.clipboard.writeText(academiaPlantillaAccesoPortal(g,rfc,codigo)); alert('Plantilla copiada al portapapeles.'); }
+  catch(e){ alert('No se pudo copiar automáticamente.'); }
+}
 async function academiaAbrirPortalEmpresa(generacionId){
-  const {data:g,error}=await sb.from('academia_generaciones').select('clave,cliente_nombre,portal_rfc,portal_codigo,portal_finalizado,portal_texto_analisis,portal_texto_recomendaciones').eq('id',generacionId).single();
+  const {data:g,error}=await sb.from('academia_generaciones').select('clave,cliente_nombre,portal_rfc,portal_codigo,portal_finalizado,portal_texto_analisis,portal_texto_recomendaciones,firmante_instructor_id,cliente_cartera:cliente_cartera_id(rfc,telefono_whatsapp)').eq('id',generacionId).single();
   if(error||!g){alert('No se pudo cargar la generación: '+(error?.message||''));return;}
+  window._academiaPortalCache=g;
+  // Autollenado de RFC (Jp, Lote 28): solo si la generación no tenía ya un
+  // RFC capturado a mano y la cuenta ligada de Cartera sí tiene RFC — sigue
+  // siendo editable, nunca se bloquea el campo.
+  const rfcInicial=g.portal_rfc||g.cliente_cartera?.rfc||'';
   const html=`
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">ACCESO (${g.cliente_nombre||g.clave||''})</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      ${fld('RFC de la empresa',inp('apRfc','text','Ej. ABC010101AB1',g.portal_rfc||'','oninput="academiaActualizarEnlacePortal()"'))}
+      ${fld('RFC de la empresa',inp('apRfc','text','Ej. ABC010101AB1',rfcInicial,'oninput="academiaActualizarEnlacePortal()"'))}
       ${fld('Código de acceso',inp('apCodigo','text','',g.portal_codigo||'','oninput="academiaActualizarEnlacePortal()"'))}
     </div>
     <button type="button" class="cartera-subtab" style="margin-bottom:10px;" onclick="academiaGenerarCodigoPortal()">🎲 Generar código nuevo</button>
-    <div id="apEnlacePreview" style="margin-bottom:16px;"></div>
+    <div id="apEnlacePreview" style="margin-bottom:10px;"></div>
+    <div style="display:flex;gap:8px;margin-bottom:16px;">
+      <button type="button" style="background:#25D366;color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;" onclick="academiaEnviarPortalWhatsApp('${generacionId}')">📲 Enviar acceso por WhatsApp</button>
+      <button type="button" class="cartera-subtab" onclick="academiaCopiarPlantillaAccesoPortal()">Copiar plantilla</button>
+    </div>
     <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:14px;">
-      <input type="checkbox" id="apFinalizado" ${g.portal_finalizado?'checked':''}> Curso finalizado — mostrar resultados de acreditación, observaciones y habilitar el reporte descargable en el portal
+      <input type="checkbox" id="apFinalizado" data-previo="${g.portal_finalizado?'1':'0'}" ${g.portal_finalizado?'checked':''}> Curso finalizado — mostrar resultados de acreditación, observaciones y habilitar el reporte descargable en el portal
     </label>
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">REPORTE — TEXTO DE LA INSTRUCTORA</div>
     <div style="margin-bottom:10px;">${fld('Análisis general del grupo',`<textarea id="apAnalisis" rows="4" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${g.portal_texto_analisis||''}</textarea>`)}</div>
@@ -1979,15 +2142,30 @@ async function academiaAbrirPortalEmpresa(generacionId){
 async function academiaGuardarPortalEmpresa(generacionId){
   const rfc=(document.getElementById('apRfc')?.value||'').trim().toUpperCase().replace(/\s+/g,'')||null;
   const codigo=(document.getElementById('apCodigo')?.value||'').trim().toUpperCase().replace(/\s+/g,'')||null;
+  const finalizadoChk=document.getElementById('apFinalizado');
+  const finalizadoNuevo=!!finalizadoChk?.checked;
+  const finalizadoPrevio=finalizadoChk?.dataset.previo==='1';
   const {error}=await sb.from('academia_generaciones').update({
     portal_rfc:rfc,
     portal_codigo:codigo,
-    portal_finalizado:!!document.getElementById('apFinalizado')?.checked,
+    portal_finalizado:finalizadoNuevo,
     portal_texto_analisis:document.getElementById('apAnalisis')?.value?.trim()||null,
     portal_texto_recomendaciones:document.getElementById('apRecomendaciones')?.value?.trim()||null,
   }).eq('id',generacionId);
   if(error){alert('Error al guardar el portal del cliente: '+error.message);return;}
   document.getElementById('modalPortalEmpresa')?.remove();
+  // Aviso automático a la instructora por Telegram (Lote 28, Jp 2026-10-04):
+  // SOLO cuando "finalizado" pasa de false a true en este guardado (no cada
+  // vez que se guarda el modal si ya estaba en true) y la generación tiene
+  // instructor(a) asignada. Best-effort: si falla, no se le avisa al
+  // usuario ni se bloquea el guardado — mismo patrón que el resto de la app.
+  const g=window._academiaPortalCache;
+  if(!finalizadoPrevio&&finalizadoNuevo&&g?.firmante_instructor_id){
+    fetch('/api/academia-portal-avisar-instructora',{
+      method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({generacion_id:generacionId}),
+    }).catch(()=>{});
+  }
 }
 
 // ── CONTROL DE ACCESOS (Jp, 2026-09-03): inventario de "empresas" (ambientes
