@@ -72,6 +72,12 @@ table.equipo td{padding:10px 10px;border-top:1px solid var(--border);}
 .emit-date{font-size:12px;color:var(--text3);}
 .result-foot{background:var(--navy);color:rgba(255,255,255,0.85);padding:16px 40px;text-align:center;font-size:11px;letter-spacing:.02em;}
 .retry{text-align:center;margin-top:20px;}
+
+.resumen{background:var(--bg);border-radius:12px;padding:14px 18px;font-size:13px;font-weight:600;color:var(--navy);margin-bottom:26px;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;}
+.resumen .sep{color:var(--text3);font-weight:400;margin-right:4px;}
+.meta-line{font-size:12px;color:var(--text3);margin-top:6px;line-height:1.5;}
+.motivo{display:block;font-size:11px;color:var(--text3);font-weight:500;margin-top:3px;}
+.vigencia{display:block;font-size:11px;color:var(--text3);font-weight:500;margin-top:3px;}
 </style>
 </head>
 <body>
@@ -109,6 +115,14 @@ const SURL='https://ydwouspzneacxfixlmmv.supabase.co';
 const SKEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlkd291c3B6bmVhY3hmaXhsbW12Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEzMzA5MzAsImV4cCI6MjA5NjkwNjkzMH0.uWB1VN2YT7ynTbHmfTWCOBHMRR54LdHJook7iOk7Mug';
 const sb=supabase.createClient(SURL,SKEY);
 
+// Número de WhatsApp de Ventas para el botón "Solicitar informe detallado".
+// No existe todavía ningún número fijo de Innovaci capturado en esta página
+// ni en index.html (ahí el flujo siempre usa el teléfono del CLIENTE
+// guardado en Cartera, nunca un número propio de la empresa) — así que se
+// deja vacío a propósito en vez de inventarlo. Si Jp define un número fijo
+// de Ventas, va aquí (formato con código de país, ej. '5215512345678').
+const WHATSAPP_VENTAS='';
+
 const ACENTOS={NOI:'#fc8104',COI:'#29a2dd',SAE:'#c80000'};
 function accentDe(sistema){return ACENTOS[sistema]||'#00A99D';}
 function normalizar(s){return (s||'').trim().toUpperCase().replace(/\s+/g,'');}
@@ -122,6 +136,11 @@ function periodoTexto(ini,fin){
   if(!ini) return '—';
   if(!fin) return `Desde ${fechaLarga(ini)}`;
   return `${fechaLarga(ini)} — ${fechaLarga(fin)}`;
+}
+function fechaCorta(d){
+  if(!d) return null;
+  const [y,m,day]=d.split('-');
+  return `${day}/${m}/${y}`;
 }
 const MODALIDAD_LABEL={en_vivo:'En vivo',['24_7']:'24/7 (a tu ritmo)',in_company:'In company'};
 const ACCESO_LABEL={esencial:'Esencial',plus:'Plus',premium:'Premium'};
@@ -182,11 +201,26 @@ function calificacionDeFila(f){
 function resultadoFila(f,criterioMin){
   if(f.constancia_tipo){
     const cal=f.constancia_calificacion!=null?` · ${f.constancia_calificacion}%`:'';
-    return {texto:`✅ ${TIPO_CONST_LABEL[f.constancia_tipo]||'Acreditado'}${cal}`,clase:'alto'};
+    return {texto:`✅ ${TIPO_CONST_LABEL[f.constancia_tipo]||'Acreditado'}${cal}`,clase:'alto',motivo:null};
   }
-  if(f.estatus_final==='no_acreditado') return {texto:'No acreditado',clase:'bajo'};
-  if(f.estatus_final==='baja') return {texto:'Baja',clase:'bajo'};
-  return {texto:'En curso',clase:'curso'};
+  if(f.estatus_final==='no_acreditado') return {texto:'No acreditado',clase:'bajo',motivo:f.estatus_final_motivo||null};
+  if(f.estatus_final==='baja') return {texto:'Baja',clase:'bajo',motivo:f.estatus_final_motivo||null};
+  return {texto:'En curso',clase:'curso',motivo:null};
+}
+function resumenEjecutivoHtml(filas,g){
+  const totalSesiones=g.sesiones_totales||null;
+  const n=filas.length;
+  const criterioMin=g.criterio_acreditacion||'80%';
+  const partes=[`${n} participante${n===1?'':'s'}`];
+  if(totalSesiones){
+    const c100=filas.filter(f=>f.sesiones_asistidas>=totalSesiones).length;
+    partes.push(`${c100} de ${n} asistieron al 100%`);
+  }
+  if(g.portal_finalizado){
+    const acreditados=filas.filter(f=>resultadoFila(f,criterioMin).clase==='alto').length;
+    partes.push(`${acreditados} de ${n} se ${acreditados===1?'acreditó':'acreditaron'}`);
+  }
+  return `<div class="resumen">${partes.map((p,i)=>i>0?`<span class="sep">·</span><span>${p}</span>`:`<span>${p}</span>`).join('')}</div>`;
 }
 
 function pintarResultado(filas){
@@ -207,30 +241,51 @@ function pintarResultado(filas){
     const elegiblePracticas=(f.nivel_acceso==='plus'||f.nivel_acceso==='premium');
     const pracPct=(elegiblePracticas&&totalPracticas)?Math.round(100*f.practicas_aprobadas/totalPracticas)+'%':'—';
     const res=g.portal_finalizado?resultadoFila(f,criterioMin):null;
+    const vigenciaPartes=[];
+    if(f.fecha_fin_laboratorio) vigenciaPartes.push(`Acceso a laboratorio hasta: ${fechaCorta(f.fecha_fin_laboratorio)}`);
+    if(f.fecha_fin_sesion_privada) vigenciaPartes.push(`Sesión privada pendiente hasta: ${fechaCorta(f.fecha_fin_sesion_privada)}`);
+    const vigenciaHtml=vigenciaPartes.length?`<span class="vigencia">${vigenciaPartes.join(' · ')}</span>`:'';
     return `<tr>
-      <td>${f.participante_nombre}</td>
+      <td>${f.participante_nombre}${vigenciaHtml}</td>
       <td>${ACCESO_LABEL[f.nivel_acceso]||f.nivel_acceso}</td>
       <td>${totalSesiones?`${f.sesiones_asistidas}/${totalSesiones} (${asistPct})`:'—'}</td>
       <td>${elegiblePracticas?(totalPracticas?`${f.practicas_aprobadas}/${totalPracticas} (${pracPct})`:'—'):'<span style="color:var(--text3);">N/A</span>'}</td>
-      ${g.portal_finalizado?`<td><span class="pill ${res.clase}">${res.texto}</span></td>`:''}
+      ${g.portal_finalizado?`<td><span class="pill ${res.clase}">${res.texto}</span>${res.motivo?`<span class="motivo">${res.motivo}</span>`:''}</td>`:''}
     </tr>`;
   }).join('');
 
   const observaciones=filas.filter(f=>f.practicas_observaciones&&f.practicas_observaciones.trim());
 
+  const metaPartes=[];
+  if(g.vendedor_nombre) metaPartes.push(`Asesor comercial: ${g.vendedor_nombre}`);
+  if(g.instructor_nombre) metaPartes.push(`Instructor(a): ${g.instructor_nombre}${g.instructor_cargo?' — '+g.instructor_cargo:''}`);
+  const metaHtml=metaPartes.length?`<div class="meta-line">${metaPartes.join(' · ')}</div>`:'';
+
   const html=`
   <div class="result-card">
     <div class="result-head">
-      <div class="result-brand">Grupo Innovaci · ${g.sistema_nombre||g.sistema}</div>
+      <div class="result-brand">Grupo Innovaci · Academia</div>
       <div class="result-name">${g.cliente_nombre||''}</div>
       <div class="result-course">${g.curso_nombre}</div>
+      ${metaHtml}
     </div>
     <div class="result-body">
-      <div class="grid">
-        ${statBlock('Participantes',filas.length)}
-        ${statBlock('Modalidad',MODALIDAD_LABEL[g.modalidad]||g.modalidad)}
-        ${statBlock('Periodo',periodoTexto(g.generacion_fecha_inicio,g.generacion_fecha_fin))}
-        ${statBlock('Duración',g.curso_duracion_horas?`${g.curso_duracion_horas} hrs`:null)}
+      ${resumenEjecutivoHtml(filas,g)}
+
+      ${g.portal_finalizado&&g.portal_texto_analisis?`<div class="section"><div class="section-title">Análisis general del grupo</div><div class="desc">${g.portal_texto_analisis}</div></div>`:''}
+
+      ${g.portal_finalizado&&g.portal_texto_recomendaciones?`<div class="section"><div class="section-title">Recomendaciones estratégicas</div><div class="desc">${g.portal_texto_recomendaciones}</div></div>`:''}
+
+      <div class="section">
+        <div class="section-title">Qué incluye este curso</div>
+        <div class="grid">
+          ${statBlock('Participantes',filas.length)}
+          ${statBlock('Modalidad',MODALIDAD_LABEL[g.modalidad]||g.modalidad)}
+          ${statBlock('Periodo',periodoTexto(g.generacion_fecha_inicio,g.generacion_fecha_fin))}
+          ${statBlock('Duración',g.curso_duracion_horas?`${g.curso_duracion_horas} hrs`:null)}
+          ${statBlock('Sesiones',totalSesiones?`${totalSesiones}`:null)}
+          ${statBlock('Prácticas',totalPracticas?`${totalPracticas}`:null)}
+        </div>
       </div>
 
       <div class="section">
@@ -245,15 +300,14 @@ function pintarResultado(filas){
 
       ${g.portal_finalizado&&observaciones.length?`<div class="section"><div class="section-title">Observaciones de la instructora por participante</div><div class="desc">${observaciones.map(o=>`<div style="margin-bottom:8px;"><strong>${o.participante_nombre}:</strong> ${o.practicas_observaciones}</div>`).join('')}</div></div>`:''}
 
-      ${g.portal_finalizado&&g.portal_texto_analisis?`<div class="section"><div class="section-title">Análisis general del grupo</div><div class="desc">${g.portal_texto_analisis}</div></div>`:''}
-
-      ${g.portal_finalizado&&g.portal_texto_recomendaciones?`<div class="section"><div class="section-title">Recomendaciones estratégicas</div><div class="desc">${g.portal_texto_recomendaciones}</div></div>`:''}
-
       ${!g.portal_finalizado?`<div class="desc" style="font-style:italic;">El curso todavía está en curso — los resultados finales de acreditación, las observaciones de la instructora y el reporte descargable estarán disponibles aquí cuando termine.</div>`:''}
 
       <div class="folio-row">
         <div class="emit-date">Generación ${g.generacion}</div>
-        ${g.portal_finalizado?`<button class="btn secondary" style="width:auto;padding:10px 20px;" onclick="descargarReporte()">⬇ Descargar reporte</button>`:''}
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="btn secondary" style="width:auto;padding:10px 20px;" onclick="solicitarInformeDetallado()">📋 Solicitar informe detallado</button>
+          ${g.portal_finalizado?`<button class="btn secondary" style="width:auto;padding:10px 20px;" onclick="descargarReporte()">⬇ Descargar reporte</button>`:''}
+        </div>
       </div>
     </div>
     <div class="result-foot">Capacitación práctica, soluciones reales · os.innovaci.com.mx</div>
@@ -269,6 +323,26 @@ function reiniciar(){
   document.getElementById('searchCard').style.display='block';
   document.getElementById('resultadoError').innerHTML='';
   ultimoResultado=null;
+}
+
+// ── Solicitar informe detallado (lead a Ventas) ─────────────────────────
+// Este botón NO genera ningún reporte: solo abre WhatsApp con un mensaje
+// pre-armado pidiendo el reporte de alto rendimiento/desempeño individual,
+// para que VENTAS lo atienda y genere/envíe el reporte a mano. Es un lead,
+// igual que "📲 Enviar acceso por WhatsApp" de index.html es un envío manual.
+function solicitarInformeDetallado(){
+  if(!ultimoResultado||!ultimoResultado.length) return;
+  const g=ultimoResultado[0];
+  let numero=WHATSAPP_VENTAS;
+  if(!numero){
+    // Mismo criterio que index.html cuando no hay número capturado: se
+    // pide a mano en el momento del envío, sin guardarse en ningún lado.
+    numero=(prompt('Falta configurar el número de WhatsApp de Ventas en esta página. Captúralo para este envío (no se guarda en ningún lado):')||'').replace(/[^0-9]/g,'');
+    if(!numero) return;
+    if(numero.length===10) numero='52'+numero;
+  }
+  const msg=`Hola, somos de *${g.cliente_nombre||'la empresa'}*. Quisiéramos solicitar el reporte detallado de alto rendimiento / desempeño individual del curso *${g.curso_nombre}* (Generación ${g.generacion}). Gracias.`;
+  window.open(`https://wa.me/${numero}?text=${encodeURIComponent(msg)}`,'_blank');
 }
 
 // ── Reporte descargable (PDF) ───────────────────────────────────────────
