@@ -75,6 +75,20 @@ Extrae ÚNICAMENTE los datos que puedas leer con certeza y responde EXCLUSIVAMEN
 
 Si un dato no aparece o no estás seguro, usa null. No inventes información.`;
 
+// Responde (reply) un mensaje en Telegram — usado para el "✅ Recibido,
+// gracias" de la excepción del chat de Capacitación (Lote 28, 2026-10-04).
+async function responderTelegram(botToken, chatId, texto, replyToMessageId) {
+  const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text: texto, reply_to_message_id: replyToMessageId }),
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error('Telegram sendMessage (reply): ' + t.slice(0, 300));
+  }
+}
+
 async function extraerConIA(apiKey, contenido) {
   const anthropicRes = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -137,6 +151,54 @@ export default async function handler(req, res) {
     const chatId = msg.chat && msg.chat.id;
     const chatTitulo = msg.chat && (msg.chat.title || msg.chat.username || null);
     const messageId = msg.message_id;
+
+    // El mismo bot ahora también vive en el canal "Capacitación INN"
+    // (Lote 21, 2026-09-29) — pero ese canal es para mandar avisos
+    // automáticos hacia afuera (ver api/academia-evaluaciones-check.js),
+    // no para recibir solicitudes de Mesa de Control. Sin este filtro,
+    // cualquier mensaje que el equipo escriba ahí (incidencias, pendientes
+    // de Capacitación, etc.) se procesaría con la IA de extracción de
+    // Mesa de Control y ensuciaría el panel de "Solicitudes de Telegram".
+    const capacitacionChatId = process.env.TELEGRAM_CAPACITACION_CHAT_ID;
+    if (capacitacionChatId && String(chatId) === String(capacitacionChatId)) {
+      // EXCEPCIÓN (Lote 28, 2026-10-04): si el mensaje es un reply a uno de
+      // los "prompts" de Análisis/Recomendaciones que mandó
+      // api/academia-portal-avisar-instructora.js (tabla
+      // academia_portal_telegram_prompts), se captura la respuesta de la
+      // instructora y se guarda directo en academia_generaciones — es lo
+      // ÚNICO que se procesa de este chat_id; cualquier otro mensaje (sin
+      // reply, o con reply a algo que no es uno de estos prompts) sigue sin
+      // pasar por la IA de extracción de Mesa de Control, igual que antes
+      // de este lote (filtro de Lote 21, sin cambios).
+      const replyToId = msg.reply_to_message && msg.reply_to_message.message_id;
+      if (replyToId && skey && (msg.text || msg.caption)) {
+        try {
+          const prompts = await sb(
+            `academia_portal_telegram_prompts?telegram_message_id=eq.${replyToId}&select=id,generacion_id,tipo`,
+            'GET',
+            skey
+          );
+          const prompt = (prompts || [])[0];
+          if (prompt) {
+            const campo = prompt.tipo === 'analisis' ? 'portal_texto_analisis' : 'portal_texto_recomendaciones';
+            // Se sobreescribe siempre con la respuesta más reciente (así se
+            // decidió con Jp) — no se acumulan varias respuestas.
+            await sb(`academia_generaciones?id=eq.${prompt.generacion_id}`, 'PATCH', skey, {
+              [campo]: msg.text || msg.caption,
+            });
+            if (botToken) {
+              await responderTelegram(botToken, chatId, '✅ Recibido, gracias', messageId).catch(() => {});
+            }
+          }
+        } catch (e) {
+          // Best-effort: si falla la captura del reply, no se le avisa a
+          // Telegram (ya respondemos 200 abajo) ni se reintenta aquí — se
+          // puede capturar a mano desde el modal "Portal del cliente".
+        }
+      }
+      res.status(200).json({ ok: true });
+      return;
+    }
     const texto = msg.text || msg.caption || null;
     const fotos = msg.photo || null; // array de tamaños, la última es la más grande
 
