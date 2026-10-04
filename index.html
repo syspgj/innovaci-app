@@ -2733,6 +2733,14 @@ function academiaPintarParticipantes(){
     return (va-vb)*mult;
   });
 
+  // Contador de activos/archivados del encabezado (Jp, 2026-10-04): sobre el
+  // TOTAL de la generación (sin filtros), usando la misma regla de
+  // "archivado" que ya se usa arriba para separar la lista (constancia ya
+  // enviada, o finalizado sin constancia).
+  const totalParticipantesGen=(inscripciones||[]).length;
+  const archivadosParticipantesGen=(inscripciones||[]).filter(i=>enviadaSet.has(i.id)||!!i.estatus_final).length;
+  const activosParticipantesGen=totalParticipantesGen-archivadosParticipantesGen;
+
   const flecha=c=>col===c?(dir==='asc'?' ▲':' ▼'):'';
   const thSort=(id,label)=>`<th style="padding:14px 12px;cursor:pointer;user-select:none;" onclick="academiaOrdenarParticipantes('${id}')">${label}${flecha(id)}</th>`;
 
@@ -2759,7 +2767,7 @@ function academiaPintarParticipantes(){
         <span>${gen?.curso?.nombre||''} — ${gen?.clave||''}</span>
         <button class="cartera-subtab" onclick="academiaAbrirEditarGeneracion('${cache.generacionId}')">✏️ Editar generación</button>
       </div>
-      <div style="font-size:12px;color:var(--text3);">${filas.length} de ${(inscripciones||[]).length} participantes</div>
+      <div style="font-size:12px;color:var(--text3);">${totalParticipantesGen} participantes · ${activosParticipantesGen} activos · ${archivadosParticipantesGen} archivados</div>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       ${gen?.curso?.modalidad!=='24_7'?`<button class="cartera-subtab" onclick="academiaAbrirRecordatorios('${cache.generacionId}')">📣 Recordatorios de sesión</button>`:''}
@@ -2830,6 +2838,15 @@ async function academiaAbrirNuevoAsistente(generacionId){
   // demás talleres 24/7); Esencial queda con fecha abierta (campos vacíos,
   // "hay que dejar ahí el campo para que después se capture").
   const diasLabSugerido=academiaDiasLabPorCurso(gen?.curso);
+  // Auto-cálculo de vigencia por asistente, ya precargado al abrir el modal
+  // (Jp, 2026-10-04: antes solo se sugería en la etiqueta pero el campo se
+  // quedaba vacío) — misma base de días que ya se usaba (diasLabSugerido /
+  // 90), solo que la fecha base ya no es "hoy" sino el fecha_fin de la
+  // generación. Sigue siendo editable a mano (el oninput de cada campo marca
+  // data-tocado, igual que siempre); si la generación no tiene fecha_fin
+  // capturada, los campos quedan vacíos como antes.
+  const finLabAutoSugerido=gen?.fecha_fin?academiaSumarDias(gen.fecha_fin,diasLabSugerido):'';
+  const finSesAutoSugerido=gen?.fecha_fin?academiaSumarDias(gen.fecha_fin,90):'';
   // Sugerencia de empresa libre (Jp, 2026-09-03: "al dar de alta al participante
   // la app podría sugerir qué empresa asignarle, siempre y cuando esté libre").
   const sistemaId=gen?.curso?.sistema_id;
@@ -2839,10 +2856,21 @@ async function academiaAbrirNuevoAsistente(generacionId){
   // vendedor, activo=true) en vez de dejar los nombres fijos en el código,
   // para que si algún día cambia el equipo (como ya pasó con Mireya, que
   // quedó inactiva) el desplegable se actualice solo, sin tocar el código.
-  const [disponibles,{data:vendedoresActivos}]=await Promise.all([
+  // Empresa/cuenta ya ligada a la GENERACIÓN (Jp, 2026-10-04: "si la
+  // generación ya está ligada a Cartera, bloquea el campo Empresa del
+  // participante"): cuando `gen.cliente_cartera_id` ya existe, el campo de
+  // Empresa deja de ser editable/buscable — se pinta fijo con el nombre de
+  // esa cuenta y se liga automáticamente al guardar, sin pedirle a Jp que
+  // busque/confirme nada (eso solo aplica para el caso de cliente en texto
+  // libre, que sigue igual que siempre).
+  const [disponibles,{data:vendedoresActivos},clienteCarteraGenRes]=await Promise.all([
     academiaEmpresasDisponiblesSistema(sistemaId),
     sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre'),
+    gen?.cliente_cartera_id
+      ? sb.from('clientes_cartera').select('id,razon_social,num_cliente').eq('id',gen.cliente_cartera_id).single()
+      : Promise.resolve({data:null}),
   ]);
+  const clienteCarteraGen=clienteCarteraGenRes?.data||null;
   window._academiaAsistenteDisponibles=disponibles;
   const empresaOpts=disponibles.map(e=>`<option value="${e.id}">Empresa #${e.numero}${e.servidor?` (servidor ${e.servidor})`:''}</option>`).join('');
   const vendedorOpts=`<option value="">— Elegir —</option>`+(vendedoresActivos||[]).map(v=>`<option value="${v.nombre}">${v.nombre}</option>`).join('');
@@ -2855,8 +2883,10 @@ async function academiaAbrirNuevoAsistente(generacionId){
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Nombre completo',inp('naNombre','text','Nombre del participante'))}
       <div>
-        ${fld('Empresa / razón social',inp('naEmpresa','text','Cuenta principal en Cartera','','oninput="academiaBuscarClienteEmpresaDebounced()"'))}
-        <div id="naEmpresaMatches" style="margin-top:4px;"></div>
+        ${clienteCarteraGen
+          ?fld('Empresa / razón social',`<div style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--bg2,#f5f6f8);color:var(--text2);">${clienteCarteraGen.razon_social||''}${clienteCarteraGen.num_cliente?` (#${clienteCarteraGen.num_cliente})`:''}</div><div style="font-size:11px;color:var(--text3);margin-top:4px;">Ligada automáticamente a la cuenta de Cartera de esta generación.</div>`)
+          :`${fld('Empresa / razón social',inp('naEmpresa','text','Cuenta principal en Cartera','','oninput="academiaBuscarClienteEmpresaDebounced()"'))}
+        <div id="naEmpresaMatches" style="margin-top:4px;"></div>`}
       </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
@@ -2896,8 +2926,8 @@ async function academiaAbrirNuevoAsistente(generacionId){
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin:12px 0 8px;">VIGENCIA DE LABORATORIO Y SESIÓN PRIVADA (24/7, Plus/Premium — dejar en blanco si es Esencial o no aplica)</div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
       ${fld('Fecha de compra / inicio',`<input id="naFechaCompra" type="date" onchange="academiaSugerirVigenciaIndividual('naFechaCompra','naFechaFinLab','naFechaFinSesion',${diasLabSugerido})">`)}
-      ${fld(`Fin de acceso a laboratorio (sugerido: +${diasLabSugerido} días)`,`<input id="naFechaFinLab" type="date" oninput="this.dataset.tocado='1'">`)}
-      ${fld('Fin de sesión privada con Karen (sugerido: +90 días)',`<input id="naFechaFinSesion" type="date" oninput="this.dataset.tocado='1'">`)}
+      ${fld(`Fin de acceso a laboratorio (sugerido: +${diasLabSugerido} días)`,`<input id="naFechaFinLab" type="date" value="${finLabAutoSugerido}" oninput="this.dataset.tocado='1'">`)}
+      ${fld('Fin de sesión privada con Karen (sugerido: +90 días)',`<input id="naFechaFinSesion" type="date" value="${finSesAutoSugerido}" oninput="this.dataset.tocado='1'">`)}
     </div>`;
   mkModal('modalNuevoAsistente',`Agregar asistente — ${gen?.curso?.nombre||''} ${gen?.clave||''}`,html,`academiaGuardarNuevoAsistente('${generacionId}')`,'Guardar',true);
   academiaToggleEmpresaBlockPorAcceso();
@@ -3122,9 +3152,15 @@ async function academiaGuardarNuevoAsistente(generacionId){
   // si hay una o más coincidencias, se detiene el guardado y se le pide a Jp
   // elegir del listado — nunca se liga solo a una cuenta sin que él la
   // confirme, para no ligar por accidente a la empresa equivocada.
+  // Generación ya ligada a Cartera (Jp, 2026-10-04): el campo Empresa no se
+  // muestra como buscador en ese caso (ver academiaAbrirNuevoAsistente), así
+  // que aquí se usa directo el cliente_cartera_id de la generación — sin
+  // buscar ni pedirle a Jp que confirme nada.
   let clienteId=null;
   const empresaInput=document.getElementById('naEmpresa');
-  if(empresa){
+  if(gen?.cliente_cartera_id){
+    clienteId=gen.cliente_cartera_id;
+  }else if(empresa){
     if(empresaInput?.dataset.clienteConfirmado==='1'&&empresaInput.dataset.clienteTexto===empresaInput.value){
       clienteId=empresaInput.dataset.clienteId||null;
     }else{
