@@ -116,19 +116,28 @@ export default async function handler(req, res) {
     }
 
     const firmantes = await sb(
-      `academia_firmantes?id=eq.${gen.firmante_instructor_id}&select=id,nombre`,
+      `academia_firmantes?id=eq.${gen.firmante_instructor_id}&select=id,nombre,telegram_usuario`,
       'GET',
       skey
     );
     const instructora = (firmantes || [])[0];
     const nombreInstructora = instructora && instructora.nombre ? instructora.nombre : 'instructora';
+    // telegram_usuario (Lote 28, 2026-10-04): si la firmante tiene su @usuario
+    // de Telegram capturado (pantalla Academia → 🖋️ Firmantes), se antepone
+    // al nombre en el aviso general para que Telegram la mencione/notifique
+    // de verdad; si no lo tiene, se cae exactamente en el comportamiento
+    // previo (solo el nombre, sin mención).
+    const telegramUsuario = instructora && instructora.telegram_usuario ? instructora.telegram_usuario.trim() : '';
+    const mencionInstructora = telegramUsuario
+      ? `${telegramUsuario} — *${nombreInstructora}*`
+      : `*${nombreInstructora}*`;
     const referencia = `${gen.clave || ''}${gen.cliente_nombre ? ' · ' + gen.cliente_nombre : ''}`.trim() || 'el curso';
 
     // 1) Aviso general.
     await mandarTelegram(
       botToken,
       capacitacionChatId,
-      `🎓 *Curso finalizado — se necesita tu reporte*\n\n*${nombreInstructora}*, el curso *${referencia}* se marcó como finalizado.\nPor favor responde (reply) a los DOS mensajes siguientes con tu *Análisis general del grupo* y tus *Recomendaciones estratégicas* — se van a usar en el reporte que ve el cliente.`
+      `🎓 *Curso finalizado — se necesita tu reporte*\n\n${mencionInstructora}, el curso *${referencia}* se marcó como finalizado.\nPor favor responde (reply) a los DOS mensajes siguientes con tu *Análisis general del grupo* y tus *Recomendaciones estratégicas* — se van a usar en el reporte que ve el cliente.`
     );
 
     // 2) y 3) Mensajes de prompt — cada uno se guarda en
