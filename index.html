@@ -892,6 +892,7 @@ const ACADEMIA_SUBTABS=[
   {id:'accesos',label:'🔐 Accesos'},
   {id:'constancias',label:'📜 Constancias'},
   {id:'mensajes',label:'💬 Mensajes'},
+  {id:'firmantes',label:'🖋️ Firmantes'},
 ];
 let currentAcademiaTab='dashboard';
 let academiaGeneracionSel=null; // id de generación activa dentro de Generaciones/Prácticas
@@ -958,6 +959,7 @@ function renderAcademiaTab(){
   else if(currentAcademiaTab==='accesos') renderAcademiaAccesos();
   else if(currentAcademiaTab==='constancias') renderAcademiaConstancias();
   else if(currentAcademiaTab==='mensajes') renderAcademiaMensajes();
+  else if(currentAcademiaTab==='firmantes') renderAcademiaFirmantes();
 }
 
 // ── DASHBOARD (Jp, 2026-09-02): panorama rápido de qué está activo y qué se
@@ -2753,7 +2755,10 @@ function academiaPintarParticipantes(){
   <div style="margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
     <div>
       <button class="cartera-subtab" onclick="swAcademia('generaciones')">← Generaciones</button>
-      <div style="font-size:18px;font-weight:600;color:var(--text);margin-top:8px;">${gen?.curso?.nombre||''} — ${gen?.clave||''}</div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span>${gen?.curso?.nombre||''} — ${gen?.clave||''}</span>
+        <button class="cartera-subtab" onclick="academiaAbrirEditarGeneracion('${cache.generacionId}')">✏️ Editar generación</button>
+      </div>
       <div style="font-size:12px;color:var(--text3);">${filas.length} de ${(inscripciones||[]).length} participantes</div>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -4093,6 +4098,94 @@ async function academiaEliminarPlantillaMsg(plantillaId){
   if(error){alert('Error al eliminar: '+error.message);return;}
   window._academiaCache.whatsappPlantillas=null;
   renderAcademiaMensajes();
+}
+
+// ── FIRMANTES (Jp, Lote 28): catálogo academia_firmantes — instructores/
+// director que firman las constancias y a quien se le avisa por Telegram al
+// finalizar un curso empresarial (ver academia-portal-avisar-instructora.js).
+// Hasta ahora era "solo-Supabase" (mismo patrón que tenía
+// academia_whatsapp_plantillas antes del Lote 9), así que esta pantalla se
+// construye copiando ese mismo patrón de lista + modal de alta/edición.
+async function renderAcademiaFirmantes(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando firmantes...</div>';
+  const {data:firmantes,error}=await sb.from('academia_firmantes').select('*').order('nombre');
+  if(error){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error: ${error.message}</div>`;return;}
+  window._academiaCache.firmantesAdmin=firmantes||[];
+  mc.innerHTML=`
+  <div style="margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+    <div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);">Firmantes</div>
+      <div style="font-size:12px;color:var(--text3);">Instructores/director que firman constancias y reciben el aviso de Telegram al finalizar un curso.</div>
+    </div>
+    <button class="btn-primary" style="width:auto;padding:8px 16px;" onclick="academiaAbrirFirmante(null)">+ Nuevo firmante</button>
+  </div>
+  <div id="academiaFirmantesLista"></div>`;
+  academiaPintarFirmantes();
+}
+function academiaPintarFirmantes(){
+  const cont=document.getElementById('academiaFirmantesLista');
+  if(!cont) return;
+  const firmantes=window._academiaCache.firmantesAdmin||[];
+  cont.innerHTML=`
+  <div class="card" style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;">
+        <th style="padding:10px 12px;">Nombre</th><th>Cargo</th><th>Credenciales</th><th>Telegram</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${firmantes.map(f=>`
+        <tr>
+          <td style="padding:10px 12px;font-weight:600;">${f.nombre||''}</td>
+          <td>${f.cargo||'—'}</td>
+          <td style="font-size:12px;color:var(--text2);">${f.credenciales||'—'}</td>
+          <td style="font-size:12px;color:var(--text2);">${f.telegram_usuario||'—'}</td>
+          <td style="text-align:right;white-space:nowrap;">
+            <button class="cartera-subtab" onclick="academiaAbrirFirmante('${f.id}')">✎ Editar</button>
+            <button class="cartera-subtab" style="color:#c0392b;" onclick="academiaEliminarFirmante('${f.id}')">Eliminar</button>
+          </td>
+        </tr>`).join('')||`<tr><td colspan="5" style="padding:16px;color:var(--text3);">Aún no hay firmantes — agrega el primero con "+ Nuevo firmante".</td></tr>`}
+      </tbody>
+    </table>
+  </div>`;
+}
+function academiaAbrirFirmante(firmanteId){
+  const f=firmanteId?(window._academiaCache.firmantesAdmin||[]).find(x=>x.id===firmanteId):null;
+  const html=`
+    <div style="margin-bottom:10px;">${fld('Nombre',inp('firNombre','text','',f?.nombre||''))}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Cargo',inp('firCargo','text','Ej. Instructora / Director',f?.cargo||''))}
+      ${fld('Credenciales',inp('firCredenciales','text','',f?.credenciales||''))}
+    </div>
+    <div style="margin-bottom:10px;">${fld('URL de la firma',inp('firUrlFirma','text','',f?.url_firma||''))}</div>
+    <div style="margin-bottom:4px;">${fld('Usuario de Telegram',inp('firTelegram','text','@usuario',f?.telegram_usuario||''))}</div>
+    <div style="font-size:11px;color:var(--text3);">Para mencionarla en el aviso de Telegram al finalizar un curso.</div>`;
+  mkModal('modalFirmante',firmanteId?'Editar firmante':'Nuevo firmante',html,`academiaGuardarFirmante('${firmanteId||''}')`,'Guardar');
+}
+async function academiaGuardarFirmante(firmanteId){
+  const nombre=document.getElementById('firNombre')?.value?.trim();
+  if(!nombre){alert('Falta el nombre.');return;}
+  const payload={
+    nombre,
+    cargo:document.getElementById('firCargo')?.value?.trim()||null,
+    credenciales:document.getElementById('firCredenciales')?.value?.trim()||null,
+    url_firma:document.getElementById('firUrlFirma')?.value?.trim()||null,
+    telegram_usuario:document.getElementById('firTelegram')?.value?.trim()||null,
+  };
+  const {error}=firmanteId
+    ?await sb.from('academia_firmantes').update(payload).eq('id',firmanteId)
+    :await sb.from('academia_firmantes').insert(payload);
+  if(error){alert('Error al guardar el firmante: '+error.message);return;}
+  document.getElementById('modalFirmante')?.remove();
+  window._academiaCache.firmantes=null; // invalida el caché que usa el select de "Instructor(a)" en Nueva/Editar generación
+  renderAcademiaFirmantes();
+}
+async function academiaEliminarFirmante(firmanteId){
+  if(!confirm('¿Eliminar este firmante? Esta acción no se puede deshacer.')) return;
+  const {error}=await sb.from('academia_firmantes').delete().eq('id',firmanteId);
+  if(error){alert('Error al eliminar: '+error.message);return;}
+  window._academiaCache.firmantes=null;
+  renderAcademiaFirmantes();
 }
 
 // ── ASISTENTES (Lote 10): un expediente por PERSONA, no por inscripción ────
