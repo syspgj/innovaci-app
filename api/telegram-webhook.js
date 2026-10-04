@@ -170,20 +170,37 @@ export default async function handler(req, res) {
     // en el canal se reenvía AUTOMÁTICAMENTE a un grupo de discusión
     // vinculado (chat_id distinto al del canal), y cuando alguien responde
     // ahí, Telegram manda ese reply con un chat_id del grupo de discusión,
-    // no el del canal — por eso el filtro de abajo (que solo miraba
-    // chat_id === capacitacionChatId) nunca detectaba la respuesta. La
-    // copia reenviada trae is_automatic_forward:true y
-    // forward_from_chat.id/forward_from_message_id apuntando al mensaje
-    // ORIGINAL del canal — con eso reconstruimos a qué prompt contestó,
-    // sin necesidad de conocer el chat_id del grupo de discusión de antemano.
+    // no el del canal — por eso el filtro original (que solo miraba
+    // chat_id === capacitacionChatId) nunca detectaba la respuesta.
+    //
+    // La copia reenviada identifica el mensaje ORIGINAL del canal de dos
+    // formas posibles según la versión de la Bot API que use Telegram en
+    // ese momento (ampliado 2026-10-04 tras una segunda prueba fallida, por
+    // si el primer intento solo cubría el esquema viejo):
+    //   - Esquema viejo: is_automatic_forward:true +
+    //     forward_from_chat.id / forward_from_message_id.
+    //   - Esquema nuevo (Bot API 7.0+): forward_origin = {type:'channel',
+    //     chat:{id:...}, message_id:...}.
+    // Se revisan ambos y, como último respaldo, también el message_id tal
+    // cual del mensaje citado (por si en algún caso Telegram preserva el
+    // mismo id) — se intenta contra la tabla de prompts en ese orden, el
+    // primero que haga match gana.
     const esChatCapacitacionDirecto = capacitacionChatId && String(chatId) === String(capacitacionChatId);
-    const esComentarioDeCapacitacion = !!(
-      capacitacionChatId &&
+    const fwdLegacyOk = !!(
       replyMsg &&
       replyMsg.is_automatic_forward &&
       replyMsg.forward_from_chat &&
-      String(replyMsg.forward_from_chat.id) === String(capacitacionChatId)
+      replyMsg.forward_from_message_id &&
+      (!capacitacionChatId || String(replyMsg.forward_from_chat.id) === String(capacitacionChatId))
     );
+    const fwdOrigin = replyMsg && replyMsg.forward_origin;
+    const fwdModernoOk = !!(
+      fwdOrigin &&
+      fwdOrigin.type === 'channel' &&
+      fwdOrigin.message_id &&
+      (!capacitacionChatId || !fwdOrigin.chat || String(fwdOrigin.chat.id) === String(capacitacionChatId))
+    );
+    const esComentarioDeCapacitacion = fwdLegacyOk || fwdModernoOk;
 
     if (esChatCapacitacionDirecto || esComentarioDeCapacitacion) {
       // EXCEPCIÓN (Lote 28, 2026-10-04; ampliada Lote 29, 2026-10-04): si el
@@ -195,13 +212,18 @@ export default async function handler(req, res) {
       // reply, o con reply a algo que no es uno de estos prompts) sigue sin
       // pasar por la IA de extracción de Mesa de Control, igual que antes
       // de este lote (filtro de Lote 21, sin cambios).
-      const replyToId = esChatCapacitacionDirecto
-        ? replyMsg && replyMsg.message_id
-        : replyMsg && replyMsg.forward_from_message_id;
-      if (replyToId && skey && (msg.text || msg.caption)) {
+      const candidatosReplyId = [];
+      if (replyMsg) {
+        if (esChatCapacitacionDirecto && replyMsg.message_id) candidatosReplyId.push(replyMsg.message_id);
+        if (fwdLegacyOk) candidatosReplyId.push(replyMsg.forward_from_message_id);
+        if (fwdModernoOk) candidatosReplyId.push(fwdOrigin.message_id);
+        if (replyMsg.message_id) candidatosReplyId.push(replyMsg.message_id); // último respaldo
+      }
+      const replyIdsUnicos = [...new Set(candidatosReplyId)];
+      if (replyIdsUnicos.length && skey && (msg.text || msg.caption)) {
         try {
           const prompts = await sb(
-            `academia_portal_telegram_prompts?telegram_message_id=eq.${replyToId}&select=id,generacion_id,tipo`,
+            `academia_portal_telegram_prompts?telegram_message_id=in.(${replyIdsUnicos.join(',')})&select=id,generacion_id,tipo`,
             'GET',
             skey
           );
