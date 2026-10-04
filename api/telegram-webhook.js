@@ -160,17 +160,44 @@ export default async function handler(req, res) {
     // de Capacitación, etc.) se procesaría con la IA de extracción de
     // Mesa de Control y ensuciaría el panel de "Solicitudes de Telegram".
     const capacitacionChatId = process.env.TELEGRAM_CAPACITACION_CHAT_ID;
-    if (capacitacionChatId && String(chatId) === String(capacitacionChatId)) {
-      // EXCEPCIÓN (Lote 28, 2026-10-04): si el mensaje es un reply a uno de
-      // los "prompts" de Análisis/Recomendaciones que mandó
-      // api/academia-portal-avisar-instructora.js (tabla
-      // academia_portal_telegram_prompts), se captura la respuesta de la
-      // instructora y se guarda directo en academia_generaciones — es lo
-      // ÚNICO que se procesa de este chat_id; cualquier otro mensaje (sin
+    const replyMsg = msg.reply_to_message;
+
+    // "Capacitación INN" resultó estar configurado como CANAL con
+    // comentarios habilitados, no como grupo normal (confirmado 2026-10-04
+    // en la prueba de Lote 28/29: Karen respondió y la vista de Telegram
+    // mostró "Conversación / 1 comentario", con contador de vistas — eso
+    // solo existe en canales). En ese modelo, cada aviso que el bot publica
+    // en el canal se reenvía AUTOMÁTICAMENTE a un grupo de discusión
+    // vinculado (chat_id distinto al del canal), y cuando alguien responde
+    // ahí, Telegram manda ese reply con un chat_id del grupo de discusión,
+    // no el del canal — por eso el filtro de abajo (que solo miraba
+    // chat_id === capacitacionChatId) nunca detectaba la respuesta. La
+    // copia reenviada trae is_automatic_forward:true y
+    // forward_from_chat.id/forward_from_message_id apuntando al mensaje
+    // ORIGINAL del canal — con eso reconstruimos a qué prompt contestó,
+    // sin necesidad de conocer el chat_id del grupo de discusión de antemano.
+    const esChatCapacitacionDirecto = capacitacionChatId && String(chatId) === String(capacitacionChatId);
+    const esComentarioDeCapacitacion = !!(
+      capacitacionChatId &&
+      replyMsg &&
+      replyMsg.is_automatic_forward &&
+      replyMsg.forward_from_chat &&
+      String(replyMsg.forward_from_chat.id) === String(capacitacionChatId)
+    );
+
+    if (esChatCapacitacionDirecto || esComentarioDeCapacitacion) {
+      // EXCEPCIÓN (Lote 28, 2026-10-04; ampliada Lote 29, 2026-10-04): si el
+      // mensaje es un reply a uno de los "prompts" de Análisis/
+      // Recomendaciones que mandó api/academia-portal-avisar-instructora.js
+      // (tabla academia_portal_telegram_prompts), se captura la respuesta de
+      // la instructora y se guarda directo en academia_generaciones — es lo
+      // ÚNICO que se procesa de este chat/canal; cualquier otro mensaje (sin
       // reply, o con reply a algo que no es uno de estos prompts) sigue sin
       // pasar por la IA de extracción de Mesa de Control, igual que antes
       // de este lote (filtro de Lote 21, sin cambios).
-      const replyToId = msg.reply_to_message && msg.reply_to_message.message_id;
+      const replyToId = esChatCapacitacionDirecto
+        ? replyMsg && replyMsg.message_id
+        : replyMsg && replyMsg.forward_from_message_id;
       if (replyToId && skey && (msg.text || msg.caption)) {
         try {
           const prompts = await sb(
