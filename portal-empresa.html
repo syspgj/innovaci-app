@@ -283,12 +283,18 @@ function resultadoFila(f,criterioMin){
 }
 function resumenEjecutivoTexto(filas,g){
   const totalSesiones=g.sesiones_totales||null;
+  const sesionesImpartidas=g.sesiones_impartidas||0;
+  // Base real de asistencia: cuántas sesiones YA se dieron, no el total
+  // programado del curso completo — si el curso sigue en marcha, nadie
+  // puede llevar el 100% de 11 si solo van 6. Jp (2026-10-05).
+  const baseAsistencia=sesionesImpartidas>0?sesionesImpartidas:totalSesiones;
   const n=filas.length;
   const criterioMin=g.criterio_acreditacion||'80%';
   const partes=[`${n} participante${n===1?'':'s'}`];
-  if(totalSesiones){
-    const c100=filas.filter(f=>f.sesiones_asistidas>=totalSesiones).length;
-    partes.push(`${c100} de ${n} asistieron al 100%`);
+  if(baseAsistencia){
+    const c100=filas.filter(f=>f.sesiones_asistidas>=baseAsistencia).length;
+    const sufijo=(sesionesImpartidas>0&&totalSesiones&&sesionesImpartidas<totalSesiones)?` de las ${sesionesImpartidas} sesiones dadas hasta ahora (de ${totalSesiones} programadas)`:'';
+    partes.push(`${c100} de ${n} asistieron al 100%${sufijo}`);
   }
   if(g.portal_finalizado){
     const acreditados=filas.filter(f=>resultadoFila(f,criterioMin).clase==='alto').length;
@@ -345,15 +351,18 @@ function analisisAutoTexto(filas,g){
   const n=filas.length;
   if(!n) return '';
   const totalSesiones=g.sesiones_totales||null;
+  const sesionesImpartidas=g.sesiones_impartidas||0;
+  const baseAsistencia=sesionesImpartidas>0?sesionesImpartidas:totalSesiones;
   const criterioMin=g.criterio_acreditacion||'80%';
   const criterioNum=parseInt(criterioMin)||80;
   const partes=[];
-  if(totalSesiones){
-    const c100=filas.filter(f=>f.sesiones_asistidas>=totalSesiones).length;
-    if(c100===n) partes.push(`El grupo mostró un compromiso sobresaliente con el curso: la totalidad de los participantes (${n} de ${n}) asistió al 100% de las sesiones programadas.`);
+  if(baseAsistencia){
+    const c100=filas.filter(f=>f.sesiones_asistidas>=baseAsistencia).length;
+    const refSesiones=(sesionesImpartidas>0&&totalSesiones&&sesionesImpartidas<totalSesiones)?`las ${sesionesImpartidas} sesiones dadas hasta ahora`:'las sesiones programadas';
+    if(c100===n) partes.push(`El grupo mostró un compromiso sobresaliente con el curso: la totalidad de los participantes (${n} de ${n}) asistió al 100% de ${refSesiones}.`);
     else {
-      const asistProm=Math.round(100*filas.reduce((s,f)=>s+(f.sesiones_asistidas/totalSesiones),0)/n);
-      partes.push(`La asistencia promedio del grupo fue de ${asistProm}%, con ${c100} de ${n} participante${n===1?'':'s'} cubriendo el 100% de las sesiones.`);
+      const asistProm=Math.round(100*filas.reduce((s,f)=>s+(f.sesiones_asistidas/baseAsistencia),0)/n);
+      partes.push(`La asistencia promedio del grupo fue de ${asistProm}%, con ${c100} de ${n} participante${n===1?'':'s'} cubriendo el 100% de ${refSesiones}.`);
     }
   }
   const conResultado=filas.filter(f=>calificacionDeFila(f)!=null);
@@ -377,14 +386,15 @@ function recomendacionesAutoTexto(filas,g){
   const conResultado=filas.filter(f=>calificacionDeFila(f)!=null);
   const bajos=conResultado.filter(f=>calificacionDeFila(f)<criterioNum);
   const totalSesiones=g.sesiones_totales||null;
+  const baseAsistencia=(g.sesiones_impartidas||0)>0?g.sesiones_impartidas:totalSesiones;
   const partes=[];
   if(bajos.length){
     partes.push(`Se recomienda dar seguimiento puntual a ${bajos.length===1?'1 participante':bajos.length+' participantes'} que no alcanzó el criterio de acreditación, reforzando los temas con mayor dificultad mediante sesiones de práctica adicionales.`);
   } else if(conResultado.length){
     partes.push('Se recomienda mantener el ritmo de trabajo del grupo y aprovechar el dominio alcanzado aplicando lo aprendido en casos reales de la operación diaria.');
   }
-  if(totalSesiones){
-    const faltantes=filas.filter(f=>f.sesiones_asistidas<totalSesiones);
+  if(baseAsistencia){
+    const faltantes=filas.filter(f=>f.sesiones_asistidas<baseAsistencia);
     if(faltantes.length) partes.push(`${faltantes.length===1?'1 participante':faltantes.length+' participantes'} no completó el 100% de las sesiones; se sugiere programar una sesión de repaso para cubrir los temas no vistos en vivo.`);
   }
   partes.push('Para potenciar el retorno de la inversión en capacitación, se sugiere dar seguimiento al uso del sistema en el día a día y considerar una evaluación de desempeño individual más detallada (ver servicios complementarios).');
@@ -405,11 +415,19 @@ function pintarResultado(filas){
   const totalSesiones=g.sesiones_totales||null;
   const totalPracticas=g.practicas_totales||null;
   const criterioMin=g.criterio_acreditacion||'80%';
+  // Cuántas sesiones YA se dieron (no el total programado del curso
+  // completo). Si el curso sigue en marcha, "5/11" sin este dato se lee
+  // como que a alguien le faltan 6 sesiones cuando en realidad solo han
+  // pasado 6 en total — Jp lo notó revisando GELKLEEN-SEP26 (2026-10-05).
+  const sesionesImpartidas=g.sesiones_impartidas||0;
+  const baseAsistencia=sesionesImpartidas>0?sesionesImpartidas:totalSesiones;
+  const enCurso=sesionesImpartidas>0&&totalSesiones&&sesionesImpartidas<totalSesiones;
 
   const statBlock=(k,v)=>v?`<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`:'';
 
   const filasHtml=filas.map(f=>{
-    const asistPct=totalSesiones?Math.round(100*f.sesiones_asistidas/totalSesiones)+'%':'—';
+    const asistPct=baseAsistencia?Math.round(100*f.sesiones_asistidas/baseAsistencia)+'%':'—';
+    const faltas=baseAsistencia?Math.max(0,baseAsistencia-f.sesiones_asistidas):null;
     const elegiblePracticas=(f.nivel_acceso==='plus'||f.nivel_acceso==='premium');
     const pracPct=(elegiblePracticas&&totalPracticas)?Math.round(100*f.practicas_aprobadas/totalPracticas)+'%':'—';
     const res=g.portal_finalizado?resultadoFila(f,criterioMin):null;
@@ -428,7 +446,8 @@ function pintarResultado(filas){
       ${vigenciaHtml}
       <div class="equipo-stats">
         <div class="equipo-stat"><div class="k">ACCESO</div><div class="v">${ACCESO_LABEL[f.nivel_acceso]||f.nivel_acceso}</div></div>
-        <div class="equipo-stat"><div class="k">ASISTENCIA</div><div class="v">${totalSesiones?`${f.sesiones_asistidas}/${totalSesiones} (${asistPct})`:'—'}</div></div>
+        <div class="equipo-stat"><div class="k">ASISTENCIA</div><div class="v">${baseAsistencia?`${f.sesiones_asistidas}/${baseAsistencia} (${asistPct})`:'—'}</div>${enCurso?`<div style="font-size:9px;color:var(--text3);margin-top:2px;">de ${totalSesiones} programadas</div>`:''}</div>
+        ${baseAsistencia?`<div class="equipo-stat"><div class="k">FALTAS</div><div class="v" style="${faltas>0?'color:var(--red);':''}">${faltas}</div></div>`:''}
         <div class="equipo-stat"><div class="k">PRÁCTICAS</div><div class="v">${elegiblePracticas?(totalPracticas?`${f.practicas_aprobadas}/${totalPracticas} (${pracPct})`:'—'):'N/A'}</div></div>
       </div>
     </div>`;
@@ -436,10 +455,10 @@ function pintarResultado(filas){
 
   const observaciones=filas.filter(f=>f.practicas_observaciones&&f.practicas_observaciones.trim());
 
-  // Anillos del resumen ejecutivo: asistencia promedio del grupo y, cuando
-  // ya finalizó, % de acreditación — mismos datos que ya resume el texto,
-  // nomás en gráfica para que se lea de un vistazo.
-  const asistPromGrupo=totalSesiones?Math.round(100*filas.reduce((s,f)=>s+f.sesiones_asistidas,0)/(totalSesiones*filas.length)):null;
+  // Anillos del resumen ejecutivo: asistencia promedio del grupo (contra las
+  // sesiones ya dadas, no el total del curso) y, cuando ya finalizó, % de
+  // acreditación — mismos datos que ya resume el texto, nomás en gráfica.
+  const asistPromGrupo=baseAsistencia?Math.round(100*filas.reduce((s,f)=>s+f.sesiones_asistidas,0)/(baseAsistencia*filas.length)):null;
   const acreditadosGrupo=g.portal_finalizado?filas.filter(f=>resultadoFila(f,criterioMin).clase==='alto').length:null;
   const pctAcreditacionGrupo=(g.portal_finalizado&&filas.length)?Math.round(100*acreditadosGrupo/filas.length):null;
   const ringsHtml=`<div class="resumen-rings">
