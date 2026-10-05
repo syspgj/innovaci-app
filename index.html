@@ -6525,11 +6525,32 @@ let currentCarteraSub='disponibles';
 let carteraSortCol=null, carteraSortDir=1;
 let carteraFiltroTexto='', carteraFiltroProducto='', carteraFiltroPeriodicidad='';
 
+// Jp, 2026-10-05: el .limit(5000) del Lote 31 no bastó — Supabase topa cada
+// respuesta de PostgREST a un máximo de filas por request ("Max Rows" del
+// proyecto, típicamente 1000) SIN IMPORTAR lo que pida .limit() del lado
+// del cliente. Confirmado: con 1,683 clientes, la app seguía mostrando 1000
+// y RAMTAV CONTADORES (que ordena después de la fila 1000) seguía
+// invisible, aun con el `index.html` ya corregido y desplegado. La única
+// forma confiable de traer TODAS las filas es paginar con .range() hasta
+// que una página regrese menos filas de las pedidas.
+async function carteraFetchTodosClientes(selectStr){
+  let todos=[], desde=0; const pageSize=1000;
+  while(true){
+    const {data,error}=await sb.from('clientes_cartera').select(selectStr).order('razon_social').range(desde,desde+pageSize-1);
+    if(error){ console.error('carteraFetchTodosClientes', error); break; }
+    if(!data||!data.length) break;
+    todos=todos.concat(data);
+    if(data.length<pageSize) break;
+    desde+=pageSize;
+  }
+  return todos;
+}
+
 async function renderCarteraVendedor(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando cartera...</div>';
-  const [{data:clientes},{data:suscripciones},{data:vendedores},{data:sistemas}]=await Promise.all([
-    sb.from('clientes_cartera').select('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)').order('razon_social').limit(5000), // Jp, 2026-10-04: sin .limit() esto se topaba con el máximo de 1000 filas de PostgREST y truncaba Cartera en silencio (confirmado: RAMTAV CONTADORES y todo lo que ordena después de la fila 1000 quedaba fuera de la lista y de la búsqueda).
+  const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas}]=await Promise.all([
+    carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)'), // Jp, 2026-10-05: paginado — ver carteraFetchTodosClientes arriba.
     sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
     sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'), // Jp, 2026-10-05: el filtro "Todos los vendedores" traía TODOS los usuarios (Capacitación, Administración, asesores, mesa de control...) — ahora solo rol='vendedor'.
     sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden')
@@ -7307,8 +7328,8 @@ async function renderDirectorCartera(containerId){
   // (uso original, desde Director → Ventas → Cartera).
   const mc=document.getElementById(containerId||'mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando cartera...</div>';
-  const [{data:clientes},{data:suscripciones},{data:vendedores},{data:sistemas}]=await Promise.all([
-    sb.from('clientes_cartera').select('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)').order('razon_social').limit(5000), // Jp, 2026-10-04: sin .limit() esto se topaba con el máximo de 1000 filas de PostgREST y truncaba Cartera en silencio (confirmado: RAMTAV CONTADORES y todo lo que ordena después de la fila 1000 quedaba fuera de la lista y de la búsqueda).
+  const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas}]=await Promise.all([
+    carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)'), // Jp, 2026-10-05: paginado con .range() — ver carteraFetchTodosClientes (el .limit(5000) del Lote 31 no bastó porque Supabase topa cada request de PostgREST a su "Max Rows" del proyecto, sin importar el .limit() del cliente).
     sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
     sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'), // Jp, 2026-10-05: el filtro "Todos los vendedores" traía TODOS los usuarios (Capacitación, Administración, asesores, mesa de control...) — ahora solo rol='vendedor'.
     sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden')
@@ -16391,8 +16412,7 @@ function fiRubroNecesitaAlumno(r){ return FI_RUBROS_ALUMNO.includes((r||'').toUp
 
 async function fiAsegurarCacheClientes(){
   if(!window._cartClientes){
-    const {data}=await sb.from('clientes_cartera').select('id,razon_social,rfc,num_cliente,alias_nombres').order('razon_social').limit(5000); // Jp, 2026-10-04: mismo fix de .limit() que renderDirectorCartera/renderCarteraVendedor — sin esto se topaba con el máximo de 1000 filas de PostgREST.
-    window._cartClientes=data||[];
+    window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente,alias_nombres'); // Jp, 2026-10-05: paginado con .range() — ver carteraFetchTodosClientes.
   }
 }
 async function fiAsegurarCacheAlumnos(){
