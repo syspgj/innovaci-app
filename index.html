@@ -1533,26 +1533,27 @@ function academiaPintarGeneraciones(){
 async function academiaAbrirNuevaGeneracion(){
   const [{data:sistemas},{data:cursos},{data:firmantes}]=await Promise.all([
     sb.from('academia_sistemas').select('*').order('clave'),
-    sb.from('academia_cursos').select('*').order('nombre'),
+    sb.from('academia_cursos').select('*,sistema:sistema_id(clave,codigo_clave)').order('nombre'),
     sb.from('academia_firmantes').select('id,nombre,cargo').order('nombre'),
   ]);
   window._academiaCache.sistemas=sistemas||[];
   window._academiaCache.cursos=cursos||[];
   window._academiaCache.firmantes=firmantes||[];
-  const cursoOpts=(cursos||[]).map(c=>`<option value="${c.id}" data-nombre="${(c.nombre||'').replace(/"/g,'&quot;')}" data-tipo="${c.tipo||''}" data-modalidad="${c.modalidad||''}" data-horas="${c.duracion_horas??''}">${c.nombre}</option>`).join('');
+  const cursoOpts=(cursos||[]).map(c=>`<option value="${c.id}" data-nombre="${(c.nombre||'').replace(/"/g,'&quot;')}" data-tipo="${c.tipo||''}" data-modalidad="${c.modalidad||''}" data-horas="${c.duracion_horas??''}" data-sistema="${c.sistema?.clave||''}" data-sistema-codigo="${c.sistema?.codigo_clave||''}">${c.nombre}</option>`).join('');
   const html=`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      ${fld('Clave de generación',inp('genClave','text','Ej. GMAY26'))}
+      ${fld('Clave de generación (automática, no editable)',`<input id="genClavePreview" type="text" readonly value="" placeholder="Se arma sola al elegir curso/tipo/modalidad" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'JetBrains Mono',monospace;background:var(--surf2,#f2f3f5);color:var(--text2);">`)}
       ${fld('Sesiones totales',inp('genSesiones','number','','12'))}
     </div>
+    <div id="genClaveExtraBox" style="display:none;margin-bottom:10px;"></div>
     <div style="margin-bottom:10px;">${fld('Curso',`<select id="genCursoSel" onchange="academiaOnCambioCursoSel(this)" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;"><option value="">Selecciona un curso...</option>${cursoOpts}<option value="__nuevo__">+ Nuevo curso...</option></select>`)}</div>
     <div id="genCursoNuevoBox" style="display:none;background:rgba(0,169,157,0.06);border:1px dashed var(--teal);border-radius:8px;padding:12px;margin-bottom:10px;">
       <div id="genCursoBoxTitulo" style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DEL NUEVO CURSO</div>
-      <div id="genCursoSistemaWrap" style="margin-bottom:10px;">${fld('Sistema',sel('genNuevoCursoSistema',(sistemas||[]).map(s=>s.clave)))}</div>
+      <div id="genCursoSistemaWrap" style="margin-bottom:10px;">${fld('Sistema',sel('genNuevoCursoSistema',(sistemas||[]).map(s=>s.clave),'',`onchange="academiaActualizarClavePreviewGen()"`))}</div>
       <div style="margin-bottom:10px;">${fld('Nombre del curso',inp('genNuevoCursoNombre','text','Ej. DIPLOMADO SIIGO ASPEL NOI 2026'))}</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px;">
-        ${fld('Tipo',sel('genNuevoCursoTipo',['diplomado_vip','24_7','empresarial','taller','desde_cero']))}
-        ${fld('Modalidad',sel('genNuevoCursoModalidad',['en_vivo','24_7','in_company']))}
+        ${fld('Tipo',sel('genNuevoCursoTipo',['diplomado_vip','24_7','empresarial','taller','desde_cero'],'',`onchange="academiaActualizarClavePreviewGen()"`))}
+        ${fld('Modalidad',sel('genNuevoCursoModalidad',['en_vivo','24_7','in_company'],'',`onchange="academiaActualizarClavePreviewGen()"`))}
       </div>
       <div style="margin-bottom:8px;">${fld('Duración (horas)',inp('genNuevoCursoHoras','number','',''))}</div>
       <div id="genCursoCopiaNota" style="display:none;font-size:11px;color:var(--text3);">Esto va a crear un curso nuevo con estos datos como punto de partida — el curso original que elegiste arriba no se modifica ni se comparte con esta generación.</div>
@@ -1563,7 +1564,7 @@ async function academiaAbrirNuevaGeneracion(){
       ${fld('Instructor(a) que firma/da seguimiento',academiaSelectFirmante('genFirmante',firmantes,null))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      ${fld('Fecha de inicio',inp('genFechaInicio','date'))}
+      ${fld('Fecha de inicio',inp('genFechaInicio','date','','',`oninput="academiaActualizarClavePreviewGen()"`))}
       ${fld('Fecha de fin',inp('genFechaFin','date','','',`onchange="academiaSugerirFechasPracticas('genFechaFin','genFechaLimitePracticas','genFechaLimitePracticasExt')"`))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
@@ -1575,6 +1576,7 @@ async function academiaAbrirNuevaGeneracion(){
   window._academiaSesFechasExistentes=window._academiaSesFechasExistentes||{};
   window._academiaSesFechasExistentes['gen']=null; // generación nueva: sin fechas previas que precargar
   mkModal('modalNuevaGen','Nueva generación',html,'academiaGuardarNuevaGeneracion','Guardar','900px');
+  academiaActualizarClavePreviewGen();
 }
 
 // Al elegir un curso ya existente, precarga el mismo bloque de datos del
@@ -1611,13 +1613,64 @@ function academiaOnCambioCursoSel(selEl){
     document.getElementById('genNuevoCursoModalidad').value=opt.dataset.modalidad||'en_vivo';
     document.getElementById('genNuevoCursoHoras').value=opt.dataset.horas||'';
   }
+  academiaActualizarClavePreviewGen();
+}
+// Recalcula en vivo la clave automática de "Nueva generación" (Jp,
+// 2026-10-06) cada vez que cambia algo que la afecta: curso elegido (trae su
+// sistema), sistema (si es curso nuevo), tipo, modalidad o fecha de inicio.
+// Para talleres/empresariales muestra además el campo de texto que falta
+// (tema del taller / nombre corto del cliente) para poder armar la clave.
+function academiaActualizarClavePreviewGen(){
+  const cursoSel=document.getElementById('genCursoSel');
+  const esNuevo=cursoSel?.value==='__nuevo__';
+  const tipo=document.getElementById('genNuevoCursoTipo')?.value||'';
+  const modalidad=document.getElementById('genNuevoCursoModalidad')?.value||'';
+  const fechaInicio=document.getElementById('genFechaInicio')?.value||'';
+  let sistemaClave='',sistemaCodigo='';
+  if(esNuevo){
+    sistemaClave=document.getElementById('genNuevoCursoSistema')?.value||'';
+  } else if(cursoSel?.value){
+    const opt=cursoSel.selectedOptions[0];
+    sistemaClave=opt?.dataset.sistema||'';
+    sistemaCodigo=opt?.dataset.sistemaCodigo||'';
+  }
+  const extraBox=document.getElementById('genClaveExtraBox');
+  if(extraBox){
+    if(tipo==='taller'){
+      extraBox.style.display='block';
+      if(!document.getElementById('genTemaTaller')){
+        extraBox.innerHTML=fld('Tema del taller (código corto, ej. HF, PTU, VF)',inp('genTemaTaller','text','Ej. HF','',`oninput="academiaActualizarClavePreviewGen()"`));
+      }
+    } else if(tipo==='empresarial'){
+      extraBox.style.display='block';
+      if(!document.getElementById('genClienteCorto')){
+        extraBox.innerHTML=fld('Nombre corto del cliente (para la clave, ej. GELKLEEN)',inp('genClienteCorto','text','Ej. GELKLEEN','',`oninput="academiaActualizarClavePreviewGen()"`));
+      }
+    } else {
+      extraBox.style.display='none';
+      extraBox.innerHTML='';
+    }
+  }
+  const sistemaObj=sistemaClave?{clave:sistemaClave,codigo_clave:sistemaCodigo}:null;
+  const clave=sistemaObj?academiaGenerarClaveGeneracion(sistemaObj,tipo,modalidad,{
+    fechaInicio,
+    clienteCorto:document.getElementById('genClienteCorto')?.value||'',
+    temaTaller:document.getElementById('genTemaTaller')?.value||'',
+  }):'';
+  const preview=document.getElementById('genClavePreview');
+  if(preview) preview.value=clave;
 }
 
 async function academiaGuardarNuevaGeneracion(){
   const cursoSel=document.getElementById('genCursoSel')?.value;
-  const clave=document.getElementById('genClave')?.value?.trim();
   if(!cursoSel){alert('Selecciona un curso o crea uno nuevo.');return;}
-  if(!clave){alert('La clave de generación es obligatoria (ej. GMAY26).');return;}
+  // Jp, 2026-10-06: la clave ya no se escribe a mano — se recalcula aquí
+  // mismo con los valores finales del formulario (no se confía en el texto
+  // del preview, que pudo quedar desactualizado si algo cambió sin disparar
+  // el oninput/onchange correspondiente).
+  academiaActualizarClavePreviewGen();
+  const clave=document.getElementById('genClavePreview')?.value?.trim();
+  if(!clave){alert('No se pudo armar la clave automática — revisa que hayas elegido sistema, tipo y modalidad del curso (y el tema/cliente si aplica).');return;}
 
   let cursoId=cursoSel;
   if(cursoSel==='__nuevo__'){
@@ -1847,6 +1900,50 @@ function academiaDiasExtensionPorCurso(curso){
   const cat=academiaCategoriaCurso(curso)?.key||'';
   return (cat==='diplomado_vivo'||cat==='diplomado_247') ? 15 : 7;
 }
+// Clave de generación 100% automática (Jp, 2026-10-06): "fijo, no manipulable
+// ni editable, para que no haya errores". A partir de aquí la clave YA NO se
+// escribe a mano — se arma sola con sistema + tipo + modalidad (+ mes/año o
+// cliente/tema según el caso) y, una vez creada la generación, no se vuelve
+// a tocar (ni aquí ni en Editar generación). Reglas confirmadas por Jp:
+//  - Diplomado en vivo:  SISTEMA-DGMESAño2   ej. COI-DGMAY26
+//  - Diplomado 24/7:     SISTEMA-D247-Año4   ej. COI-D247-2026
+//  - Desde cero en vivo: SISTEMA-0-Año4      ej. COI-0-2026
+//  - Desde cero 24/7:    SISTEMA-0247-Año4   ej. COI-0247-2026
+//  - Taller en vivo:     SISTEMA-T{TEMA}-Año4      ej. COI-THF-2026
+//  - Taller 24/7:        SISTEMA-T{TEMA}247-Año4   ej. COI-THF247-2026
+//  - Empresarial:        SISTEMA-{CLIENTE}-MesAño2 ej. COI-GELKLEEN-SEP26
+// La "D" se conserva en los dos casos de diplomado (aunque en un ejemplo
+// hablado Jp la omitió para el 24/7) porque sin ella un diplomado 24/7 y un
+// curso-desde-cero 24/7 del mismo sistema quedarían con la MISMA clave
+// (COI-247-2026 los dos) — eso sí generaría folios ambiguos, justo lo que
+// se quiere evitar. Las generaciones que ya existían (CERO24, 247-2026,
+// GMAY26, etc.) NO se renombran — la regla aplica solo hacia adelante.
+const ACADEMIA_MESES3=['','ENE','FEB','MAR','ABR','MAY','JUN','JUL','AGO','SEP','OCT','NOV','DIC'];
+function academiaGenerarClaveGeneracion(sistema,tipo,modalidad,{fechaInicio,clienteCorto,temaTaller}={}){
+  if(!sistema) return '';
+  const sis=(sistema.codigo_clave||sistema.clave||'').toUpperCase();
+  const hoy=new Date();
+  const f=fechaInicio?new Date(fechaInicio+'T00:00:00'):hoy;
+  const anio4=String(f.getFullYear());
+  const anio2=anio4.slice(-2);
+  const mes3=ACADEMIA_MESES3[f.getMonth()+1];
+  const es247=modalidad==='24_7';
+  if(tipo==='diplomado_vip'){
+    return es247?`${sis}-D247-${anio4}`:`${sis}-DG${mes3}${anio2}`;
+  }
+  if(tipo==='desde_cero'||tipo==='24_7'){
+    return es247?`${sis}-0247-${anio4}`:`${sis}-0-${anio4}`;
+  }
+  if(tipo==='taller'){
+    const tema=(temaTaller||'').toUpperCase().replace(/[^A-Z0-9]/g,'')||'XX';
+    return es247?`${sis}-T${tema}247-${anio4}`:`${sis}-T${tema}-${anio4}`;
+  }
+  if(tipo==='empresarial'){
+    const cli=(clienteCorto||'').toUpperCase().replace(/[^A-Z0-9]/g,'')||'CLIENTE';
+    return `${sis}-${cli}-${mes3}${anio2}`;
+  }
+  return '';
+}
 function academiaSugerirVigenciaIndividual(iniId,finLabId,finSesId,diasLab){
   const ini=document.getElementById(iniId)?.value;
   const finLabEl=document.getElementById(finLabId), finSesEl=document.getElementById(finSesId);
@@ -1896,7 +1993,7 @@ async function academiaAbrirEditarGeneracion(generacionId){
     <div style="margin-bottom:14px;">${fld('Competencias desarrolladas (una por línea)',`<textarea id="egCompetencias" rows="3" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${(c.competencias||[]).join('\n')}</textarea>`)}</div>
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DE LA GENERACIÓN (${g.clave||''})</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      ${fld('Clave',inp('egClave','text','',g.clave||''))}
+      ${fld('Clave (fija — ya no se puede editar, Jp 2026-10-06)',inp('egClave','text','',g.clave||'','readonly'))}
       ${fld('Sesiones totales',inp('egSesiones','number','',g.sesiones_totales??''))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
@@ -1942,7 +2039,8 @@ async function academiaGuardarEditarGeneracion(generacionId,cursoId){
 
   const clienteCartera=academiaClienteCarteraLeer('eg');
   const {error:errGen}=await sb.from('academia_generaciones').update({
-    clave:document.getElementById('egClave')?.value?.trim(),
+    // clave: intencionalmente fuera de este update — Jp, 2026-10-06: la clave
+    // ya no se edita nunca, ni aquí ni al crear (ver academiaGenerarClaveGeneracion).
     sesiones_totales:parseInt(document.getElementById('egSesiones')?.value)||null,
     fecha_inicio:document.getElementById('egFechaInicio')?.value||null,
     fecha_fin:document.getElementById('egFechaFin')?.value||null,
@@ -2433,12 +2531,11 @@ function academiaAbrirEditarEmpresaAcceso(empresaId){
     <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${e.sistema?.clave||''} · Empresa #${e.numero}</div>
     <div style="margin-bottom:10px;">${fld('Servidor',inp('eaServidor','text','',e.servidor||''))}</div>
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DE ASPEL DE ESTA EMPRESA DE PRÁCTICA</div>
-    <div style="margin-bottom:10px;">${fld('Empresa Aspel (nombre de la compañía cargada)',inp('eaEmpresaAspel','text','',e.empresa_aspel||''))}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Usuario Aspel',inp('eaUsuario','text','',e.usuario_empresa||''))}
       ${fld('Contraseña Aspel',inp('eaContrasena','text','',e.contrasena_empresa||''))}
     </div>
-    <div style="font-size:11px;color:var(--text3);margin-bottom:14px;">Estos 3 datos se autocompletan solos en "+ Agregar asistente" en cuanto se elige/sugiere esta empresa (Jp, 2026-09-30) — captúralos una vez aquí.</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px;">Estos datos se autocompletan solos en "+ Agregar asistente" en cuanto se elige/sugiere esta empresa (Jp, 2026-09-30) — captúralos una vez aquí.</div>
     <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;">
       <input type="checkbox" id="eaSiempreActivo" ${e.siempre_activo?'checked':''}> Uso interno permanente (nunca se libera sola)
     </label>`;
@@ -2447,7 +2544,6 @@ function academiaAbrirEditarEmpresaAcceso(empresaId){
 async function academiaGuardarEditarEmpresaAcceso(empresaId){
   const {error}=await sb.from('academia_empresas_acceso').update({
     servidor:document.getElementById('eaServidor')?.value?.trim()||null,
-    empresa_aspel:document.getElementById('eaEmpresaAspel')?.value?.trim()||null,
     usuario_empresa:document.getElementById('eaUsuario')?.value?.trim()||null,
     contrasena_empresa:document.getElementById('eaContrasena')?.value?.trim()||null,
     siempre_activo:!!document.getElementById('eaSiempreActivo')?.checked,
@@ -2984,7 +3080,7 @@ async function academiaAbrirNuevoAsistente(generacionId){
       ${fld('Contraseña RDP',academiaCampoPasswordConGenerador('naPassRdp',`'${gen?.clave||''}'`,'','academiaSincronizarPassAspelDesdeRdp()'))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
-      ${fld('Empresa Aspel',inp('naEmpresaAspel','text',''))}
+      ${fld('N.° de empresa Aspel (es el número, no un nombre — se autocompleta al elegir la empresa)',inp('naEmpresaAspel','text',''))}
       ${fld('Usuario Aspel',inp('naUsuarioAspel','text',''))}
       ${fld('Contraseña Aspel',inp('naPassAspel','text',''))}
     </div>
@@ -3542,11 +3638,11 @@ async function academiaVerFicha(inscripcionId){
         ${asigVinculada?`
         <div><b>Sistema:</b> ${asigVinculada.empresa?.sistema?.clave||'—'} · <b>Empresa:</b> #${asigVinculada.empresa?.numero??'—'} · <b>Servidor:</b> ${asigVinculada.servidor||asigVinculada.empresa?.servidor||'—'}${asigVinculada.empresa?.sistema?.ddns?` · <b>DDNS:</b> ${asigVinculada.empresa.sistema.ddns}`:''}</div>
         <div><b>Usuario RDP:</b> ${asigVinculada.usuario_rdp||'—'} · <b>Contraseña RDP:</b> ${asigVinculada.contrasena_rdp||'—'}</div>
-        <div><b>Empresa Aspel:</b> ${asigVinculada.empresa?.empresa_aspel||'—'} · <b>Usuario Aspel:</b> ${asigVinculada.empresa?.usuario_empresa||'—'} · <b>Contraseña Aspel:</b> ${asigVinculada.empresa?.contrasena_empresa||'—'}</div>
+        <div><b>Usuario Aspel:</b> ${asigVinculada.empresa?.usuario_empresa||'—'} · <b>Contraseña Aspel:</b> ${asigVinculada.empresa?.contrasena_empresa||'—'}</div>
         <div style="margin-top:4px;">${asigVigenteAcc?`<span style="color:var(--green);font-weight:700;">● Vigente</span> desde ${asigVinculada.fecha_inicio||'—'}${asigVinculada.fecha_fin?' hasta '+asigVinculada.fecha_fin:''}`:`<span style="color:var(--text3);">Asignación anterior — ya no vigente (${asigVinculada.fecha_fin?'liberada el '+asigVinculada.fecha_fin:'sin fecha'})</span>`}</div>
         `:`
         <div><b>Servidor:</b> ${insc.servidor||'—'}${insc.generacion?.curso?.sistema?.ddns?` (DDNS: ${insc.generacion.curso.sistema.ddns})`:''} · <b>Usuario RDP:</b> ${insc.usuario_rdp||'—'} · <b>Contraseña RDP:</b> ${insc.contrasena_rdp||'—'}</div>
-        <div><b>Empresa Aspel:</b> ${insc.empresa_aspel||'—'} · <b>Usuario Aspel:</b> ${insc.usuario_aspel||'—'} · <b>Contraseña Aspel:</b> ${insc.contrasena_aspel||'—'}</div>
+        <div><b>N.° empresa Aspel:</b> ${insc.empresa_aspel||'—'} · <b>Usuario Aspel:</b> ${insc.usuario_aspel||'—'} · <b>Contraseña Aspel:</b> ${insc.contrasena_aspel||'—'}</div>
         <div style="margin-top:4px;color:var(--text3);">No vinculado a Control de Accesos — datos capturados a mano.</div>
         `}
         <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
@@ -3627,7 +3723,7 @@ async function academiaAbrirEditarAccesoLab(inscripcionId){
       ${fld('Contraseña RDP',academiaCampoPasswordConGenerador('ealPassRdp',`'${insc.generacion?.clave||''}'`,insc.contrasena_rdp||''))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
-      ${fld('Empresa Aspel',inp('ealEmpresaAspel','text','',insc.empresa_aspel||''))}
+      ${fld('N.° de empresa Aspel (es el número, no un nombre — se autocompleta al elegir la empresa)',inp('ealEmpresaAspel','text','',insc.empresa_aspel||''))}
       ${fld('Usuario Aspel',inp('ealUsuarioAspel','text','',insc.usuario_aspel||''))}
       ${fld('Contraseña Aspel',inp('ealPassAspel','text','',insc.contrasena_aspel||''))}
     </div>
@@ -3994,6 +4090,14 @@ async function academiaEliminarLigaInscripcion(ligaId,inscripcionId){
 // academiaVigenciaInfo ya resuelve la vigencia por separado (fecha_limite_
 // practicas / fecha_limite_practicas_extension de la generación), así que
 // ahí solo se guarda el checkbox.
+// El "Editar manual" de Datos de acceso lee fecha_fin_laboratorio en vivo
+// de academia_inscripciones, así que ya queda al día solo con lo de arriba.
+// Pero si la inscripción está VINCULADA a una empresa en Control de Accesos
+// (academia_empresas_asignaciones), esa asignación tiene su PROPIA fecha_fin
+// — independiente — que antes se quedaba sin moverse (Jp, 2026-10-06: "en el
+// módulo de accesos" también). Aquí se le aplica el mismo delta de días,
+// solo si esa asignación ya tenía fecha_fin capturada (si estaba abierta/sin
+// fecha, se deja abierta).
 async function academiaGuardarExtension(inscripcionId,checked){
   const {data:insc,error:errFetch}=await sb.from('academia_inscripciones')
     .select('fecha_fin_laboratorio,practicas_extension_dias_aplicados,generacion:generacion_id(curso:curso_id(tipo,modalidad))')
@@ -4001,16 +4105,19 @@ async function academiaGuardarExtension(inscripcionId,checked){
   if(errFetch||!insc){alert('No se pudo cargar la inscripción: '+(errFetch?.message||''));return;}
   const payload={practicas_extension:checked};
   let detalle=`Extensión de prácticas ${checked?'otorgada':'retirada'}`;
+  let deltaDias=0;
   if(insc.fecha_fin_laboratorio){
     if(checked){
       const dias=academiaDiasExtensionPorCurso(insc.generacion?.curso);
       payload.fecha_fin_laboratorio=academiaSumarDias(insc.fecha_fin_laboratorio,dias);
       payload.practicas_extension_dias_aplicados=dias;
+      deltaDias=dias;
       detalle+=` (+${dias} días, nueva vigencia: ${payload.fecha_fin_laboratorio})`;
     } else {
       const diasAplicados=insc.practicas_extension_dias_aplicados||0;
       if(diasAplicados){
         payload.fecha_fin_laboratorio=academiaSumarDias(insc.fecha_fin_laboratorio,-diasAplicados);
+        deltaDias=-diasAplicados;
         detalle+=` (-${diasAplicados} días, nueva vigencia: ${payload.fecha_fin_laboratorio})`;
       }
       payload.practicas_extension_dias_aplicados=null;
@@ -4018,6 +4125,13 @@ async function academiaGuardarExtension(inscripcionId,checked){
   }
   const {error}=await sb.from('academia_inscripciones').update(payload).eq('id',inscripcionId);
   if(error){alert('Error guardando la extensión: '+error.message);return;}
+  if(deltaDias){
+    const {data:asigVinc}=await sb.from('academia_empresas_asignaciones').select('id,fecha_fin').eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false}).limit(1).maybeSingle();
+    if(asigVinc?.fecha_fin){
+      await sb.from('academia_empresas_asignaciones').update({fecha_fin:academiaSumarDias(asigVinc.fecha_fin,deltaDias)}).eq('id',asigVinc.id);
+      detalle+=` · también se ajustó ${deltaDias>0?'+':''}${deltaDias} días la fecha de la empresa asignada en Control de Accesos`;
+    }
+  }
   await sb.from('academia_bitacora').insert({
     inscripcion_id:inscripcionId,tipo:'practica',
     detalle,
@@ -16721,7 +16835,7 @@ function mkModal(id,titulo,contenido,onSave,saveLabel='Guardar',wide=false){
 }
 function fld(label,input){return `<div><div style="font-size:11px;color:var(--text3);margin-bottom:3px;font-weight:500;">${label}</div>${input}</div>`;}
 function inp(id,type='text',ph='',val='',extra=''){return `<input id="${id}" type="${type}" placeholder="${ph}" value="${val}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;" ${extra}>`;}
-function sel(id,opts,val=''){return `<select id="${id}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${opts.map(o=>`<option value="${o}" ${o===val?'selected':''}>${o}</option>`).join('')}</select>`;}
+function sel(id,opts,val='',extra=''){return `<select id="${id}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;" ${extra}>${opts.map(o=>`<option value="${o}" ${o===val?'selected':''}>${o}</option>`).join('')}</select>`;}
 
 // Generador de contraseñas seguras para accesos RDP (Jp, 2026-09-08): prefijo
 // = clave de la generación + sufijo aleatorio (mismo estilo que el folio de
