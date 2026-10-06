@@ -1756,31 +1756,39 @@ function academiaGenerarFechasSesionUI(prefix,existentes){
   if(!total){ cont.innerHTML='<div style="font-size:11px;color:var(--text3);">Captura primero el número de sesiones.</div>'; return; }
   let html='';
   for(let n=1;n<=total;n++){
-    let fecha=(existentes&&existentes[n])||'';
+    const ex=(existentes&&existentes[n])||null;
+    let fecha=ex?.fecha||'';
     if(!fecha && inicio) fecha=academiaSumarDias(inicio,(n-1)*cadencia);
-    html+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><span style="font-size:11px;color:var(--text3);width:64px;">Sesión ${n}</span><input type="date" id="${prefix}SesFecha_${n}" value="${fecha}" style="flex:1;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;"></div>`;
+    html+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+      <span style="font-size:11px;color:var(--text3);width:64px;">Sesión ${n}</span>
+      <input type="date" id="${prefix}SesFecha_${n}" value="${fecha}" style="flex:1.3;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;">
+      <input type="time" id="${prefix}SesHoraIni_${n}" value="${ex?.hora_inicio||''}" title="Hora de inicio programada (opcional)" style="flex:1;padding:5px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px;box-sizing:border-box;">
+      <span style="font-size:10px;color:var(--text3);">a</span>
+      <input type="time" id="${prefix}SesHoraFin_${n}" value="${ex?.hora_fin||''}" title="Hora de fin programada (opcional)" style="flex:1;padding:5px 6px;border:1px solid var(--border);border-radius:6px;font-size:11px;box-sizing:border-box;">
+    </div>`;
   }
   cont.innerHTML=html;
 }
 function academiaBloqueFechasSesion(prefix){
   return `
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin:14px 0 8px;">FECHAS DE SESIÓN (opcional — para diplomados/talleres en vivo y cursos empresariales)</div>
-    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Si las capturas, se muestran junto al número de sesión en Asistencia y habilitan un recordatorio comparado contra la fecha real. Para cursos 24/7 puedes dejarlo vacío.</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Si las capturas, se muestran junto al número de sesión en Asistencia y habilitan un recordatorio comparado contra la fecha real. El horario (hora de inicio/fin) es opcional, pero si lo capturas, el sistema usa la regla del 80% para calcular automáticamente si la conexión real de cada participante cuenta como asistencia o falta. Para cursos 24/7 puedes dejarlo todo vacío.</div>
     <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-bottom:8px;">
       ${fld('Fecha de la 1ª sesión',inp(prefix+'SesFechaInicio','date'))}
       ${fld('Cada cuántos días',inp(prefix+'SesCadencia','number','','7'))}
       <button type="button" class="cartera-subtab" onclick="academiaGenerarFechasSesionUI('${prefix}',(window._academiaSesFechasExistentes||{})['${prefix}']||null)" style="height:34px;">Generar fechas</button>
     </div>
-    <div id="${prefix}SesFechasCont" style="max-height:180px;overflow-y:auto;"></div>`;
+    <div id="${prefix}SesFechasCont" style="max-height:220px;overflow-y:auto;"></div>`;
 }
 // Junta los valores capturados en el bloque de arriba, listos para guardar
-// en academia_generacion_sesiones (solo las que sí tengan fecha).
+// en academia_generacion_sesiones (solo las que sí tengan fecha; hora_inicio/
+// hora_fin son opcionales y van sueltas si no se capturan).
 function academiaLeerFechasSesion(prefix){
   const total=parseInt(document.getElementById(prefix+'Sesiones')?.value)||0;
   const filas=[];
   for(let n=1;n<=total;n++){
     const v=document.getElementById(prefix+'SesFecha_'+n)?.value;
-    if(v) filas.push({numero_sesion:n,fecha:v});
+    if(v) filas.push({numero_sesion:n,fecha:v,hora_inicio:document.getElementById(prefix+'SesHoraIni_'+n)?.value||null,hora_fin:document.getElementById(prefix+'SesHoraFin_'+n)?.value||null});
   }
   return filas;
 }
@@ -1790,7 +1798,7 @@ function academiaLeerFechasSesion(prefix){
 async function academiaGuardarFechasSesion(generacionId,filas){
   await sb.from('academia_generacion_sesiones').delete().eq('generacion_id',generacionId);
   if(filas.length){
-    await sb.from('academia_generacion_sesiones').insert(filas.map(f=>({generacion_id:generacionId,numero_sesion:f.numero_sesion,fecha:f.fecha})));
+    await sb.from('academia_generacion_sesiones').insert(filas.map(f=>({generacion_id:generacionId,numero_sesion:f.numero_sesion,fecha:f.fecha,hora_inicio:f.hora_inicio||null,hora_fin:f.hora_fin||null})));
   }
 }
 
@@ -1832,6 +1840,13 @@ async function academiaGuardarRecordatorio(generacionId){
 function academiaDiasLabPorCurso(curso){
   return academiaCategoriaCurso(curso)?.key==='diplomado_247' ? 30 : 15;
 }
+// Días que se suman a la vigencia de prácticas al otorgar la extensión (Jp,
+// 2026-10-06): regla fija por categoría de curso — empresariales 7, talleres
+// y cursos 24/7 ("desde cero") 7, diplomados (en vivo o 24/7) 15.
+function academiaDiasExtensionPorCurso(curso){
+  const cat=academiaCategoriaCurso(curso)?.key||'';
+  return (cat==='diplomado_vivo'||cat==='diplomado_247') ? 15 : 7;
+}
 function academiaSugerirVigenciaIndividual(iniId,finLabId,finSesId,diasLab){
   const ini=document.getElementById(iniId)?.value;
   const finLabEl=document.getElementById(finLabId), finSesEl=document.getElementById(finSesId);
@@ -1859,8 +1874,8 @@ async function academiaAbrirEditarGeneracion(generacionId){
   const {data:g,error}=await sb.from('academia_generaciones').select('*,curso:curso_id(*),cliente_cartera:cliente_cartera_id(id,razon_social,num_cliente)').eq('id',generacionId).single();
   if(error||!g){alert('No se pudo cargar la generación: '+(error?.message||''));return;}
   const c=g.curso||{};
-  const {data:sesFechas}=await sb.from('academia_generacion_sesiones').select('numero_sesion,fecha').eq('generacion_id',generacionId);
-  const sesFechasMap={}; (sesFechas||[]).forEach(s=>{ if(s.fecha) sesFechasMap[s.numero_sesion]=s.fecha; });
+  const {data:sesFechas}=await sb.from('academia_generacion_sesiones').select('numero_sesion,fecha,hora_inicio,hora_fin').eq('generacion_id',generacionId);
+  const sesFechasMap={}; (sesFechas||[]).forEach(s=>{ if(s.fecha) sesFechasMap[s.numero_sesion]={fecha:s.fecha,hora_inicio:s.hora_inicio,hora_fin:s.hora_fin}; });
   window._academiaSesFechasExistentes=window._academiaSesFechasExistentes||{};
   window._academiaSesFechasExistentes['eg']=sesFechasMap;
   const {data:firmantes}=await sb.from('academia_firmantes').select('id,nombre,cargo').order('nombre');
@@ -2397,6 +2412,7 @@ function academiaPintarAccesos(){
                   ?`<button class="cartera-subtab" onclick="event.stopPropagation();academiaLiberarAsignacion('${asig.id}','${e.id}')">Liberar</button>`
                   :`<span title="Solo se puede liberar cuando el participante haya finalizado (constancia entregada, o finalizado sin constancia)" style="font-size:11px;color:var(--text3);">🔒 En curso</span>`
               ):''}
+              ${estado==='permanente'?`<button class="cartera-subtab" onclick="event.stopPropagation();academiaAbrirAsignarEmpresa('${e.id}')">${asig?'Cambiar ocupante':'Asignar'}</button>`:''}
               <button class="cartera-subtab" onclick="event.stopPropagation();academiaAbrirEditarEmpresaAcceso('${e.id}')">Editar</button>
             </td>
           </tr>`;
@@ -2516,6 +2532,35 @@ async function academiaAbrirAsignarEmpresa(empresaId){
   const {empresas}=window._academiaCache.accesos||{empresas:[]};
   const e=(empresas||[]).find(x=>x.id===empresaId);
   if(!e) return;
+  // Jp, 2026-10-06: las empresas marcadas "Uso interno permanente" (las 10
+  // de siempre) normalmente se le asignan a alguien del EQUIPO interno, no a
+  // un alumno dado de alta en una generación — forzar el selector de
+  // participante ahí no tenía sentido. Para esas, texto libre: a quién se le
+  // asignó y para qué.
+  if(e.siempre_activo){
+    const hoy=new Date().toISOString().split('T')[0];
+    const html=`
+      <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">${e.sistema?.clave||''} · Empresa #${e.numero}${e.servidor?` · servidor ${e.servidor}`:''} · <span style="color:var(--navy);font-weight:700;">Uso interno permanente</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+        ${fld('Asignada a (texto libre)',inp('accNombreLibre','text','Ej. Karen Hernández'))}
+        ${fld('Para qué / motivo (texto libre)',inp('accMotivoLibre','text','Ej. Demos a prospectos'))}
+      </div>
+      <div style="font-size:11px;font-weight:700;color:var(--teal);margin:14px 0 8px;">ACCESO AL SERVIDOR (LABORATORIO REMOTO)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px;">
+        ${fld('Servidor',inp('accServidor','text','',e?.servidor||''))}
+        ${fld('Usuario RDP',inp('accUsuarioRdp','text','Ej. US03'))}
+        ${fld('Contraseña RDP',academiaCampoPasswordConGenerador('accContrasenaRdp',`'${e?.sistema?.clave||''}'`))}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">
+        ${fld('Fecha de inicio',inp('accFechaInicio','date','',hoy))}
+        ${fld('Fecha de fin (opcional — se libera sola en esa fecha; uso interno normalmente se deja vacío)',inp('accFechaFin','date'))}
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button type="button" onclick="academiaGuardarAsignarEmpresaLibre('${empresaId}')" style="padding:8px 16px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">Asignar</button>
+      </div>`;
+    mkModal('modalAsignarAcceso','Asignar empresa (uso interno)',html,null,'Cancelar');
+    return;
+  }
   if(!window._academiaCache.generacionesParaAcceso){
     // Jp, 2026-09-17: en el selector de "Asignar empresa" solo deben aparecer
     // generaciones ACTIVAS — ya no las cerradas/históricas (mismo criterio de
@@ -2566,6 +2611,26 @@ async function academiaAbrirAsignarEmpresa(empresaId){
       <button type="button" onclick="academiaGuardarAsignarEmpresa('${empresaId}',true)" style="padding:8px 16px;background:var(--teal);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">Guardar y seguir con el siguiente acceso</button>
     </div>`;
   mkModal('modalAsignarAcceso','Asignar empresa',html,null,'Cancelar');
+}
+async function academiaGuardarAsignarEmpresaLibre(empresaId){
+  const nombre=document.getElementById('accNombreLibre')?.value.trim()||'';
+  const motivo=document.getElementById('accMotivoLibre')?.value.trim()||'';
+  if(!nombre){alert('Escribe a quién se le asignó.');return;}
+  const {error}=await sb.from('academia_empresas_asignaciones').insert({
+    empresa_id:empresaId,
+    inscripcion_id:null,
+    participante_nombre:nombre,
+    curso_taller:motivo||'Uso interno',
+    servidor:document.getElementById('accServidor')?.value?.trim()||null,
+    usuario_rdp:document.getElementById('accUsuarioRdp')?.value?.trim()||null,
+    contrasena_rdp:document.getElementById('accContrasenaRdp')?.value?.trim()||null,
+    fecha_inicio:document.getElementById('accFechaInicio')?.value||null,
+    fecha_fin:document.getElementById('accFechaFin')?.value||null,
+    creada_por:userProfile?.id||null,
+  });
+  if(error){alert('Error al asignar: '+error.message);return;}
+  document.getElementById('modalAsignarAcceso')?.remove();
+  renderAcademiaAccesos();
 }
 async function academiaGuardarAsignarEmpresa(empresaId,seguirConSiguiente){
   const genId=document.getElementById('accGenSel')?.value;
@@ -3281,10 +3346,13 @@ async function academiaVerFicha(inscripcionId){
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando ficha...</div>';
 
   const {data:insc,error}=await sb.from('academia_inscripciones')
-    .select('*,participante:participante_id(*,cliente:cliente_cartera_id(razon_social,num_cliente)),generacion:generacion_id(*,curso:curso_id(*,sistema:sistema_id(*)),sesiones:academia_generacion_sesiones(numero_sesion,fecha)),asistencias:academia_asistencias(*),ligas:academia_inscripcion_ligas(*)')
+    .select('*,participante:participante_id(*,cliente:cliente_cartera_id(razon_social,num_cliente)),generacion:generacion_id(*,curso:curso_id(*,sistema:sistema_id(*)),sesiones:academia_generacion_sesiones(numero_sesion,fecha,hora_inicio,hora_fin)),asistencias:academia_asistencias(*),ligas:academia_inscripcion_ligas(*)')
     .eq('id',inscripcionId).single();
   if(error||!insc){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error: ${error?.message||'no encontrado'}</div>`;return;}
   const sesFechaMap={}; (insc.generacion?.sesiones||[]).forEach(s=>{ if(s.fecha) sesFechaMap[s.numero_sesion]=s.fecha; });
+  const sesHorarioMap={}; (insc.generacion?.sesiones||[]).forEach(s=>{ if(s.hora_inicio&&s.hora_fin) sesHorarioMap[s.numero_sesion]={hora_inicio:s.hora_inicio,hora_fin:s.hora_fin}; });
+  window._academiaSesHorarioMap=window._academiaSesHorarioMap||{}; window._academiaSesHorarioMap[inscripcionId]=sesHorarioMap;
+  window._academiaFichaAsistencias=window._academiaFichaAsistencias||{}; window._academiaFichaAsistencias[inscripcionId]=insc.asistencias||[];
   // Notificaciones de acceso ya enviadas (Jp, 2026-09-17) — historial completo
   // más el último envío de tipo 'acceso_lab' para mostrarlo junto al botón.
   const {data:notifs}=await sb.from('academia_notificaciones_envios').select('*').eq('inscripcion_id',inscripcionId).order('enviada_en',{ascending:false}).limit(10);
@@ -3369,16 +3437,20 @@ async function academiaVerFicha(inscripcionId){
       <div>
         <div style="font-size:12px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Asistencia (${presentes}/${totalSesiones} — ${academiaPct(pctAsistencia)})</div>
         <div style="margin-bottom:8px;">${academiaBarraProgreso(pctAsistencia,ac.c)}</div>
-        <div style="font-size:10px;color:var(--text3);margin-bottom:6px;">Clic en el número para marcar/desmarcar asistencia. 📎 para adjuntar evidencia de la sesión.</div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:6px;">Clic en el número para marcar/desmarcar asistencia. 📎 para adjuntar evidencia de la sesión. 🕒 para capturar hora de entrada/salida y observaciones (si la sesión tiene horario programado, el sistema calcula la falta automáticamente con la regla del 80%).</div>
         <div style="display:flex;flex-wrap:wrap;gap:8px;">
           ${Array.from({length:totalSesiones},(_,idx)=>{
             const n=idx+1;
             const s=sesiones.find(x=>x.numero_sesion===n);
             const on=s?.asistio;
             const ev=s?.evidencia_path;
+            const tieneObs=!!(s?.hora_entrada||s?.hora_salida||s?.observacion);
             return `<div style="display:flex;flex-direction:column;align-items:center;gap:3px;">
               <div title="Sesión ${n}${sesFechaMap[n]?' — '+sesFechaMap[n]:''} — clic para marcar/desmarcar" onclick="academiaToggleAsistencia('${inscripcionId}',${n},${!on})" style="width:28px;height:28px;border-radius:6px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;background:${on?ac.c:'#eee'};color:${on?'#fff':'#999'};">${n}</div>
-              <label style="cursor:pointer;font-size:11px;line-height:1;" title="Adjuntar evidencia de la sesión ${n}">${ev?`<a href="#" onclick="event.preventDefault();academiaDescargarEvidencia('${ev}')">📎</a>`:`<span style="opacity:.4;">📎</span><input type="file" style="display:none" onchange="academiaSubirEvidenciaAsistencia('${inscripcionId}',${n},this)"></input>`}</label>
+              <div style="display:flex;gap:4px;">
+                <label style="cursor:pointer;font-size:11px;line-height:1;" title="Adjuntar evidencia de la sesión ${n}">${ev?`<a href="#" onclick="event.preventDefault();academiaDescargarEvidencia('${ev}')">📎</a>`:`<span style="opacity:.4;">📎</span><input type="file" style="display:none" onchange="academiaSubirEvidenciaAsistencia('${inscripcionId}',${n},this)"></input>`}</label>
+                <a href="#" onclick="event.preventDefault();academiaAbrirObservacionAsistencia('${inscripcionId}',${n})" title="Hora de entrada/salida y observaciones de la sesión ${n}" style="font-size:11px;line-height:1;${tieneObs?'':'opacity:.4;'}">🕒</a>
+              </div>
             </div>`;
           }).join('')}
         </div>
@@ -3776,6 +3848,57 @@ async function academiaToggleAsistencia(inscripcionId,numeroSesion,nuevoValor){
   academiaVerFicha(inscripcionId);
 }
 
+// Hora de entrada/salida + observación por sesión (Jp, 2026-10-06): sirve
+// como evidencia ante reclamos ("se conectó a la mitad, aunque haya estado
+// presente, es falta si no cubre 80% de la sesión"). Si la generación tiene
+// horario programado para esa sesión (hora_inicio/hora_fin, capturado en el
+// editor de la generación), el sistema calcula el % de la sesión cubierto
+// por el rango [hora_entrada,hora_salida] y marca automáticamente asistio
+// según la regla del 80% — el usuario puede seguir marcando/desmarcando a
+// mano con el número de sesión si lo necesita, esto solo sugiere el valor.
+function academiaAbrirObservacionAsistencia(inscripcionId,numeroSesion){
+  const asistencias=window._academiaFichaAsistencias?.[inscripcionId]||[];
+  const s=asistencias.find(x=>x.numero_sesion===numeroSesion);
+  const horario=(window._academiaSesHorarioMap?.[inscripcionId]||{})[numeroSesion];
+  const html=`
+    ${horario?`<div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Horario programado de esta sesión: <b>${horario.hora_inicio.slice(0,5)} a ${horario.hora_fin.slice(0,5)}</b>. Si capturas hora de entrada y salida, el sistema calculará el % de la sesión cubierto y ajustará asistencia automáticamente con la regla del 80%.</div>`
+      :`<div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Esta sesión no tiene horario programado en la generación, así que la hora de entrada/salida se guarda solo como referencia — la asistencia se sigue marcando a mano con el número de sesión.</div>`}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Hora de entrada',inp('oaHoraEntrada','time','',(s?.hora_entrada||'').slice(0,5)))}
+      ${fld('Hora de salida',inp('oaHoraSalida','time','',(s?.hora_salida||'').slice(0,5)))}
+    </div>
+    ${fld('Observación',`<textarea id="oaObservacion" rows="3" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;box-sizing:border-box;resize:vertical;">${s?.observacion||''}</textarea>`)}`;
+  mkModal('modalObsAsistencia',`Sesión ${numeroSesion} — hora y observación`,html,`academiaGuardarObservacionAsistencia('${inscripcionId}',${numeroSesion})`,'Guardar');
+}
+async function academiaGuardarObservacionAsistencia(inscripcionId,numeroSesion){
+  const horaEntrada=document.getElementById('oaHoraEntrada')?.value||null;
+  const horaSalida=document.getElementById('oaHoraSalida')?.value||null;
+  const observacion=document.getElementById('oaObservacion')?.value.trim()||null;
+  const payload={inscripcion_id:inscripcionId,numero_sesion:numeroSesion,hora_entrada:horaEntrada,hora_salida:horaSalida,observacion,capturada_por:currentUser?.id||null,updated_at:new Date().toISOString()};
+  let detalleAuto='';
+  const horario=(window._academiaSesHorarioMap?.[inscripcionId]||{})[numeroSesion];
+  if(horario&&horaEntrada&&horaSalida){
+    const aMin=hhmm=>{const [h,m]=hhmm.split(':').map(Number);return h*60+m;};
+    const progInicio=aMin(horario.hora_inicio.slice(0,5)), progFin=aMin(horario.hora_fin.slice(0,5));
+    const realInicio=aMin(horaEntrada), realFin=aMin(horaSalida);
+    const duracionProg=Math.max(progFin-progInicio,1);
+    const cubierto=Math.max(0,Math.min(progFin,realFin)-Math.max(progInicio,realInicio));
+    const pct=Math.round((cubierto/duracionProg)*100);
+    const cumple=pct>=80;
+    payload.asistio=cumple;
+    detalleAuto=` — ${pct}% de la sesión cubierto (horario ${horario.hora_inicio.slice(0,5)}-${horario.hora_fin.slice(0,5)}, conexión ${horaEntrada}-${horaSalida}): ${cumple?'cumple 80%, se marcó presente':'no cumple 80%, se marcó falta'} automáticamente`;
+  }
+  const {error}=await sb.from('academia_asistencias').upsert(payload,{onConflict:'inscripcion_id,numero_sesion'});
+  if(error){alert('Error guardando la observación: '+error.message);return;}
+  await sb.from('academia_bitacora').insert({
+    inscripcion_id:inscripcionId,tipo:'asistencia',
+    detalle:`Sesión ${numeroSesion}: hora/observación capturada${detalleAuto}`,
+    capturada_por:currentUser?.id||null
+  });
+  document.getElementById('modalObsAsistencia')?.remove();
+  academiaVerFicha(inscripcionId);
+}
+
 async function academiaSubirEvidenciaAsistencia(inscripcionId,numeroSesion,inputEl){
   const file=inputEl.files?.[0];
   if(!file) return;
@@ -3859,12 +3982,45 @@ async function academiaEliminarLigaInscripcion(ligaId,inscripcionId){
   academiaVerFicha(inscripcionId);
 }
 
+// Jp, 2026-10-06: marcar "Adquirió extensión de prácticas" antes solo
+// guardaba el checkbox — para inscripciones con fecha_fin_laboratorio
+// individual (cursos 24/7 de inscripción continua) esa fecha nunca se movía,
+// así que la vigencia mostrada no cambiaba aunque la extensión estuviera
+// marcada. Ahora, si la inscripción tiene fecha_fin_laboratorio propia, se
+// le suman (o restan, al desmarcar) los días de extensión según el tipo de
+// curso (academiaDiasExtensionPorCurso) y se guarda cuántos días se
+// aplicaron (practicas_extension_dias_aplicados) para poder revertir exacto.
+// Para generaciones con fecha compartida (sin fecha_fin_laboratorio propia),
+// academiaVigenciaInfo ya resuelve la vigencia por separado (fecha_limite_
+// practicas / fecha_limite_practicas_extension de la generación), así que
+// ahí solo se guarda el checkbox.
 async function academiaGuardarExtension(inscripcionId,checked){
-  const {error}=await sb.from('academia_inscripciones').update({practicas_extension:checked}).eq('id',inscripcionId);
+  const {data:insc,error:errFetch}=await sb.from('academia_inscripciones')
+    .select('fecha_fin_laboratorio,practicas_extension_dias_aplicados,generacion:generacion_id(curso:curso_id(tipo,modalidad))')
+    .eq('id',inscripcionId).single();
+  if(errFetch||!insc){alert('No se pudo cargar la inscripción: '+(errFetch?.message||''));return;}
+  const payload={practicas_extension:checked};
+  let detalle=`Extensión de prácticas ${checked?'otorgada':'retirada'}`;
+  if(insc.fecha_fin_laboratorio){
+    if(checked){
+      const dias=academiaDiasExtensionPorCurso(insc.generacion?.curso);
+      payload.fecha_fin_laboratorio=academiaSumarDias(insc.fecha_fin_laboratorio,dias);
+      payload.practicas_extension_dias_aplicados=dias;
+      detalle+=` (+${dias} días, nueva vigencia: ${payload.fecha_fin_laboratorio})`;
+    } else {
+      const diasAplicados=insc.practicas_extension_dias_aplicados||0;
+      if(diasAplicados){
+        payload.fecha_fin_laboratorio=academiaSumarDias(insc.fecha_fin_laboratorio,-diasAplicados);
+        detalle+=` (-${diasAplicados} días, nueva vigencia: ${payload.fecha_fin_laboratorio})`;
+      }
+      payload.practicas_extension_dias_aplicados=null;
+    }
+  }
+  const {error}=await sb.from('academia_inscripciones').update(payload).eq('id',inscripcionId);
   if(error){alert('Error guardando la extensión: '+error.message);return;}
   await sb.from('academia_bitacora').insert({
     inscripcion_id:inscripcionId,tipo:'practica',
-    detalle:`Extensión de prácticas ${checked?'otorgada':'retirada'}`,
+    detalle,
     capturada_por:currentUser?.id||null
   });
   academiaVerFicha(inscripcionId);
@@ -6523,7 +6679,19 @@ async function eliminarFilaPipe(id){
 // ── CARTERA DE CUENTAS ──────────────────────────────────────────────────────
 let currentCarteraSub='disponibles';
 let carteraSortCol=null, carteraSortDir=1;
-let carteraFiltroTexto='', carteraFiltroProducto='', carteraFiltroPeriodicidad='';
+let carteraFiltroTexto='', carteraFiltroProducto='', carteraFiltroPeriodicidad='', carteraFiltroVendedor='';
+function toggleCarteraFiltroVendedor(vendedorId){
+  carteraFiltroVendedor=(carteraFiltroVendedor===vendedorId)?'':vendedorId;
+  renderCarteraVendorBotones();
+  const sub=(currentCarteraSub==='pendientes'||currentCarteraSub==='suscripciones')?'todos':(currentCarteraSub||'todos'); // esas vistas no filtran por cliente/vendedor seleccionado, se regresa a "todos"
+  swCartera(sub);
+}
+function renderCarteraVendorBotones(){
+  const cont=document.getElementById('carteraVendedorBotones');
+  if(!cont) return;
+  const vendedores=window._carteraVendedores||[];
+  cont.innerHTML=vendedores.map(v=>`<button onclick="toggleCarteraFiltroVendedor('${v.id}')" class="cartera-subtab" style="${carteraFiltroVendedor===v.id?'background:var(--navy);color:#fff;border-color:var(--navy);':''}">${v.nombre}</button>`).join('');
+}
 
 // Jp, 2026-10-05: el .limit(5000) del Lote 31 no bastó — Supabase topa cada
 // respuesta de PostgREST a un máximo de filas por request ("Max Rows" del
@@ -6574,14 +6742,20 @@ async function renderCarteraVendedor(){
     <div style="font-size:18px;font-weight:600;color:var(--text);">Cartera de cuentas</div>
     <div style="font-size:12px;color:var(--text3);">Clientes con suscripción Aspel/Siigo. Da clic en un cliente para ver su ficha completa.</div>
   </div>
-  <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;">
+  <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
     <button onclick="swCartera('todos')" id="carteraSub_todos" class="cartera-subtab">Todos los clientes</button>
     <button onclick="swCartera('mia')" id="carteraSub_mia" class="cartera-subtab">Mi cartera</button>
+    <button onclick="swCartera('activos')" id="carteraSub_activos" class="cartera-subtab">✅ Activos</button>
     <button onclick="swCartera('vencen')" id="carteraSub_vencen" class="cartera-subtab">Vencen este mes</button>
     <button onclick="swCartera('resueltas')" id="carteraSub_resueltas" class="cartera-subtab">Resueltas este mes</button>
+    <button onclick="swCartera('sin_seguimiento')" id="carteraSub_sin_seguimiento" class="cartera-subtab">🕓 Sin seguimiento (+90 días)</button>
     <button onclick="swCartera('pendientes')" id="carteraSub_pendientes" class="cartera-subtab">🔗 Pendientes de vincular${totalPendientesVincular?` (${totalPendientesVincular})`:''}</button>
     <button onclick="swCartera('suscripciones')" id="carteraSub_suscripciones" class="cartera-subtab">📋 Suscripciones</button>
     <button onclick="abrirAltaCuenta()" style="margin-left:auto;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nuevo cliente</button>
+  </div>
+  <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
+    <span style="font-size:11px;color:var(--text3);">Acceso rápido por vendedor (clic de nuevo para quitar):</span>
+    <div id="carteraVendedorBotones" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
   </div>
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;">
     <div style="flex:1;min-width:200px;position:relative;">
@@ -6596,12 +6770,15 @@ async function renderCarteraVendedor(){
   <div id="carteraContenido"></div>`;
 
   currentCarteraSub='todos';
+  renderCarteraVendorBotones();
   swCartera('todos');
 }
 
+const CARTERA_DIAS_SIN_SEGUIMIENTO=90; // Jp, 2026-10-06: umbral para "Sin seguimiento" — basado en updated_at de la ficha.
+
 function swCartera(sub){
   currentCarteraSub=sub;
-  ['todos','mia','vencen','resueltas','pendientes','suscripciones'].forEach(s=>{
+  ['todos','mia','activos','vencen','resueltas','sin_seguimiento','pendientes','suscripciones'].forEach(s=>{
     const btn=document.getElementById('carteraSub_'+s);
     if(btn) btn.classList.toggle('active',s===sub);
   });
@@ -6611,20 +6788,26 @@ function swCartera(sub){
   const hoy=new Date();
   const inicioMes=`${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}-01`;
   const finMes=new Date(hoy.getFullYear(),hoy.getMonth()+1,0).toISOString().split('T')[0];
+  const limiteSinSeguimiento=new Date(Date.now()-CARTERA_DIAS_SIN_SEGUIMIENTO*86400000);
   const q=(carteraFiltroTexto||'').toLowerCase();
   const prod=carteraFiltroProducto||'';
+  const vend=carteraFiltroVendedor||'';
 
   let filtrados=clientes.filter(cl=>{
     // Filtro de texto
     const matchQ=!q||(cl.razon_social||'').toLowerCase().includes(q)||(cl.rfc||'').toLowerCase().includes(q)||(cl.num_cliente||'').toLowerCase().includes(q)||(cl.alias_nombres||[]).some(a=>(a||'').toLowerCase().includes(q));
     // Filtro de producto (al menos una suscripción con ese producto)
     const matchProd=!prod||(cl._suscripciones||[]).some(s=>s.producto===prod);
-    if(!matchQ||!matchProd) return false;
+    // Filtro de vendedor (acceso rápido, independiente de la sub-pestaña)
+    const matchVend=!vend||cl.vendedor_asignado===vend;
+    if(!matchQ||!matchProd||!matchVend) return false;
     // Filtro por sub-pestaña
     if(sub==='todos') return true;
     if(sub==='mia') return cl.vendedor_asignado===currentUser.id;
+    if(sub==='activos') return cl.rating==='Activo';
     if(sub==='vencen') return cl.vendedor_asignado===currentUser.id&&(cl._suscripciones||[]).some(s=>s.fecha_proxima_renovacion>=inicioMes&&s.fecha_proxima_renovacion<=finMes);
     if(sub==='resueltas') return cl.vendedor_asignado===currentUser.id&&(cl._suscripciones||[]).some(s=>['renovada','no_renovada'].includes(s.estado)&&s.fecha_marcado>=inicioMes);
+    if(sub==='sin_seguimiento') return !cl.updated_at||new Date(cl.updated_at)<limiteSinSeguimiento;
     return true;
   });
 
@@ -6644,7 +6827,7 @@ function swCartera(sub){
   if(!cont) return;
   if(!agrupados.length){
     cont.innerHTML=`<div style="text-align:center;padding:50px 20px;color:var(--text3);font-size:13px;">
-      ${q||prod?'Ningún cliente coincide con los filtros aplicados.':sub==='mia'?'Aún no tienes clientes asignados.':sub==='vencen'?'No hay renovaciones este mes.':'No hay clientes en la cartera aún.'}
+      ${q||prod||vend?'Ningún cliente coincide con los filtros aplicados.':sub==='mia'?'Aún no tienes clientes asignados.':sub==='vencen'?'No hay renovaciones este mes.':sub==='activos'?'No hay clientes con rating Activo.':sub==='sin_seguimiento'?'Todos los clientes tienen seguimiento reciente.':'No hay clientes en la cartera aún.'}
     </div>`;
     return;
   }
@@ -7564,13 +7747,17 @@ function suscSistemaInfo(s){
 // no cliente-sin-vendedor) — solo aparecía buscando en "Todos los clientes".
 // Esta vista corrige ambos huecos: filtra/busca por la suscripción misma
 // (serie, RFC, razón social, sistema, estado), no por el cliente.
-let suscListFiltroTexto='', suscListFiltroEstado='';
+let suscListFiltroTexto='', suscListFiltroEstado='', suscListFiltroSistema='';
 function onSuscListFiltroChange(scope){
   suscListFiltroTexto=document.getElementById('suscListFiltroTextoInput')?.value||'';
   renderTodasSuscripciones(scope);
 }
 function suscListSwEstado(scope,estado){
   suscListFiltroEstado=(suscListFiltroEstado===estado)?'':estado;
+  renderTodasSuscripciones(scope);
+}
+function suscListSwSistema(scope,sistemaId){
+  suscListFiltroSistema=(suscListFiltroSistema===sistemaId)?'':sistemaId;
   renderTodasSuscripciones(scope);
 }
 async function renderTodasSuscripciones(scope){
@@ -7593,6 +7780,9 @@ async function renderTodasSuscripciones(scope){
     suscs=suscs.filter(s=>s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=inicioMes&&s.fecha_proxima_renovacion<=finMes);
   } else if(suscListFiltroEstado){
     suscs=suscs.filter(s=>s.estado===suscListFiltroEstado);
+  }
+  if(suscListFiltroSistema){
+    suscs=suscs.filter(s=>s.sistema_id===suscListFiltroSistema);
   }
   const q=(suscListFiltroTexto||'').trim().toLowerCase();
   if(q){
@@ -7617,6 +7807,10 @@ async function renderTodasSuscripciones(scope){
       <input type="text" id="suscListFiltroTextoInput" placeholder="Buscar por número de serie, RFC, razón social o sistema..." value="${suscListFiltroTexto}" oninput="onSuscListFiltroChange('${scope}')" style="width:100%;padding:8px 36px 8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
       ${suscListFiltroTexto?`<button onclick="suscListFiltroTexto='';document.getElementById('suscListFiltroTextoInput').value='';renderTodasSuscripciones('${scope}')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;line-height:1;">✕</button>`:''}
     </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+      <span style="font-size:11px;color:var(--text3);">Por sistema:</span>
+      ${(window._suscSistemas||[]).map(sis=>`<button onclick="suscListSwSistema('${scope}','${sis.id}')" style="cursor:pointer;background:${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)')+'22':'var(--surface-2,#f8f9fa)'};border:1px solid ${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)'):'var(--border)'};color:${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)'):'var(--text2)'};border-radius:20px;padding:5px 12px;font-size:11px;font-weight:600;font-family:'Inter',sans-serif;">${sis.nombre}</button>`).join('')}
+    </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:14px;">
       ${tarjeta('Vencen este mes',(window._cartSuscripciones||[]).filter(s=>{if(scope!=='director'){const cl=s.cliente_id?clientesPorId[s.cliente_id]:null;if(!cl||cl.vendedor_asignado!==currentUser.id)return false;}return s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=inicioMes&&s.fecha_proxima_renovacion<=finMes;}).length,'#F5A623','vencen_mes')}
       ${tarjeta('Sin reclamar',suscs.filter(s=>s.estado==='sin_reclamar').length,'var(--text3)','sin_reclamar')}
@@ -7625,7 +7819,7 @@ async function renderTodasSuscripciones(scope){
       ${tarjeta('No renovadas',suscs.filter(s=>s.estado==='no_renovada').length,'#E84040','no_renovada')}
     </div>
     ${scope==='director'&&(totalSinVendedor>0||totalSinCta>0)?`<div style="font-size:11px;color:#B8740A;background:rgba(245,166,35,0.1);border:1px solid rgba(245,166,35,0.3);border-radius:6px;padding:6px 10px;margin-bottom:10px;">⚠ ${totalSinCta>0?`${totalSinCta} sin cuenta ligada (usa "🔗 Vincular"). `:''}${totalSinVendedor>0?`${totalSinVendedor} de cuentas SIN vendedor asignado — nadie las ve en su cartera hoy.`:''}</div>`:''}
-    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${suscs.length} suscripción${suscs.length===1?'':'es'}${suscListFiltroEstado||q?' (filtradas)':''}</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${suscs.length} suscripción${suscs.length===1?'':'es'}${suscListFiltroEstado||suscListFiltroSistema||q?' (filtradas)':''}</div>
     <div style="display:grid;gap:6px;">
       ${suscs.length?suscs.map(s=>{
         const info=suscSistemaInfo(s);
