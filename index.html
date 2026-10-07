@@ -6964,6 +6964,7 @@ function fichaClienteCartera(cl,sub){
           <span style="font-size:11px;color:var(--text3);font-family:'JetBrains Mono',monospace;">${cl.num_cliente||'—'}</span>
           <span style="font-size:14px;font-weight:600;color:var(--text);">${cl.razon_social||'Sin nombre'}</span>
           ${cl.rfc?`<span style="font-size:10px;color:var(--text3);">${cl.rfc}</span>`:''}
+          ${cl._polizaVigente?.polizas_catalogo?.prioridad_codigo?(()=>{const cod=cl._polizaVigente.polizas_catalogo.prioridad_codigo;const col=POLIZA_NIVEL_COLOR[cod]||'var(--navy)';return `<span title="Póliza vigente: ${cl._polizaVigente.polizas_catalogo.prioridad_nombre||''}" style="font-size:10px;font-weight:700;padding:1px 8px;border-radius:4px;background:${col};color:#fff;">🛡 ${cod} ${POLIZA_NIVEL_ETIQUETA[cod]||''}</span>`;})():''}
         </div>
         <div style="margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
           ${(cl.sistemas_aspel||[]).map(s=>`<span style="background:rgba(0,169,157,0.1);color:var(--teal);border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;">${s}</span>`).join('')}
@@ -7782,19 +7783,37 @@ async function renderDirectorCartera(containerId){
   // (uso original, desde Director → Ventas → Cartera).
   const mc=document.getElementById(containerId||'mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando cartera...</div>';
-  const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas}]=await Promise.all([
+  const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas},{data:polizasVig},{data:servHist},{data:generaciones}]=await Promise.all([
     carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)'), // Jp, 2026-10-05: paginado con .range() — ver carteraFetchTodosClientes (el .limit(5000) del Lote 31 no bastó porque Supabase topa cada request de PostgREST a su "Max Rows" del proyecto, sin importar el .limit() del cliente).
     sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
     sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'), // Jp, 2026-10-05: el filtro "Todos los vendedores" traía TODOS los usuarios (Capacitación, Administración, asesores, mesa de control...) — ahora solo rol='vendedor'.
-    sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden')
+    sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden'),
+    // Jp, 2026-10-07: datos para los filtros "Clientes de póliza / servicios eventuales / cursos / inactivos"
+    // del dashboard de Cartera de cuentas — ver renderDirCarteraAuditoria.
+    sb.from('clientes_polizas').select('cliente_cartera_id,poliza_catalogo_id,polizas_catalogo(nombre,categoria,prioridad_codigo,prioridad_nombre)').eq('estatus','VIGENTE').not('cliente_cartera_id','is',null),
+    sb.from('servicios_historicos').select('cliente_cartera_id').is('poliza_numero',null).not('cliente_cartera_id','is',null),
+    sb.from('academia_generaciones').select('cliente_cartera_id,curso:curso_id(tipo)').not('cliente_cartera_id','is',null)
   ]);
   window._cartClientes=clientes||[];
   window._cartSuscripciones=suscripciones||[];
   window._carteraVendedores=vendedores||[];
   window._carteraTodas=clientes||[]; // compatibilidad
   window._suscSistemas=sistemas||[];
+  // Jp, 2026-10-07: sets/maps para los 4 filtros nuevos de clientes (póliza, servicios
+  // eventuales, cursos, inactivos) — "servicios eventuales" = tickets históricos SIN
+  // póliza ligada (servicios_historicos.poliza_numero NULL); "cursos" = generaciones de
+  // Academia ligadas a un diplomado o curso 24/7 (no empresarial/taller/desde-cero);
+  // criterio confirmado con Jp. "Inactivo" = cliente sin póliza vigente, sin servicio
+  // eventual registrado, sin curso, y sin suscripción reclamada/en revisión/renovada.
+  const servEventualSet=new Set((servHist||[]).map(s=>s.cliente_cartera_id));
+  const cursosSet=new Set((generaciones||[]).filter(g=>['diplomado_vip','24_7'].includes(g.curso?.tipo)).map(g=>g.cliente_cartera_id));
   (clientes||[]).forEach(cl=>{
     cl._suscripciones=(suscripciones||[]).filter(s=>s.cliente_id===cl.id);
+    cl._polizaVigente=(polizasVig||[]).find(p=>p.cliente_cartera_id===cl.id)||null;
+    cl._servEventual=servEventualSet.has(cl.id);
+    cl._cursos=cursosSet.has(cl.id);
+    cl._suscActiva=(cl._suscripciones||[]).some(s=>['reclamada','en_revision','renovada'].includes(s.estado));
+    cl._inactivo=!cl._polizaVigente&&!cl._servEventual&&!cl._cursos&&!cl._suscActiva;
   });
   const productos=[...new Set((suscripciones||[]).map(s=>s.producto).filter(Boolean))].sort();
   const totalCuentas=(clientes||[]).length;
@@ -7808,14 +7827,11 @@ async function renderDirectorCartera(containerId){
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
     <div>
       <div style="font-size:18px;font-weight:600;color:var(--text);">Cartera de cuentas</div>
-      <div style="font-size:12px;color:var(--text3);">Auditoría y campañas de llamadas a clientes activos.</div>
+      <div style="font-size:12px;color:var(--text3);">Vista general de clientes y campañas de llamadas. Las suscripciones Aspel/Siigo ahora viven en el módulo 📋 Suscripciones.</div>
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;">
-      <button onclick="swDirCartera('auditoria')" id="dirCarteraTab_auditoria" class="cartera-subtab active">📊 Auditoría</button>
-      <button onclick="swDirCartera('pendientes')" id="dirCarteraTab_pendientes" class="cartera-subtab">🔗 Pendientes de vincular${totalPendientesVincular?` (${totalPendientesVincular})`:''}</button>
-      <button onclick="swDirCartera('suscripciones')" id="dirCarteraTab_suscripciones" class="cartera-subtab">📋 Suscripciones</button>
+      <button onclick="swDirCartera('auditoria')" id="dirCarteraTab_auditoria" class="cartera-subtab active">👥 Clientes</button>
       <button onclick="swDirCartera('campanas')" id="dirCarteraTab_campanas" class="cartera-subtab">📞 Campañas de cartera</button>
-      ${puedeCargarExcel?`<button onclick="abrirCargaExcelSuscripciones()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📎 Cargar Excel de renovaciones</button>`:''}
     </div>
   </div>
   <div id="dirCarteraContenidoMain"></div>`;
@@ -7826,16 +7842,64 @@ async function renderDirectorCartera(containerId){
 let _dirCarteraSubActual='auditoria';
 function swDirCartera(sub){
   _dirCarteraSubActual=sub;
-  ['auditoria','pendientes','suscripciones','campanas'].forEach(s=>{
+  ['auditoria','campanas'].forEach(s=>{
     const btn=document.getElementById('dirCarteraTab_'+s);
     if(btn) btn.classList.toggle('active',s===sub);
   });
   const mc=document.getElementById('dirCarteraContenidoMain');
   if(!mc) return;
   if(sub==='auditoria') renderDirCarteraAuditoria();
-  else if(sub==='pendientes') renderPendientesVincular('director');
-  else if(sub==='suscripciones') renderTodasSuscripciones('director');
   else renderDirCarteraCampanas();
+}
+
+// ── Módulo "Suscripciones" (Jp, 2026-10-07): separado de Cartera de cuentas
+// — vive en su propio ítem del menú (VENTAS_SUBTABS). Reutiliza la carga de
+// datos y el render de renderTodasSuscripciones/renderPendientesVincular
+// (scope 'director'), que ya escriben sobre #dirCarteraContenidoMain — para
+// no duplicar esa lógica, el módulo reusa ese mismo id de contenedor.
+let _suscModuloSub='suscripciones';
+async function renderDirectorSuscripcionesModulo(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando suscripciones...</div>';
+  const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas}]=await Promise.all([
+    carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)'),
+    sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'),
+    sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden')
+  ]);
+  window._cartClientes=clientes||[];
+  window._cartSuscripciones=suscripciones||[];
+  window._carteraVendedores=vendedores||[];
+  window._suscSistemas=sistemas||[];
+  (clientes||[]).forEach(cl=>{cl._suscripciones=(suscripciones||[]).filter(s=>s.cliente_id===cl.id);});
+  const totalPendientesVincular=(suscripciones||[]).filter(s=>!s.cliente_id).length;
+  const puedeCargarExcel=userProfile.rol==='director'||userProfile.rol==='administracion';
+
+  mc.innerHTML=`
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
+    <div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);">Suscripciones</div>
+      <div style="font-size:12px;color:var(--text3);">Catálogo de suscripciones Aspel/Siigo (NOI, SAE, Banco, Pro, Facturé, Sigo Fiscal, ADM, Caja, Sigo Fiscal Despachos) — separado de Cartera de cuentas.</div>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      <button onclick="swSuscModulo('suscripciones')" id="suscModuloTab_suscripciones" class="cartera-subtab active">📋 Suscripciones</button>
+      <button onclick="swSuscModulo('pendientes')" id="suscModuloTab_pendientes" class="cartera-subtab">🔗 Pendientes de vincular${totalPendientesVincular?` (${totalPendientesVincular})`:''}</button>
+      ${puedeCargarExcel?`<button onclick="abrirCargaExcelSuscripciones()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📎 Cargar Excel de renovaciones</button>`:''}
+    </div>
+  </div>
+  <div id="dirCarteraContenidoMain"></div>`;
+
+  swSuscModulo('suscripciones');
+}
+
+function swSuscModulo(sub){
+  _suscModuloSub=sub;
+  ['suscripciones','pendientes'].forEach(s=>{
+    const btn=document.getElementById('suscModuloTab_'+s);
+    if(btn) btn.classList.toggle('active',s===sub);
+  });
+  if(sub==='pendientes') renderPendientesVincular('director');
+  else renderTodasSuscripciones('director');
 }
 
 // ── SUSCRIPCIONES — catálogo, cola de vinculación y carga de Excel ─────────
@@ -8174,37 +8238,63 @@ async function guardarCargaExcelSuscripciones(){
   renderDirectorCartera();
 }
 
+// Jp, 2026-10-07: colores oficiales por nivel de póliza (imagen de referencia
+// "Niveles de prioridad, asignación y primer contacto"): N1 Black, N2 Blue,
+// N3 Gold, N4 Green, N5 Gray.
+const POLIZA_NIVEL_COLOR={N1:'#1A1F29',N2:'#1D5FA8',N3:'#E0A324',N4:'#1D9E75',N5:'#9AA3AB'};
+const POLIZA_NIVEL_ETIQUETA={N1:'Black',N2:'Blue',N3:'Gold',N4:'Green',N5:'Gray'};
+
+// Jp, 2026-10-07: segmento único (como un "radio") en vez de 4 checkboxes
+// independientes — un cliente de póliza, al dar clic en otra tarjeta, cambia
+// de segmento en vez de acumular filtros contradictorios.
+let dirCarteraSegmento='';
+let dirCarteraPolizaPrioridad='';
+function dirCarteraSwSegmento(seg){
+  dirCarteraSegmento=(dirCarteraSegmento===seg)?'':seg;
+  if(dirCarteraSegmento!=='poliza') dirCarteraPolizaPrioridad='';
+  dirCarteraEstadoFiltro='';
+  dirCarteraVenceMesActivo=false;
+  renderDirCarteraAuditoria();
+}
+function dirCarteraSwPolizaPrioridad(cod){
+  dirCarteraPolizaPrioridad=(dirCarteraPolizaPrioridad===cod)?'':cod;
+  renderDirCarteraContenido();
+}
+
 function renderDirCarteraAuditoria(){
   const mc=document.getElementById('dirCarteraContenidoMain');
   if(!mc) return;
   const clientes=window._cartClientes||[];
-  const suscripciones=window._cartSuscripciones||[];
   const vendedores=window._carteraVendedores||[];
-  const productos=[...new Set(suscripciones.map(s=>s.producto).filter(Boolean))].sort();
+  const productos=[...new Set((window._cartSuscripciones||[]).map(s=>s.producto).filter(Boolean))].sort();
   const totalClientes=clientes.length;
-  const sinRenovar=suscripciones.filter(s=>s.estado==='sin_reclamar').length;
-  const reclamadas=suscripciones.filter(s=>['reclamada','en_revision'].includes(s.estado)).length;
-  const noRenovadas=suscripciones.filter(s=>s.estado==='no_renovada').length;
-  const hoyDC=new Date();
-  const inicioMesDC=`${hoyDC.getFullYear()}-${String(hoyDC.getMonth()+1).padStart(2,'0')}-01`;
-  const finMesDC=new Date(hoyDC.getFullYear(),hoyDC.getMonth()+1,0).toISOString().split('T')[0];
-  const vencenMesDC=suscripciones.filter(s=>s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=inicioMesDC&&s.fecha_proxima_renovacion<=finMesDC).length;
+  const totalPoliza=clientes.filter(cl=>cl._polizaVigente).length;
+  const totalEventuales=clientes.filter(cl=>cl._servEventual).length;
+  const totalCursos=clientes.filter(cl=>cl._cursos).length;
+  const totalInactivos=clientes.filter(cl=>cl._inactivo).length;
   const tarjeta=(label,valor,color,activo,onclick)=>`
     <div class="card" onclick="${onclick}" style="padding:14px;cursor:pointer;${activo?`border:2px solid ${color};background:${color}11;`:''}">
       <div style="font-size:11px;color:var(--text3);">${label}${activo?' · filtro activo (clic para quitar)':''}</div>
       <div style="font-size:20px;font-weight:700;color:${color};">${valor}</div>
     </div>`;
+  // Chips de prioridad de póliza (N1-N5) — colores provisionales (en gris/neutro)
+  // hasta que Jp mande la imagen de referencia con los colores oficiales por nivel.
+  const prioridadesPoliza=[...new Map((clientes||[]).filter(cl=>cl._polizaVigente?.polizas_catalogo).map(cl=>cl._polizaVigente.polizas_catalogo).map(p=>[p.prioridad_codigo,p])).values()].filter(p=>p.prioridad_codigo).sort((a,b)=>(a.prioridad_codigo||'').localeCompare(b.prioridad_codigo||''));
 
   mc.innerHTML=`
-  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:16px;">
-    <div class="card" onclick="dirCarteraEstadoFiltro='';dirCarteraVenceMesActivo=false;renderDirCarteraAuditoria();" style="padding:14px;cursor:pointer;">
+  <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:10px;">
+    <div class="card" onclick="dirCarteraSwSegmento('')" style="padding:14px;cursor:pointer;${!dirCarteraSegmento?'border:2px solid var(--navy);background:var(--navy)11;':''}">
       <div style="font-size:11px;color:var(--text3);">Total clientes</div><div style="font-size:20px;font-weight:700;color:var(--text);">${totalClientes}</div>
     </div>
-    ${tarjeta('Vencen este mes (todas)',vencenMesDC,'var(--navy)',dirCarteraVenceMesActivo,'dirCarteraSwVenceMes()')}
-    ${tarjeta('Suscripciones sin reclamar',sinRenovar,'var(--gold)',dirCarteraEstadoFiltro==='sin_reclamar',`dirCarteraSwEstado('sin_reclamar')`)}
-    ${tarjeta('Reclamadas activas',reclamadas,'var(--teal)',dirCarteraEstadoFiltro==='reclamada',`dirCarteraSwEstado('reclamada')`)}
-    ${tarjeta('No renovadas',noRenovadas,'var(--red)',dirCarteraEstadoFiltro==='no_renovada',`dirCarteraSwEstado('no_renovada')`)}
+    ${tarjeta('🛡 Clientes de póliza',totalPoliza,'var(--teal)',dirCarteraSegmento==='poliza',`dirCarteraSwSegmento('poliza')`)}
+    ${tarjeta('🧰 Servicios eventuales',totalEventuales,'#2980B9',dirCarteraSegmento==='eventual',`dirCarteraSwSegmento('eventual')`)}
+    ${tarjeta('🎓 Clientes de cursos',totalCursos,'#8E44AD',dirCarteraSegmento==='cursos',`dirCarteraSwSegmento('cursos')`)}
+    ${tarjeta('⚪ Clientes inactivos',totalInactivos,'var(--text3)',dirCarteraSegmento==='inactivos',`dirCarteraSwSegmento('inactivos')`)}
   </div>
+  ${dirCarteraSegmento==='poliza'&&prioridadesPoliza.length?`<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+    <span style="font-size:11px;color:var(--text3);">Filtrar por nivel de póliza:</span>
+    ${prioridadesPoliza.map(p=>{const col=POLIZA_NIVEL_COLOR[p.prioridad_codigo]||'var(--navy)';const activo=dirCarteraPolizaPrioridad===p.prioridad_codigo;return `<button onclick="dirCarteraSwPolizaPrioridad('${p.prioridad_codigo}')" style="cursor:pointer;background:${activo?col:col+'18'};color:${activo?'#fff':col};border:1px solid ${col};border-radius:20px;padding:5px 12px;font-size:11px;font-weight:700;font-family:'Inter',sans-serif;">${p.prioridad_codigo} ${POLIZA_NIVEL_ETIQUETA[p.prioridad_codigo]||''} · ${p.prioridad_nombre||''}</button>`;}).join('')}
+  </div>`:''}
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;">
     <div style="flex:1;min-width:200px;position:relative;">
       <input type="text" id="dirCarteraFiltroTextoInput" placeholder="Buscar por nombre, RFC, número..." value="${carteraFiltroTexto}" oninput="onDirCarteraFiltroChange()" style="width:100%;padding:8px 36px 8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
@@ -8241,7 +8331,14 @@ function renderDirCarteraContenido(){
     const matchVend=!vend||(vend==='__sin_asignar__'?!cl.vendedor_asignado:cl.vendedor_asignado===vend);
     const matchEstado=!dirCarteraEstadoFiltro||(cl._suscripciones||[]).some(s=>dirCarteraEstadoFiltro==='reclamada'?['reclamada','en_revision'].includes(s.estado):s.estado===dirCarteraEstadoFiltro);
     const matchVenceMes=!dirCarteraVenceMesActivo||(cl._suscripciones||[]).some(s=>s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=inicioMesDC2&&s.fecha_proxima_renovacion<=finMesDC2);
-    return matchQ&&matchProd&&matchVend&&matchEstado&&matchVenceMes;
+    // Jp, 2026-10-07: segmento de "Cartera de cuentas" — póliza / servicios eventuales / cursos / inactivos.
+    const matchSegmento=!dirCarteraSegmento||(
+      dirCarteraSegmento==='poliza'?(!!cl._polizaVigente&&(!dirCarteraPolizaPrioridad||cl._polizaVigente.polizas_catalogo?.prioridad_codigo===dirCarteraPolizaPrioridad)):
+      dirCarteraSegmento==='eventual'?!!cl._servEventual:
+      dirCarteraSegmento==='cursos'?!!cl._cursos:
+      dirCarteraSegmento==='inactivos'?!!cl._inactivo:true
+    );
+    return matchQ&&matchProd&&matchVend&&matchEstado&&matchVenceMes&&matchSegmento;
   });
 
   // Agrupar con subcuentas
@@ -8759,6 +8856,7 @@ const VENTAS_SUBTABS=[
   {id:'crm',label:'📋 Prospectos'},
   {id:'campanas',label:'🎯 Campañas'},
   {id:'cartera',label:'💼 Cartera'},
+  {id:'suscripciones',label:'📋 Suscripciones'},
   {id:'proyecciondir',label:'📊 Proyección'},
   {id:'promociones',label:'🏷 Promociones'},
   {id:'servidores',label:'🖥 Servidores'},
@@ -8814,6 +8912,7 @@ function renderDirectorTab(){
   else if(id==='crm')renderDirectorCRM();
   else if(id==='campanas')renderDirectorCampanas();
   else if(id==='cartera')renderDirectorCartera();
+  else if(id==='suscripciones')renderDirectorSuscripcionesModulo();
   else if(id==='proyecciondir')renderDirectorProyeccion();
   else if(id==='promociones')renderDirectorPromociones();
   else if(id==='servidores')renderCatalogoServidores();
