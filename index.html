@@ -6501,6 +6501,15 @@ async function renderProyeccion(){
     .eq('anio',currentYear).eq('mes',currentMonth);
   window._pipeRows=rows||[];
 
+  // Director/administración: cuántas oportunidades abiertas del CRM siguen sin
+  // poder vincularse solas a Proyección (sin cuenta y/o vendedor reconocidos)
+  // — Jp, 2026-10-11, Fase 2 del diseño Oportunidades CRM↔Proyección.
+  if(userProfile.rol==='director'||userProfile.rol==='administracion'){
+    window._pipePendientesCount=await cargarPipePendientes();
+  } else {
+    window._pipePendientesCount=0;
+  }
+
   // Buscar negociaciones abiertas del mes anterior
   const {data:abiertas}=await sb.from('pipeline_vendedor')
     .select('*').eq('usuario_id',currentUser.id)
@@ -6612,7 +6621,10 @@ function renderProyeccionTabla(){
       <div style="font-size:16px;font-weight:700;color:var(--text);">Proyección de Ventas — ${getNombreMes(currentMonth)} ${currentYear}</div>
       <div style="font-size:12px;color:var(--text3);margin-top:2px;">${pipe.length} negociaciones · Total: ${fmt(totalMonto)} · Subtotal: ${fmt(totalSubtotal)}</div>
     </div>
-    <button onclick="agregarFilaPipe()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar</button>
+    <div style="display:flex;gap:8px;">
+      ${(userProfile.rol==='director'||userProfile.rol==='administracion')?`<button onclick="renderPipePendientesVincularModal()" style="background:${window._pipePendientesCount?'#F5A623':'none'};color:${window._pipePendientesCount?'#fff':'var(--text2)'};border:1px solid ${window._pipePendientesCount?'#F5A623':'var(--border)'};border-radius:var(--radsm);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Pendientes de vincular${window._pipePendientesCount?` (${window._pipePendientesCount})`:''}</button>`:''}
+      <button onclick="agregarFilaPipe()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar</button>
+    </div>
   </div>
   <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
     <div style="position:relative;flex:1;min-width:160px;">
@@ -6666,7 +6678,7 @@ function filaPipe(r){
   return `<tr id="pr_${r.id}" style="border-bottom:1px solid var(--border);">
     <td style="padding:7px 10px;">${r.tipo_servicio||'—'}</td>
     <td style="padding:7px 10px;font-weight:500;">${r.producto||'—'}</td>
-    <td style="padding:7px 10px;">${r.cliente||'—'}</td>
+    <td style="padding:7px 10px;">${r.cliente||'—'}${r.oportunidad_crm_id?` <span title="Sincronizado desde una Oportunidad abierta del CRM" style="background:rgba(0,169,157,0.14);color:var(--teal);border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;margin-left:4px;white-space:nowrap;">📡 CRM</span>`:(r.cliente_cartera_id?` <span title="Ligada a una cuenta real de Cartera" style="background:rgba(29,95,168,0.12);color:#1D5FA8;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;margin-left:4px;white-space:nowrap;">🔗 cuenta</span>`:'')}</td>
     <td style="padding:7px 10px;text-align:right;font-weight:600;color:var(--navy);">${fmt(r.monto_total||0)}</td>
     <td style="padding:7px 10px;text-align:right;color:var(--teal);">${fmt(r.subtotal||0)}</td>
     <td style="padding:7px 10px;text-align:center;"><span style="font-weight:700;color:${probColor};">${r.probabilidad||0}%</span></td>
@@ -6680,8 +6692,11 @@ function filaPipe(r){
   </tr>`;
 }
 
-function agregarFilaPipe(){
+async function agregarFilaPipe(){
   const hoy=todayLocal();
+  if(!window._cartClientes||!window._cartClientes.length){
+    window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente');
+  }
   const modal=document.createElement('div');
   modal.id='modalPipe';
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -6693,12 +6708,20 @@ function agregarFilaPipe(){
 async function editarFilaPipe(id){
   const {data:r}=await sb.from('pipeline_vendedor').select('*').eq('id',id).single();
   if(!r) return;
+  if(!window._cartClientes||!window._cartClientes.length){
+    window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente');
+  }
   const modal=document.createElement('div');
   modal.id='modalPipe';
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;';
   modal.innerHTML=modalPipeHTML(r,r.fecha_prevista||new Date().toISOString().split('T')[0]);
   document.body.appendChild(modal);
   modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
+  // Si la fila ya estaba ligada a una cuenta real, mostrarla como ligada.
+  if(r.cliente_cartera_id){
+    const cta=(window._cartClientes||[]).find(c=>c.id===r.cliente_cartera_id);
+    if(cta) pipeMostrarCuentaLigada(cta.id,cta.razon_social);
+  }
 }
 
 function modalPipeHTML(r,hoy){
@@ -6719,7 +6742,10 @@ function modalPipeHTML(r,hoy){
       </div>
       <div class="form-field" style="grid-column:1/-1;">
         <label>Cliente</label>
-        <input type="text" id="pCliente" value="${v.cliente||''}" placeholder="Nombre del cliente o empresa">
+        <input type="text" id="pCliente" value="${v.cliente||''}" placeholder="Escribe para buscar una cuenta real o captura texto libre" oninput="document.getElementById('pipeCuentaId').value='';pipeFiltrarCuentasModal();" autocomplete="off">
+        <input type="hidden" id="pipeCuentaId" value="${v.cliente_cartera_id||''}">
+        <div id="pipeCuentaResultados" style="max-height:140px;overflow-y:auto;margin-top:4px;display:grid;gap:4px;"></div>
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;">Si eliges una cuenta de la lista, esta negociación queda ligada a ella en el CRM. Si no eliges ninguna, se guarda como texto libre (como siempre).</div>
       </div>
       <div class="form-field">
         <label>Monto Total ($)</label>
@@ -6757,14 +6783,37 @@ function modalPipeHTML(r,hoy){
   </div>`;
 }
 
+function pipeFiltrarCuentasModal(){
+  const q=(document.getElementById('pCliente')?.value||'').toLowerCase().trim();
+  const cont=document.getElementById('pipeCuentaResultados');
+  if(!cont) return;
+  if(q.length<2){cont.innerHTML='';return;}
+  const cuentas=(window._cartClientes||[]).filter(c=>(c.razon_social||'').toLowerCase().includes(q)||(c.rfc||'').toLowerCase().includes(q)||(c.num_cliente||'').toLowerCase().includes(q));
+  if(!cuentas.length){cont.innerHTML='<div style="font-size:11px;color:var(--text3);padding:4px;">Sin cuentas que coincidan — se guardará como texto libre.</div>';return;}
+  cont.innerHTML=cuentas.slice(0,15).map(c=>`
+    <div onclick="pipeMostrarCuentaLigada('${c.id}', '${(c.razon_social||'').replace(/'/g,"\\'")}')" style="cursor:pointer;padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:11px;">
+      <b>${c.razon_social||'Sin nombre'}</b> <span style="color:var(--text3);">${c.num_cliente||''}</span>
+    </div>`).join('');
+}
+
+function pipeMostrarCuentaLigada(cuentaId,nombre){
+  document.getElementById('pipeCuentaId').value=cuentaId;
+  const campoCliente=document.getElementById('pCliente');
+  if(campoCliente) campoCliente.value=nombre;
+  const cont=document.getElementById('pipeCuentaResultados');
+  if(cont) cont.innerHTML=`<div style="font-size:11px;color:var(--teal);font-weight:600;padding:4px;">✓ Ligada a ${nombre}</div>`;
+}
+
 async function guardarFilaPipe(){
   const id=document.getElementById('pipeId').value;
+  const cuentaId=document.getElementById('pipeCuentaId')?.value||null;
   const payload={
     usuario_id:currentUser.id,
     anio:currentYear, mes:currentMonth,
     tipo_servicio:document.getElementById('pTipo').value,
     producto:document.getElementById('pProducto').value,
     cliente:document.getElementById('pCliente').value,
+    cliente_cartera_id:cuentaId||null,
     monto_total:parseFloat(document.getElementById('pMonto').value)||0,
     subtotal:parseFloat(document.getElementById('pSubtotal').value)||0,
     probabilidad:parseInt(document.getElementById('pProb').value)||50,
@@ -6788,6 +6837,130 @@ async function eliminarFilaPipe(id){
   if(!confirm('¿Eliminar esta negociación?')) return;
   await sb.from('pipeline_vendedor').delete().eq('id',id);
   renderProyeccion();
+}
+
+// ── PROYECCIÓN ↔ CRM: pendientes de vincular ────────────────────────────────
+// Jp, 2026-10-11 — Fase 2 del diseño en claude/oportunidades-crm-diseno.md.
+// Oportunidades abiertas en el CRM que NO se pudieron reflejar solas en
+// Proyección (sin cuenta reconocida y/o sin vendedor_asignado en la cuenta).
+// Solo director/administración ven y resuelven esta cola.
+async function cargarPipePendientes(){
+  const {data:ligadas}=await sb.from('pipeline_vendedor').select('oportunidad_crm_id').not('oportunidad_crm_id','is',null);
+  const ligadasSet=new Set((ligadas||[]).map(r=>r.oportunidad_crm_id));
+  const {data:abiertas}=await sb.from('oportunidades_crm').select('*, clientes_cartera(id,razon_social,num_cliente,vendedor_asignado)').eq('abierta',true);
+  const pendientes=(abiertas||[]).filter(o=>!ligadasSet.has(o.id));
+  window._pipePendientes=pendientes;
+  return pendientes.length;
+}
+
+function renderPipePendientesVincularModal(){
+  const pendientes=window._pipePendientes||[];
+  if(!pendientes.length){
+    mkModal('modalPipePendientes','🔗 Pendientes de vincular','<div style="text-align:center;padding:30px 10px;color:var(--text3);font-size:13px;">No hay oportunidades abiertas del CRM sin vincular. 🎉</div>',null,'Cerrar',true);
+    return;
+  }
+  const html=`
+    <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">
+      Estas oportunidades están abiertas en el CRM pero no se pudieron reflejar solas en la Proyección de nadie — falta la cuenta, el vendedor, o ambos. Complétalos para que aparezcan en la Proyección del vendedor correspondiente.
+    </div>
+    <div style="display:grid;gap:8px;max-height:58vh;overflow-y:auto;">
+      ${pendientes.map(o=>`
+        <div class="card" style="padding:12px 16px;">
+          <div style="font-size:13px;font-weight:600;color:var(--text);">${o.nombre_oportunidad||'Sin nombre'}</div>
+          <div style="font-size:11px;color:var(--text3);margin:3px 0 8px;">${o.fase_venta||'—'} · ${fmt(o.monto||0)} · ${o.clientes_cartera?.razon_social?('Cuenta: '+o.clientes_cartera.razon_social):'<span style="color:var(--red);">Sin cuenta reconocida</span>'}</div>
+          <button onclick="abrirVincularOportunidad('${o.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Vincular</button>
+        </div>`).join('')}
+    </div>`;
+  mkModal('modalPipePendientes',`🔗 Pendientes de vincular (${pendientes.length})`,html,null,'Cerrar',true);
+}
+
+async function abrirVincularOportunidad(opId){
+  const o=(window._pipePendientes||[]).find(x=>x.id===opId);
+  if(!o) return;
+  window._vincPipeOpIdActual=opId;
+  if(!window._cartClientes||!window._cartClientes.length){
+    window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente,vendedor_asignado');
+  }
+  if(!window._carteraVendedores||!window._carteraVendedores.length){
+    const {data:vend}=await sb.from('usuarios').select('id,nombre').eq('activo',true).order('nombre');
+    window._carteraVendedores=vend||[];
+  }
+  const vendedores=window._carteraVendedores||[];
+  const cuentaConocida=o.clientes_cartera;
+  const html=`
+    <div style="margin-bottom:12px;padding:10px 14px;background:rgba(0,169,157,0.06);border-radius:8px;font-size:12px;">
+      <b>${o.nombre_oportunidad||'Sin nombre'}</b><br>${o.fase_venta||'—'} · ${fmt(o.monto||0)}
+    </div>
+    ${cuentaConocida?`
+      <div style="font-size:12px;margin-bottom:10px;">Cuenta: <b>${cuentaConocida.razon_social}</b></div>
+      <input type="hidden" id="vincPipeCuentaId" value="${cuentaConocida.id}">
+    `:`
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Buscar cuenta en Cartera</label>
+        <input type="text" id="vincPipeBuscarCuenta" placeholder="Nombre, RFC o número..." oninput="vincPipeFiltrarCuentas()" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+      <div id="vincPipeResultadosCuenta" style="max-height:160px;overflow-y:auto;margin-top:6px;display:grid;gap:6px;"></div>
+      <input type="hidden" id="vincPipeCuentaId" value="">
+    `}
+    <div style="margin-top:12px;"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Vendedor</label>
+      <select id="vincPipeVendedor" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+        <option value="">Selecciona...</option>
+        ${vendedores.map(v=>`<option value="${v.id}" ${cuentaConocida&&cuentaConocida.vendedor_asignado===v.id?'selected':''}>${v.nombre}</option>`).join('')}
+      </select>
+    </div>`;
+  mkModal('modalVincularOp','🔗 Vincular oportunidad',html,'ejecutarVinculacionOportunidadActual','Vincular',true);
+}
+
+function vincPipeFiltrarCuentas(){
+  const q=(document.getElementById('vincPipeBuscarCuenta')?.value||'').toLowerCase().trim();
+  const cont=document.getElementById('vincPipeResultadosCuenta');
+  if(!cont) return;
+  if(q.length<2){cont.innerHTML='<div style="font-size:11px;color:var(--text3);padding:6px;">Escribe al menos 2 letras.</div>';return;}
+  const cuentas=(window._cartClientes||[]).filter(c=>(c.razon_social||'').toLowerCase().includes(q)||(c.rfc||'').toLowerCase().includes(q)||(c.num_cliente||'').toLowerCase().includes(q));
+  if(!cuentas.length){cont.innerHTML='<div style="font-size:11px;color:var(--text3);padding:6px;">Sin resultados.</div>';return;}
+  cont.innerHTML=cuentas.slice(0,20).map(c=>`
+    <div onclick="vincPipeElegirCuenta('${c.id}')" style="cursor:pointer;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;" data-nombre="${(c.razon_social||'Sin nombre').replace(/"/g,'&quot;')}">
+      <b>${c.razon_social||'Sin nombre'}</b> <span style="color:var(--text3);font-size:10px;">${c.num_cliente||''}</span>
+    </div>`).join('');
+}
+
+function vincPipeElegirCuenta(id){
+  const cont=document.getElementById('vincPipeResultadosCuenta');
+  const fila=cont?.querySelector(`[onclick="vincPipeElegirCuenta('${id}')"]`);
+  const nombre=fila?.dataset?.nombre||'';
+  document.getElementById('vincPipeCuentaId').value=id;
+  if(cont) cont.innerHTML=`<div style="font-size:11px;color:var(--teal);font-weight:600;padding:4px;">✓ ${nombre}</div>`;
+}
+
+async function ejecutarVinculacionOportunidadActual(){
+  const opId=window._vincPipeOpIdActual;
+  const o=(window._pipePendientes||[]).find(x=>x.id===opId);
+  const cuentaId=document.getElementById('vincPipeCuentaId')?.value;
+  const vendedorId=document.getElementById('vincPipeVendedor')?.value;
+  if(!o||!cuentaId||!vendedorId){alert('Falta elegir cuenta y vendedor.');return;}
+  const cuenta=(window._cartClientes||[]).find(c=>c.id===cuentaId)||o.clientes_cartera;
+  if(!o.cliente_cartera_id){
+    await sb.from('oportunidades_crm').update({cliente_cartera_id:cuentaId}).eq('id',o.id);
+  }
+  const {error}=await sb.from('pipeline_vendedor').insert({
+    usuario_id:vendedorId,
+    anio:currentYear, mes:currentMonth,
+    tipo_servicio:'Otro',
+    producto:o.nombre_oportunidad||'',
+    cliente:cuenta?.razon_social||'',
+    monto_total:o.monto||0,
+    subtotal:o.monto||0,
+    probabilidad:o.probabilidad||50,
+    fecha_prevista:o.fecha_cierre_prevista||todayLocal(),
+    estatus:'Negociando',
+    objecion:'📡 Sincronizado desde CRM (vinculado manualmente)',
+    oportunidad_crm_id:o.id,
+    cliente_cartera_id:cuentaId,
+    updated_at:new Date().toISOString(),
+  });
+  if(error){alert('Error al vincular: '+error.message);return;}
+  document.getElementById('modalVincularOp')?.remove();
+  document.getElementById('modalPipePendientes')?.remove();
+  await cargarPipePendientes();
+  renderPipePendientesVincularModal();
 }
 
 // ── CARTERA DE CUENTAS ──────────────────────────────────────────────────────
