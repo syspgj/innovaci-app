@@ -39,9 +39,11 @@
 //     rechaza, así nunca se manda basura al CRM.
 //   - Login contra Vtiger con el usuario Analisis (misma Access Key que
 //     ya usan los sync).
-//   - Trae el registro completo de la Oportunidad (retrieve) y le
-//     cambia solo sales_stage/probability antes de reenviarlo
-//     (Vtiger exige el registro completo en el update).
+//   - Manda a Vtiger (operation=update) SOLO el id de la Oportunidad más
+//     sales_stage/probability — nunca el registro completo, para no
+//     chocar con campos personalizados (cf_xxx) vacíos en Oportunidades
+//     viejas que Vtiger exige con valor en cualquier update si vienen en
+//     el payload.
 //   - Además actualiza de inmediato el espejo en oportunidades_crm en
 //     Supabase, para no tener que esperar al sync diario del día
 //     siguiente para ver el cambio reflejado ahí también.
@@ -87,17 +89,6 @@ async function vtigerLogin() {
     throw new Error('login failed: ' + JSON.stringify(loginRes));
   }
   return loginRes.result.sessionName;
-}
-
-async function vtigerRetrieve(sessionName, id) {
-  const url = `${VTIGER_BASE}?operation=retrieve&sessionName=${encodeURIComponent(
-    sessionName
-  )}&id=${encodeURIComponent(id)}`;
-  const res = await fetch(url).then((r) => r.json());
-  if (!res.success) {
-    throw new Error('retrieve failed: ' + JSON.stringify(res));
-  }
-  return res.result;
 }
 
 async function vtigerUpdate(sessionName, record) {
@@ -174,8 +165,12 @@ export default async function handler(req, res) {
 
   try {
     const sessionName = await vtigerLogin();
-    const actual = await vtigerRetrieve(sessionName, crm_potentialid);
-    const record = { ...actual };
+    // Mandamos SOLO el id y los campos que cambian — nunca el registro
+    // completo. Vtiger exige valor en todo campo obligatorio que venga en
+    // el payload del update, incluso si no lo estamos tocando; algunas
+    // Oportunidades viejas tienen campos personalizados (cf_xxx) vacíos
+    // que harían fallar un update de registro completo sin necesidad.
+    const record = { id: crm_potentialid };
     if (fase_venta !== undefined) record.sales_stage = fase_venta;
     if (probabilidad !== undefined) record.probability = String(probabilidad);
     const actualizado = await vtigerUpdate(sessionName, record);
