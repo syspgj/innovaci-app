@@ -6836,20 +6836,61 @@ async function guardarFilaPipe(){
   let error;
   if(id){
     ({error}=await sb.from('pipeline_vendedor').update(payload).eq('id',id));
+    // Fase 3: si esta fila está ligada a una Oportunidad real del CRM y el
+    // vendedor cambió el estatus o la probabilidad, se refleja de inmediato
+    // en Vtiger. Proyección siempre gana — no se pregunta, se sobreescribe.
+    const orig=window._pipeEditOriginal;
+    if(!error&&orig&&orig.oportunidad_crm_id&&(orig.estatus!==payload.estatus||orig.probabilidad!==payload.probabilidad)){
+      await crmActualizarOportunidad(orig.oportunidad_crm_id,payload.estatus,payload.probabilidad);
+    }
   } else {
-    ({error}=await sb.from('pipeline_vendedor').insert(payload));
+    const {data:nuevaFila,error:errIns}=await sb.from('pipeline_vendedor').insert(payload).select().single();
+    error=errIns;
+    // Fase 4: fila NUEVA ligada a una cuenta real -> crear la Oportunidad
+    // correspondiente en el CRM (nunca para texto libre, solo con cuenta).
+    if(!error&&cuentaId&&nuevaFila){
+      await crmCrearOportunidadDesdeNuevaFila(nuevaFila,cuentaId,payload);
+    }
   }
   if(error){alert('Error: '+error.message);return;}
-  // Fase 3: si esta fila está ligada a una Oportunidad real del CRM y el
-  // vendedor cambió el estatus o la probabilidad, se refleja de inmediato
-  // en Vtiger. Proyección siempre gana — no se pregunta, se sobreescribe.
-  const orig=window._pipeEditOriginal;
-  if(orig&&orig.oportunidad_crm_id&&(orig.estatus!==payload.estatus||orig.probabilidad!==payload.probabilidad)){
-    await crmActualizarOportunidad(orig.oportunidad_crm_id,payload.estatus,payload.probabilidad);
-  }
   window._pipeEditOriginal=null;
   document.getElementById('modalPipe')?.remove();
   renderProyeccion();
+}
+
+async function crmCrearOportunidadDesdeNuevaFila(fila,cuentaId,payload){
+  try{
+    const clienteNombre=document.getElementById('pCliente')?.value||payload.cliente||'';
+    const nombreOportunidad=`${clienteNombre} | ${payload.producto||''}`.trim();
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const res=await fetch('/api/crm-crear-oportunidad',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body:JSON.stringify({
+        cliente_cartera_id:cuentaId,
+        nombre_oportunidad:nombreOportunidad,
+        monto:payload.monto_total,
+        fase_venta:payload.estatus,
+        probabilidad:payload.probabilidad,
+        fecha_prevista:payload.fecha_prevista,
+        vendedor_usuario_id:currentUser.id,
+      }),
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){
+      console.error('CRM create failed',j);
+      alert('⚠️ Se guardó en Proyección, pero no se pudo crear la Oportunidad en el CRM.\nDetalle: '+(j.error||res.status)+'\nLa negociación queda como texto libre, sin liga al CRM.');
+      return;
+    }
+    await sb.from('pipeline_vendedor').update({oportunidad_crm_id:j.oportunidad_crm_id}).eq('id',fila.id);
+    if(j.asignado_fallback){
+      alert('✅ Oportunidad creada en el CRM, pero tu usuario todavía no está ligado a un usuario de Vtiger — quedó asignada a Analisis. Avisa a sistemas para que te liguen.');
+    }
+  }catch(e){
+    console.error('CRM create error',e);
+    alert('⚠️ Se guardó en Proyección, pero hubo un error de conexión al intentar crear la Oportunidad en el CRM.');
+  }
 }
 
 async function crmActualizarOportunidad(oportunidadCrmId,fase_venta,probabilidad){
