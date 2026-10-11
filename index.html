@@ -5751,21 +5751,21 @@ async function renderVendorMiMes(){
   const {data:pipeHist}=await sb.from('pipeline_vendedor')
     .select('estatus,monto_total,probabilidad')
     .eq('usuario_id',currentUser.id)
-    .in('estatus',['Ganado','Perdido']);
+    .in('estatus',['Cerrada-Ganada','Cerrada-Perdida']);
   const pipeHistList=pipeHist||[];
-  const ganados=pipeHistList.filter(p=>p.estatus==='Ganado');
-  const perdidos=pipeHistList.filter(p=>p.estatus==='Perdido');
+  const ganados=pipeHistList.filter(p=>p.estatus==='Cerrada-Ganada');
+  const perdidos=pipeHistList.filter(p=>p.estatus==='Cerrada-Perdida');
   const totalCerrados=ganados.length+perdidos.length;
   const tasaCierreReal=totalCerrados>0?ganados.length/totalCerrados:null;
   // Monto ganado vs perdido
   const montoGanado=ganados.reduce((s,p)=>s+(p.monto_total||0),0);
   const montoPerdido=perdidos.reduce((s,p)=>s+(p.monto_total||0),0);
-  // Pipeline abierto actual (Negociando) para proyección ponderada realista
+  // Pipeline abierto actual (cualquier fase que no sea cerrada) para proyección ponderada realista
   const {data:pipeAbierto}=await sb.from('pipeline_vendedor')
     .select('monto_total,probabilidad')
     .eq('usuario_id',currentUser.id)
     .eq('anio',currentYear).eq('mes',currentMonth)
-    .eq('estatus','Negociando');
+    .not('estatus','in','("Cerrada-Ganada","Cerrada-Perdida")');
   const pipeAbiertoList=pipeAbierto||[];
   const montoPipelineAbierto=pipeAbiertoList.reduce((s,p)=>s+(p.monto_total||0),0);
   // Proyección declarada (con probabilidad del vendedor) vs ajustada (con tasa real)
@@ -6401,7 +6401,14 @@ async function consumirCreditoEdicion(){
 
 // ── PROYECCIÓN DE VENTAS ──────────────────────────────────────────────────────
 const TIPOS_SERVICIO=['Póliza','Curso Empresarial','IT','Servicio','Otro'];
-const ESTATUS_PIPE=['Negociando','Ganado','Perdido','Pospuesto'];
+const ESTATUS_PIPE=['Prospectando','Evaluando Requerimientos','Valoración con Soporte','Valoración con Dirección','Preparando Propuesta','Cotización enviada','Negociación o Revisión con Cliente','Pausada por Cliente','CAP','Cerrada-Ganada','Cerrada-Perdida'];
+// Mismos nombres que la fase_venta real de Vtiger — así el traspaso a Fase 3
+// (escritura de vuelta al CRM) es literal, sin tabla de conversión.
+const ESTATUS_PIPE_COLOR={
+  'Prospectando':'#64748B','Evaluando Requerimientos':'#64748B','Valoración con Soporte':'#64748B','Valoración con Dirección':'#64748B',
+  'Preparando Propuesta':'#F5A623','Cotización enviada':'#F5A623','Negociación o Revisión con Cliente':'#F5A623',
+  'Pausada por Cliente':'#888','CAP':'#00A99D','Cerrada-Ganada':'#27AE60','Cerrada-Perdida':'#E84040',
+};
 const PROB_OPTS=[10,25,50,70,90,100];
 
 let pipeSortCol='fecha_prevista', pipeSortDir=1, pipeFiltroEstatus='', pipeFiltroTexto='';
@@ -6510,11 +6517,11 @@ async function renderProyeccion(){
     window._pipePendientesCount=0;
   }
 
-  // Buscar negociaciones abiertas del mes anterior
+  // Buscar negociaciones abiertas del mes anterior (cualquier fase que no sea cerrada)
   const {data:abiertas}=await sb.from('pipeline_vendedor')
     .select('*').eq('usuario_id',currentUser.id)
     .eq('anio',anioAnt).eq('mes',mesAnt)
-    .eq('estatus','Negociando');
+    .not('estatus','in','("Cerrada-Ganada","Cerrada-Perdida")');
 
   // Solo mostrar oferta si hay abiertas y NO ya existen en el mes actual (comparar por cliente+producto)
   const yaExisten=new Set((rows||[]).map(r=>`${r.cliente||''}|${r.producto||''}`));
@@ -6575,11 +6582,13 @@ async function confirmarTraspaso(){
       tipo_servicio:r.tipo_servicio||'',
       producto:r.producto||'',
       cliente:r.cliente||'',
+      cliente_cartera_id:r.cliente_cartera_id||null,
+      oportunidad_crm_id:r.oportunidad_crm_id||null,
       monto_total:r.monto_total||0,
       subtotal:r.subtotal||0,
       probabilidad:r.probabilidad||50,
       fecha_prevista:nuevaFecha,
-      estatus:'Negociando',
+      estatus:r.estatus||'Negociación o Revisión con Cliente',
       objecion:(r.objecion?r.objecion+' | ':'')+'📋 Traspasado de '+mesAntNombre,
       updated_at:new Date().toISOString(),
     });
@@ -6613,7 +6622,7 @@ function renderProyeccionTabla(){
   const totalSubtotal=pipe.reduce((s,r)=>s+(r.subtotal||0),0);
   const flecha=(col)=>pipeSortCol===col?(pipeSortDir===1?' ▲':' ▼'):'';
   const thS=(lbl,col,extra='')=>`<th onclick="pipeSort('${col}')" style="padding:8px 10px;text-align:${extra||'left'};white-space:nowrap;cursor:pointer;user-select:none;" title="Ordenar">${lbl}${flecha(col)}</th>`;
-  const estatusOpciones=['Negociando','Ganado','Perdido','Pospuesto'];
+  const estatusOpciones=ESTATUS_PIPE;
 
   mc.innerHTML=`
   <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
@@ -6674,7 +6683,7 @@ function pipeSort(col){
 
 function filaPipe(r){
   const probColor=r.probabilidad>=90?'#27AE60':r.probabilidad>=70?'#00A99D':r.probabilidad>=50?'#F5A623':'#E84040';
-  const estColor=r.estatus==='Ganado'?'#27AE60':r.estatus==='Perdido'?'#E84040':r.estatus==='Pospuesto'?'#888':'#F5A623';
+  const estColor=ESTATUS_PIPE_COLOR[r.estatus]||'#F5A623';
   return `<tr id="pr_${r.id}" style="border-bottom:1px solid var(--border);">
     <td style="padding:7px 10px;">${r.tipo_servicio||'—'}</td>
     <td style="padding:7px 10px;font-weight:500;">${r.producto||'—'}</td>
@@ -6683,7 +6692,7 @@ function filaPipe(r){
     <td style="padding:7px 10px;text-align:right;color:var(--teal);">${fmt(r.subtotal||0)}</td>
     <td style="padding:7px 10px;text-align:center;"><span style="font-weight:700;color:${probColor};">${r.probabilidad||0}%</span></td>
     <td style="padding:7px 10px;text-align:center;color:var(--text3);">${r.fecha_prevista||'—'}</td>
-    <td style="padding:7px 10px;text-align:center;"><span style="font-size:11px;font-weight:600;color:${estColor};">${r.estatus||'Negociando'}</span></td>
+    <td style="padding:7px 10px;text-align:center;"><span style="font-size:11px;font-weight:600;color:${estColor};">${r.estatus||'—'}</span></td>
     <td style="padding:7px 10px;color:var(--text3);font-size:11px;max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.objecion||''}</td>
     <td style="padding:7px 10px;text-align:center;">
       <button onclick="editarFilaPipe('${r.id}')" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:3px 8px;font-size:11px;cursor:pointer;color:var(--text2);">✏️</button>
@@ -6694,6 +6703,7 @@ function filaPipe(r){
 
 async function agregarFilaPipe(){
   const hoy=todayLocal();
+  window._pipeEditOriginal=null;
   if(!window._cartClientes||!window._cartClientes.length){
     window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente');
   }
@@ -6708,6 +6718,7 @@ async function agregarFilaPipe(){
 async function editarFilaPipe(id){
   const {data:r}=await sb.from('pipeline_vendedor').select('*').eq('id',id).single();
   if(!r) return;
+  window._pipeEditOriginal={estatus:r.estatus,probabilidad:r.probabilidad,oportunidad_crm_id:r.oportunidad_crm_id};
   if(!window._cartClientes||!window._cartClientes.length){
     window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente');
   }
@@ -6768,7 +6779,7 @@ function modalPipeHTML(r,hoy){
       <div class="form-field">
         <label>Estatus</label>
         <select id="pEstatus" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;">
-          ${ESTATUS_PIPE.map(e=>`<option ${(v.estatus||'Negociando')===e?'selected':''}>${e}</option>`).join('')}
+          ${ESTATUS_PIPE.map(e=>`<option ${(v.estatus||'Negociación o Revisión con Cliente')===e?'selected':''}>${e}</option>`).join('')}
         </select>
       </div>
       <div class="form-field" style="grid-column:1/-1;">
@@ -6829,8 +6840,38 @@ async function guardarFilaPipe(){
     ({error}=await sb.from('pipeline_vendedor').insert(payload));
   }
   if(error){alert('Error: '+error.message);return;}
+  // Fase 3: si esta fila está ligada a una Oportunidad real del CRM y el
+  // vendedor cambió el estatus o la probabilidad, se refleja de inmediato
+  // en Vtiger. Proyección siempre gana — no se pregunta, se sobreescribe.
+  const orig=window._pipeEditOriginal;
+  if(orig&&orig.oportunidad_crm_id&&(orig.estatus!==payload.estatus||orig.probabilidad!==payload.probabilidad)){
+    await crmActualizarOportunidad(orig.oportunidad_crm_id,payload.estatus,payload.probabilidad);
+  }
+  window._pipeEditOriginal=null;
   document.getElementById('modalPipe')?.remove();
   renderProyeccion();
+}
+
+async function crmActualizarOportunidad(oportunidadCrmId,fase_venta,probabilidad){
+  try{
+    const {data:o}=await sb.from('oportunidades_crm').select('crm_potentialid').eq('id',oportunidadCrmId).single();
+    if(!o?.crm_potentialid) return;
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const res=await fetch('/api/crm-actualizar-oportunidad',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body:JSON.stringify({crm_potentialid:o.crm_potentialid,fase_venta,probabilidad}),
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){
+      console.error('CRM write-back failed',j);
+      alert('⚠️ Se guardó en Proyección, pero no se pudo reflejar el cambio en el CRM.\nDetalle: '+(j.error||res.status)+'\nAvisa a sistemas si se repite.');
+    }
+  }catch(e){
+    console.error('CRM write-back error',e);
+    alert('⚠️ Se guardó en Proyección, pero hubo un error de conexión al intentar actualizar el CRM.');
+  }
 }
 
 async function eliminarFilaPipe(id){
@@ -6950,7 +6991,7 @@ async function ejecutarVinculacionOportunidadActual(){
     subtotal:o.monto||0,
     probabilidad:o.probabilidad||50,
     fecha_prevista:o.fecha_cierre_prevista||todayLocal(),
-    estatus:'Negociando',
+    estatus:o.fase_venta||'Negociación o Revisión con Cliente',
     objecion:'📡 Sincronizado desde CRM (vinculado manualmente)',
     oportunidad_crm_id:o.id,
     cliente_cartera_id:cuentaId,
@@ -12843,7 +12884,7 @@ async function renderDirectorProyeccion(){
   const allRows=rows||[];
 
   const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-  const ESTATUS_COL={'Negociando':'#F5A623','Ganado':'#27AE60','Perdido':'var(--red)','En pausa':'var(--text3)'};
+  const ESTATUS_COL=ESTATUS_PIPE_COLOR;
 
   // Funciones de orden/filtro
   window._dirPipeRows=allRows;
@@ -12943,7 +12984,7 @@ async function renderDirectorProyeccion(){
     </select>
     <select id="dpFiltEst" onchange="renderDirPipeTabla()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
       <option value="">Todos los estatus</option>
-      ${['Negociando','Ganado','Perdido','En pausa'].map(e=>`<option value="${e}">${e}</option>`).join('')}
+      ${ESTATUS_PIPE.map(e=>`<option value="${e}">${e}</option>`).join('')}
     </select>
     <select id="dpFiltTipo" onchange="renderDirPipeTabla()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
       <option value="">Todos los tipos</option>
