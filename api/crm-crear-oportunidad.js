@@ -56,6 +56,23 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 // usuario de Vtiger ligado en usuarios.crm_user_id.
 const VTIGER_USUARIO_RESPALDO = '19x27';
 
+// "Tipo de Servicio" — campo personalizado cf_1176 en Potentials, dado de
+// alta por Jp en Vtiger el 2026-10-12. Mismas 9 opciones que TIPOS_SERVICIO
+// en index.html (Proyección) — homologado para poder escribirlo sin tabla
+// de equivalencias. Nombre interno confirmado vía describe (Jp, 2026-10-12).
+const CAMPO_TIPO_SERVICIO = 'cf_1176';
+const TIPOS_SERVICIO_PERMITIDOS = [
+  'Póliza',
+  'Curso Empresarial',
+  'IT',
+  'Servicio por Evento',
+  'Suscripción Aspel',
+  'Licenciamiento Aspel',
+  'Servidor Cloud',
+  '24/7',
+  'Curso o Diplomado en Vivo',
+];
+
 // Mismo vocabulario que Fase 3 (ver claude/oportunidades-crm-diseno.md).
 const FASES_PERMITIDAS = [
   'Prospectando',
@@ -159,6 +176,7 @@ export default async function handler(req, res) {
     probabilidad,
     fecha_prevista,
     vendedor_usuario_id,
+    tipo_servicio,
   } = req.body || {};
 
   if (!cliente_cartera_id || !nombre_oportunidad || !vendedor_usuario_id) {
@@ -166,6 +184,9 @@ export default async function handler(req, res) {
   }
   if (fase_venta !== undefined && !FASES_PERMITIDAS.includes(fase_venta)) {
     return res.status(400).json({ ok: false, error: 'fase_venta no reconocida: ' + fase_venta });
+  }
+  if (tipo_servicio !== undefined && tipo_servicio !== null && tipo_servicio !== '' && !TIPOS_SERVICIO_PERMITIDOS.includes(tipo_servicio)) {
+    return res.status(400).json({ ok: false, error: 'tipo_servicio no reconocido: ' + tipo_servicio });
   }
 
   try {
@@ -207,6 +228,7 @@ export default async function handler(req, res) {
     };
     if (monto !== undefined && monto !== null) element.amount = String(monto);
     if (fecha_prevista) element.closingdate = fecha_prevista;
+    if (tipo_servicio) element[CAMPO_TIPO_SERVICIO] = tipo_servicio;
     const creado = await vtigerCreate(sessionName, element);
 
     // 4. Espejo en Supabase. Vtiger regresa el registro recién creado

@@ -73,6 +73,22 @@ const FASES_PERMITIDAS = [
   'Cerrada-Perdida',
 ];
 
+// "Tipo de Servicio" — campo personalizado cf_1176 en Potentials (Jp,
+// 2026-10-12). Mismas 9 opciones que TIPOS_SERVICIO en index.html —
+// homologado para no necesitar tabla de equivalencias.
+const CAMPO_TIPO_SERVICIO = 'cf_1176';
+const TIPOS_SERVICIO_PERMITIDOS = [
+  'Póliza',
+  'Curso Empresarial',
+  'IT',
+  'Servicio por Evento',
+  'Suscripción Aspel',
+  'Licenciamiento Aspel',
+  'Servidor Cloud',
+  '24/7',
+  'Curso o Diplomado en Vivo',
+];
+
 async function vtigerLogin() {
   const challengeRes = await fetch(
     `${VTIGER_BASE}?operation=getchallenge&username=${encodeURIComponent(VTIGER_USER)}`
@@ -156,7 +172,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ ok: false, error: 'sesión inválida — vuelve a iniciar sesión' });
   }
 
-  const { crm_potentialid, fase_venta, probabilidad } = req.body || {};
+  const { crm_potentialid, fase_venta, probabilidad, tipo_servicio } = req.body || {};
   if (!crm_potentialid) {
     return res.status(400).json({ ok: false, error: 'falta crm_potentialid' });
   }
@@ -169,7 +185,10 @@ export default async function handler(req, res) {
   ) {
     return res.status(400).json({ ok: false, error: 'probabilidad inválida' });
   }
-  if (fase_venta === undefined && probabilidad === undefined) {
+  if (tipo_servicio !== undefined && tipo_servicio !== null && tipo_servicio !== '' && !TIPOS_SERVICIO_PERMITIDOS.includes(tipo_servicio)) {
+    return res.status(400).json({ ok: false, error: 'tipo_servicio no reconocido: ' + tipo_servicio });
+  }
+  if (fase_venta === undefined && probabilidad === undefined && !tipo_servicio) {
     return res.status(400).json({ ok: false, error: 'nada que actualizar' });
   }
 
@@ -183,6 +202,7 @@ export default async function handler(req, res) {
     const record = { ...actual };
     if (fase_venta !== undefined) record.sales_stage = fase_venta;
     if (probabilidad !== undefined) record.probability = String(probabilidad);
+    if (tipo_servicio) record[CAMPO_TIPO_SERVICIO] = tipo_servicio;
     const actualizado = await vtigerUpdate(sessionName, record);
 
     await actualizarMirrorSupabase(crm_potentialid, fase_venta, probabilidad);
