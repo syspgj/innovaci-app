@@ -1,95 +1,86 @@
 // api/crm-describir-oportunidades.js
 //
-// Script de UNA SOLA VEZ (no es parte del flujo normal en producción) —
-// solo para ver TODOS los campos reales del módulo Oportunidades (Potentials)
-// en Vtiger, y así encontrar el nombre del campo que trae el folio "bonito"
-// (ej. "OP6384") que Jp quiere mostrar en Proyección — hoy solo guardamos el
-// id interno de Vtiger (ej. "13x29544"), que no es lo mismo.
+// Diagnóstico de un solo uso — igual que el que se usó para encontrar
+// potential_no (folio bonito). Esta vez es para encontrar el nombre interno
+// (API name, tipo "cf_1081") del campo personalizado "Tipo de Servicio" que
+// Jp acaba de dar de alta en Vtiger (Potentials), para poder enviarlo desde
+// la app al crear/actualizar Oportunidades (Jp, 2026-10-12).
 //
 // Cómo se usa:
 //   1. Coloca este archivo en  api/crm-describir-oportunidades.js  dentro
-//      del repo (en la carpeta api/, NO en api/cron/).
+//      del repo (ya existió antes con este mismo nombre y se borró porque
+//      ya había cumplido su función — esta es una nueva corrida para un
+//      campo nuevo).
 //   2. No requiere variables de entorno nuevas — reutiliza VTIGER_BASE_URL,
-//      VTIGER_USER, VTIGER_ACCESS_KEY, SYNC_SECRET.
-//   3. Sube el archivo, espera a que despliegue, y visita en el navegador:
-//        https://os.innovaci.com.mx/api/crm-describir-oportunidades?secret=TU_SYNC_SECRET
-//   4. Te va a regresar un JSON con dos partes:
-//        - "campos": todos los campos que tiene el módulo (nombre interno,
-//          etiqueta visible, tipo) — busca ahí algo como "Número",
-//          "potential_no", "No. de oportunidad", etc.
-//        - "ejemplo": una Oportunidad real completa (la más reciente, con
-//          TODOS sus valores) para ver en cuál campo aparece de verdad el
-//          folio tipo "OP####" que ves en pantalla.
-//   5. Copia el resultado (o una captura de la parte relevante) y con eso
-//      Claude ajusta qué campo usar para `oportunidades_crm.crm_folio`.
-//   6. Cuando ya no lo necesites, puedes borrar este archivo del repo.
+//      VTIGER_USER, VTIGER_ACCESS_KEY y SYNC_SECRET, ya configuradas.
+//   3. No lleva entrada en vercel.json (no es un cron, se llama manual).
+//   4. Súbelo, espera a que Vercel despliegue, y ábrelo en el navegador:
+//      https://os.innovaci.com.mx/api/crm-describir-oportunidades?secret=TU_SYNC_SECRET
+//   5. En la respuesta busca el bloque "candidatos_tipo_servicio" — ahí debe
+//      aparecer el campo con label "Tipo de Servicio" y su nombre interno.
+//      Si no aparece ahí, revisa el bloque completo "todos_los_campos".
+//   6. Una vez que tengamos el nombre, este archivo ya cumplió su función y
+//      se puede volver a borrar del repo (como la vez pasada).
 
-import crypto from 'crypto';
-
-const VTIGER_BASE = process.env.VTIGER_BASE_URL;
+const VTIGER_BASE_URL = process.env.VTIGER_BASE_URL;
 const VTIGER_USER = process.env.VTIGER_USER;
 const VTIGER_ACCESS_KEY = process.env.VTIGER_ACCESS_KEY;
+const SYNC_SECRET = process.env.SYNC_SECRET;
 
 async function vtigerLogin() {
-  const challengeRes = await fetch(
-    `${VTIGER_BASE}?operation=getchallenge&username=${encodeURIComponent(VTIGER_USER)}`
-  ).then((r) => r.json());
-  if (!challengeRes.success) {
-    throw new Error('getchallenge failed: ' + JSON.stringify(challengeRes));
+  const crypto = await import('node:crypto');
+  const challengeUrl = `${VTIGER_BASE_URL}/webservice.php?operation=getchallenge&username=${encodeURIComponent(VTIGER_USER)}`;
+  const challengeRes = await fetch(challengeUrl);
+  const challengeJson = await challengeRes.json();
+  if (!challengeJson.success) {
+    throw new Error('getchallenge falló: ' + JSON.stringify(challengeJson));
   }
-  const token = challengeRes.result.token;
-  const hash = crypto.createHash('md5').update(token + VTIGER_ACCESS_KEY).digest('hex');
-  const body = new URLSearchParams({ operation: 'login', username: VTIGER_USER, accessKey: hash });
-  const loginRes = await fetch(VTIGER_BASE, { method: 'POST', body }).then((r) => r.json());
-  if (!loginRes.success) {
-    throw new Error('login failed: ' + JSON.stringify(loginRes));
+  const token = challengeJson.result.token;
+  const accessKeyHash = crypto.createHash('md5').update(token + VTIGER_ACCESS_KEY).digest('hex');
+  const loginBody = new URLSearchParams({ operation: 'login', username: VTIGER_USER, accessKey: accessKeyHash });
+  const loginRes = await fetch(`${VTIGER_BASE_URL}/webservice.php`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: loginBody,
+  });
+  const loginJson = await loginRes.json();
+  if (!loginJson.success) {
+    throw new Error('login falló: ' + JSON.stringify(loginJson));
   }
-  return loginRes.result.sessionName;
-}
-
-async function vtigerDescribeFields(sessionName) {
-  const url = `${VTIGER_BASE}?operation=describe&sessionName=${encodeURIComponent(
-    sessionName
-  )}&elementType=Potentials`;
-  const res = await fetch(url).then((r) => r.json());
-  if (!res.success) {
-    throw new Error('describe failed: ' + JSON.stringify(res));
-  }
-  return res.result.fields.map((f) => ({ name: f.name, label: f.label, type: f.type?.name || f.type }));
-}
-
-async function vtigerQuery(sessionName, q) {
-  const url = `${VTIGER_BASE}?operation=query&sessionName=${encodeURIComponent(
-    sessionName
-  )}&query=${encodeURIComponent(q)}`;
-  const res = await fetch(url).then((r) => r.json());
-  if (!res.success) {
-    throw new Error('query failed: ' + JSON.stringify(res) + ' | query=' + q);
-  }
-  return res.result;
+  return loginJson.result.sessionName;
 }
 
 export default async function handler(req, res) {
-  const secretHeader = req.headers['x-sync-secret'];
-  const secretQuery = req.query?.secret;
-  if (
-    process.env.SYNC_SECRET &&
-    secretHeader !== process.env.SYNC_SECRET &&
-    secretQuery !== process.env.SYNC_SECRET
-  ) {
-    return res.status(401).json({ error: 'unauthorized' });
+  const secret = req.query?.secret || req.headers['x-sync-secret'];
+  if (!SYNC_SECRET || secret !== SYNC_SECRET) {
+    return res.status(401).json({ ok: false, error: 'No autorizado' });
   }
 
   try {
     const sessionName = await vtigerLogin();
-    const campos = await vtigerDescribeFields(sessionName);
-    const ejemploRows = await vtigerQuery(
-      sessionName,
-      'select * from Potentials order by createdtime desc limit 1;'
+    const describeUrl = `${VTIGER_BASE_URL}/webservice.php?operation=describe&sessionName=${encodeURIComponent(sessionName)}&elementType=Potentials`;
+    const describeRes = await fetch(describeUrl);
+    const describeJson = await describeRes.json();
+    if (!describeJson.success) {
+      return res.status(500).json({ ok: false, error: 'describe falló: ' + JSON.stringify(describeJson) });
+    }
+
+    const campos = describeJson.result.fields || [];
+    const candidatos = campos.filter((f) =>
+      /servicio/i.test(f.label || '') || /servicio/i.test(f.name || '')
     );
-    return res.status(200).json({ ok: true, total_campos: campos.length, campos, ejemplo: ejemploRows?.[0] || null });
+
+    return res.status(200).json({
+      ok: true,
+      candidatos_tipo_servicio: candidatos.map((f) => ({
+        name: f.name,
+        label: f.label,
+        type: f.type?.name,
+        picklistValues: f.type?.picklistValues || null,
+      })),
+      todos_los_campos: campos.map((f) => ({ name: f.name, label: f.label })),
+    });
   } catch (err) {
-    console.error('crm-describir-oportunidades failed', err);
-    return res.status(500).json({ ok: false, error: String((err && err.message) || err) });
+    return res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 }
