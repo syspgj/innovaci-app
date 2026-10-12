@@ -6926,8 +6926,8 @@ async function guardarFilaPipe(){
     // vendedor cambió el estatus o la probabilidad, se refleja de inmediato
     // en Vtiger. Proyección siempre gana — no se pregunta, se sobreescribe.
     const orig=window._pipeEditOriginal;
-    if(!error&&orig&&orig.oportunidad_crm_id&&(orig.estatus!==payload.estatus||orig.probabilidad!==payload.probabilidad)){
-      await crmActualizarOportunidad(orig.oportunidad_crm_id,payload.estatus,payload.probabilidad);
+    if(!error&&orig&&orig.oportunidad_crm_id&&(orig.estatus!==payload.estatus||orig.probabilidad!==payload.probabilidad||orig.tipo_servicio!==payload.tipo_servicio)){
+      await crmActualizarOportunidad(orig.oportunidad_crm_id,payload.estatus,payload.probabilidad,payload.tipo_servicio);
     }
   } else {
     const {data:nuevaFila,error:errIns}=await sb.from('pipeline_vendedor').insert(payload).select().single();
@@ -6961,6 +6961,7 @@ async function crmCrearOportunidadDesdeNuevaFila(fila,cuentaId,payload){
         probabilidad:payload.probabilidad,
         fecha_prevista:payload.fecha_prevista,
         vendedor_usuario_id:currentUser.id,
+        tipo_servicio:payload.tipo_servicio,
       }),
     });
     const j=await res.json().catch(()=>({}));
@@ -6979,7 +6980,7 @@ async function crmCrearOportunidadDesdeNuevaFila(fila,cuentaId,payload){
   }
 }
 
-async function crmActualizarOportunidad(oportunidadCrmId,fase_venta,probabilidad){
+async function crmActualizarOportunidad(oportunidadCrmId,fase_venta,probabilidad,tipo_servicio){
   try{
     const {data:o}=await sb.from('oportunidades_crm').select('crm_potentialid').eq('id',oportunidadCrmId).single();
     if(!o?.crm_potentialid) return;
@@ -6988,7 +6989,7 @@ async function crmActualizarOportunidad(oportunidadCrmId,fase_venta,probabilidad
     const res=await fetch('/api/crm-actualizar-oportunidad',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({crm_potentialid:o.crm_potentialid,fase_venta,probabilidad}),
+      body:JSON.stringify({crm_potentialid:o.crm_potentialid,fase_venta,probabilidad,tipo_servicio}),
     });
     const j=await res.json().catch(()=>({}));
     if(!res.ok||!j.ok){
