@@ -6504,9 +6504,14 @@ async function renderProyeccion(){
 
   // Cargar oportunidades del mes actual
   const {data:rows}=await sb.from('pipeline_vendedor')
-    .select('*').eq('usuario_id',currentUser.id)
+    .select('*, oportunidades_crm(crm_folio,crm_potentialid)').eq('usuario_id',currentUser.id)
     .eq('anio',currentYear).eq('mes',currentMonth);
   window._pipeRows=rows||[];
+
+  // Siguiente actividad de seguimiento pendiente por negociación (para la
+  // columna "Siguiente paso" — vive en pipeline_actividades, no solo en el
+  // campo de texto manual). Jp, 2026-10-12, análisis de inteligencia de Proyección.
+  await pipeCargarProximasActividades((rows||[]).map(r=>r.id));
 
   // Director/administración: cuántas oportunidades abiertas del CRM siguen sin
   // poder vincularse solas a Proyección (sin cuenta y/o vendedor reconocidos)
@@ -6590,6 +6595,8 @@ async function confirmarTraspaso(){
       fecha_prevista:nuevaFecha,
       estatus:r.estatus||'Negociación o Revisión con Cliente',
       objecion:(r.objecion?r.objecion+' | ':'')+'📋 Traspasado de '+mesAntNombre,
+      siguiente_paso:r.siguiente_paso||null,
+      fecha_siguiente_paso:r.fecha_siguiente_paso||null,
       updated_at:new Date().toISOString(),
     });
     if(error){console.error('Error traspaso:',error.message);err++;}
@@ -6598,10 +6605,11 @@ async function confirmarTraspaso(){
   document.getElementById('bannerTraspaso')?.remove();
   if(err>0) alert(`⚠️ ${ok} traspasados, ${err} con error.`);
   const {data:rows}=await sb.from('pipeline_vendedor')
-    .select('*').eq('usuario_id',currentUser.id)
+    .select('*, oportunidades_crm(crm_folio,crm_potentialid)').eq('usuario_id',currentUser.id)
     .eq('anio',currentYear).eq('mes',currentMonth);
   window._pipeRows=rows||[];
   window._pipeAbiertasMesAnt=[];
+  await pipeCargarProximasActividades((rows||[]).map(r=>r.id));
   renderProyeccionTabla();
 }
 
@@ -6656,19 +6664,22 @@ function renderProyeccionTabla(){
         ${thS('Prob.','probabilidad','center')}${thS('Fecha prev.','fecha_prevista','center')}
         ${thS('Estatus','estatus','center')}
         <th style="padding:8px 10px;text-align:left;white-space:nowrap;">Objeción / Nota</th>
+        ${thS('Creada','created_at','center')}
+        <th style="padding:8px 10px;text-align:center;white-space:nowrap;">Folio CRM</th>
+        ${thS('Siguiente paso','fecha_siguiente_paso','center')}
         <th style="padding:8px 10px;"></th>
       </tr>
     </thead>
     <tbody id="pipeBody">
       ${pipe.map(r=>filaPipe(r)).join('')}
-      ${pipe.length===0?`<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--text3);">${window._pipeRows.length?'Ningún resultado coincide con los filtros.':'Sin negociaciones este mes — agrega una con el botón de arriba'}</td></tr>`:''}
+      ${pipe.length===0?`<tr><td colspan="13" style="text-align:center;padding:24px;color:var(--text3);">${window._pipeRows.length?'Ningún resultado coincide con los filtros.':'Sin negociaciones este mes — agrega una con el botón de arriba'}</td></tr>`:''}
     </tbody>
     <tfoot>
       <tr style="background:var(--surface-2,#f4f6f8);font-weight:700;">
         <td colspan="3" style="padding:8px 10px;color:var(--text);">TOTAL</td>
         <td style="padding:8px 10px;text-align:right;color:var(--navy);">${fmt(totalMonto)}</td>
         <td style="padding:8px 10px;text-align:right;color:var(--teal);">${fmt(totalSubtotal)}</td>
-        <td colspan="5"></td>
+        <td colspan="8"></td>
       </tr>
     </tfoot>
   </table>
@@ -6684,6 +6695,11 @@ function pipeSort(col){
 function filaPipe(r){
   const probColor=r.probabilidad>=90?'#27AE60':r.probabilidad>=70?'#00A99D':r.probabilidad>=50?'#F5A623':'#E84040';
   const estColor=ESTATUS_PIPE_COLOR[r.estatus]||'#F5A623';
+  const creada=r.created_at?String(r.created_at).slice(0,10):'—';
+  const folioCrm=r.oportunidades_crm?.crm_folio||null;
+  const hoyStr=todayLocal();
+  const vencido=r.fecha_siguiente_paso&&r.fecha_siguiente_paso<hoyStr;
+  const sigPaso=r.siguiente_paso?`<div style="font-weight:600;${vencido?'color:var(--red);':''}">${r.siguiente_paso}</div>${r.fecha_siguiente_paso?`<div style="font-size:10px;color:${vencido?'var(--red)':'var(--text3)'};">${vencido?'⚠️ ':''}${r.fecha_siguiente_paso}</div>`:''}`:'<span style="color:var(--text3);">—</span>';
   return `<tr id="pr_${r.id}" style="border-bottom:1px solid var(--border);">
     <td style="padding:7px 10px;">${r.tipo_servicio||'—'}</td>
     <td style="padding:7px 10px;font-weight:500;">${r.producto||'—'}</td>
@@ -6694,6 +6710,9 @@ function filaPipe(r){
     <td style="padding:7px 10px;text-align:center;color:var(--text3);">${r.fecha_prevista||'—'}</td>
     <td style="padding:7px 10px;text-align:center;"><span style="font-size:11px;font-weight:600;color:${estColor};">${r.estatus||'—'}</span></td>
     <td style="padding:7px 10px;color:var(--text3);font-size:11px;max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.objecion||''}</td>
+    <td style="padding:7px 10px;text-align:center;color:var(--text3);font-size:11px;white-space:nowrap;">${creada}</td>
+    <td style="padding:7px 10px;text-align:center;font-size:11px;white-space:nowrap;">${folioCrm?`<span style="color:var(--teal);font-weight:600;">${folioCrm}</span>`:'<span style="color:var(--text3);">—</span>'}</td>
+    <td style="padding:7px 10px;text-align:center;font-size:11px;max-width:150px;">${sigPaso}</td>
     <td style="padding:7px 10px;text-align:center;">
       <button onclick="editarFilaPipe('${r.id}')" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:3px 8px;font-size:11px;cursor:pointer;color:var(--text2);">✏️</button>
       <button onclick="eliminarFilaPipe('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);border-radius:var(--radsm);padding:3px 8px;font-size:11px;cursor:pointer;color:var(--red);margin-left:4px;">✕</button>
@@ -6733,6 +6752,7 @@ async function editarFilaPipe(id){
     const cta=(window._cartClientes||[]).find(c=>c.id===r.cliente_cartera_id);
     if(cta) pipeMostrarCuentaLigada(cta.id,cta.razon_social);
   }
+  pipeCargarActividades(r.id);
 }
 
 function modalPipeHTML(r,hoy){
@@ -6786,7 +6806,18 @@ function modalPipeHTML(r,hoy){
         <label>Objeción / Nota</label>
         <input type="text" id="pObjecion" value="${v.objecion||''}" placeholder="No contesta, pagan el 15, etc.">
       </div>
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>Siguiente paso</label>
+        <input type="text" id="pSiguientePaso" value="${v.siguiente_paso||''}" placeholder="Ej: Llamar para confirmar respuesta del jefe">
+      </div>
+      <div class="form-field">
+        <label>Fecha del siguiente paso</label>
+        <input type="date" id="pFechaSiguientePaso" value="${v.fecha_siguiente_paso||''}">
+      </div>
     </div>
+    ${r&&r.id?`<div id="pipeActividadesBox" style="grid-column:1/-1;margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
+      <div style="font-size:12px;color:var(--text3);">Cargando bitácora de seguimiento...</div>
+    </div>`:`<div style="grid-column:1/-1;margin-top:14px;font-size:11px;color:var(--text3);">La bitácora de seguimiento (llamadas, correos, comentarios) se habilita después de guardar esta negociación por primera vez.</div>`}
     <div style="display:flex;gap:8px;margin-top:16px;">
       <button onclick="guardarFilaPipe()" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
       <button onclick="document.getElementById('modalPipe').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);">Cancelar</button>
@@ -6831,6 +6862,8 @@ async function guardarFilaPipe(){
     fecha_prevista:document.getElementById('pFecha').value,
     estatus:document.getElementById('pEstatus').value,
     objecion:document.getElementById('pObjecion').value,
+    siguiente_paso:document.getElementById('pSiguientePaso')?.value||null,
+    fecha_siguiente_paso:document.getElementById('pFechaSiguientePaso')?.value||null,
     updated_at:new Date().toISOString(),
   };
   let error;
@@ -6919,6 +6952,262 @@ async function eliminarFilaPipe(id){
   if(!confirm('¿Eliminar esta negociación?')) return;
   await sb.from('pipeline_vendedor').delete().eq('id',id);
   renderProyeccion();
+}
+
+// ── PROYECCIÓN — Bitácora/programación de seguimiento (pipeline_actividades) ──
+// Jp, 2026-10-12 — análisis de inteligencia de Proyección
+// (claude/analisis-proyeccion-inteligente.md). Una fila por actividad
+// programada o completada (llamada, correo, visita) ligada a una negociación.
+// La actividad PENDIENTE más próxima alimenta la columna "Siguiente paso" de
+// la tabla; al completarla se puede sugerir subir la probabilidad y, si la
+// negociación está ligada a una Oportunidad real del CRM, se manda también
+// como comentario allá.
+const TIPO_ACTIVIDAD_LABEL={llamada:'Llamar',correo:'Enviar correo',visita:'Visita',otro:'Actividad'};
+
+async function pipeCargarProximasActividades(ids){
+  if(!ids||!ids.length){window._pipeProximasActividades={};return;}
+  const {data}=await sb.from('pipeline_actividades')
+    .select('pipeline_vendedor_id,tipo_actividad,fecha_programada,nota')
+    .in('pipeline_vendedor_id',ids).eq('completada',false)
+    .order('fecha_programada',{ascending:true});
+  const map={};
+  (data||[]).forEach(a=>{ if(!map[a.pipeline_vendedor_id]) map[a.pipeline_vendedor_id]=a; });
+  window._pipeProximasActividades=map;
+  // La actividad pendiente real (bitácora) gana sobre el texto manual al mostrar.
+  (window._pipeRows||[]).forEach(r=>{
+    const prox=map[r.id];
+    if(prox){
+      r.siguiente_paso=`${TIPO_ACTIVIDAD_LABEL[prox.tipo_actividad]||prox.tipo_actividad}${prox.nota?': '+prox.nota:''}`;
+      r.fecha_siguiente_paso=prox.fecha_programada;
+    }
+  });
+}
+
+async function pipeCargarActividades(pipelineVendedorId){
+  const box=document.getElementById('pipeActividadesBox');
+  if(!box) return;
+  const {data,error}=await sb.from('pipeline_actividades')
+    .select('*').eq('pipeline_vendedor_id',pipelineVendedorId)
+    .order('fecha_programada',{ascending:true});
+  if(error){box.innerHTML='<div style="font-size:11px;color:var(--red);">No se pudo cargar la bitácora.</div>';return;}
+  window._pipeActividadesActual=data||[];
+  pipeRenderActividadesBox(pipelineVendedorId);
+}
+
+function pipeRenderActividadesBox(pipelineVendedorId){
+  const box=document.getElementById('pipeActividadesBox');
+  if(!box) return;
+  const actividades=window._pipeActividadesActual||[];
+  const pendientes=actividades.filter(a=>!a.completada);
+  const hechas=actividades.filter(a=>a.completada);
+  const filaAct=(a)=>{
+    const fechaTxt=`${a.fecha_programada}${a.hora_programada?' '+String(a.hora_programada).slice(0,5):''}`;
+    if(a.completada){
+      return `<div style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;background:var(--surface-2,#f4f6f8);">
+        <div style="font-size:11px;color:var(--text3);">${fechaTxt} · ${TIPO_ACTIVIDAD_LABEL[a.tipo_actividad]||a.tipo_actividad} · ✅ completada</div>
+        ${a.resultado?`<div style="font-size:12px;margin-top:2px;"><b>${a.resultado}</b></div>`:''}
+        ${a.nota?`<div style="font-size:12px;color:var(--text2);margin-top:2px;">${a.nota}</div>`:''}
+      </div>`;
+    }
+    return `<div id="actRow_${a.id}" style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <div style="font-size:12px;"><b>${fechaTxt}</b> · ${TIPO_ACTIVIDAD_LABEL[a.tipo_actividad]||a.tipo_actividad}${a.nota?' — '+a.nota:''}</div>
+        <button onclick="pipeMostrarFormCompletar('${a.id}','${pipelineVendedorId}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;white-space:nowrap;">✓ Completar</button>
+      </div>
+      <div id="formCompletar_${a.id}"></div>
+    </div>`;
+  };
+  box.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <div style="font-size:13px;font-weight:700;color:var(--text);">📋 Bitácora de seguimiento</div>
+      <button onclick="pipeMostrarFormNuevaActividad('${pipelineVendedorId}')" style="background:none;border:1px solid var(--navy);color:var(--navy);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">+ Programar actividad</button>
+    </div>
+    <div id="formNuevaActividad_${pipelineVendedorId}"></div>
+    ${pendientes.length?`<div style="font-size:11px;font-weight:600;color:var(--text3);margin:6px 0 4px;">PENDIENTES</div>${pendientes.map(filaAct).join('')}`:''}
+    ${hechas.length?`<div style="font-size:11px;font-weight:600;color:var(--text3);margin:10px 0 4px;">HISTORIAL</div>${hechas.slice().reverse().map(filaAct).join('')}`:''}
+    ${!pendientes.length&&!hechas.length?'<div style="font-size:11px;color:var(--text3);">Sin actividades registradas todavía.</div>':''}
+  `;
+}
+
+function pipeMostrarFormNuevaActividad(pipelineVendedorId){
+  const cont=document.getElementById('formNuevaActividad_'+pipelineVendedorId);
+  if(!cont) return;
+  const hoy=todayLocal();
+  cont.innerHTML=`<div style="border:1px dashed var(--border);border-radius:6px;padding:10px;margin-bottom:8px;">
+    <div class="form-grid fg3" style="gap:8px;">
+      <div class="form-field">
+        <label>Tipo</label>
+        <select id="actTipo_${pipelineVendedorId}" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">
+          <option value="llamada">Llamada</option>
+          <option value="correo">Correo</option>
+          <option value="visita">Visita</option>
+          <option value="otro">Otro</option>
+        </select>
+      </div>
+      <div class="form-field">
+        <label>Fecha</label>
+        <input type="date" id="actFecha_${pipelineVendedorId}" value="${hoy}">
+      </div>
+      <div class="form-field">
+        <label>Hora (opcional)</label>
+        <input type="time" id="actHora_${pipelineVendedorId}">
+      </div>
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>Nota</label>
+        <input type="text" id="actNota_${pipelineVendedorId}" placeholder="Ej: Llamar para confirmar respuesta del jefe">
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:8px;">
+      <button onclick="pipeGuardarNuevaActividad('${pipelineVendedorId}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">Guardar</button>
+      <button onclick="document.getElementById('formNuevaActividad_${pipelineVendedorId}').innerHTML=''" style="background:none;border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;color:var(--text2);">Cancelar</button>
+    </div>
+  </div>`;
+}
+
+async function pipeGuardarNuevaActividad(pipelineVendedorId){
+  const tipo=document.getElementById('actTipo_'+pipelineVendedorId)?.value||'llamada';
+  const fecha=document.getElementById('actFecha_'+pipelineVendedorId)?.value;
+  const hora=document.getElementById('actHora_'+pipelineVendedorId)?.value||null;
+  const nota=document.getElementById('actNota_'+pipelineVendedorId)?.value||null;
+  if(!fecha){alert('Falta la fecha');return;}
+  const {error}=await sb.from('pipeline_actividades').insert({
+    pipeline_vendedor_id:pipelineVendedorId,
+    usuario_id:currentUser.id,
+    tipo_actividad:tipo,
+    fecha_programada:fecha,
+    hora_programada:hora,
+    nota,
+  });
+  if(error){alert('Error: '+error.message);return;}
+  const contForm=document.getElementById('formNuevaActividad_'+pipelineVendedorId);
+  if(contForm) contForm.innerHTML='';
+  await pipeRecalcularSiguientePaso(pipelineVendedorId);
+  await pipeCargarActividades(pipelineVendedorId);
+}
+
+function pipeMostrarFormCompletar(actividadId,pipelineVendedorId){
+  const cont=document.getElementById('formCompletar_'+actividadId);
+  if(!cont) return;
+  cont.innerHTML=`<div style="margin-top:8px;border-top:1px dashed var(--border);padding-top:8px;">
+    <div class="form-grid fg3" style="gap:8px;">
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>Resultado</label>
+        <select id="actResultado_${actividadId}" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">
+          <option value="Positivo">Positivo — avanza</option>
+          <option value="Neutral">Neutral — sigue en proceso</option>
+          <option value="Negativo">Negativo — se enfría</option>
+        </select>
+      </div>
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>Comentario</label>
+        <input type="text" id="actComentario_${actividadId}" placeholder="Qué pasó en esta actividad...">
+      </div>
+      <div class="form-field">
+        <label>Programar siguiente (opcional)</label>
+        <input type="date" id="actSiguienteFecha_${actividadId}">
+      </div>
+      <div class="form-field" style="grid-column:2/4;">
+        <label>Nota de la siguiente</label>
+        <input type="text" id="actSiguienteNota_${actividadId}" placeholder="Ej: Llamar de nuevo el viernes">
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:8px;">
+      <button onclick="pipeGuardarCompletarActividad('${actividadId}','${pipelineVendedorId}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">Guardar</button>
+      <button onclick="document.getElementById('formCompletar_${actividadId}').innerHTML=''" style="background:none;border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;color:var(--text2);">Cancelar</button>
+    </div>
+  </div>`;
+}
+
+async function pipeGuardarCompletarActividad(actividadId,pipelineVendedorId){
+  const resultado=document.getElementById('actResultado_'+actividadId)?.value||'Neutral';
+  const nota=document.getElementById('actComentario_'+actividadId)?.value||null;
+  const sigFecha=document.getElementById('actSiguienteFecha_'+actividadId)?.value||null;
+  const sigNota=document.getElementById('actSiguienteNota_'+actividadId)?.value||null;
+
+  // Sugerencia de probabilidad: solo se sugiere, el vendedor confirma (Jp, 2026-10-12).
+  let sugerenciaProb=null;
+  if(resultado==='Positivo'){
+    const fila=(window._pipeRows||[]).find(r=>r.id===pipelineVendedorId);
+    const actual=fila?.probabilidad||50;
+    const sugerida=Math.min(95,actual+20);
+    if(actual<sugerida&&confirm(`Resultado positivo — ¿subir la probabilidad de ${actual}% a ${sugerida}%?`)){
+      sugerenciaProb=sugerida;
+      await sb.from('pipeline_vendedor').update({probabilidad:sugerida,updated_at:new Date().toISOString()}).eq('id',pipelineVendedorId);
+      if(fila) fila.probabilidad=sugerida;
+      // Si está ligada al CRM, reflejar también el cambio de probabilidad allá.
+      if(fila?.oportunidad_crm_id){
+        await crmActualizarOportunidad(fila.oportunidad_crm_id,fila.estatus,sugerida);
+      }
+    }
+  }
+
+  const {error}=await sb.from('pipeline_actividades').update({
+    completada:true,
+    fecha_completada:new Date().toISOString(),
+    resultado,
+    nota,
+    sugerencia_probabilidad:sugerenciaProb,
+    sugerencia_aplicada:!!sugerenciaProb,
+    updated_at:new Date().toISOString(),
+  }).eq('id',actividadId);
+  if(error){alert('Error: '+error.message);return;}
+
+  // Comentario también en Vtiger, si la negociación está ligada a una Oportunidad real.
+  await pipeSincronizarComentarioCrm(pipelineVendedorId,resultado,nota);
+
+  if(sigFecha){
+    await sb.from('pipeline_actividades').insert({
+      pipeline_vendedor_id:pipelineVendedorId,
+      usuario_id:currentUser.id,
+      tipo_actividad:'llamada',
+      fecha_programada:sigFecha,
+      nota:sigNota,
+    });
+  }
+  await pipeRecalcularSiguientePaso(pipelineVendedorId);
+  await pipeCargarActividades(pipelineVendedorId);
+}
+
+async function pipeRecalcularSiguientePaso(pipelineVendedorId){
+  const {data}=await sb.from('pipeline_actividades')
+    .select('tipo_actividad,fecha_programada,nota')
+    .eq('pipeline_vendedor_id',pipelineVendedorId).eq('completada',false)
+    .order('fecha_programada',{ascending:true}).limit(1);
+  const prox=(data||[])[0]||null;
+  const siguiente_paso=prox?`${TIPO_ACTIVIDAD_LABEL[prox.tipo_actividad]||prox.tipo_actividad}${prox.nota?': '+prox.nota:''}`:null;
+  const fecha_siguiente_paso=prox?prox.fecha_programada:null;
+  await sb.from('pipeline_vendedor').update({siguiente_paso,fecha_siguiente_paso}).eq('id',pipelineVendedorId);
+  const fila=(window._pipeRows||[]).find(r=>r.id===pipelineVendedorId);
+  if(fila){
+    fila.siguiente_paso=siguiente_paso;
+    fila.fecha_siguiente_paso=fecha_siguiente_paso;
+    const trEl=document.getElementById('pr_'+pipelineVendedorId);
+    if(trEl) trEl.outerHTML=filaPipe(fila);
+  }
+}
+
+// Comentario de bitácora también como comentario real en la Oportunidad del
+// CRM (Jp pidió que viva en ambos lados). Igual que Fase 3/4: best-effort —
+// si falla, la actividad ya quedó guardada en la app, solo se avisa en consola.
+async function pipeSincronizarComentarioCrm(pipelineVendedorId,resultado,nota){
+  try{
+    const fila=(window._pipeRows||[]).find(r=>r.id===pipelineVendedorId);
+    if(!fila?.oportunidad_crm_id) return;
+    const {data:o}=await sb.from('oportunidades_crm').select('crm_potentialid').eq('id',fila.oportunidad_crm_id).single();
+    if(!o?.crm_potentialid) return;
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const contenido=`[Proyección] ${resultado}${nota?': '+nota:''}`;
+    const res=await fetch('/api/crm-agregar-comentario',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body:JSON.stringify({crm_potentialid:o.crm_potentialid,comentario:contenido,vendedor_usuario_id:currentUser.id}),
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok) console.error('CRM comentario failed',j);
+  }catch(e){
+    console.error('CRM comentario error',e);
+  }
 }
 
 // ── PROYECCIÓN ↔ CRM: pendientes de vincular ────────────────────────────────
