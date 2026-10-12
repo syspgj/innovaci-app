@@ -209,10 +209,13 @@ export default async function handler(req, res) {
     if (fecha_prevista) element.closingdate = fecha_prevista;
     const creado = await vtigerCreate(sessionName, element);
 
-    // 4. Espejo en Supabase.
+    // 4. Espejo en Supabase. Vtiger regresa el registro recién creado
+    // completo, incluyendo potential_no (el folio "bonito", ej. "OP6384")
+    // — se guarda de una vez, sin esperar al sync diario (Jp, 2026-10-12).
     const ahora = new Date().toISOString();
     const nuevaFila = await supabaseInsert('oportunidades_crm', {
       crm_potentialid: creado.id,
+      crm_folio: creado.potential_no || null,
       nombre_oportunidad,
       monto: monto ?? null,
       fase_venta: fase_venta || 'Prospectando',
