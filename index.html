@@ -6855,22 +6855,33 @@ function modalPipeHTML(r,hoy){
           ${ESTATUS_PIPE.map(e=>`<option ${(v.estatus||'Negociación o Revisión con Cliente')===e?'selected':''}>${e}</option>`).join('')}
         </select>
       </div>
-      <div class="form-field" style="grid-column:1/-1;">
-        <label>Objeción / Nota</label>
-        <input type="text" id="pObjecion" value="${v.objecion||''}" placeholder="No contesta, pagan el 15, etc.">
-      </div>
-      <div class="form-field" style="grid-column:1/-1;">
-        <label>Siguiente paso</label>
-        <input type="text" id="pSiguientePaso" value="${v.siguiente_paso||''}" placeholder="Ej: Llamar para confirmar respuesta del jefe">
-      </div>
-      <div class="form-field">
-        <label>Fecha del siguiente paso</label>
-        <input type="date" id="pFechaSiguientePaso" value="${v.fecha_siguiente_paso||''}">
-      </div>
     </div>
     ${r&&r.id?`<div id="pipeActividadesBox" style="grid-column:1/-1;margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
       <div style="font-size:12px;color:var(--text3);">Cargando bitácora de seguimiento...</div>
-    </div>`:`<div style="grid-column:1/-1;margin-top:14px;font-size:11px;color:var(--text3);">La bitácora de seguimiento (llamadas, correos, comentarios) se habilita después de guardar esta negociación por primera vez.</div>`}
+    </div>`:`<div style="grid-column:1/-1;margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
+      <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:2px;">📋 Primera actividad (opcional)</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Queda registrada en la bitácora de esta negociación y, si la ligas a una cuenta del CRM, se manda también como comentario allá.</div>
+      <div class="form-grid fg3" style="gap:8px;">
+        <div class="form-field">
+          <label>Tipo</label>
+          <select id="pActTipo" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">
+            ${pipeOpcionesTipoActividad('inicio_solicitud')}
+          </select>
+        </div>
+        <div class="form-field">
+          <label>Fecha</label>
+          <input type="date" id="pActFecha" value="${hoy}">
+        </div>
+        <div class="form-field">
+          <label>Hora (opcional)</label>
+          <input type="time" id="pActHora">
+        </div>
+        <div class="form-field" style="grid-column:1/-1;">
+          <label>Nota</label>
+          <input type="text" id="pActNota" placeholder="Ej: El contador Arturo de la Garza solicita cotización del diplomado grupal de COI para 3 personas">
+        </div>
+      </div>
+    </div>`}
     <div style="display:flex;gap:8px;margin-top:16px;">
       <button onclick="guardarFilaPipe()" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
       <button onclick="document.getElementById('modalPipe').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);">Cancelar</button>
@@ -6914,10 +6925,11 @@ async function guardarFilaPipe(){
     probabilidad:parseInt(document.getElementById('pProb').value)||50,
     fecha_prevista:document.getElementById('pFecha').value,
     estatus:document.getElementById('pEstatus').value,
-    objecion:document.getElementById('pObjecion').value,
-    siguiente_paso:document.getElementById('pSiguientePaso')?.value||null,
-    fecha_siguiente_paso:document.getElementById('pFechaSiguientePaso')?.value||null,
     updated_at:new Date().toISOString(),
+    // objecion / siguiente_paso / fecha_siguiente_paso ya no se capturan
+    // aquí — Jp, 2026-10-12: todo vive en la bitácora de seguimiento
+    // (pipeline_actividades). No se mandan en el payload a propósito, para
+    // no sobrescribir en silencio el valor histórico que ya tuviera la fila.
   };
   let error;
   if(id){
@@ -6936,6 +6948,28 @@ async function guardarFilaPipe(){
     // correspondiente en el CRM (nunca para texto libre, solo con cuenta).
     if(!error&&cuentaId&&nuevaFila){
       await crmCrearOportunidadDesdeNuevaFila(nuevaFila,cuentaId,payload);
+    }
+    // Primera actividad opcional — reemplaza los campos sueltos de
+    // Objeción/Siguiente paso de antes. Queda en la bitácora y, si la
+    // negociación terminó ligada al CRM (arriba), se manda también como
+    // comentario allá. Jp, 2026-10-12.
+    if(!error&&nuevaFila){
+      const actTipo=document.getElementById('pActTipo')?.value;
+      const actFecha=document.getElementById('pActFecha')?.value;
+      const actHora=document.getElementById('pActHora')?.value||null;
+      const actNota=document.getElementById('pActNota')?.value||null;
+      if(actTipo&&actFecha&&actNota){
+        await sb.from('pipeline_actividades').insert({
+          pipeline_vendedor_id:nuevaFila.id,
+          usuario_id:currentUser.id,
+          tipo_actividad:actTipo,
+          fecha_programada:actFecha,
+          hora_programada:actHora,
+          nota:actNota,
+        });
+        await pipeRecalcularSiguientePaso(nuevaFila.id);
+        await pipeSincronizarComentarioCrm(nuevaFila.id,actTipo,actFecha,actHora,null,actNota);
+      }
     }
   }
   if(error){alert('Error: '+error.message);return;}
@@ -7016,7 +7050,39 @@ async function eliminarFilaPipe(id){
 // la tabla; al completarla se puede sugerir subir la probabilidad y, si la
 // negociación está ligada a una Oportunidad real del CRM, se manda también
 // como comentario allá.
-const TIPO_ACTIVIDAD_LABEL={llamada:'Llamar',correo:'Enviar correo',visita:'Visita',otro:'Actividad'};
+// Catálogo ampliado 2026-10-12 — Jp pidió más tipos para que la bitácora
+// sirva no solo para programar llamadas/correos/visitas, sino para ir
+// registrando cada movimiento que determina el avance de la negociación
+// (desde que el cliente pide algo, hasta cotizaciones y evidencias).
+const TIPO_ACTIVIDAD_LABEL={
+  inicio_solicitud:'Inicio de solicitud',
+  llamada:'Llamada',
+  correo:'Correo',
+  visita:'Visita',
+  cotizacion_enviada:'Cotización enviada',
+  respuesta_cliente:'Respuesta del cliente',
+  evidencia:'Evidencia / documento',
+  seguimiento:'Seguimiento general',
+  otro:'Otro',
+};
+
+function pipeOpcionesTipoActividad(seleccionado){
+  return Object.entries(TIPO_ACTIVIDAD_LABEL).map(([k,label])=>`<option value="${k}" ${seleccionado===k?'selected':''}>${label}</option>`).join('');
+}
+
+// Texto del comentario que se manda a Vtiger — mismo formato tanto al
+// PROGRAMAR una actividad (sin resultado todavía) como al COMPLETARLA (con
+// resultado). Jp, 2026-10-12: "tipo, fecha, hora y la nota".
+function construirComentarioActividad(tipo,fecha,hora,resultado,nota){
+  const fechaFmt=fecha?String(fecha).split('-').reverse().join('/'):'';
+  const horaFmt=hora?String(hora).slice(0,5):'';
+  const cuando=[fechaFmt,horaFmt].filter(Boolean).join(' ');
+  const partes=[TIPO_ACTIVIDAD_LABEL[tipo]||tipo||'Actividad'];
+  if(cuando) partes.push(cuando);
+  if(resultado) partes.push(nota?`${resultado}: ${nota}`:resultado);
+  else if(nota) partes.push(nota);
+  return '[Proyección] '+partes.join(' · ');
+}
 
 // Última actividad registrada por negociación (cualquier tipo, completada o
 // no) — se usa solo para el dashboard de prioridades (quién lleva días sin
@@ -7159,10 +7225,7 @@ function pipeMostrarFormNuevaActividad(pipelineVendedorId){
       <div class="form-field">
         <label>Tipo</label>
         <select id="actTipo_${pipelineVendedorId}" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">
-          <option value="llamada">Llamada</option>
-          <option value="correo">Correo</option>
-          <option value="visita">Visita</option>
-          <option value="otro">Otro</option>
+          ${pipeOpcionesTipoActividad('llamada')}
         </select>
       </div>
       <div class="form-field">
@@ -7202,6 +7265,10 @@ async function pipeGuardarNuevaActividad(pipelineVendedorId){
   if(error){alert('Error: '+error.message);return;}
   const contForm=document.getElementById('formNuevaActividad_'+pipelineVendedorId);
   if(contForm) contForm.innerHTML='';
+  // Jp, 2026-10-12: también al PROGRAMAR (no solo al completar) se manda el
+  // comentario al CRM, con tipo + fecha + hora + nota — así queda registrado
+  // allá desde el momento en que se agenda, no hasta que se marque hecha.
+  await pipeSincronizarComentarioCrm(pipelineVendedorId,tipo,fecha,hora,null,nota);
   await pipeRecalcularSiguientePaso(pipelineVendedorId);
   await pipeCargarActividades(pipelineVendedorId);
 }
@@ -7273,8 +7340,11 @@ async function pipeGuardarCompletarActividad(actividadId,pipelineVendedorId){
   }).eq('id',actividadId);
   if(error){alert('Error: '+error.message);return;}
 
-  // Comentario también en Vtiger, si la negociación está ligada a una Oportunidad real.
-  await pipeSincronizarComentarioCrm(pipelineVendedorId,resultado,nota);
+  // Comentario también en Vtiger, si la negociación está ligada a una
+  // Oportunidad real — ahora con tipo + fecha + hora de la actividad
+  // original, no solo el resultado (Jp, 2026-10-12).
+  const actOriginal=(window._pipeActividadesActual||[]).find(a=>a.id===actividadId);
+  await pipeSincronizarComentarioCrm(pipelineVendedorId,actOriginal?.tipo_actividad,actOriginal?.fecha_programada,actOriginal?.hora_programada,resultado,nota);
 
   if(sigFecha){
     await sb.from('pipeline_actividades').insert({
@@ -7309,16 +7379,20 @@ async function pipeRecalcularSiguientePaso(pipelineVendedorId){
 
 // Comentario de bitácora también como comentario real en la Oportunidad del
 // CRM (Jp pidió que viva en ambos lados). Igual que Fase 3/4: best-effort —
-// si falla, la actividad ya quedó guardada en la app, solo se avisa en consola.
-async function pipeSincronizarComentarioCrm(pipelineVendedorId,resultado,nota){
+// si falla, la actividad ya quedó guardada en la app, solo se avisa en
+// consola. Se llama tanto al PROGRAMAR (resultado=null) como al COMPLETAR
+// (con resultado) una actividad — Jp, 2026-10-12. Consulta Supabase directo
+// en vez de usar el caché en memoria, porque al crear una negociación nueva
+// (primera actividad) todavía no existe en window._pipeRows.
+async function pipeSincronizarComentarioCrm(pipelineVendedorId,tipo,fecha,hora,resultado,nota){
   try{
-    const fila=(window._pipeRows||[]).find(r=>r.id===pipelineVendedorId);
+    const {data:fila}=await sb.from('pipeline_vendedor').select('oportunidad_crm_id').eq('id',pipelineVendedorId).single();
     if(!fila?.oportunidad_crm_id) return;
     const {data:o}=await sb.from('oportunidades_crm').select('crm_potentialid').eq('id',fila.oportunidad_crm_id).single();
     if(!o?.crm_potentialid) return;
     const {data:sess}=await sb.auth.getSession();
     const token=sess?.session?.access_token;
-    const contenido=`[Proyección] ${resultado}${nota?': '+nota:''}`;
+    const contenido=construirComentarioActividad(tipo,fecha,hora,resultado,nota);
     const res=await fetch('/api/crm-agregar-comentario',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
