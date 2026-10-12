@@ -6411,7 +6411,7 @@ const ESTATUS_PIPE_COLOR={
 };
 const PROB_OPTS=[10,25,50,70,90,100];
 
-let pipeSortCol='fecha_prevista', pipeSortDir=1, pipeFiltroEstatus='', pipeFiltroTexto='', pipeFiltroEspecial='';
+let pipeSortCol='fecha_prevista', pipeSortDir=1, pipeFiltroEstatus='', pipeFiltroTexto='', pipeFiltroEspecial='', pipeVerHistorico=false;
 
 function mostrarCanalizadosDetalle(vendedorId, nombreVend){
   const detalle=(window._canalizadosDetalle||{})[vendedorId]||[];
@@ -6625,6 +6625,10 @@ function renderProyeccionTabla(){
   let pipe=window._pipeRows||[];
   const resumen=pipeCalcularResumenDashboard();
   // Filtros
+  // Las negociaciones Cerrada-Perdida se van a un histórico y no se ven por
+  // default — se mandan ahí igual que se hizo con generaciones. Las
+  // Cerrada-Ganada sí se quedan visibles (Jp, 2026-10-12).
+  if(!pipeVerHistorico) pipe=pipe.filter(r=>r.estatus!=='Cerrada-Perdida');
   if(pipeFiltroEspecial){
     const idsEspecial=new Set((resumen[pipeFiltroEspecial]||[]).map(r=>r.id));
     pipe=pipe.filter(r=>idsEspecial.has(r.id));
@@ -6670,7 +6674,10 @@ function renderProyeccionTabla(){
       <option value="">Todos los estatus</option>
       ${estatusOpciones.map(e=>`<option value="${e}" ${pipeFiltroEstatus===e?'selected':''}>${e}</option>`).join('')}
     </select>
-    ${(pipeFiltroEstatus||pipeFiltroTexto||pipeFiltroEspecial)?`<button onclick="pipeFiltroEstatus='';pipeFiltroTexto='';pipeFiltroEspecial='';renderProyeccionTabla()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:6px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕ Limpiar</button>`:''}
+    ${pipeChipFiltro('esteMes','Abiertas este mes','📅')}
+    ${pipeChipFiltro('recientes30','Recientes (30d)','🕐')}
+    <button onclick="pipeVerHistorico=!pipeVerHistorico;renderProyeccionTabla();" style="background:${pipeVerHistorico?'var(--navy)':'none'};color:${pipeVerHistorico?'#fff':'var(--text2)'};border:1px solid ${pipeVerHistorico?'var(--navy)':'var(--border)'};border-radius:var(--radsm);padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">${pipeVerHistorico?'🗄️ Viendo histórico':'🗄️ Ver histórico'}</button>
+    ${(pipeFiltroEstatus||pipeFiltroTexto||pipeFiltroEspecial||pipeVerHistorico)?`<button onclick="pipeFiltroEstatus='';pipeFiltroTexto='';pipeFiltroEspecial='';pipeVerHistorico=false;renderProyeccionTabla()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:6px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕ Limpiar</button>`:''}
   </div>
   <div style="overflow-x:auto;">
   <table style="width:100%;border-collapse:collapse;font-size:12px;">
@@ -6719,6 +6726,13 @@ function pipeTarjetaDashboard(clave,titulo,cantidad,descripcion,color){
     <div style="font-size:22px;font-weight:800;color:${cantidad>0?color:'var(--text3)'};line-height:1.2;margin-top:2px;">${cantidad}</div>
     <div style="font-size:10px;color:var(--text3);margin-top:1px;">${descripcion}</div>
   </div>`;
+}
+
+// Chip simple de filtro rápido (distinto a la tarjeta del dashboard) — para
+// "Abiertas este mes" y "Recientes (30d)", pedidos por Jp, 2026-10-12.
+function pipeChipFiltro(clave,label,emoji){
+  const activa=pipeFiltroEspecial===clave;
+  return `<button onclick="pipeFiltroEspecial=(pipeFiltroEspecial==='${clave}'?'':'${clave}');renderProyeccionTabla();" style="background:${activa?'var(--teal)':'none'};color:${activa?'#fff':'var(--text2)'};border:1px solid ${activa?'var(--teal)':'var(--border)'};border-radius:var(--radsm);padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">${emoji} ${label}</button>`;
 }
 
 function filaPipe(r){
@@ -7043,7 +7057,21 @@ function pipeCalcularResumenDashboard(){
     const ultima=ultimaAct[r.id];
     return !ultima||new Date(ultima).getTime()<haceDiez;
   });
-  return {hoyActs,porCerrar,enfriando,sinSeguimiento};
+
+  // "Abiertas este mes" (fecha de creación, solo abiertas) y "Recientes
+  // (30d)" (fecha de creación, cualquier estatus) — filtros rápidos pedidos
+  // por Jp, 2026-10-12.
+  const hoyDate=new Date();
+  const mesActual=hoyDate.getMonth(), anioActual=hoyDate.getFullYear();
+  const haceTreinta=Date.now()-30*24*60*60*1000;
+  const esteMes=rows.filter(r=>{
+    if(!r.created_at) return false;
+    const d=new Date(r.created_at);
+    return d.getMonth()===mesActual&&d.getFullYear()===anioActual;
+  });
+  const recientes30=(window._pipeRows||[]).filter(r=>r.created_at&&new Date(r.created_at).getTime()>=haceTreinta);
+
+  return {hoyActs,porCerrar,enfriando,sinSeguimiento,esteMes,recientes30};
 }
 
 async function pipeCargarProximasActividades(ids){
