@@ -6505,9 +6505,14 @@ async function renderProyeccion(){
 
   // Cargar oportunidades del mes actual
   const {data:rows}=await sb.from('pipeline_vendedor')
-    .select('*, oportunidades_crm(crm_folio,crm_potentialid)').eq('usuario_id',currentUser.id)
+    .select('*, oportunidades_crm(crm_folio,crm_potentialid,fecha_creacion_crm)').eq('usuario_id',currentUser.id)
     .eq('anio',currentYear).eq('mes',currentMonth);
   window._pipeRows=rows||[];
+  // "Creada" debe reflejar cuándo nació la Oportunidad de verdad (en el CRM o
+  // en la app), no cuándo se sincronizó/espejó en Supabase — created_at de
+  // pipeline_vendedor es solo el momento del traspaso/sync para las que
+  // vienen del CRM. Jp, 2026-10-12.
+  window._pipeRows.forEach(r=>{ r.fecha_creada_real=r.oportunidades_crm?.fecha_creacion_crm||r.created_at; });
 
   // Siguiente actividad de seguimiento pendiente por negociación (para la
   // columna "Siguiente paso" — vive en pipeline_actividades, no solo en el
@@ -6610,9 +6615,10 @@ async function confirmarTraspaso(){
   document.getElementById('bannerTraspaso')?.remove();
   if(err>0) alert(`⚠️ ${ok} traspasados, ${err} con error.`);
   const {data:rows}=await sb.from('pipeline_vendedor')
-    .select('*, oportunidades_crm(crm_folio,crm_potentialid)').eq('usuario_id',currentUser.id)
+    .select('*, oportunidades_crm(crm_folio,crm_potentialid,fecha_creacion_crm)').eq('usuario_id',currentUser.id)
     .eq('anio',currentYear).eq('mes',currentMonth);
   window._pipeRows=rows||[];
+  window._pipeRows.forEach(r=>{ r.fecha_creada_real=r.oportunidades_crm?.fecha_creacion_crm||r.created_at; });
   window._pipeAbiertasMesAnt=[];
   await pipeCargarProximasActividades((rows||[]).map(r=>r.id));
   await pipeCargarResumenSeguimiento((rows||[]).map(r=>r.id));
@@ -6688,7 +6694,7 @@ function renderProyeccionTabla(){
         ${thS('Prob.','probabilidad','center')}${thS('Fecha prev.','fecha_prevista','center')}
         ${thS('Estatus','estatus','center')}
         <th style="padding:8px 10px;text-align:left;white-space:nowrap;">Objeción / Nota</th>
-        ${thS('Creada','created_at','center')}
+        ${thS('Creada','fecha_creada_real','center')}
         <th style="padding:8px 10px;text-align:center;white-space:nowrap;">Folio CRM</th>
         ${thS('Siguiente paso','fecha_siguiente_paso','center')}
         <th style="padding:8px 10px;"></th>
@@ -6738,7 +6744,7 @@ function pipeChipFiltro(clave,label,emoji){
 function filaPipe(r){
   const probColor=r.probabilidad>=90?'#27AE60':r.probabilidad>=70?'#00A99D':r.probabilidad>=50?'#F5A623':'#E84040';
   const estColor=ESTATUS_PIPE_COLOR[r.estatus]||'#F5A623';
-  const creada=r.created_at?String(r.created_at).slice(0,10):'—';
+  const creada=r.fecha_creada_real?String(r.fecha_creada_real).slice(0,10):'—';
   const folioCrm=r.oportunidades_crm?.crm_folio||null;
   const hoyStr=todayLocal();
   const vencido=r.fecha_siguiente_paso&&r.fecha_siguiente_paso<hoyStr;
@@ -7065,11 +7071,11 @@ function pipeCalcularResumenDashboard(){
   const mesActual=hoyDate.getMonth(), anioActual=hoyDate.getFullYear();
   const haceTreinta=Date.now()-30*24*60*60*1000;
   const esteMes=rows.filter(r=>{
-    if(!r.created_at) return false;
-    const d=new Date(r.created_at);
+    if(!r.fecha_creada_real) return false;
+    const d=new Date(r.fecha_creada_real);
     return d.getMonth()===mesActual&&d.getFullYear()===anioActual;
   });
-  const recientes30=(window._pipeRows||[]).filter(r=>r.created_at&&new Date(r.created_at).getTime()>=haceTreinta);
+  const recientes30=(window._pipeRows||[]).filter(r=>r.fecha_creada_real&&new Date(r.fecha_creada_real).getTime()>=haceTreinta);
 
   return {hoyActs,porCerrar,enfriando,sinSeguimiento,esteMes,recientes30};
 }
