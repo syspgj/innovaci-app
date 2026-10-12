@@ -6411,7 +6411,7 @@ const ESTATUS_PIPE_COLOR={
 };
 const PROB_OPTS=[10,25,50,70,90,100];
 
-let pipeSortCol='fecha_prevista', pipeSortDir=1, pipeFiltroEstatus='', pipeFiltroTexto='';
+let pipeSortCol='fecha_prevista', pipeSortDir=1, pipeFiltroEstatus='', pipeFiltroTexto='', pipeFiltroEspecial='';
 
 function mostrarCanalizadosDetalle(vendedorId, nombreVend){
   const detalle=(window._canalizadosDetalle||{})[vendedorId]||[];
@@ -6496,6 +6496,7 @@ async function renderReglasComision(){
 
 async function renderProyeccion(){
   const mc=document.getElementById('mainContent');
+  mc.classList.add('full-width'); // Jp, 2026-10-12 — la tabla ya no se corta a 1100px.
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando proyección...</div>';
 
   // Calcular mes anterior
@@ -6512,6 +6513,10 @@ async function renderProyeccion(){
   // columna "Siguiente paso" — vive en pipeline_actividades, no solo en el
   // campo de texto manual). Jp, 2026-10-12, análisis de inteligencia de Proyección.
   await pipeCargarProximasActividades((rows||[]).map(r=>r.id));
+  // Última actividad registrada por negociación (de cualquier tipo, completada
+  // o no) — alimenta el dashboard de prioridades (Hoy / Por cerrar / Enfriando
+  // / Sin seguimiento) que se muestra arriba de la tabla.
+  await pipeCargarResumenSeguimiento((rows||[]).map(r=>r.id));
 
   // Director/administración: cuántas oportunidades abiertas del CRM siguen sin
   // poder vincularse solas a Proyección (sin cuenta y/o vendedor reconocidos)
@@ -6610,6 +6615,7 @@ async function confirmarTraspaso(){
   window._pipeRows=rows||[];
   window._pipeAbiertasMesAnt=[];
   await pipeCargarProximasActividades((rows||[]).map(r=>r.id));
+  await pipeCargarResumenSeguimiento((rows||[]).map(r=>r.id));
   renderProyeccionTabla();
 }
 
@@ -6617,7 +6623,12 @@ function renderProyeccionTabla(){
   const mc=document.getElementById('mainContent');
   if(!mc) return;
   let pipe=window._pipeRows||[];
+  const resumen=pipeCalcularResumenDashboard();
   // Filtros
+  if(pipeFiltroEspecial){
+    const idsEspecial=new Set((resumen[pipeFiltroEspecial]||[]).map(r=>r.id));
+    pipe=pipe.filter(r=>idsEspecial.has(r.id));
+  }
   if(pipeFiltroEstatus) pipe=pipe.filter(r=>r.estatus===pipeFiltroEstatus);
   if(pipeFiltroTexto){const q=pipeFiltroTexto.toLowerCase();pipe=pipe.filter(r=>(r.producto||'').toLowerCase().includes(q)||(r.cliente||'').toLowerCase().includes(q)||(r.tipo_servicio||'').toLowerCase().includes(q));}
   // Ordenamiento
@@ -6643,6 +6654,12 @@ function renderProyeccionTabla(){
       <button onclick="agregarFilaPipe()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar</button>
     </div>
   </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;">
+    ${pipeTarjetaDashboard('hoyActs','🔔 Hoy',resumen.hoyActs.length,'Seguimientos para hoy o ya vencidos','#E84040')}
+    ${pipeTarjetaDashboard('porCerrar','🎯 Por cerrar',resumen.porCerrar.length,'Cierran en los próximos 15 días','#F5A623')}
+    ${pipeTarjetaDashboard('enfriando','🧊 Enfriando',resumen.enfriando.length,'7+ días sin actividad ni cambios','#1D5FA8')}
+    ${pipeTarjetaDashboard('sinSeguimiento','🙈 Sin seguimiento',resumen.sinSeguimiento.length,'10+ días sin ninguna actividad','#888')}
+  </div>
   <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
     <div style="position:relative;flex:1;min-width:160px;">
       <input type="text" id="pipeBuscar" placeholder="Buscar por cliente, servicio..." value="${pipeFiltroTexto}" oninput="pipeFiltroTexto=this.value;renderProyeccionTabla()"
@@ -6653,7 +6670,7 @@ function renderProyeccionTabla(){
       <option value="">Todos los estatus</option>
       ${estatusOpciones.map(e=>`<option value="${e}" ${pipeFiltroEstatus===e?'selected':''}>${e}</option>`).join('')}
     </select>
-    ${(pipeFiltroEstatus||pipeFiltroTexto)?`<button onclick="pipeFiltroEstatus='';pipeFiltroTexto='';renderProyeccionTabla()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:6px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕ Limpiar</button>`:''}
+    ${(pipeFiltroEstatus||pipeFiltroTexto||pipeFiltroEspecial)?`<button onclick="pipeFiltroEstatus='';pipeFiltroTexto='';pipeFiltroEspecial='';renderProyeccionTabla()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:6px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕ Limpiar</button>`:''}
   </div>
   <div style="overflow-x:auto;">
   <table style="width:100%;border-collapse:collapse;font-size:12px;">
@@ -6690,6 +6707,18 @@ function pipeSort(col){
   if(pipeSortCol===col) pipeSortDir*=-1;
   else{pipeSortCol=col;pipeSortDir=1;}
   renderProyeccionTabla();
+}
+
+// Tarjeta clicable del dashboard de prioridades (arriba de la tabla de
+// Proyección) — al hacer clic filtra la tabla a esa categoría; un segundo
+// clic la quita. Jp, 2026-10-12.
+function pipeTarjetaDashboard(clave,titulo,cantidad,descripcion,color){
+  const activa=pipeFiltroEspecial===clave;
+  return `<div onclick="pipeFiltroEspecial=(pipeFiltroEspecial==='${clave}'?'':'${clave}');renderProyeccionTabla();" style="cursor:pointer;background:${activa?color+'14':'var(--surface)'};border:1.5px solid ${activa?color:'var(--border)'};border-radius:10px;padding:10px 14px;">
+    <div style="font-size:11px;font-weight:700;color:var(--text2);white-space:nowrap;">${titulo}</div>
+    <div style="font-size:22px;font-weight:800;color:${cantidad>0?color:'var(--text3)'};line-height:1.2;margin-top:2px;">${cantidad}</div>
+    <div style="font-size:10px;color:var(--text3);margin-top:1px;">${descripcion}</div>
+  </div>`;
 }
 
 function filaPipe(r){
@@ -6963,6 +6992,59 @@ async function eliminarFilaPipe(id){
 // negociación está ligada a una Oportunidad real del CRM, se manda también
 // como comentario allá.
 const TIPO_ACTIVIDAD_LABEL={llamada:'Llamar',correo:'Enviar correo',visita:'Visita',otro:'Actividad'};
+
+// Última actividad registrada por negociación (cualquier tipo, completada o
+// no) — se usa solo para el dashboard de prioridades (quién lleva días sin
+// que se le toque nada), no para la columna "Siguiente paso" (esa la cubre
+// pipeCargarProximasActividades, que solo mira lo PENDIENTE).
+async function pipeCargarResumenSeguimiento(ids){
+  if(!ids||!ids.length){window._pipeUltimaActividad={};return;}
+  const {data}=await sb.from('pipeline_actividades')
+    .select('pipeline_vendedor_id,created_at')
+    .in('pipeline_vendedor_id',ids)
+    .order('created_at',{ascending:false});
+  const map={};
+  (data||[]).forEach(a=>{ if(!(a.pipeline_vendedor_id in map)) map[a.pipeline_vendedor_id]=a.created_at; });
+  window._pipeUltimaActividad=map;
+}
+
+// Dashboard de prioridades de Proyección — Jp, 2026-10-12: "qué le tiene que
+// dar prioridad, qué le tiene que dar seguimiento, cuáles están por cerrar,
+// cuáles se están enfriando, cuáles no ha actualizado". Criterios confirmados
+// con Jp el mismo día:
+//   - Hoy: siguiente paso con fecha de hoy o ya vencida.
+//   - Por cerrar pronto: fecha prevista de cierre dentro de los próximos 15 días.
+//   - Enfriando: sin actividad en pipeline_actividades Y sin ningún cambio
+//     guardado (updated_at) en los últimos 7 días. No existe todavía una
+//     bitácora de cambios de probabilidad específica, así que updated_at es
+//     la aproximación — si se guarda cualquier cambio (no solo probabilidad)
+//     ya no cuenta como "sin cambio"; queda anotado como aproximación en
+//     claude/analisis-proyeccion-inteligente.md.
+//   - Sin seguimiento: 10+ días sin ninguna actividad nueva, o nunca tuvo una.
+// Las categorías no son excluyentes entre sí.
+function pipeCalcularResumenDashboard(){
+  const hoy=todayLocal();
+  const en15=new Date();en15.setDate(en15.getDate()+15);
+  const en15Str=en15.toISOString().slice(0,10);
+  const haceSiete=Date.now()-7*24*60*60*1000;
+  const haceDiez=Date.now()-10*24*60*60*1000;
+  const ultimaAct=window._pipeUltimaActividad||{};
+  const rows=(window._pipeRows||[]).filter(r=>r.estatus!=='Cerrada-Ganada'&&r.estatus!=='Cerrada-Perdida');
+
+  const hoyActs=rows.filter(r=>r.fecha_siguiente_paso&&r.fecha_siguiente_paso<=hoy);
+  const porCerrar=rows.filter(r=>r.fecha_prevista&&r.fecha_prevista>=hoy&&r.fecha_prevista<=en15Str);
+  const enfriando=rows.filter(r=>{
+    const ultima=ultimaAct[r.id];
+    const sinActividad=!ultima||new Date(ultima).getTime()<haceSiete;
+    const sinCambio=!r.updated_at||new Date(r.updated_at).getTime()<haceSiete;
+    return sinActividad&&sinCambio;
+  });
+  const sinSeguimiento=rows.filter(r=>{
+    const ultima=ultimaAct[r.id];
+    return !ultima||new Date(ultima).getTime()<haceDiez;
+  });
+  return {hoyActs,porCerrar,enfriando,sinSeguimiento};
+}
 
 async function pipeCargarProximasActividades(ids){
   if(!ids||!ids.length){window._pipeProximasActividades={};return;}
