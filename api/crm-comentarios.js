@@ -24,13 +24,13 @@
 // sincronizada, o num_cliente no es un ACCxxx del CRM), regresa un mensaje
 // claro en vez de tronar.
 //
-// Nota para Jp: este endpoint es NUEVO y no se ha probado contra el CRM en
-// vivo (a diferencia de los demás scripts de este proyecto, que ya corrieron
-// en producción). El nombre del campo "related_to" de ModComments y el
-// formato del id son el comportamiento estándar de Vtiger 7.1, pero conviene
-// probarlo una vez desplegado — si algo no calza, lo ajustamos con el mismo
-// patrón de diagnóstico que usamos para encontrar "Tipo de Servicio"
-// (api/crm-describir-oportunidades.js).
+// Nota para Jp: 2026-10-13, ya se probó una vez en vivo y se encontró que
+// stg_cuentas_crm_raw.account_id casi nunca viene poblado (es un campo
+// legado) — el id real de Vtiger está en crm_record_id, ya corregido abajo
+// (ver resolverAccountIdCrm). El nombre del campo "related_to" de ModComments
+// sigue sin probarse contra el CRM en vivo — si al usarlo no calza, lo
+// ajustamos con el mismo patrón de diagnóstico que usamos para encontrar
+// "Tipo de Servicio" (api/crm-describir-oportunidades.js).
 //
 // Variables de entorno: reutiliza las ya configuradas — VTIGER_BASE_URL,
 // VTIGER_USER, VTIGER_ACCESS_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
@@ -74,11 +74,17 @@ function escaparVtigerQL(str) {
   return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
-// Resuelve el ACCOUNTID real de Vtiger (ej. "11x123") a partir del
+// Resuelve el ACCOUNTID real de Vtiger (ej. "11x67227") a partir del
 // num_cliente de negocio (ej. "ACC607"), usando el espejo crudo del sync
 // diario — no depende de que clientes_cartera guarde ese id.
+//
+// Jp, 2026-10-13 — bug encontrado al probar esto en vivo: la columna
+// "account_id" de stg_cuentas_crm_raw casi nunca viene poblada (solo 46 de
+// 1480 filas la tienen — probablemente un campo legado de otro sync). El id
+// real de Vtiger SÍ llega siempre, en la columna "crm_record_id" (formato
+// "11xNNNNN", 1480/1480 filas). Se corrige para usar esa columna.
 async function resolverAccountIdCrm(numCliente) {
-  const url = `${SUPABASE_URL}/rest/v1/stg_cuentas_crm_raw?account_no=eq.${encodeURIComponent(numCliente)}&select=account_id`;
+  const url = `${SUPABASE_URL}/rest/v1/stg_cuentas_crm_raw?account_no=eq.${encodeURIComponent(numCliente)}&select=crm_record_id`;
   const res = await fetch(url, {
     headers: {
       apikey: SUPABASE_SERVICE_ROLE_KEY,
@@ -87,7 +93,7 @@ async function resolverAccountIdCrm(numCliente) {
   });
   if (!res.ok) throw new Error('No se pudo consultar stg_cuentas_crm_raw: ' + (await res.text()));
   const rows = await res.json();
-  return rows?.[0]?.account_id || null;
+  return rows?.[0]?.crm_record_id || null;
 }
 
 async function obtenerCrmId(tipo, body) {
