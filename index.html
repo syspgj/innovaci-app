@@ -8191,6 +8191,7 @@ async function abrirFichaClienteModal(clienteId){
         ${s.tipo_producto==='diplomado'?`<span class="pipe-badge" style="font-size:9px;background:rgba(41,128,185,0.12);color:#2980B9;">DIPLOMADO</span>`:''}
         ${s.periodicidad?`<span style="font-size:10px;color:var(--text3);text-transform:capitalize;">${s.periodicidad}</span>`:''}
         ${s.monto?`<span style="font-size:11px;font-weight:600;color:var(--teal);">${fmt(s.monto)}</span>`:''}
+        ${s.sistema_id?`<span class="pipe-badge" title="Esta suscripción está ligada a su sistema en 'Sistemas y licencias' (datos del CRM)" style="font-size:9px;background:rgba(0,169,157,0.12);color:var(--teal);">🔗 Ligada con CRM</span>`:''}
         ${editable?`<span onclick="borrarSuscripcionCliente('${s.id}','${clienteId}')" title="Eliminar suscripción" style="margin-left:auto;font-size:10px;color:var(--text3);cursor:pointer;">🗑</span>`:''}
       </div>
       ${editable&&s.tipo_producto==='diplomado'?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;padding:8px;background:rgba(41,128,185,0.05);border-radius:var(--radsm);">
@@ -8283,13 +8284,16 @@ async function abrirFichaClienteModal(clienteId){
     // de cero.
     const claveSuscEquivalente=resolverSuscClaveParaSistema(def.key,s.version_licencia);
     const suscSistemaEquivalente=claveSuscEquivalente?(window._suscSistemas||[]).find(x=>x.clave===claveSuscEquivalente):null;
-    const yaTieneSuscLigada=suscSistemaEquivalente&&suscripciones.some(su=>su.sistema_id===suscSistemaEquivalente.id);
+    // Jp, 2026-10-13: "que apareciera el número de serie que está ligado" —
+    // ya no basta con saber SI está ligado, hace falta mostrar A CUÁL
+    // suscripción (su número de serie), para identificarla de un vistazo.
+    const suscLigada=suscSistemaEquivalente?suscripciones.find(su=>su.sistema_id===suscSistemaEquivalente.id):null;
     return `<div data-sistema-row="${def.key}" data-sistema-id="${s?.id||''}" style="border:1px solid ${vencido?'var(--red)':vence?'var(--gold-b,#e8c468)':'var(--border)'};border-radius:var(--radsm);padding:10px 12px;margin-bottom:6px;background:${vencido?'rgba(228,64,64,0.04)':vence?'var(--gold-bg,rgba(245,166,35,0.06))':'#fff'};">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
         <span style="font-size:12px;font-weight:700;color:var(--navy);min-width:90px;">${def.label}</span>
         ${vencido?`<span style="font-size:9px;color:var(--red);font-weight:700;">VENCIDO</span>`:vence?`<span style="font-size:9px;color:var(--gold);font-weight:700;">POR VENCER</span>`:''}
-        ${suscSistemaEquivalente&&!yaTieneSuscLigada?`<button type="button" onclick="event.stopPropagation();fcAbrirVincularSistemaSusc('${clienteId}','${def.key}')" style="background:none;border:1px dashed var(--teal);color:var(--teal);border-radius:var(--radsm);padding:2px 8px;font-size:9px;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Vincular suscripción</button>`:''}
-        ${yaTieneSuscLigada?`<span style="font-size:9px;color:#27AE60;font-weight:600;">✓ Ligado a Suscripciones</span>`:''}
+        ${suscSistemaEquivalente&&!suscLigada?`<button type="button" onclick="event.stopPropagation();fcAbrirVincularSistemaSusc('${clienteId}','${def.key}')" style="background:none;border:1px dashed var(--teal);color:var(--teal);border-radius:var(--radsm);padding:2px 8px;font-size:9px;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Vincular suscripción</button>`:''}
+        ${suscLigada?`<span style="font-size:9px;color:#27AE60;font-weight:600;">✓ Ligado a Suscripciones</span>`:''}
         <span style="margin-left:auto;font-size:10px;color:var(--text3);cursor:pointer;" onclick="this.closest('[data-sistema-row]').remove()">✕ quitar</span>
       </div>
       <div style="display:grid;grid-template-columns:1.3fr 1fr 0.8fr 1fr;gap:6px;align-items:start;">
@@ -8301,6 +8305,7 @@ async function abrirFichaClienteModal(clienteId){
         </select>
         <input data-sis-field="proximo_pago" type="date" value="${s.proximo_pago||''}" style="padding:6px 8px;border:1px solid ${vencido?'var(--red)':'var(--border)'};border-radius:var(--radsm);font-size:11px;box-sizing:border-box;">
       </div>
+      ${suscLigada?`<div style="margin-top:6px;font-size:10px;color:var(--text3);">🔗 Suscripción ligada: <span style="font-family:'JetBrains Mono',monospace;font-weight:600;color:var(--text2);">${suscLigada.numserie||'sin número de serie'}</span></div>`:''}
     </div>`;
   };
   const sistemasHtml=SISTEMAS_CATALOGO.map(filaSistema).filter(Boolean).join('')
