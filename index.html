@@ -6714,6 +6714,10 @@ function renderProyeccionTabla(){
   });
   const totalMonto=pipe.reduce((s,r)=>s+(r.monto_total||0),0);
   const totalSubtotal=pipe.reduce((s,r)=>s+(r.subtotal||0),0);
+  window._pipeNavList=pipe.map(r=>r.id); // Jp, 2026-10-13: orden para "Guardar y siguiente" en el modal de edición.
+  // Indicador (no filtro) de cuántas negociaciones siguen abiertas en total
+  // este mes, sin importar los filtros/búsqueda activos — Jp, 2026-10-13.
+  const totalAbiertasMes=(window._pipeRows||[]).filter(r=>!['Cerrada-Ganada','Cerrada-Perdida'].includes(r.estatus)).length;
   const flecha=(col)=>pipeSortCol===col?(pipeSortDir===1?' ▲':' ▼'):'';
   const thS=(lbl,col,extra='')=>`<th onclick="pipeSort('${col}')" style="padding:8px 10px;text-align:${extra||'left'};white-space:nowrap;cursor:pointer;user-select:none;" title="Ordenar">${lbl}${flecha(col)}</th>`;
   const estatusOpciones=ESTATUS_PIPE;
@@ -6722,7 +6726,7 @@ function renderProyeccionTabla(){
   <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
     <div>
       <div style="font-size:16px;font-weight:700;color:var(--text);">Proyección de Ventas — ${getNombreMes(currentMonth)} ${currentYear}</div>
-      <div style="font-size:12px;color:var(--text3);margin-top:2px;">${pipe.length} negociaciones · Total: ${fmt(totalMonto)} · Subtotal: ${fmt(totalSubtotal)}</div>
+      <div style="font-size:12px;color:var(--text3);margin-top:2px;">${pipe.length} negociaciones · Total: ${fmt(totalMonto)} · Subtotal: ${fmt(totalSubtotal)} · <span style="color:var(--navy);font-weight:600;">🔓 ${totalAbiertasMes} abiertas en total este mes</span></div>
     </div>
     <div style="display:flex;gap:8px;">
       ${(userProfile.rol==='director'||userProfile.rol==='administracion')?`<button onclick="renderPipePendientesVincularModal()" style="background:${window._pipePendientesCount?'#F5A623':'none'};color:${window._pipePendientesCount?'#fff':'var(--text2)'};border:1px solid ${window._pipePendientesCount?'#F5A623':'var(--border)'};border-radius:var(--radsm);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Pendientes de vincular${window._pipePendientesCount?` (${window._pipePendientesCount})`:''}</button>`:''}
@@ -6861,6 +6865,11 @@ async function agregarFilaPipe(){
 async function editarFilaPipe(id){
   const {data:r}=await sb.from('pipeline_vendedor').select('*').eq('id',id).single();
   if(!r) return;
+  // Jp, 2026-10-13: folio CRM arriba del modal — se trae de la fila ya
+  // cargada en memoria (window._pipeRows trae el join a oportunidades_crm),
+  // sin pedirlo otra vez a la base.
+  const cacheado=(window._pipeRows||[]).find(x=>x.id===id);
+  if(cacheado?.oportunidades_crm) r.oportunidades_crm=cacheado.oportunidades_crm;
   window._pipeEditOriginal={estatus:r.estatus,probabilidad:r.probabilidad,oportunidad_crm_id:r.oportunidad_crm_id};
   if(!window._cartClientes||!window._cartClientes.length){
     window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente');
@@ -6877,13 +6886,17 @@ async function editarFilaPipe(id){
     if(cta) await pipeMostrarCuentaLigada(cta.id,cta.razon_social);
   }
   pipeCargarActividades(r.id);
+  if(r.oportunidades_crm?.crm_potentialid) pipeCargarComentariosCrm(r.oportunidades_crm.crm_potentialid);
 }
 
 function modalPipeHTML(r,hoy){
   const v=r||{};
   return `<div style="background:var(--surface);border-radius:var(--rad);padding:28px;max-width:720px;width:100%;max-height:90vh;overflow-y:auto;">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;gap:10px;">
-      <div style="font-size:15px;font-weight:700;color:var(--text);">${r?'Editar':'Nueva'} negociación <span style="font-weight:500;color:var(--text3);">(Oportunidad)</span></div>
+      <div>
+        <div style="font-size:15px;font-weight:700;color:var(--text);">${r?'Editar':'Nueva'} negociación <span style="font-weight:500;color:var(--text3);">(Oportunidad)</span></div>
+        ${v.oportunidades_crm?.crm_folio?`<div style="font-size:11px;color:var(--teal);font-weight:700;margin-top:2px;">📡 ${v.oportunidades_crm.crm_folio}</div>`:''}
+      </div>
       <button onclick="pipeIntentarCerrarModal()" title="Cerrar" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);line-height:1;padding:0;">✕</button>
     </div>
     <input type="hidden" id="pipeId" value="${v.id||''}">
@@ -6943,7 +6956,10 @@ function modalPipeHTML(r,hoy){
     </div>
     ${r&&r.id?`<div id="pipeActividadesBox" style="grid-column:1/-1;margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
       <div style="font-size:12px;color:var(--text3);">Cargando bitácora de seguimiento...</div>
-    </div>`:`<div style="grid-column:1/-1;margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
+    </div>
+    ${v.oportunidades_crm?.crm_potentialid?`<div id="pipeComentariosCrmBox" style="grid-column:1/-1;margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
+      <div style="font-size:12px;color:var(--text3);">Cargando comentarios del CRM...</div>
+    </div>`:''}`:`<div style="grid-column:1/-1;margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
       <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:2px;">📋 Primera actividad (opcional)</div>
       <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Queda registrada en la bitácora de esta negociación y, si la ligas a una cuenta del CRM, se manda también como comentario allá.</div>
       <div class="form-grid fg3" style="gap:8px;">
@@ -6969,6 +6985,7 @@ function modalPipeHTML(r,hoy){
     </div>`}
     <div style="display:flex;gap:8px;margin-top:16px;">
       <button onclick="guardarFilaPipe()" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
+      ${r&&r.id?`<button onclick="guardarFilaPipe(true)" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar y siguiente →</button>`:''}
       <button onclick="pipeIntentarCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);">Cancelar</button>
     </div>
   </div>`;
@@ -7039,7 +7056,7 @@ function pipeAplicarContactoSugerido(idx){
   const t=document.getElementById('pContactoTelefono'); if(t) t.value=c.telefono||'';
 }
 
-async function guardarFilaPipe(){
+async function guardarFilaPipe(irASiguiente){
   const id=document.getElementById('pipeId').value;
   const cuentaId=document.getElementById('pipeCuentaId')?.value||null;
   const payload={
@@ -7106,8 +7123,23 @@ async function guardarFilaPipe(){
   }
   if(error){alert('Error: '+error.message);return;}
   window._pipeEditOriginal=null;
+  // "Guardar y siguiente" — Jp, 2026-10-13: para que el vendedor pueda ir
+  // revisando negociación por negociación sin tener que reentrar a cada una
+  // manualmente. Avanza sobre el orden en que están pintadas en la tabla
+  // ahorita mismo (respeta filtros/orden activos — window._pipeNavList se
+  // llena en renderProyeccionTabla).
+  const siguienteId=irASiguiente&&id?pipeSiguienteIdEnLista(id):null;
   document.getElementById('modalPipe')?.remove();
-  renderProyeccion();
+  await renderProyeccion();
+  if(siguienteId) editarFilaPipe(siguienteId);
+  else if(irASiguiente) alert('✅ Guardado. No hay más negociaciones en esta vista para seguir revisando.');
+}
+
+function pipeSiguienteIdEnLista(idActual){
+  const lista=window._pipeNavList||[];
+  const idx=lista.indexOf(idActual);
+  if(idx===-1||idx===lista.length-1) return null;
+  return lista[idx+1];
 }
 
 async function crmCrearOportunidadDesdeNuevaFila(fila,cuentaId,payload){
@@ -7300,6 +7332,38 @@ async function pipeCargarProximasActividades(ids){
       r.fecha_siguiente_paso=prox.fecha_programada;
     }
   });
+}
+
+// Histórico de comentarios del CRM para esta Oportunidad — Jp, 2026-10-13.
+// Jp aclaró que en Vtiger los comentarios de Cuenta/Oportunidad/Proyecto son
+// independientes; esto trae SOLO los de la Oportunidad (no los de la cuenta
+// ligada). Solo lectura aquí — agregar comentarios ya sucede solo, desde la
+// bitácora de seguimiento (pipeSincronizarComentarioCrm).
+async function pipeCargarComentariosCrm(crmPotentialId){
+  const box=document.getElementById('pipeComentariosCrmBox');
+  if(!box) return;
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const res=await fetch(`/api/crm-comentarios?tipo=oportunidad&crm_potentialid=${encodeURIComponent(crmPotentialId)}`,{
+      headers:{'Authorization':'Bearer '+token},
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){
+      box.innerHTML=`<div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:6px;">💬 Comentarios del CRM</div><div style="font-size:11px;color:var(--text3);">No se pudieron cargar (${j.error||res.status}).</div>`;
+      return;
+    }
+    const comentarios=j.comentarios||[];
+    box.innerHTML=`
+      <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:8px;">💬 Comentarios del CRM (de esta Oportunidad)</div>
+      ${comentarios.length?comentarios.map(c=>`<div style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;background:var(--surface-2,#f4f6f8);">
+        <div style="font-size:11px;color:var(--text3);">${c.fecha?String(c.fecha).slice(0,16).replace('T',' '):''}</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:2px;">${c.contenido||''}</div>
+      </div>`).join(''):'<div style="font-size:11px;color:var(--text3);">Sin comentarios registrados en el CRM para esta oportunidad.</div>'}
+    `;
+  }catch(e){
+    box.innerHTML=`<div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:6px;">💬 Comentarios del CRM</div><div style="font-size:11px;color:var(--text3);">Error de conexión al cargarlos.</div>`;
+  }
 }
 
 async function pipeCargarActividades(pipelineVendedorId){
@@ -7674,7 +7738,10 @@ function renderCarteraVendorBotones(){
   const cont=document.getElementById('carteraVendedorBotones');
   if(!cont) return;
   const vendedores=window._carteraVendedores||[];
-  cont.innerHTML=vendedores.map(v=>`<button onclick="toggleCarteraFiltroVendedor('${v.id}')" class="cartera-subtab" style="${carteraFiltroVendedor===v.id?'background:var(--navy);color:#fff;border-color:var(--navy);':''}">${v.nombre}</button>`).join('');
+  const clientes=window._cartClientes||[];
+  const hayNoAsignados=clientes.some(cl=>!cl.vendedor_asignado);
+  cont.innerHTML=vendedores.map(v=>`<button onclick="toggleCarteraFiltroVendedor('${v.id}')" class="cartera-subtab" style="${carteraFiltroVendedor===v.id?'background:var(--navy);color:#fff;border-color:var(--navy);':''}">${v.nombre}</button>`).join('')
+    +(hayNoAsignados?`<button onclick="toggleCarteraFiltroVendedor('__sin_vendedor__')" class="cartera-subtab" style="${carteraFiltroVendedor==='__sin_vendedor__'?'background:var(--navy);color:#fff;border-color:var(--navy);':''}">Sin asignar</button>`:'');
 }
 
 // Jp, 2026-10-05: el .limit(5000) del Lote 31 no bastó — Supabase topa cada
@@ -7762,13 +7829,11 @@ async function renderCarteraVendedor(){
     <button onclick="swCartera('mia')" id="carteraSub_mia" class="cartera-subtab">Mi cartera</button>
     <button onclick="swCartera('todos')" id="carteraSub_todos" class="cartera-subtab">Todos los clientes</button>
     <button onclick="swCartera('activos')" id="carteraSub_activos" class="cartera-subtab">✅ Activos</button>
-    <button onclick="swCartera('vencen')" id="carteraSub_vencen" class="cartera-subtab">Vencen este mes</button>
-    <button onclick="swCartera('resueltas')" id="carteraSub_resueltas" class="cartera-subtab">Resueltas este mes</button>
     <button onclick="swCartera('sin_seguimiento')" id="carteraSub_sin_seguimiento" class="cartera-subtab">🕓 Sin seguimiento (+90 días)</button>
     <button onclick="abrirAltaCuenta()" style="margin-left:auto;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nuevo cliente</button>
   </div>
-  <div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
-    <span style="font-size:11px;color:var(--text3);">Acceso rápido por vendedor (clic de nuevo para quitar):</span>
+  <div id="carteraVendedorBotonesWrap" style="display:none;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
+    <span style="font-size:11px;color:var(--text3);">Filtrar por vendedor (clic de nuevo para quitar):</span>
     <div id="carteraVendedorBotones" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
   </div>
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;">
@@ -7801,14 +7866,17 @@ function carteraPrioridadScore(cl){
 
 function swCartera(sub){
   currentCarteraSub=sub;
-  ['todos','mia','activos','vencen','resueltas','sin_seguimiento'].forEach(s=>{
+  if(sub!=='todos') carteraFiltroVendedor=''; // Jp, 2026-10-13: el filtro por vendedor solo tiene sentido/se ve en "Todos los clientes".
+  ['todos','mia','activos','sin_seguimiento'].forEach(s=>{
     const btn=document.getElementById('carteraSub_'+s);
     if(btn) btn.classList.toggle('active',s===sub);
   });
+  const wrapVend=document.getElementById('carteraVendedorBotonesWrap');
+  if(wrapVend){
+    wrapVend.style.display=(sub==='todos')?'flex':'none';
+    if(sub==='todos') renderCarteraVendorBotones();
+  }
   const clientes=window._cartClientes||[];
-  const hoy=new Date();
-  const inicioMes=`${hoy.getFullYear()}-${String(hoy.getMonth()+1).padStart(2,'0')}-01`;
-  const finMes=new Date(hoy.getFullYear(),hoy.getMonth()+1,0).toISOString().split('T')[0];
   const limiteSinSeguimiento=new Date(Date.now()-CARTERA_DIAS_SIN_SEGUIMIENTO*86400000);
   const actividadReciente=window._cartActividadReciente||new Set();
   const q=(carteraFiltroTexto||'').toLowerCase();
@@ -7820,15 +7888,13 @@ function swCartera(sub){
     const matchQ=!q||(cl.razon_social||'').toLowerCase().includes(q)||(cl.rfc||'').toLowerCase().includes(q)||(cl.num_cliente||'').toLowerCase().includes(q)||(cl.alias_nombres||[]).some(a=>(a||'').toLowerCase().includes(q));
     // Filtro de producto (al menos una suscripción con ese producto)
     const matchProd=!prod||(cl._suscripciones||[]).some(s=>s.producto===prod);
-    // Filtro de vendedor (acceso rápido, independiente de la sub-pestaña)
-    const matchVend=!vend||cl.vendedor_asignado===vend;
+    // Filtro de vendedor (solo visible/activo en "Todos los clientes")
+    const matchVend=!vend||(vend==='__sin_vendedor__'?!cl.vendedor_asignado:cl.vendedor_asignado===vend);
     if(!matchQ||!matchProd||!matchVend) return false;
     // Filtro por sub-pestaña
     if(sub==='todos') return true;
     if(sub==='mia') return cl.vendedor_asignado===currentUser.id;
     if(sub==='activos') return cl.rating==='Activo';
-    if(sub==='vencen') return cl.vendedor_asignado===currentUser.id&&(cl._suscripciones||[]).some(s=>s.fecha_proxima_renovacion>=inicioMes&&s.fecha_proxima_renovacion<=finMes);
-    if(sub==='resueltas') return cl.vendedor_asignado===currentUser.id&&(cl._suscripciones||[]).some(s=>['renovada','no_renovada'].includes(s.estado)&&s.fecha_marcado>=inicioMes);
     if(sub==='sin_seguimiento') return (!cl.updated_at||new Date(cl.updated_at)<limiteSinSeguimiento)&&!actividadReciente.has(cl.id);
     return true;
   });
@@ -7849,7 +7915,7 @@ function swCartera(sub){
   if(!cont) return;
   if(!agrupados.length){
     cont.innerHTML=`<div style="text-align:center;padding:50px 20px;color:var(--text3);font-size:13px;">
-      ${q||prod||vend?'Ningún cliente coincide con los filtros aplicados.':sub==='mia'?'Aún no tienes clientes asignados.':sub==='vencen'?'No hay renovaciones este mes.':sub==='activos'?'No hay clientes con rating Activo.':sub==='sin_seguimiento'?'Todos los clientes tienen seguimiento reciente.':'No hay clientes en la cartera aún.'}
+      ${q||prod||vend?'Ningún cliente coincide con los filtros aplicados.':sub==='mia'?'Aún no tienes clientes asignados.':sub==='activos'?'No hay clientes con rating Activo.':sub==='sin_seguimiento'?'Todos los clientes tienen seguimiento reciente.':'No hay clientes en la cartera aún.'}
     </div>`;
     return;
   }
@@ -8115,6 +8181,21 @@ async function abrirFichaClienteModal(clienteId){
         <div style="margin-top:8px;"><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Alias / otros nombres <span style="font-weight:400;">(separados por coma — cuando el cliente aparece con otra razón social en pólizas o tickets viejos, sin tener cuenta propia en el CRM)</span></label>
           <input id="fcAlias" type="text" value="${(cl.alias_nombres||[]).join(', ')}" placeholder="ej. ALI MAYA, OTRO NOMBRE" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>`
       )}
+      ${seccion('Oportunidades abiertas (este año)',
+        `<div id="fcOportunidadesBox" style="font-size:12px;color:var(--text3);">Cargando oportunidades del CRM...</div>`,
+        'fcSeccionOportunidades'
+      )}
+      ${seccion('Comentarios CRM (de esta cuenta)',
+        // Jp, 2026-10-13: aclaró que en el CRM los comentarios de Cuenta,
+        // Oportunidad y Proyecto son independientes — esto trae SOLO los que
+        // están ligados directamente a la Cuenta, no los de sus oportunidades.
+        `<div id="fcComentariosCrmBox" style="font-size:12px;color:var(--text3);margin-bottom:10px;">Cargando comentarios del CRM...</div>
+        <div><textarea id="fcNuevoComentarioCrm" rows="2" placeholder="Escribe un comentario para agregarlo al CRM..." style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;resize:vertical;font-family:'Inter',sans-serif;"></textarea>
+          <button onclick="fcAgregarComentarioCrm('${clienteId}','${(cl.num_cliente||'').replace(/'/g,"\\'")}')" style="margin-top:6px;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Agregar comentario</button>
+          <span id="fcComentarioCrmMsg" style="font-size:11px;color:var(--red);margin-left:8px;"></span>
+        </div>`,
+        'fcSeccionComentariosCrm'
+      )}
     </div>
     <!-- COLUMNA DERECHA: suscripciones (comisiones) -->
     <div class="card" style="padding:18px 20px;background:var(--surface-2,#f8f9fa);position:sticky;top:12px;">
@@ -8152,6 +8233,98 @@ async function abrirFichaClienteModal(clienteId){
     selNuevo.innerHTML='<option value="">-- Elegir sistema --</option>'+SISTEMAS_CATALOGO.map(d=>`<option value="${d.key}">${d.label}</option>`).join('');
   }
   window.scrollTo(0,0);
+  fcCargarOportunidadesAbiertas(clienteId);
+  fcCargarComentariosCrm(clienteId,cl.num_cliente);
+}
+
+// Jp, 2026-10-13: "necesito ver al menos las ventas que ha tenido este
+// cliente, sus oportunidades abiertas, al menos de este año" — oportunidades_crm
+// ya trae cliente_cartera_id poblado (del sync con el CRM), así que no hace
+// falta ningún endpoint nuevo: se consulta directo desde Supabase.
+async function fcCargarOportunidadesAbiertas(clienteId){
+  const box=document.getElementById('fcOportunidadesBox');
+  if(!box) return;
+  const anioActual=new Date().getFullYear();
+  const {data,error}=await sb.from('oportunidades_crm')
+    .select('*')
+    .eq('cliente_cartera_id',clienteId)
+    .eq('abierta',true)
+    .gte('fecha_creacion_crm',`${anioActual}-01-01`)
+    .order('fecha_creacion_crm',{ascending:false});
+  if(error){
+    box.innerHTML=`<div style="font-size:12px;color:var(--red);">No se pudieron cargar (${error.message}).</div>`;
+    return;
+  }
+  const ops=data||[];
+  if(!ops.length){
+    box.innerHTML=`<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin oportunidades abiertas registradas en ${anioActual}.</div>`;
+    return;
+  }
+  box.innerHTML=`<div style="display:grid;gap:6px;">${ops.map(o=>`
+    <div style="border:1px solid var(--border);border-radius:var(--radsm);padding:8px 12px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+        <span style="font-size:12px;font-weight:600;color:var(--text);">${o.nombre_oportunidad||'Sin nombre'}</span>
+        ${o.monto?`<span style="font-size:12px;font-weight:700;color:var(--teal);">${fmt(o.monto)}</span>`:''}
+      </div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px;">${o.crm_folio?o.crm_folio+' · ':''}${o.fase_venta||'Sin fase'}${o.fecha_cierre_prevista?' · cierre previsto '+fmtFecha(o.fecha_cierre_prevista):''}${o.vendedor_crm_texto?' · '+o.vendedor_crm_texto:''}</div>
+    </div>`).join('')}</div>`;
+}
+
+// Jp, 2026-10-13: lee/agrega comentarios del CRM a nivel Cuenta, vía el nuevo
+// endpoint /api/crm-comentarios (ver api/crm-comentarios.js) — resuelve el
+// ACCOUNTID real del CRM a partir del num_cliente, sin necesidad de guardar
+// ese id en clientes_cartera.
+async function fcCargarComentariosCrm(clienteId,numCliente){
+  const box=document.getElementById('fcComentariosCrmBox');
+  if(!box) return;
+  if(!numCliente){
+    box.innerHTML=`<div style="font-size:12px;color:var(--text3);">Esta cuenta no tiene número de cliente (ACCxxx) — no se puede ligar a comentarios del CRM.</div>`;
+    return;
+  }
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const res=await fetch(`/api/crm-comentarios?tipo=cuenta&num_cliente=${encodeURIComponent(numCliente)}`,{
+      headers:{'Authorization':'Bearer '+token},
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){
+      box.innerHTML=`<div style="font-size:12px;color:var(--text3);">No se pudieron cargar (${j.error||res.status}).</div>`;
+      return;
+    }
+    const comentarios=j.comentarios||[];
+    box.innerHTML=comentarios.length?comentarios.map(c=>`
+      <div style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);margin-bottom:6px;background:#fff;">
+        <div style="font-size:10px;color:var(--text3);">${c.fecha?String(c.fecha).slice(0,16).replace('T',' '):''}</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:2px;">${c.contenido||''}</div>
+      </div>`).join(''):'<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin comentarios registrados en el CRM para esta cuenta.</div>';
+  }catch(e){
+    box.innerHTML=`<div style="font-size:12px;color:var(--text3);">Error de conexión al cargarlos.</div>`;
+  }
+}
+
+async function fcAgregarComentarioCrm(clienteId,numCliente){
+  const msg=document.getElementById('fcComentarioCrmMsg');
+  const texto=(document.getElementById('fcNuevoComentarioCrm')?.value||'').trim();
+  if(!texto){msg.textContent='Escribe el comentario primero.';return;}
+  if(!numCliente){msg.textContent='Esta cuenta no tiene número de cliente (ACCxxx).';return;}
+  msg.textContent='Guardando...';
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const res=await fetch('/api/crm-comentarios',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body:JSON.stringify({tipo:'cuenta',num_cliente:numCliente,comentario:texto}),
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){msg.textContent='Error: '+(j.error||res.status);return;}
+    msg.textContent='';
+    document.getElementById('fcNuevoComentarioCrm').value='';
+    fcCargarComentariosCrm(clienteId,numCliente);
+  }catch(e){
+    msg.textContent='Error de conexión.';
+  }
 }
 
 function agregarFilaSistema(){
@@ -8294,7 +8467,11 @@ async function guardarFichaClienteCompleta(id){
   const errSusc=results.find(r=>r.error);
   if(errSusc){msg.textContent='Error en suscripción: '+errSusc.error.message;return;}
 
-  renderCarteraVendedor();
+  // Jp, 2026-10-13: bug reportado — al guardar la ficha (p.ej. abierta desde
+  // Suscripciones) sí regresaba a Cartera correctamente, pero la pestaña
+  // superior se quedaba marcada como "Suscripciones". swV() además de
+  // renderizar, actualiza currentVendTab y la clase "active" de las pestañas.
+  swV('cartera');
 }
 
 function buscarClientePadre(q, excluyeId){
@@ -8342,7 +8519,7 @@ async function guardarFichaCliente(id){
   const {error}=await sb.from('clientes_cartera').update(payload).eq('id',id);
   if(error){msg.textContent='Error: '+error.message;return;}
   document.getElementById('modalFichaCliente').remove();
-  renderCarteraVendedor();
+  swV('cartera'); // Jp, 2026-10-13: ver nota en guardarFichaClienteCompleta — mismo fix de la pestaña activa.
 }
 
 function onCarteraFiltroChange(){
@@ -8934,30 +9111,45 @@ async function renderTodasSuscripciones(scope){
   const propiaSusc=s=>{if(scope!=='director'){const cl=s.cliente_id?clientesPorId[s.cliente_id]:null;if(!cl||cl.vendedor_asignado!==currentUser.id)return false;}return true;};
   const totalVencenMes=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=inicioMes&&s.fecha_proxima_renovacion<=finMes).length;
   const totalVencidasAntes=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada').length;
-  const tarjeta=(label,valor,color,key,alarma)=>`
-    <button onclick="suscListSwEstado('${scope}','${key}')" style="text-align:left;cursor:pointer;background:${alarma?(suscListFiltroEstado===key?color:color):(suscListFiltroEstado===key?color+'18':'var(--surface-2,#f8f9fa)')};border:1px solid ${color};border-radius:var(--radsm);padding:10px 12px;font-family:'Inter',sans-serif;">
-      <div style="font-size:10px;color:${alarma?'rgba(255,255,255,0.85)':'var(--text3)'};">${label}</div>
-      <div style="font-size:17px;font-weight:700;color:${alarma?'#fff':color};">${valor}</div>
+  const tarjeta=(label,valor,color,key)=>`
+    <button onclick="suscListSwEstado('${scope}','${key}')" style="text-align:left;cursor:pointer;background:${suscListFiltroEstado===key?color+'18':'var(--surface-2,#f8f9fa)'};border:1px solid ${color};border-radius:var(--radsm);padding:10px 12px;font-family:'Inter',sans-serif;">
+      <div style="font-size:10px;color:var(--text3);">${label}</div>
+      <div style="font-size:17px;font-weight:700;color:${color};">${valor}</div>
     </button>`;
   cont.innerHTML=`
     <div style="font-size:12px;color:var(--text3);margin-bottom:10px;">
       ${scope==='director'?'Todas las suscripciones registradas, tengan o no cuenta/vendedor asignado.':'Solo las suscripciones de tus cuentas asignadas.'}
     </div>
-    <div style="position:relative;margin-bottom:10px;">
-      <input type="text" id="suscListFiltroTextoInput" placeholder="Buscar por número de serie, RFC, razón social o sistema..." value="${suscListFiltroTexto}" oninput="onSuscListFiltroChange('${scope}')" style="width:100%;padding:8px 36px 8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
-      ${suscListFiltroTexto?`<button onclick="suscListFiltroTexto='';document.getElementById('suscListFiltroTextoInput').value='';renderTodasSuscripciones('${scope}')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;line-height:1;">✕</button>`:''}
+    <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:10px;">
+      <div style="position:relative;flex:1;">
+        <input type="text" id="suscListFiltroTextoInput" placeholder="Buscar por número de serie, RFC, razón social o sistema..." value="${suscListFiltroTexto}" oninput="onSuscListFiltroChange('${scope}')" style="width:100%;padding:8px 36px 8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
+        ${suscListFiltroTexto?`<button onclick="suscListFiltroTexto='';document.getElementById('suscListFiltroTextoInput').value='';renderTodasSuscripciones('${scope}')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;line-height:1;">✕</button>`:''}
+      </div>
+      <button onclick="abrirAgregarSuscripcion('${scope}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;font-family:'Inter',sans-serif;">➕ Agregar suscripción</button>
     </div>
     <div style="font-size:11px;color:var(--text3);margin-bottom:6px;">Por sistema:</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;">
-      ${(window._suscSistemas||[]).map(sis=>`<button onclick="suscListSwSistema('${scope}','${sis.id}')" style="cursor:pointer;text-align:left;background:${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)')+'18':'var(--surface-2,#f8f9fa)'};border:2px solid ${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)'):'var(--border)'};color:${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)'):'var(--text2)'};border-radius:var(--rad);padding:14px 16px;font-size:14px;font-weight:700;font-family:'Inter',sans-serif;transition:transform 0.1s;" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='none'">${sis.nombre}</button>`).join('')}
+      ${(window._suscSistemas||[]).map(sis=>{
+        // Jp, 2026-10-13: mostrar cuántas suscripciones tiene cada sistema en
+        // este filtro rápido (cuenta sobre el universo ya filtrado por scope/
+        // estado/texto, sin aplicar el propio filtro de sistema, para que el
+        // número no cambie solo por hacer clic en el botón).
+        const countSis=suscs.filter(s=>s.sistema_id===sis.id).length;
+        return `<button onclick="suscListSwSistema('${scope}','${sis.id}')" style="cursor:pointer;text-align:left;background:${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)')+'18':'var(--surface-2,#f8f9fa)'};border:2px solid ${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)'):'var(--border)'};color:${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)'):'var(--text2)'};border-radius:var(--rad);padding:14px 16px;font-family:'Inter',sans-serif;transition:transform 0.1s;" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='none'">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+            <span style="font-size:14px;font-weight:700;">${sis.nombre}</span>
+            <span class="pipe-badge" style="font-size:10px;background:${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)'):'var(--border)'};color:${suscListFiltroSistema===sis.id?'#fff':'var(--text3)'};">${countSis}</span>
+          </div>
+        </button>`;
+      }).join('')}
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:14px;">
       ${tarjeta('Vencen este mes',totalVencenMes,'#F5A623','vencen_mes')}
-      ${tarjeta('Vencidas desde antes',totalVencidasAntes,'#C0392B','vencidas_antes',true)}
+      ${tarjeta('Vencidas desde antes',totalVencidasAntes,'#C0392B','vencidas_antes')}
       ${tarjeta('Sin reclamar',suscs.filter(s=>s.estado==='sin_reclamar').length,'var(--text3)','sin_reclamar')}
       ${tarjeta('Reclamadas',suscs.filter(s=>['reclamada','en_revision'].includes(s.estado)).length,'#2980B9','reclamada')}
       ${tarjeta('Renovadas',suscs.filter(s=>s.estado==='renovada').length,'#27AE60','renovada')}
-      ${tarjeta('No renovadas',suscs.filter(s=>s.estado==='no_renovada').length,'#E84040','no_renovada',true)}
+      ${tarjeta('No renovadas',suscs.filter(s=>s.estado==='no_renovada').length,'#E84040','no_renovada')}
     </div>
     ${scope==='director'&&(totalSinVendedor>0||totalSinCta>0)?`<div style="font-size:11px;color:#B8740A;background:rgba(245,166,35,0.1);border:1px solid rgba(245,166,35,0.3);border-radius:var(--radsm);padding:6px 10px;margin-bottom:10px;">⚠ ${totalSinCta>0?`${totalSinCta} sin cuenta ligada (usa "🔗 Vincular"). `:''}${totalSinVendedor>0?`${totalSinVendedor} de cuentas SIN vendedor asignado — nadie las ve en su cartera hoy.`:''}</div>`:''}
     <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${suscs.length} suscripción${suscs.length===1?'':'es'}${suscListFiltroEstado||suscListFiltroSistema||q?' (filtradas)':''}</div>
@@ -8968,12 +9160,20 @@ async function renderTodasSuscripciones(scope){
         const vend=cl&&cl.vendedor_asignado?(window._carteraVendedores||[]).find(v=>v.id===cl.vendedor_asignado):null;
         const estadoInfo={sin_reclamar:['Sin reclamar','var(--text3)'],reclamada:['Reclamada','#2980B9'],en_revision:['En revisión','#2980B9'],renovada:['Renovada','#27AE60'],no_renovada:['No renovada','#E84040']}[s.estado]||[s.estado||'—','var(--text3)'];
         const esAlarma=s.estado==='no_renovada'; // Jp, 2026-10-13: "no renovada" debe verse alarmante — "que se vea que no lo pagó".
-        return `<div class="card" style="padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;${esAlarma?'border:1px solid #E84040;background:rgba(232,64,64,0.04);':''}">
+        // Jp, 2026-10-13: vencida-sin-renovar NO depende de que alguien ya le haya
+        // puesto el estado "no_renovada" — por ejemplo "Inmobiliarios Vetko" venció
+        // y seguía en "sin_reclamar" sin ningún distintivo. Esto marca cualquier
+        // suscripción cuya fecha de renovación ya pasó y que no está renovada,
+        // sea cual sea su estado actual.
+        const esVencida=s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada';
+        const esAlarmaVisual=esAlarma||esVencida;
+        return `<div class="card" style="padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;${esAlarmaVisual?'border:1px solid #E84040;background:rgba(232,64,64,0.04);':''}">
           <div style="flex:1;min-width:240px;">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <span class="pipe-badge" style="background:${info.color}22;color:${info.color};font-size:10px;">${info.nombre}</span>
               <span style="font-size:13px;font-weight:600;color:var(--text);">${cl?cl.razon_social:(s.razon_social_reportada||'Sin razón social')}</span>
               <span class="pipe-badge" style="font-size:10px;${esAlarma?`background:${estadoInfo[1]};color:#fff;`:`background:${estadoInfo[1]}18;color:${estadoInfo[1]};`}">${esAlarma?'⚠ ':''}${estadoInfo[0]}</span>
+              ${esVencida&&!esAlarma?`<span class="pipe-badge" style="font-size:10px;background:#E84040;color:#fff;">⚠ Vencida sin renovar</span>`:''}
               ${!cl?'<span class="pipe-badge" style="font-size:10px;background:rgba(232,64,64,0.1);color:#E84040;">Sin cuenta</span>':!cl.vendedor_asignado&&scope==='director'?'<span class="pipe-badge" style="font-size:10px;background:rgba(245,166,35,0.12);color:#B8740A;">Sin vendedor</span>':''}
             </div>
             <div style="font-size:11px;color:var(--text3);margin-top:3px;font-family:'JetBrains Mono',monospace;">RFC ${(cl?cl.rfc:s.rfc_reportado)||'—'} · serie ${s.numserie||'—'}${s.monto?' · '+fmt(s.monto):''}${s.fecha_proxima_renovacion?' · vence '+fmtFecha(s.fecha_proxima_renovacion):''}${scope==='director'&&vend?' · '+vend.nombre:''}</div>
@@ -9081,12 +9281,113 @@ async function ejecutarVinculacion(suscId,cuentaId){
   const {error}=await sb.from('suscripciones_cartera').update({
     cliente_id:clienteFinalId,
     vendedor_resuelto_por:currentUser.id,
-    fecha_vinculacion:new Date().toISOString()
+    fecha_vinculacion:new Date().toISOString(),
+    // Jp, 2026-10-13: al vincular a una cuenta ya alguien se está haciendo
+    // cargo de ella — si seguía en "sin_reclamar" (el default de la carga
+    // de Excel), pasa a "reclamada". Si ya tenía otro estado (reclamada en
+    // revisión/renovada/no_renovada) se respeta, nunca se pisa.
+    ...(susc.estado==='sin_reclamar'?{estado:'reclamada'}:{})
   }).eq('id',suscId);
   if(error){alert('Error al vincular: '+error.message);return;}
   document.getElementById('modalVincularSusc')?.remove();
   const scope=userProfile.rol==='director'||userProfile.rol==='administracion'?'director':'vendedor';
   if(scope==='director') renderDirectorCartera(); else renderCarteraVendedor();
+}
+
+// Jp, 2026-10-13: "no existe uno de agregar suscripción, habría que ver por
+// qué" — existía "Dar de alta cuenta nueva" (abrirAltaCuenta), que SIEMPRE
+// crea una cuenta nueva junto con la suscripción, pero no había forma de
+// agregar una suscripción a una cuenta YA existente desde el módulo de
+// Suscripciones (solo "🔗 Vincular", que liga una suscripción que ya vino de
+// la carga de Excel). Este modal cubre ese hueco: busca una cuenta existente
+// y captura los datos de la suscripción directamente.
+function abrirAgregarSuscripcion(scope){
+  const cuentas=suscCuentasPermitidasParaVincular();
+  window._agregarSuscCuentasCache=cuentas;
+  window._agregarSuscCuentaId=null;
+  window._agregarSuscScope=scope;
+  const sistemas=window._suscSistemas||[];
+  const html=`
+    <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Cuenta (busca por nombre, RFC o número)</label>
+      <input type="text" id="agrSuscBuscarInput" placeholder="Escribe para buscar..." oninput="agrSuscFiltrarCuentas()" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+    </div>
+    <div id="agrSuscResultados" style="max-height:160px;overflow-y:auto;margin-top:6px;display:grid;gap:6px;"></div>
+    <div id="agrSuscSeleccionada" style="margin-top:8px;"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:14px;">
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Sistema</label>
+        <select id="agrSuscSistema" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+          <option value="">Sin catalogar</option>
+          ${sistemas.map(s=>`<option value="${s.id}">${s.nombre}</option>`).join('')}
+        </select></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Número de serie</label>
+        <input type="text" id="agrSuscNumserie" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Producto</label>
+        <input type="text" id="agrSuscProducto" placeholder="Ej: COI Suscrip" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Periodicidad</label>
+        <select id="agrSuscPeriodicidad" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+          <option value="mensual">Mensual</option><option value="semestral">Semestral</option><option value="anual" selected>Anual</option>
+        </select></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;">
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Monto</label>
+        <input type="number" id="agrSuscMonto" min="0" step="0.01" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+      <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Próxima renovación</label>
+        <input type="date" id="agrSuscFechaProxima" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+    </div>
+    <div id="agrSuscMsg" style="font-size:11px;color:var(--red);margin-top:8px;"></div>`;
+  mkModal('modalAgregarSusc','➕ Agregar suscripción',html,'guardarAgregarSuscripcion','Guardar',true);
+}
+
+function agrSuscFiltrarCuentas(){
+  const q=(document.getElementById('agrSuscBuscarInput')?.value||'').toLowerCase().trim();
+  const cont=document.getElementById('agrSuscResultados');
+  if(!cont) return;
+  if(q.length<2){cont.innerHTML='';return;}
+  const cuentas=(window._agregarSuscCuentasCache||[]).filter(c=>(c.razon_social||'').toLowerCase().includes(q)||(c.rfc||'').toLowerCase().includes(q)||(c.num_cliente||'').toLowerCase().includes(q));
+  if(!cuentas.length){cont.innerHTML='<div style="font-size:11px;color:var(--text3);padding:8px;">Sin resultados.</div>';return;}
+  cont.innerHTML=cuentas.slice(0,15).map(c=>`
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);">
+      <div style="min-width:0;">
+        <div style="font-size:12px;font-weight:600;color:var(--text);">${c.razon_social||'Sin nombre'}</div>
+        <div style="font-size:10px;color:var(--text3);">${c.num_cliente||'—'} · ${c.rfc||'sin RFC'}</div>
+      </div>
+      <button onclick="agrSuscElegirCuenta('${c.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;flex-shrink:0;font-family:'Inter',sans-serif;">Elegir</button>
+    </div>`).join('');
+}
+
+function agrSuscElegirCuenta(cuentaId){
+  const c=(window._agregarSuscCuentasCache||[]).find(x=>x.id===cuentaId);
+  if(!c) return;
+  window._agregarSuscCuentaId=cuentaId;
+  document.getElementById('agrSuscResultados').innerHTML='';
+  document.getElementById('agrSuscBuscarInput').value=c.razon_social||'';
+  document.getElementById('agrSuscSeleccionada').innerHTML=`<div style="padding:8px 10px;background:rgba(0,169,157,0.08);border:1px solid var(--teal);border-radius:var(--radsm);font-size:12px;"><b>${c.razon_social}</b> <span style="color:var(--text3);">(${c.num_cliente||'—'})</span> <a href="#" onclick="event.preventDefault();window._agregarSuscCuentaId=null;document.getElementById('agrSuscSeleccionada').innerHTML='';document.getElementById('agrSuscBuscarInput').value='';" style="margin-left:8px;color:var(--red);font-size:11px;">quitar</a></div>`;
+}
+
+async function guardarAgregarSuscripcion(){
+  const msg=document.getElementById('agrSuscMsg');
+  if(!window._agregarSuscCuentaId){msg.textContent='Primero elige la cuenta a la que pertenece esta suscripción.';return;}
+  const numserie=document.getElementById('agrSuscNumserie').value.trim();
+  if(!numserie){msg.textContent='El número de serie es obligatorio.';return;}
+  const payload={
+    cliente_id:window._agregarSuscCuentaId,
+    sistema_id:document.getElementById('agrSuscSistema').value||null,
+    numserie,
+    producto:document.getElementById('agrSuscProducto').value.trim()||null,
+    periodicidad:document.getElementById('agrSuscPeriodicidad').value,
+    monto:parseFloat(document.getElementById('agrSuscMonto').value)||null,
+    fecha_proxima_renovacion:document.getElementById('agrSuscFechaProxima').value||null,
+    estado:'reclamada', // se da de alta ya ligada a una cuenta conocida, no "sin_reclamar"
+    origen:'alta_manual_vendedor',
+    vendedor_resuelto_por:currentUser.id,
+    fecha_vinculacion:new Date().toISOString(),
+  };
+  const {error}=await sb.from('suscripciones_cartera').insert(payload);
+  if(error){msg.textContent='Error: '+error.message;return;}
+  document.getElementById('modalAgregarSusc')?.remove();
+  renderTodasSuscripciones(window._agregarSuscScope||'vendedor');
 }
 
 function abrirCargaExcelSuscripciones(){
