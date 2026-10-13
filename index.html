@@ -7988,6 +7988,95 @@ function toggleFichaCliente(id){
   if(arrow) arrow.textContent=abierto?'▸':'▾';
 }
 
+// Sistemas/licencias (Jp, 2026-10-06: tabla clientes_cartera_sistemas, llega del sync con el CRM — antes invisible en la app)
+// — movido a nivel de módulo (antes vivía duplicado dentro de abrirFichaClienteModal
+// y de nuevo, ligeramente distinto, dentro de agregarFilaSistema) para que ambos
+// usen el mismo catálogo y no se desincronicen.
+const SISTEMAS_CATALOGO=[
+  {key:'SAE',label:'SAE'},{key:'COI',label:'COI'},{key:'NOI',label:'NOI'},{key:'FACTURE',label:'FACTURe'},
+  {key:'BANCO',label:'Banco'},{key:'CAJA',label:'Caja'},{key:'PROD',label:'Producción'},{key:'ADM',label:'Administración'},
+  {key:'SIIGO_FISCAL',label:'Siigo Fiscal'},{key:'SIIGO_NUBE',label:'Siigo Nube'}
+];
+// Jp, 2026-10-13: "este campo lo tengo para editar, pero en CRM no lo tengo
+// editable, lo tengo con una lista — necesitamos igualar eso". El campo
+// "Versión/licencia" era texto libre y ya hay drift real en los datos
+// sincronizados (ej. "Suscripción" / "Suscrición" / "Suscrpción" / "Suscripcíón"
+// todas queriendo decir lo mismo). Se vuelve lista. El catálogo se construyó a
+// partir de los valores que YA llegaron del CRM (no hay forma de leer el
+// picklist de Vtiger directo desde aquí) — por eso se deja "Otro (como está en
+// CRM)" como escape: si el CRM tiene una opción que nunca se ha sincronizado,
+// nunca se bloquea ni se pisa el valor real, solo se captura como texto libre
+// igual que antes.
+const VERSION_CATALOGO_POR_SISTEMA={
+  SAE:['v7.0 Compra','v7.0 Suscripción','v8.0 Compra','v8.0 Suscripción','v8.0 Suscripción con INN','v9.0 Compra','v9.0 Suscripción','v9.0 Suscripción con INN','v10.0 Compra','v10.0 Suscripción','v10.0 Suscripción con INN'],
+  COI:['v7.0 Compra','v8.0 Compra','v8.0 Suscripción','v9.0 Compra','v9.0 Suscripción','v9.0 Suscripción con INN','v10.0 Compra','v10.0 Suscripción','v10.0 Suscripción con INN','v11.0 Compra','v11.0 Suscripción','v11.0 Suscripción con INN'],
+  NOI:['v8.0 Compra','v8.0 Suscripción','v9.0 Compra','v9.0 Suscripción','v10.0 Compra','v10.0 Suscripción','v10.0 Suscripción con INN','v11.0 Compra','v11.0 Suscripción','v11.0 Suscripción con INN'],
+  BANCO:['v4.0 Suscripción','v5.0 Compra','v6.0 Compra','v6.0 Suscripción','v6.0 Suscripción con INN'],
+  CAJA:['v4.0 Suscripción','v5.0 Compra','v5.0 Suscripción'],
+  PROD:['v4.0 Suscripción','v5.0 Compra','v5.0 Suscripción','v5.0 Suscripción con INN'],
+  FACTURE:['v4.0 Compra','v4.0 Suscripción','v5.0 Suscripción 1 RFC','v6.0 Suscripción 1 RFC','v6.0 Suscripción 1 RFC con INN','v6.0 Suscripción 99 RFC','v6.0 Suscripción 99 RFC con INN'],
+  ADM:['Básica','Básica Pq 100','Premium'],
+  SIIGO_FISCAL:['Despacho','Pyme','Empresarial'],
+  SIIGO_NUBE:['Siigo Nube Facturación','Siigo Nube Gestión Inicio']
+};
+function campoVersionLicenciaHtml(sistemaKey,valorActual){
+  const catalogo=VERSION_CATALOGO_POR_SISTEMA[sistemaKey]||[];
+  const val=(valorActual||'').trim();
+  const coincide=catalogo.some(v=>v.toLowerCase()===val.toLowerCase());
+  const esOtro=!!val&&!coincide;
+  return `<div>
+    <select data-sis-field="version_licencia" onchange="const o=this.nextElementSibling;if(o)o.style.display=this.value==='__otro__'?'block':'none';" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;">
+      <option value="">-- Versión / licencia --</option>
+      ${catalogo.map(v=>`<option value="${v.replace(/"/g,'&quot;')}" ${!esOtro&&val.toLowerCase()===v.toLowerCase()?'selected':''}>${v}</option>`).join('')}
+      <option value="__otro__" ${esOtro?'selected':''}>Otro (como está en CRM)...</option>
+    </select>
+    <input data-sis-field="version_licencia_otro" type="text" value="${val.replace(/"/g,'&quot;')}" placeholder="Escríbela tal como está en el CRM" style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;display:${esOtro?'block':'none'};">
+  </div>`;
+}
+// Jp, 2026-10-13: "en sistemas y licencias me aparece Siigo Fiscal PYME... ese
+// debería poderlo ligar con la suscripción que está activa... en suscripciones
+// solamente tengo el filtro de Siigo Fiscal Despachos, faltarían los demás" —
+// se agregaron los catálogos faltantes (Siigo Fiscal PYME / Empresarial) en
+// suscripciones_sistemas, y aquí se resuelve a cuál corresponde cada sistema
+// de la ficha para poder crear/ligar la suscripción con un clic.
+const SISTEMA_A_SUSC_CLAVE={SAE:'SAE',COI:'COI',NOI:'NOI',BANCO:'BANCO',PROD:'PROD',CAJA:'CAJA',FACTURE:'FE',ADM:'ADM_PREMIUM'};
+function resolverSuscClaveParaSistema(sistemaKey,versionLicencia){
+  if(sistemaKey==='SIIGO_FISCAL'){
+    const v=(versionLicencia||'').toLowerCase();
+    if(v.includes('pyme')) return 'SIIGO_FISCAL_PYME';
+    if(v.includes('empresarial')) return 'SIIGO_FISCAL_EMPRESARIAL';
+    if(v.includes('despacho')) return 'SIIGO_FISCAL_DESPACHOS';
+    return null; // sin dato suficiente para saber cuál de las 3 variantes es
+  }
+  return SISTEMA_A_SUSC_CLAVE[sistemaKey]||null;
+}
+async function fcCrearSuscripcionDesdeSistema(clienteId,sistemaKey){
+  const cl=(window._cartClientes||[]).find(c=>c.id===clienteId);
+  if(!cl) return;
+  const sisCliente=(cl._sistemas||[]).find(s=>s.sistema===sistemaKey);
+  const claveSusc=resolverSuscClaveParaSistema(sistemaKey,sisCliente?.version_licencia);
+  const suscSistema=(window._suscSistemas||[]).find(s=>s.clave===claveSusc);
+  if(!claveSusc||!suscSistema){alert('No se encontró un sistema de Suscripciones equivalente para vincular (revisa que "Versión/licencia" indique cuál variante es, ej. Pyme/Despacho/Empresarial).');return;}
+  const planTexto=(sisCliente?.plan||'').toLowerCase();
+  const periodicidad=planTexto.includes('mensual')?'mensual':planTexto.includes('semestral')?'semestral':'anual';
+  const payload={
+    cliente_id:clienteId,
+    sistema_id:suscSistema.id,
+    producto:suscSistema.nombre,
+    periodicidad,
+    fecha_proxima_renovacion:sisCliente?.proximo_pago||null,
+    estado:'reclamada',
+    origen:'desde_sistemas_licencias',
+    vendedor_resuelto_por:currentUser.id,
+    fecha_vinculacion:new Date().toISOString(),
+  };
+  const {data,error}=await sb.from('suscripciones_cartera').insert(payload).select().single();
+  if(error){alert('Error al crear la suscripción: '+error.message);return;}
+  cl._suscripciones=[...(cl._suscripciones||[]),data];
+  window._cartSuscripciones=[...(window._cartSuscripciones||[]),data];
+  abrirFichaClienteModal(clienteId);
+}
+
 async function abrirFichaClienteModal(clienteId){
   const cl=(window._cartClientes||[]).find(c=>c.id===clienteId);
   if(!cl) return;
@@ -8064,17 +8153,25 @@ async function abrirFichaClienteModal(clienteId){
   const campo=(id,label,value,type='text',extraAttrs='',extraStyle='')=>`<div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">${label}</label>
     <input id="${id}" type="${type}" value="${(value==null?'':String(value)).replace(/"/g,'&quot;')}" ${extraAttrs} style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;${extraStyle}"></div>`;
   const campo2=(a,b)=>`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">${a}${b}</div>`;
-  const seccion=(titulo,html,id)=>`<div class="card" ${id?`id="${id}"`:''} style="padding:18px 20px;margin-bottom:12px;">
-    <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:12px;">${titulo}</div>
-    ${html}
-  </div>`;
+  // Jp, 2026-10-13: "hay manera que se pueda comprimir... que solamente cuando
+  // yo le diga mostrar aparezca, para que no tenga que yo deslizar hasta
+  // abajo" — todas las secciones de la ficha ahora son colapsables y
+  // arrancan cerradas; un clic en el título las abre/cierra.
+  let _seccionSeq=0;
+  const seccion=(titulo,html,id)=>{
+    _seccionSeq++;
+    const bodyId=(id||'fcSec'+_seccionSeq)+'_body';
+    const chevId=(id||'fcSec'+_seccionSeq)+'_chev';
+    return `<div class="card" ${id?`id="${id}"`:''} style="padding:14px 20px;margin-bottom:10px;">
+      <div onclick="const b=document.getElementById('${bodyId}'),c=document.getElementById('${chevId}');const abrir=b.style.display==='none';b.style.display=abrir?'block':'none';c.textContent=abrir?'▾':'▸';" style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;user-select:none;">
+        <span id="${chevId}" style="font-size:10px;">▸</span> ${titulo}
+      </div>
+      <div id="${bodyId}" style="display:none;margin-top:12px;">
+        ${html}
+      </div>
+    </div>`;
+  };
 
-  // Sistemas/licencias (Jp, 2026-10-06: tabla clientes_cartera_sistemas, llega del sync con el CRM — antes invisible en la app)
-  const SISTEMAS_CATALOGO=[
-    {key:'SAE',label:'SAE'},{key:'COI',label:'COI'},{key:'NOI',label:'NOI'},{key:'FACTURE',label:'FACTURe'},
-    {key:'BANCO',label:'Banco'},{key:'CAJA',label:'Caja'},{key:'PROD',label:'Producción'},{key:'ADM',label:'Administración'},
-    {key:'SIIGO_FISCAL',label:'Siigo Fiscal'},{key:'SIIGO_NUBE',label:'Siigo Nube'}
-  ];
   const sistemasCliente=cl._sistemas||[];
   const hoyStr=new Date().toISOString().split('T')[0];
   const en14dias=new Date(Date.now()+14*86400000).toISOString().split('T')[0];
@@ -8084,14 +8181,25 @@ async function abrirFichaClienteModal(clienteId){
     if(!tieneDato) return ''; // solo mostrar sistemas con algo capturado; el resto se agrega con "+ agregar sistema"
     const vence=s.proximo_pago&&s.proximo_pago<=en14dias;
     const vencido=s.proximo_pago&&s.proximo_pago<hoyStr;
+    // Jp, 2026-10-13: "ese debería yo de poderlo ligar con la suscripción que
+    // está activa" — si este sistema tiene un equivalente en Suscripciones
+    // (ver SISTEMA_A_SUSC_CLAVE / resolverSuscClaveParaSistema) y la cuenta
+    // todavía no tiene una suscripción ligada a ese sistema, se ofrece crearla
+    // con un clic en vez de tener que ir a "Agregar suscripción" a capturarla
+    // de cero.
+    const claveSuscEquivalente=resolverSuscClaveParaSistema(def.key,s.version_licencia);
+    const suscSistemaEquivalente=claveSuscEquivalente?(window._suscSistemas||[]).find(x=>x.clave===claveSuscEquivalente):null;
+    const yaTieneSuscLigada=suscSistemaEquivalente&&suscripciones.some(su=>su.sistema_id===suscSistemaEquivalente.id);
     return `<div data-sistema-row="${def.key}" data-sistema-id="${s?.id||''}" style="border:1px solid ${vencido?'var(--red)':vence?'var(--gold-b,#e8c468)':'var(--border)'};border-radius:var(--radsm);padding:10px 12px;margin-bottom:6px;background:${vencido?'rgba(228,64,64,0.04)':vence?'var(--gold-bg,rgba(245,166,35,0.06))':'#fff'};">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
         <span style="font-size:12px;font-weight:700;color:var(--navy);min-width:90px;">${def.label}</span>
         ${vencido?`<span style="font-size:9px;color:var(--red);font-weight:700;">VENCIDO</span>`:vence?`<span style="font-size:9px;color:var(--gold);font-weight:700;">POR VENCER</span>`:''}
+        ${suscSistemaEquivalente&&!yaTieneSuscLigada?`<button type="button" onclick="event.stopPropagation();fcCrearSuscripcionDesdeSistema('${clienteId}','${def.key}')" style="background:none;border:1px dashed var(--teal);color:var(--teal);border-radius:var(--radsm);padding:2px 8px;font-size:9px;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Crear suscripción ligada</button>`:''}
+        ${yaTieneSuscLigada?`<span style="font-size:9px;color:#27AE60;font-weight:600;">✓ Ligado a Suscripciones</span>`:''}
         <span style="margin-left:auto;font-size:10px;color:var(--text3);cursor:pointer;" onclick="this.closest('[data-sistema-row]').remove()">✕ quitar</span>
       </div>
-      <div style="display:grid;grid-template-columns:1.3fr 1fr 0.8fr 1fr;gap:6px;">
-        <input data-sis-field="version_licencia" type="text" value="${(s.version_licencia||'').replace(/"/g,'&quot;')}" placeholder="Versión / licencia" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;">
+      <div style="display:grid;grid-template-columns:1.3fr 1fr 0.8fr 1fr;gap:6px;align-items:start;">
+        ${campoVersionLicenciaHtml(def.key,s.version_licencia)}
         <input data-sis-field="usuarios" type="text" value="${(s.usuarios||'').replace(/"/g,'&quot;')}" placeholder="Usuarios" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;">
         <select data-sis-field="plan" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;">
           <option value="">Plan</option>
@@ -8181,6 +8289,32 @@ async function abrirFichaClienteModal(clienteId){
         <div style="margin-top:8px;"><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Alias / otros nombres <span style="font-weight:400;">(separados por coma — cuando el cliente aparece con otra razón social en pólizas o tickets viejos, sin tener cuenta propia en el CRM)</span></label>
           <input id="fcAlias" type="text" value="${(cl.alias_nombres||[]).join(', ')}" placeholder="ej. ALI MAYA, OTRO NOMBRE" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>`
       )}
+    </div>
+    <!-- COLUMNA DERECHA: suscripciones (comisiones), y debajo Oportunidades/Comentarios CRM (Jp, 2026-10-13: "estas dos secciones me gustaría que aparecieran debajo de suscripciones") -->
+    <div>
+      <div class="card" style="padding:18px 20px;background:var(--surface-2,#f8f9fa);position:sticky;top:12px;">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">
+          Suscripciones (${suscripciones.length})
+        </div>
+        <div style="display:grid;gap:8px;margin-bottom:16px;">
+          ${suscripciones.length
+            ? suscripciones.map(s=>renderSusc(s,true)).join('')
+            : `<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin suscripciones. Se agregan al cargar reportes de comisiones.</div>`}
+        </div>
+        ${subcuentas.length?`
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;margin-top:8px;border-top:1px solid var(--border);padding-top:12px;">
+          Suscripciones de subcuentas
+        </div>
+        ${subcuentas.map(sub=>{
+          const subSuscs=sub._suscripciones||[];
+          return subSuscs.length?`
+          <div style="margin-bottom:12px;">
+            <div style="font-size:11px;font-weight:600;color:var(--teal);margin-bottom:6px;">↳ ${sub.razon_social} <span style="font-size:10px;color:var(--text3);">${sub.num_cliente||''}</span></div>
+            <div style="display:grid;gap:6px;">
+              ${subSuscs.map(s=>renderSusc(s,true)).join('')}
+            </div>
+          </div>`:''}).join('')}`:''}
+      </div>
       ${seccion('Oportunidades abiertas (este año)',
         `<div id="fcOportunidadesBox" style="font-size:12px;color:var(--text3);">Cargando oportunidades del CRM...</div>`,
         'fcSeccionOportunidades'
@@ -8196,30 +8330,6 @@ async function abrirFichaClienteModal(clienteId){
         </div>`,
         'fcSeccionComentariosCrm'
       )}
-    </div>
-    <!-- COLUMNA DERECHA: suscripciones (comisiones) -->
-    <div class="card" style="padding:18px 20px;background:var(--surface-2,#f8f9fa);position:sticky;top:12px;">
-      <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">
-        Suscripciones (${suscripciones.length})
-      </div>
-      <div style="display:grid;gap:8px;margin-bottom:16px;">
-        ${suscripciones.length
-          ? suscripciones.map(s=>renderSusc(s,true)).join('')
-          : `<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin suscripciones. Se agregan al cargar reportes de comisiones.</div>`}
-      </div>
-      ${subcuentas.length?`
-      <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;margin-top:8px;border-top:1px solid var(--border);padding-top:12px;">
-        Suscripciones de subcuentas
-      </div>
-      ${subcuentas.map(sub=>{
-        const subSuscs=sub._suscripciones||[];
-        return subSuscs.length?`
-        <div style="margin-bottom:12px;">
-          <div style="font-size:11px;font-weight:600;color:var(--teal);margin-bottom:6px;">↳ ${sub.razon_social} <span style="font-size:10px;color:var(--text3);">${sub.num_cliente||''}</span></div>
-          <div style="display:grid;gap:6px;">
-            ${subSuscs.map(s=>renderSusc(s,true)).join('')}
-          </div>
-        </div>`:''}).join('')}`:''}
     </div>
   </div>
   <div style="display:flex;gap:8px;margin-top:16px;">
@@ -8336,12 +8446,7 @@ function agregarFilaSistema(){
     const cont=document.getElementById('fcSistemasCont');
     if(cont.querySelector(`[data-sistema-row="${key}"]`)){sel.value='';return;}
     document.getElementById('sisVacio')?.remove();
-    const SISTEMAS_CATALOGO=[
-      {key:'SAE',label:'SAE'},{key:'COI',label:'COI'},{key:'NOI',label:'NOI'},{key:'FACTURE',label:'FACTURe'},
-      {key:'BANCO',label:'Banco'},{key:'CAJA',label:'Caja'},{key:'PROD',label:'Producción'},{key:'ADM',label:'Administración'},
-      {key:'SIIGO_FISCAL',label:'Siigo Fiscal'},{key:'SIIGO_NUBE',label:'Siigo Nube'}
-    ];
-    const def=SISTEMAS_CATALOGO.find(d=>d.key===key);
+    const def=SISTEMAS_CATALOGO.find(d=>d.key===key); // SISTEMAS_CATALOGO ahora es global — ver arriba de abrirFichaClienteModal
     const div=document.createElement('div');
     div.setAttribute('data-sistema-row',key);
     div.setAttribute('data-sistema-id','');
@@ -8350,8 +8455,8 @@ function agregarFilaSistema(){
         <span style="font-size:12px;font-weight:700;color:var(--navy);min-width:90px;">${def.label}</span>
         <span style="margin-left:auto;font-size:10px;color:var(--text3);cursor:pointer;" onclick="this.closest('[data-sistema-row]').remove()">✕ quitar</span>
       </div>
-      <div style="display:grid;grid-template-columns:1.3fr 1fr 0.8fr 1fr;gap:6px;">
-        <input data-sis-field="version_licencia" type="text" placeholder="Versión / licencia" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;">
+      <div style="display:grid;grid-template-columns:1.3fr 1fr 0.8fr 1fr;gap:6px;align-items:start;">
+        ${campoVersionLicenciaHtml(key,'')}
         <input data-sis-field="usuarios" type="text" placeholder="Usuarios" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;">
         <select data-sis-field="plan" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;">
           <option value="">Plan</option>
@@ -8430,10 +8535,15 @@ async function guardarFichaClienteCompleta(id){
   const aBorrar=sistemasOriginales.filter(s=>!sistemasVisibles.has(s.sistema)).map(s=>s.id);
   const aGuardar=filasSistema.map(f=>{
     const campo=field=>f.querySelector(`[data-sis-field="${field}"]`)?.value.trim()||null;
+    // Jp, 2026-10-13: "Versión/licencia" ahora es una lista (como en CRM) con
+    // una opción "Otro" que abre un texto libre — si eligieron "Otro", se
+    // guarda lo que escribieron ahí en vez del valor literal "__otro__".
+    let versionLicencia=campo('version_licencia');
+    if(versionLicencia==='__otro__') versionLicencia=campo('version_licencia_otro');
     return {
       cliente_cartera_id:id,
       sistema:f.dataset.sistemaRow,
-      version_licencia:campo('version_licencia'),
+      version_licencia:versionLicencia,
       usuarios:campo('usuarios'),
       plan:campo('plan'),
       proximo_pago:campo('proximo_pago'),
