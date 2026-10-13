@@ -8050,13 +8050,91 @@ function resolverSuscClaveParaSistema(sistemaKey,versionLicencia){
   }
   return SISTEMA_A_SUSC_CLAVE[sistemaKey]||null;
 }
-async function fcCrearSuscripcionDesdeSistema(clienteId,sistemaKey){
+// Jp, 2026-10-13: "cuando yo le doy en crear suscripción ligada, me crea una
+// nueva completamente, no me la ligo a la que ya estaba... que me diga, a
+// ver, de esta cuenta estas son las suscripciones que podrían corresponder".
+// Bug encontrado: el botón SIEMPRE insertaba una suscripción nueva, sin
+// buscar primero si esta cuenta YA tenía una (típicamente cargada desde
+// Excel, con cliente_id ya asignado pero sistema_id en null porque el nombre
+// del producto no calzó exacto con el catálogo) que simplemente hiciera
+// falta ligar. Ahora primero busca candidatas por texto (producto/numserie)
+// y, si encuentra alguna, deja elegir en vez de crear directo.
+const SISTEMA_PALABRAS_BUSQUEDA={SAE:['sae'],COI:['coi'],NOI:['noi'],BANCO:['banco'],CAJA:['caja'],PROD:['prod','producción','produccion'],FACTURE:['fe','facture','facturación electrónica','facturacion electronica'],ADM:['adm','administración','administracion'],SIIGO_FISCAL:['siigo fiscal'],SIIGO_NUBE:['siigo nube']};
+function fcCandidatosSuscParaSistema(cl,sistemaKey,suscSistemaIdObjetivo){
+  const palabras=SISTEMA_PALABRAS_BUSQUEDA[sistemaKey]||[];
+  if(!palabras.length) return [];
+  return (cl._suscripciones||[]).filter(su=>{
+    if(su.sistema_id===suscSistemaIdObjetivo) return false; // ya ligada exactamente a este sistema
+    const texto=((su.producto||'')+' '+(su.numserie||'')).toLowerCase();
+    return palabras.some(p=>texto.includes(p));
+  });
+}
+
+function fcAbrirVincularSistemaSusc(clienteId,sistemaKey){
   const cl=(window._cartClientes||[]).find(c=>c.id===clienteId);
   if(!cl) return;
   const sisCliente=(cl._sistemas||[]).find(s=>s.sistema===sistemaKey);
   const claveSusc=resolverSuscClaveParaSistema(sistemaKey,sisCliente?.version_licencia);
-  const suscSistema=(window._suscSistemas||[]).find(s=>s.clave===claveSusc);
+  const suscSistema=claveSusc?(window._suscSistemas||[]).find(s=>s.clave===claveSusc):null;
   if(!claveSusc||!suscSistema){alert('No se encontró un sistema de Suscripciones equivalente para vincular (revisa que "Versión/licencia" indique cuál variante es, ej. Pyme/Despacho/Empresarial).');return;}
+  const candidatas=fcCandidatosSuscParaSistema(cl,sistemaKey,suscSistema.id);
+  const htmlCandidatas=candidatas.length?`
+    <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">Estas suscripciones de esta cuenta podrían ser la de <b>${suscSistema.nombre}</b> — ligar en vez de crear una nueva:</div>
+    <div style="display:grid;gap:6px;margin-bottom:14px;">
+      ${candidatas.map(su=>`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);">
+        <div style="min-width:0;">
+          <div style="font-size:12px;font-weight:600;color:var(--text);">${su.producto||'Sin producto'} <span style="font-size:10px;color:var(--text3);font-weight:400;">${su.numserie?'· '+su.numserie:''}</span></div>
+          <div style="font-size:10px;color:var(--text3);">${su.periodicidad||'sin periodicidad'}${su.fecha_proxima_renovacion?' · vence '+fmtFecha(su.fecha_proxima_renovacion):''}${su.monto?' · '+fmt(su.monto):''} · ${(su.estado||'').replace('_',' ')}</div>
+        </div>
+        <button onclick="fcLigarSuscripcionASistema('${clienteId}','${sistemaKey}','${su.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;flex-shrink:0;font-family:'Inter',sans-serif;">🔗 Ligar aquí</button>
+      </div>`).join('')}
+    </div>
+    <div style="border-top:1px solid var(--border);padding-top:10px;">`:'';
+  const html=`${htmlCandidatas}
+    <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">${candidatas.length?'¿Ninguna es? ':''}Crea una suscripción nueva de ${suscSistema.nombre} para esta cuenta:</div>
+    <button onclick="fcCrearNuevaSuscripcionDesdeSistema('${clienteId}','${sistemaKey}')" style="background:none;border:1px dashed var(--teal);color:var(--teal);border-radius:var(--radsm);padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Crear suscripción nueva</button>
+    ${candidatas.length?'</div>':''}`;
+  mkModal('modalVincularSistemaSusc',`🔗 Vincular ${suscSistema.nombre} — ${cl.razon_social||''}`,html,null,'Cerrar');
+}
+
+async function fcLigarSuscripcionASistema(clienteId,sistemaKey,suscId){
+  const cl=(window._cartClientes||[]).find(c=>c.id===clienteId);
+  if(!cl) return;
+  const sisCliente=(cl._sistemas||[]).find(s=>s.sistema===sistemaKey);
+  const claveSusc=resolverSuscClaveParaSistema(sistemaKey,sisCliente?.version_licencia);
+  const suscSistema=claveSusc?(window._suscSistemas||[]).find(s=>s.clave===claveSusc):null;
+  if(!suscSistema) return;
+  const {data,error}=await sb.from('suscripciones_cartera').update({sistema_id:suscSistema.id,cliente_id:clienteId}).eq('id',suscId).select().single();
+  if(error){alert('Error al ligar: '+error.message);return;}
+  // Jp, 2026-10-13: "me puede actualizar los datos porque, por ejemplo, aquí
+  // en plan no está actualizado... la próxima renovación..." — una vez
+  // ligada, la suscripción (ya con su periodicidad/fecha correctas, cargadas
+  // de antes) es la fuente de verdad: se reflejan en la fila de "Sistemas y
+  // licencias" de la ficha, no al revés.
+  if(sisCliente?.id){
+    const planMap={mensual:'Mensual',semestral:'Semestral',anual:'Anual'};
+    const upd={};
+    if(data.periodicidad&&planMap[data.periodicidad]) upd.plan=planMap[data.periodicidad];
+    if(data.fecha_proxima_renovacion) upd.proximo_pago=data.fecha_proxima_renovacion;
+    if(Object.keys(upd).length){
+      const {error:errSis}=await sb.from('clientes_cartera_sistemas').update(upd).eq('id',sisCliente.id);
+      if(errSis){alert('Se ligó la suscripción, pero no se pudo actualizar la fila de Sistemas y licencias: '+errSis.message);}
+      else Object.assign(sisCliente,upd);
+    }
+  }
+  cl._suscripciones=(cl._suscripciones||[]).map(su=>su.id===data.id?data:su);
+  window._cartSuscripciones=(window._cartSuscripciones||[]).map(su=>su.id===data.id?data:su);
+  document.getElementById('modalVincularSistemaSusc')?.remove();
+  abrirFichaClienteModal(clienteId);
+}
+
+async function fcCrearNuevaSuscripcionDesdeSistema(clienteId,sistemaKey){
+  const cl=(window._cartClientes||[]).find(c=>c.id===clienteId);
+  if(!cl) return;
+  const sisCliente=(cl._sistemas||[]).find(s=>s.sistema===sistemaKey);
+  const claveSusc=resolverSuscClaveParaSistema(sistemaKey,sisCliente?.version_licencia);
+  const suscSistema=claveSusc?(window._suscSistemas||[]).find(s=>s.clave===claveSusc):null;
+  if(!claveSusc||!suscSistema){alert('No se encontró un sistema de Suscripciones equivalente para vincular.');return;}
   const planTexto=(sisCliente?.plan||'').toLowerCase();
   const periodicidad=planTexto.includes('mensual')?'mensual':planTexto.includes('semestral')?'semestral':'anual';
   const payload={
@@ -8074,6 +8152,21 @@ async function fcCrearSuscripcionDesdeSistema(clienteId,sistemaKey){
   if(error){alert('Error al crear la suscripción: '+error.message);return;}
   cl._suscripciones=[...(cl._suscripciones||[]),data];
   window._cartSuscripciones=[...(window._cartSuscripciones||[]),data];
+  document.getElementById('modalVincularSistemaSusc')?.remove();
+  abrirFichaClienteModal(clienteId);
+}
+
+// Jp, 2026-10-13: "ahora necesito quitar eso" (una suscripción duplicada que
+// el bug de arriba había creado) — no existía forma de borrar una
+// suscripción desde la ficha, solo de editarla. Botón discreto, con
+// confirmación, visible junto a cada suscripción en la columna derecha.
+async function borrarSuscripcionCliente(suscId,clienteId){
+  if(!confirm('¿Eliminar esta suscripción? Esta acción no se puede deshacer.')) return;
+  const {error}=await sb.from('suscripciones_cartera').delete().eq('id',suscId);
+  if(error){alert('Error al eliminar: '+error.message);return;}
+  const cl=(window._cartClientes||[]).find(c=>c.id===clienteId);
+  if(cl) cl._suscripciones=(cl._suscripciones||[]).filter(su=>su.id!==suscId);
+  window._cartSuscripciones=(window._cartSuscripciones||[]).filter(su=>su.id!==suscId);
   abrirFichaClienteModal(clienteId);
 }
 
@@ -8098,6 +8191,7 @@ async function abrirFichaClienteModal(clienteId){
         ${s.tipo_producto==='diplomado'?`<span class="pipe-badge" style="font-size:9px;background:rgba(41,128,185,0.12);color:#2980B9;">DIPLOMADO</span>`:''}
         ${s.periodicidad?`<span style="font-size:10px;color:var(--text3);text-transform:capitalize;">${s.periodicidad}</span>`:''}
         ${s.monto?`<span style="font-size:11px;font-weight:600;color:var(--teal);">${fmt(s.monto)}</span>`:''}
+        ${editable?`<span onclick="borrarSuscripcionCliente('${s.id}','${clienteId}')" title="Eliminar suscripción" style="margin-left:auto;font-size:10px;color:var(--text3);cursor:pointer;">🗑</span>`:''}
       </div>
       ${editable&&s.tipo_producto==='diplomado'?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;padding:8px;background:rgba(41,128,185,0.05);border-radius:var(--radsm);">
         <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:2px;">Diplomado</label>
@@ -8194,7 +8288,7 @@ async function abrirFichaClienteModal(clienteId){
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
         <span style="font-size:12px;font-weight:700;color:var(--navy);min-width:90px;">${def.label}</span>
         ${vencido?`<span style="font-size:9px;color:var(--red);font-weight:700;">VENCIDO</span>`:vence?`<span style="font-size:9px;color:var(--gold);font-weight:700;">POR VENCER</span>`:''}
-        ${suscSistemaEquivalente&&!yaTieneSuscLigada?`<button type="button" onclick="event.stopPropagation();fcCrearSuscripcionDesdeSistema('${clienteId}','${def.key}')" style="background:none;border:1px dashed var(--teal);color:var(--teal);border-radius:var(--radsm);padding:2px 8px;font-size:9px;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Crear suscripción ligada</button>`:''}
+        ${suscSistemaEquivalente&&!yaTieneSuscLigada?`<button type="button" onclick="event.stopPropagation();fcAbrirVincularSistemaSusc('${clienteId}','${def.key}')" style="background:none;border:1px dashed var(--teal);color:var(--teal);border-radius:var(--radsm);padding:2px 8px;font-size:9px;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Vincular suscripción</button>`:''}
         ${yaTieneSuscLigada?`<span style="font-size:9px;color:#27AE60;font-weight:600;">✓ Ligado a Suscripciones</span>`:''}
         <span style="margin-left:auto;font-size:10px;color:var(--text3);cursor:pointer;" onclick="this.closest('[data-sistema-row]').remove()">✕ quitar</span>
       </div>
