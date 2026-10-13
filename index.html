@@ -6984,8 +6984,8 @@ function modalPipeHTML(r,hoy){
       </div>
     </div>`}
     <div style="display:flex;gap:8px;margin-top:16px;">
-      <button onclick="guardarFilaPipe()" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
-      ${r&&r.id?`<button onclick="guardarFilaPipe(true)" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar y siguiente →</button>`:''}
+      <button id="pipeBtnGuardar" onclick="guardarFilaPipe()" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
+      ${r&&r.id?`<button id="pipeBtnGuardarSiguiente" onclick="guardarFilaPipe(true)" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar y siguiente →</button>`:''}
       <button onclick="pipeIntentarCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);">Cancelar</button>
     </div>
   </div>`;
@@ -7056,7 +7056,36 @@ function pipeAplicarContactoSugerido(idx){
   const t=document.getElementById('pContactoTelefono'); if(t) t.value=c.telefono||'';
 }
 
+// Jp, 2026-10-13: bug encontrado — al dar "Guardar" en una negociación nueva,
+// el clic no mostraba ningún cambio visible mientras se creaba también la
+// Oportunidad en el CRM (crmCrearOportunidadDesdeNuevaFila tarda un poco),
+// así que Jp le dio clic otra vez pensando que no había funcionado: se
+// guardaron 2 registros en Proyección y 2 Oportunidades en el CRM. Se
+// corrige con un candado (_pipeGuardando) que ignora clics repetidos mientras
+// el guardado está en vuelo, y los botones se deshabilitan y cambian de
+// texto a "Guardando..." para que se vea que sí está pasando algo.
+let _pipeGuardando=false;
 async function guardarFilaPipe(irASiguiente){
+  if(_pipeGuardando) return;
+  _pipeGuardando=true;
+  const btnGuardar=document.getElementById('pipeBtnGuardar');
+  const btnSiguiente=document.getElementById('pipeBtnGuardarSiguiente');
+  const textoOriginalGuardar=btnGuardar?.textContent;
+  const textoOriginalSiguiente=btnSiguiente?.textContent;
+  if(btnGuardar){btnGuardar.disabled=true;btnGuardar.style.opacity='0.6';btnGuardar.style.cursor='default';btnGuardar.textContent='Guardando...';}
+  if(btnSiguiente){btnSiguiente.disabled=true;btnSiguiente.style.opacity='0.6';btnSiguiente.style.cursor='default';btnSiguiente.textContent='Guardando...';}
+  try{
+    await _guardarFilaPipeInterno(irASiguiente);
+  }finally{
+    _pipeGuardando=false;
+    // Si el modal sigue abierto (hubo un error y se hizo return antes de
+    // cerrarlo), se re-habilitan los botones; si ya se cerró, estas líneas
+    // no hacen nada porque los elementos ya no existen.
+    if(btnGuardar){btnGuardar.disabled=false;btnGuardar.style.opacity='';btnGuardar.style.cursor='';btnGuardar.textContent=textoOriginalGuardar;}
+    if(btnSiguiente){btnSiguiente.disabled=false;btnSiguiente.style.opacity='';btnSiguiente.style.cursor='';btnSiguiente.textContent=textoOriginalSiguiente;}
+  }
+}
+async function _guardarFilaPipeInterno(irASiguiente){
   const id=document.getElementById('pipeId').value;
   const cuentaId=document.getElementById('pipeCuentaId')?.value||null;
   const payload={
@@ -8033,6 +8062,27 @@ function campoVersionLicenciaHtml(sistemaKey,valorActual){
     <input data-sis-field="version_licencia_otro" type="text" value="${val.replace(/"/g,'&quot;')}" placeholder="Escríbela tal como está en el CRM" style="width:100%;margin-top:4px;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;display:${esOtro?'block':'none'};">
   </div>`;
 }
+// Jp, 2026-10-13: "este campo [Tipo de cliente] tiene que ser una lista como
+// la que está en CRM... que es la que habíamos dicho que tenía que quedar...
+// te paso la lista completa para que tengan las cuentas lo mismo que CRM".
+// Lista tal cual la pasó (captura de pantalla del picklist "Tipo" en CRM).
+// Ya hay cuentas con valores que NO están en esta lista (p.ej. "Cliente
+// Poliza Total", "24-jul", o valores viejos en inglés como "Reseller") — se
+// deja "Otro (como está en CRM)" para nunca bloquear ni pisar esos datos.
+const TIPO_CLIENTE_CATALOGO=['Cliente Poliza Aliado','Cliente Poliza Aspel','Cliente Servicio Eventual','24/7','Cliente Cursos Grupales','Cliente Campaña Servicios Gratuito','Socio','Revendedor','Comprador de Producto','Competencia','Inactivo','Suspendido'];
+function campoTipoClienteHtml(valorActual){
+  const val=(valorActual||'').trim();
+  const coincide=TIPO_CLIENTE_CATALOGO.some(v=>v.toLowerCase()===val.toLowerCase());
+  const esOtro=!!val&&!coincide;
+  return `<div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Tipo de cliente</label>
+    <select id="fcTipoCliente" onchange="const o=document.getElementById('fcTipoClienteOtro');if(o)o.style.display=this.value==='__otro__'?'block':'none';" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+      <option value="">-- Sin tipo --</option>
+      ${TIPO_CLIENTE_CATALOGO.map(v=>`<option value="${v}" ${!esOtro&&val.toLowerCase()===v.toLowerCase()?'selected':''}>${v}</option>`).join('')}
+      <option value="__otro__" ${esOtro?'selected':''}>Otro (como está en CRM)...</option>
+    </select>
+    <input id="fcTipoClienteOtro" type="text" value="${val.replace(/"/g,'&quot;')}" placeholder="Escríbelo tal como está en el CRM" style="width:100%;margin-top:4px;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;display:${esOtro?'block':'none'};">
+  </div>`;
+}
 // Jp, 2026-10-13: "en sistemas y licencias me aparece Siigo Fiscal PYME... ese
 // debería poderlo ligar con la suscripción que está activa... en suscripciones
 // solamente tengo el filtro de Siigo Fiscal Despachos, faltarían los demás" —
@@ -8333,7 +8383,7 @@ async function abrirFichaClienteModal(clienteId){
     <div>
       ${seccion('Datos generales',
         campo2(campo('fcRazon','Razón social',cl.razon_social),campo('fcRfc','RFC',cl.rfc,'text','','text-transform:uppercase;'))+
-        campo2(campo('fcTipoCliente','Tipo de cliente',cl.tipo_cliente),campo('fcRating','Rating',cl.rating))+
+        campo2(campoTipoClienteHtml(cl.tipo_cliente),campo('fcRating','Rating',cl.rating))+
         campo2(campo('fcVendedorOrigen','Vendedor (texto CRM)',cl.vendedor_origen,'text','readonly','background:var(--surface-2,#f8f9fa);'),
           `<div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Vendedor asignado</label>
             <select id="fcVendedor" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
@@ -8391,6 +8441,14 @@ async function abrirFichaClienteModal(clienteId){
     </div>
     <!-- COLUMNA DERECHA: suscripciones (comisiones), y debajo Oportunidades/Comentarios CRM (Jp, 2026-10-13: "estas dos secciones me gustaría que aparecieran debajo de suscripciones") -->
     <div>
+      <div class="card" style="padding:14px 20px;margin-bottom:12px;">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">💬 Agregar comentario (CRM)</div>
+        <textarea id="fcNuevoComentarioCrmTop" rows="2" placeholder="Ej: Le di seguimiento, dice que renueva en noviembre..." style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;resize:vertical;font-family:'Inter',sans-serif;"></textarea>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+          <button onclick="fcAgregarComentarioCrm('${clienteId}','${(cl.num_cliente||'').replace(/'/g,"\\'")}','Top')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Agregar</button>
+          <span id="fcComentarioCrmMsgTop" style="font-size:11px;color:var(--red);"></span>
+        </div>
+      </div>
       <div class="card" style="padding:18px 20px;background:var(--surface-2,#f8f9fa);position:sticky;top:12px;">
         <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">
           Suscripciones (${suscripciones.length})
@@ -8512,11 +8570,22 @@ async function fcCargarComentariosCrm(clienteId,numCliente){
   }
 }
 
-async function fcAgregarComentarioCrm(clienteId,numCliente){
-  const msg=document.getElementById('fcComentarioCrmMsg');
-  const texto=(document.getElementById('fcNuevoComentarioCrm')?.value||'').trim();
+// Jp, 2026-10-13: "sí habría manera de que el comentario esté más arriba o
+// más visible, tal vez arriba de suscripciones. Solamente agregar nuevo
+// comentario, no el total de los comentarios" — se agregó una caja rápida
+// arriba de Suscripciones (ids con sufijo "Top") que solo agrega; el
+// historial completo se queda donde ya estaba (colapsado, debajo de
+// Suscripciones). Ambas comparten esta misma función — basta con decirle
+// cuáles ids de textarea/mensaje usar.
+async function fcAgregarComentarioCrm(clienteId,numCliente,sufijo){
+  sufijo=sufijo||'';
+  const msg=document.getElementById('fcComentarioCrmMsg'+sufijo);
+  const textarea=document.getElementById('fcNuevoComentarioCrm'+sufijo);
+  const texto=(textarea?.value||'').trim();
+  msg.style.color='var(--red)';
   if(!texto){msg.textContent='Escribe el comentario primero.';return;}
   if(!numCliente){msg.textContent='Esta cuenta no tiene número de cliente (ACCxxx).';return;}
+  msg.style.color='var(--text3)';
   msg.textContent='Guardando...';
   try{
     const {data:sess}=await sb.auth.getSession();
@@ -8527,9 +8596,15 @@ async function fcAgregarComentarioCrm(clienteId,numCliente){
       body:JSON.stringify({tipo:'cuenta',num_cliente:numCliente,comentario:texto}),
     });
     const j=await res.json().catch(()=>({}));
-    if(!res.ok||!j.ok){msg.textContent='Error: '+(j.error||res.status);return;}
-    msg.textContent='';
-    document.getElementById('fcNuevoComentarioCrm').value='';
+    if(!res.ok||!j.ok){msg.style.color='var(--red)';msg.textContent='Error: '+(j.error||res.status);return;}
+    msg.style.color='#27AE60';
+    msg.textContent='✅ Agregado.';
+    textarea.value='';
+    // Limpia también el otro cuadro (rápido ↔ historial completo) si existe,
+    // para que no se vea el mismo texto repetido en los dos.
+    const otroSufijo=sufijo==='Top'?'':'Top';
+    const otroTextarea=document.getElementById('fcNuevoComentarioCrm'+otroSufijo);
+    if(otroTextarea) otroTextarea.value='';
     fcCargarComentariosCrm(clienteId,numCliente);
   }catch(e){
     msg.textContent='Error de conexión.';
@@ -8579,7 +8654,10 @@ async function guardarFichaClienteCompleta(id){
   const payload={
     razon_social:val('fcRazon'),
     rfc:val('fcRfc')?.toUpperCase()||null,
-    tipo_cliente:val('fcTipoCliente'),
+    // Jp, 2026-10-13: "Tipo de cliente" ahora es lista (como en CRM) con
+    // fallback "Otro" — si eligieron "Otro", se guarda lo que escribieron en
+    // el texto libre en vez del valor literal "__otro__".
+    tipo_cliente:val('fcTipoCliente')==='__otro__'?val('fcTipoClienteOtro'):val('fcTipoCliente'),
     rating:val('fcRating'),
     contacto_principal:val('fcContacto'),
     correo_principal:val('fcCorreoPrincipal'),
