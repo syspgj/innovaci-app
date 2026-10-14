@@ -8341,14 +8341,29 @@ let currentProyectosSub='mios', proyectosFiltroEstado='activos', proyectosFiltro
 function normTipoProyectoFE(v){
   return (v||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim().replace(/\s+/g,' ');
 }
+// Jp, 2026-10-14 (3ra revisión): el filtro "Pólizas ASPEL" estaba mal — solo
+// tenía "Poliza Siigo Aspel" (por eso solo salía 1). Jp repasó los 24 Tipo de
+// CRM uno por uno y corrigió: "Pólizas ASPEL" es la categoría genérica de
+// pólizas con escalera N1→N5 (Elite/Infinito/Mi Empresa+/Profesionista/
+// Emprendedor/Siigo Aspel/Small), separada de "Pólizas Aliado" (Core/Empresa/
+// Prime/Especial — el nivel premium, hasta el final de la lista). Se agrega
+// "Círculo Innovaci" (hoy solo "Circulo Innovaci NOI", Jp dijo que luego se
+// añaden más tipos ahí). Capacitación se renombra "Capacitación Empresarial".
+// Evento Gratuito, Poliza Total ASPEL/GOLD/RED/BLUE/BLACK, Poliza Especial N1
+// y Poliza desfasada NO tienen filtro rápido propio — caen en "Otros" (ver
+// proyectoSinCategoriaTipo), el catch-all para cualquier Tipo no contemplado
+// aquí (incluye null).
 const PROYECTOS_TIPO_CATEGORIAS=[
-  {key:'aliado',label:'🛡 Pólizas Aliado',color:'#1A1F29',set:new Set(['poliza aliado core','poliza aliado empresa','poliza aliado prime','poliza aliado especial'])},
-  {key:'aspel',label:'📦 Pólizas ASPEL',color:'#1D5FA8',set:new Set(['poliza siigo aspel'])},
   {key:'servicio',label:'🔧 Servicio',color:'#2980B9',set:new Set(['servicio en sitio','servicio remoto'])},
-  {key:'capacitacion',label:'🎓 Capacitación',color:'#27AE60',set:new Set(['capacitacion','capacitacion grupal'])},
+  {key:'capacitacion',label:'🎓 Capacitación Empresarial',color:'#27AE60',set:new Set(['capacitacion','capacitacion grupal'])},
   {key:'backup',label:'🗄 Pólizas Backup',color:'#9AA3AB',set:new Set(['poliza backup'])},
+  {key:'aspel',label:'📦 Pólizas ASPEL',color:'#1D5FA8',set:new Set(['poliza siigo aspel','poliza small','poliza emprendedor','poliza profesionista','poliza mi empresa +','poliza infinito','poliza elite'])},
+  {key:'circulo',label:'⭕ Círculo Innovaci',color:'#8E44AD',set:new Set(['circulo innovaci noi'])},
+  {key:'aliado',label:'🛡 Pólizas Aliado',color:'#1A1F29',set:new Set(['poliza aliado core','poliza aliado empresa','poliza aliado prime','poliza aliado especial'])},
 ];
 function proyectoMatchTipoCat(p,cat){ return cat.set.has(normTipoProyectoFE(p.tipo_proyecto)); }
+function proyectoSinCategoriaTipo(p){ return !PROYECTOS_TIPO_CATEGORIAS.some(c=>proyectoMatchTipoCat(p,c)); }
+function proyectosCategoriaLabel(key){ return key==='otros'?'➕ Otros':(PROYECTOS_TIPO_CATEGORIAS.find(c=>c.key===key)?.label||''); }
 
 // Jp, 2026-10-14: "los históricos van a ser los que tengan estado concluido,
 // archivado, y nada más. Los que van a estar en activo son los que están en
@@ -8444,6 +8459,7 @@ function renderProyectosStats(listaBase){
   const wrap=document.getElementById('proyectosStatsWrap');
   if(!wrap) return;
   const conteosTipo=PROYECTOS_TIPO_CATEGORIAS.map(c=>({...c,total:listaBase.filter(p=>proyectoMatchTipoCat(p,c)).length}));
+  conteosTipo.push({key:'otros',label:'➕ Otros',color:'#6B7280',total:listaBase.filter(proyectoSinCategoriaTipo).length});
   wrap.innerHTML=`
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:10px;">
     <div class="card" style="padding:10px 12px;border-left:3px solid var(--teal);" title="Total de proyectos en esta vista (según Activos/Históricos/Otros arriba)">
@@ -8455,7 +8471,7 @@ function renderProyectosStats(listaBase){
       <div style="font-size:18px;font-weight:700;color:${c.color};">${c.total}</div>
     </div>`).join('')}
   </div>
-  ${proyectosFiltroTipo?`<div style="margin-bottom:10px;font-size:11px;color:var(--text2);">Filtrando por: <b>${PROYECTOS_TIPO_CATEGORIAS.find(c=>c.key===proyectosFiltroTipo)?.label||''}</b> <span onclick="onProyectosFiltroTipoClick('${proyectosFiltroTipo}')" style="cursor:pointer;color:var(--red);margin-left:6px;">✕ quitar</span></div>`:''}`;
+  ${proyectosFiltroTipo?`<div style="margin-bottom:10px;font-size:11px;color:var(--text2);">Filtrando por: <b>${proyectosCategoriaLabel(proyectosFiltroTipo)}</b> <span onclick="onProyectosFiltroTipoClick('${proyectosFiltroTipo}')" style="cursor:pointer;color:var(--red);margin-left:6px;">✕ quitar</span></div>`:''}`;
 }
 
 function swProyectos(sub){
@@ -8492,7 +8508,7 @@ function swProyectos(sub){
   renderProyectosStats(listaBase);
 
   const tipoCat=PROYECTOS_TIPO_CATEGORIAS.find(c=>c.key===proyectosFiltroTipo);
-  const filtrados=tipoCat?listaBase.filter(p=>proyectoMatchTipoCat(p,tipoCat)):listaBase;
+  const filtrados=proyectosFiltroTipo==='otros'?listaBase.filter(proyectoSinCategoriaTipo):(tipoCat?listaBase.filter(p=>proyectoMatchTipoCat(p,tipoCat)):listaBase);
   // Orden: prioridad de póliza primero (N1→N5), luego fecha de término prevista más próxima.
   const ORDEN_NIVEL={N1:1,N2:2,N3:3,N4:4,N5:5};
   filtrados.sort((a,b)=>{
