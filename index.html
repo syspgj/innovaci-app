@@ -8314,7 +8314,53 @@ function campoVersionLicenciaHtml(sistemaKey,valorActual){
 // Ya hay cuentas con valores que NO están en esta lista (p.ej. "Cliente
 // Poliza Total", "24-jul", o valores viejos en inglés como "Reseller") — se
 // deja "Otro (como está en CRM)" para nunca bloquear ni pisar esos datos.
-const TIPO_CLIENTE_CATALOGO=['Cliente Poliza Aliado','Cliente Poliza Aspel','Cliente Servicio Eventual','24/7','Cliente Cursos Grupales','Cliente Campaña Servicios Gratuito','Socio','Revendedor','Comprador de Producto','Competencia','Inactivo','Suspendido'];
+// Jp, 2026-10-14: lista completa confirmada contra el picklist real "Tipo"
+// de Cuentas en el CRM (captura de pantalla) — se agregaron "No renovó
+// Póliza" y "Circulo Innovaci", que faltaban en la primera versión.
+const TIPO_CLIENTE_CATALOGO=['No renovó Póliza','Cliente Poliza Aliado','Cliente Poliza Aspel','Circulo Innovaci','Cliente Servicio Eventual','24/7','Cliente Cursos Grupales','Cliente Campaña Servicios Gratuito','Socio','Revendedor','Comprador de Producto','Competencia','Inactivo','Suspendido'];
+
+// Jp, 2026-10-14: "Tipo de Cliente" — clasificación A-E (CRM, campo aparte
+// de "Tipo"), ya se sincroniza en clientes_cartera.tipo_cliente_2 pero no
+// se mostraba/editaba en la app. Colores tomados de la captura del
+// picklist en CRM.
+const TIPO_CLIENTE_2_CATALOGO=[
+  {v:'A Fiel',color:'#1A1F29'},
+  {v:'B Ideal',color:'#5B2A86'},
+  {v:'C Promedio',color:'#C2186D'},
+  {v:'D Esporadico',color:'#E0529C'},
+  {v:'E Red List',color:'#D32F2F'},
+];
+function campoTipoCliente2Html(valorActual){
+  const val=(valorActual||'').trim();
+  const coincide=TIPO_CLIENTE_2_CATALOGO.some(o=>o.v.toLowerCase()===val.toLowerCase());
+  const esOtro=!!val&&!coincide;
+  const actual=TIPO_CLIENTE_2_CATALOGO.find(o=>o.v.toLowerCase()===val.toLowerCase());
+  return `<div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Tipo de Cliente ${actual?`<span style="background:${actual.color};color:#fff;border-radius:3px;padding:1px 6px;font-weight:700;">${actual.v}</span>`:''}</label>
+    <select id="fcTipoCliente2" onchange="const o=document.getElementById('fcTipoCliente2Otro');if(o)o.style.display=this.value==='__otro__'?'block':'none';" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+      <option value="">-- Sin clasificar --</option>
+      ${TIPO_CLIENTE_2_CATALOGO.map(o=>`<option value="${o.v}" ${!esOtro&&val.toLowerCase()===o.v.toLowerCase()?'selected':''}>${o.v}</option>`).join('')}
+      <option value="__otro__" ${esOtro?'selected':''}>Otro (como está en CRM)...</option>
+    </select>
+    <input id="fcTipoCliente2Otro" type="text" value="${val.replace(/"/g,'&quot;')}" placeholder="Escríbelo tal como está en el CRM" style="width:100%;margin-top:4px;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;display:${esOtro?'block':'none'};">
+  </div>`;
+}
+
+// Jp, 2026-10-14: "Rating" — ya se sincroniza en clientes_cartera.rating
+// pero era un texto libre en la ficha; se vuelve lista como el resto.
+const RATING_CATALOGO=['Póliza Premier','Póliza','Activo Premier','Activo','Esporadico','Inactivo','Suspendido','Fallido','Basura'];
+function campoRatingHtml(valorActual){
+  const val=(valorActual||'').trim();
+  const coincide=RATING_CATALOGO.some(v=>v.toLowerCase()===val.toLowerCase());
+  const esOtro=!!val&&!coincide;
+  return `<div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Rating</label>
+    <select id="fcRating" onchange="const o=document.getElementById('fcRatingOtro');if(o)o.style.display=this.value==='__otro__'?'block':'none';" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+      <option value="">-- Sin rating --</option>
+      ${RATING_CATALOGO.map(v=>`<option value="${v}" ${!esOtro&&val.toLowerCase()===v.toLowerCase()?'selected':''}>${v}</option>`).join('')}
+      <option value="__otro__" ${esOtro?'selected':''}>Otro (como está en CRM)...</option>
+    </select>
+    <input id="fcRatingOtro" type="text" value="${val.replace(/"/g,'&quot;')}" placeholder="Escríbelo tal como está en el CRM" style="width:100%;margin-top:4px;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;display:${esOtro?'block':'none'};">
+  </div>`;
+}
 function campoTipoClienteHtml(valorActual){
   const val=(valorActual||'').trim();
   const coincide=TIPO_CLIENTE_CATALOGO.some(v=>v.toLowerCase()===val.toLowerCase());
@@ -8628,7 +8674,8 @@ async function abrirFichaClienteModal(clienteId){
     <div>
       ${seccion('Datos generales',
         campo2(campo('fcRazon','Razón social',cl.razon_social),campo('fcRfc','RFC',cl.rfc,'text','','text-transform:uppercase;'))+
-        campo2(campoTipoClienteHtml(cl.tipo_cliente),campo('fcRating','Rating',cl.rating))+
+        campo2(campoTipoClienteHtml(cl.tipo_cliente),campoRatingHtml(cl.rating))+
+        campo2(campoTipoCliente2Html(cl.tipo_cliente_2),campo('fcVentasGlobales','Ventas globales',cl.ventas_globales,'number'))+
         campo2(campo('fcVendedorOrigen','Vendedor (texto CRM)',cl.vendedor_origen,'text','readonly','background:var(--surface-2,#f8f9fa);'),
           `<div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:3px;">Vendedor asignado</label>
             <select id="fcVendedor" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
@@ -9170,7 +9217,11 @@ async function guardarFichaClienteCompleta(id){
     // fallback "Otro" — si eligieron "Otro", se guarda lo que escribieron en
     // el texto libre en vez del valor literal "__otro__".
     tipo_cliente:val('fcTipoCliente')==='__otro__'?val('fcTipoClienteOtro'):val('fcTipoCliente'),
-    rating:val('fcRating'),
+    // Jp, 2026-10-14: "Rating" y "Tipo de Cliente" (A-E) ahora son listas con
+    // el mismo patrón de fallback "Otro" que Tipo de cliente.
+    rating:val('fcRating')==='__otro__'?val('fcRatingOtro'):val('fcRating'),
+    tipo_cliente_2:val('fcTipoCliente2')==='__otro__'?val('fcTipoCliente2Otro'):val('fcTipoCliente2'),
+    ventas_globales:val('fcVentasGlobales')?Number(val('fcVentasGlobales')):null,
     contacto_principal:val('fcContacto'),
     correo_principal:val('fcCorreoPrincipal'),
     otro_correo:val('fcOtroCorreo'),
