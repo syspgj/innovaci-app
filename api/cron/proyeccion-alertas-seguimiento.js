@@ -38,6 +38,10 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const RESEND_KEY = process.env.RESEND_API_KEY;
 const FROM_EMAIL = process.env.REPORTE_FROM_EMAIL || 'Innovaci OS <reportes@innovaci.com.mx>';
+// Jp, 2026-10-14: "necesito que me llegue copia a mi correo" — copia oculta
+// (bcc) de cada correo de seguimiento diario que se manda a un vendedor, para
+// que Jp vea lo mismo que ellos sin que les aparezca su correo en el mensaje.
+const JP_BCC_EMAIL = 'sys.pgj@gmail.com';
 
 const TIPO_LABEL = { llamada: 'Llamada', correo: 'Correo', visita: 'Visita', otro: 'Actividad' };
 
@@ -62,7 +66,7 @@ async function enviarCorreo({ to, subject, html }) {
   const r = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: FROM_EMAIL, to: [to], subject, html }),
+    body: JSON.stringify({ from: FROM_EMAIL, to: [to], bcc: [JP_BCC_EMAIL], subject, html }),
   });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`Resend -> ${r.status}: ${JSON.stringify(body)}`);
