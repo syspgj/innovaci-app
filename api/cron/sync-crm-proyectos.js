@@ -150,6 +150,18 @@ function parseFechaHoraCRM(v) {
   return v;
 }
 
+// Jp, 2026-10-14 — bug encontrado en la primera corrida real: targetbudget
+// viene de Vtiger como texto con formato de moneda (ej. "$1,709.00"), no
+// como número — Postgres lo rechaza tal cual ("invalid input syntax for
+// type numeric"). Se limpia a solo dígitos/punto/signo antes de guardar.
+function parseMonedaCRM(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const limpio = String(v).replace(/[^0-9.-]/g, '');
+  if (!limpio || limpio === '-' || limpio === '.') return null;
+  const num = Number(limpio);
+  return Number.isFinite(num) ? num : null;
+}
+
 export default async function handler(req, res) {
   const secret = req.query?.secret || req.headers['x-sync-secret'];
   if (!SYNC_SECRET || secret !== SYNC_SECRET) {
@@ -193,7 +205,7 @@ export default async function handler(req, res) {
         fecha_inicio: parseFechaCRM(p.startdate),
         fecha_fin_prevista: parseFechaCRM(p.targetenddate),
         fecha_fin_real: parseFechaCRM(p.actualenddate),
-        presupuesto: p.targetbudget || null,
+        presupuesto: parseMonedaCRM(p.targetbudget),
         descripcion: p.description || null,
         cliente_cartera_id: cliente?.id || null,
         oportunidad_crm_id: p.potentialid ? oportunidadPorPotentialId.get(p.potentialid) || null : null,
