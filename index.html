@@ -7438,7 +7438,12 @@ function pipeRenderActividadesBox(pipelineVendedorId){
     ${pendientes.length?`<div style="font-size:11px;font-weight:600;color:var(--text3);margin:6px 0 4px;">PENDIENTES</div>${pendientes.map(filaAct).join('')}`:''}
     ${hechas.length?`<div style="font-size:11px;font-weight:600;color:var(--text3);margin:10px 0 4px;">HISTORIAL</div>${hechas.slice().reverse().map(filaAct).join('')}`:''}
     ${!pendientes.length&&!hechas.length?'<div style="font-size:11px;color:var(--text3);">Sin actividades registradas todavía.</div>':''}
+    <div style="margin-top:10px;border-top:1px dashed var(--border);padding-top:8px;">
+      <div style="font-size:11px;font-weight:600;color:var(--text3);margin-bottom:4px;">📎 Documentos (cotizaciones, evidencias...)</div>
+      ${htmlUploaderDocumentos('oportunidad',pipelineVendedorId,'docListOportunidad_'+pipelineVendedorId)}
+    </div>
   `;
+  cargarDocumentosAdjuntos('oportunidad',pipelineVendedorId,'docListOportunidad_'+pipelineVendedorId);
 }
 
 function pipeMostrarFormNuevaActividad(pipelineVendedorId){
@@ -7628,6 +7633,93 @@ async function pipeSincronizarComentarioCrm(pipelineVendedorId,tipo,fecha,hora,r
   }catch(e){
     console.error('CRM comentario error',e);
   }
+}
+
+// ── Documentos adjuntos (Supabase Storage + réplica en Vtiger Documents) ───
+// Jp, 2026-10-13/14: pidió poder adjuntar documentos tanto en los comentarios
+// de Cuenta (Cartera) como en la bitácora de Oportunidad (Proyección) — ej.
+// cotizaciones enviadas al cliente — y que queden también en el módulo
+// Documents de Vtiger, no solo en la app. Autorizó construir "ambos niveles"
+// (Storage + réplica a Vtiger) el 14/oct. Ver api/crm-documento.js para la
+// parte que crea el registro en Vtiger — esa parte es best-effort: si falla
+// (instalación de Vtiger con campos distintos, etc.) el archivo igual queda
+// guardado y disponible en la app, solo se avisa que no se replicó.
+async function subirDocumentoAdjunto(entidadTipo,entidadId,file,containerIdLista){
+  if(!file) return;
+  const msgEl=document.getElementById('docMsg_'+entidadId);
+  if(msgEl){msgEl.style.color='var(--text3)';msgEl.textContent='Subiendo...';}
+  try{
+    const nombreSeguro=file.name.replace(/[^a-zA-Z0-9_.\-]/g,'_');
+    const path=`${entidadTipo}/${entidadId}/${Date.now()}_${nombreSeguro}`;
+    const {error:upErr}=await sb.storage.from('crm-documentos').upload(path,file,{upsert:false});
+    if(upErr) throw upErr;
+    const insertPayload={
+      entidad_tipo:entidadTipo,
+      nombre_archivo:file.name,
+      storage_path:path,
+      tamano_bytes:file.size,
+      subido_por:currentUser.id,
+    };
+    if(entidadTipo==='cuenta') insertPayload.cliente_cartera_id=entidadId;
+    else insertPayload.pipeline_vendedor_id=entidadId;
+    const {data:fila,error:insErr}=await sb.from('crm_documentos').insert(insertPayload).select().single();
+    if(insErr) throw insErr;
+    if(msgEl){msgEl.style.color='#27AE60';msgEl.textContent='✅ Subido — replicando en CRM...';}
+    try{
+      const {data:sess}=await sb.auth.getSession();
+      const token=sess?.session?.access_token;
+      const res=await fetch('/api/crm-documento',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+        body:JSON.stringify({crm_documento_id:fila.id}),
+      });
+      const j=await res.json().catch(()=>({}));
+      if(!res.ok||!j.ok||j.relacion_error){
+        if(msgEl){msgEl.style.color='var(--text3)';msgEl.textContent='✅ Subido (CRM: '+(j.relacion_error||j.error||'pendiente de revisar')+').';}
+      }else if(msgEl){
+        msgEl.style.color='#27AE60';msgEl.textContent='✅ Subido y replicado en CRM.';
+      }
+    }catch(e){
+      if(msgEl){msgEl.style.color='var(--text3)';msgEl.textContent='✅ Subido (no se pudo replicar en CRM todavía).';}
+    }
+    if(containerIdLista) cargarDocumentosAdjuntos(entidadTipo,entidadId,containerIdLista);
+  }catch(e){
+    if(msgEl){msgEl.style.color='var(--red)';msgEl.textContent='Error: '+(e.message||e);}
+  }
+}
+
+async function cargarDocumentosAdjuntos(entidadTipo,entidadId,containerId){
+  const box=document.getElementById(containerId);
+  if(!box) return;
+  const campo=entidadTipo==='cuenta'?'cliente_cartera_id':'pipeline_vendedor_id';
+  const {data,error}=await sb.from('crm_documentos').select('*').eq(campo,entidadId).order('created_at',{ascending:false});
+  if(error){box.innerHTML='<div style="font-size:11px;color:var(--red);">No se pudieron cargar los documentos.</div>';return;}
+  const docs=data||[];
+  if(!docs.length){box.innerHTML='<div style="font-size:11px;color:var(--text3);font-style:italic;">Sin documentos adjuntos.</div>';return;}
+  box.innerHTML=docs.map(d=>{
+    const estatus=d.crm_sync_estatus==='ok'?'🔗 en CRM':d.crm_sync_estatus==='error'?'⚠️ no replicado':'⏳ replicando...';
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
+      <span style="font-size:12px;cursor:pointer;color:var(--navy);text-decoration:underline;" onclick="abrirDocumentoAdjunto('${d.storage_path.replace(/'/g,"\\'")}')">${d.nombre_archivo}</span>
+      <span style="font-size:10px;color:var(--text3);white-space:nowrap;" title="${d.crm_sync_error?String(d.crm_sync_error).replace(/"/g,'&quot;'):''}">${estatus}</span>
+    </div>`;
+  }).join('');
+}
+
+async function abrirDocumentoAdjunto(storagePath){
+  const {data,error}=await sb.storage.from('crm-documentos').createSignedUrl(storagePath,300);
+  if(error||!data?.signedUrl){alert('No se pudo abrir el archivo.');return;}
+  window.open(data.signedUrl,'_blank');
+}
+
+function htmlUploaderDocumentos(entidadTipo,entidadId,containerIdLista){
+  return `<div style="margin-top:8px;">
+    <div id="${containerIdLista}" style="margin-bottom:6px;font-size:11px;color:var(--text3);">Cargando documentos...</div>
+    <label style="display:inline-block;background:none;border:1px dashed var(--border);border-radius:6px;padding:6px 12px;font-size:11px;cursor:pointer;color:var(--text2);">
+      📎 Adjuntar documento
+      <input type="file" style="display:none;" onchange="subirDocumentoAdjunto('${entidadTipo}','${entidadId}',this.files[0],'${containerIdLista}')">
+    </label>
+    <span id="docMsg_${entidadId}" style="font-size:11px;margin-left:8px;"></span>
+  </div>`;
 }
 
 // ── PROYECCIÓN ↔ CRM: pendientes de vincular ────────────────────────────────
@@ -8484,8 +8576,22 @@ async function abrirFichaClienteModal(clienteId){
         <div><textarea id="fcNuevoComentarioCrm" rows="2" placeholder="Escribe un comentario para agregarlo al CRM..." style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;resize:vertical;font-family:'Inter',sans-serif;"></textarea>
           <button onclick="fcAgregarComentarioCrm('${clienteId}','${(cl.num_cliente||'').replace(/'/g,"\\'")}')" style="margin-top:6px;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Agregar comentario</button>
           <span id="fcComentarioCrmMsg" style="font-size:11px;color:var(--red);margin-left:8px;"></span>
+        </div>
+        <div style="margin-top:10px;border-top:1px dashed var(--border);padding-top:8px;">
+          <div style="font-size:11px;font-weight:600;color:var(--text3);margin-bottom:4px;">📎 Documentos</div>
+          ${htmlUploaderDocumentos('cuenta',clienteId,'docListCuenta_'+clienteId)}
         </div>`,
         'fcSeccionComentariosCrm'
+      )}
+      ${seccion('Actividades de seguimiento',
+        // Jp, 2026-10-13: "cómo en cartera de cuentas, cuando los vendedores
+        // le dan seguimiento a su cartera de cuentas, cómo registran
+        // actividades... sin necesariamente generar una oportunidad" —
+        // mismo patrón de bitácora que Proyección (pipeline_actividades),
+        // pero ligado directo a la Cuenta (cartera_actividades), y también
+        // se sincroniza como comentario en el CRM. Autorizado 14/oct.
+        `<div id="fcActividadesBox">Cargando actividades...</div>`,
+        'fcSeccionActividades'
       )}
     </div>
   </div>
@@ -8502,6 +8608,8 @@ async function abrirFichaClienteModal(clienteId){
   window.scrollTo(0,0);
   fcCargarOportunidadesAbiertas(clienteId);
   fcCargarComentariosCrm(clienteId,cl.num_cliente);
+  cargarDocumentosAdjuntos('cuenta',clienteId,'docListCuenta_'+clienteId);
+  fcCargarActividades(clienteId,cl.num_cliente);
 }
 
 // Jp, 2026-10-13: "necesito ver al menos las ventas que ha tenido este
@@ -8535,6 +8643,209 @@ async function fcCargarOportunidadesAbiertas(clienteId){
       </div>
       <div style="font-size:10px;color:var(--text3);margin-top:2px;">${o.crm_folio?o.crm_folio+' · ':''}${o.fase_venta||'Sin fase'}${o.fecha_cierre_prevista?' · cierre previsto '+fmtFecha(o.fecha_cierre_prevista):''}${o.vendedor_crm_texto?' · '+o.vendedor_crm_texto:''}</div>
     </div>`).join('')}</div>`;
+}
+
+// ── CARTERA — Actividades de seguimiento sin Oportunidad (cartera_actividades) ──
+// Jp, 2026-10-13: "cómo en cartera de cuentas, cuando los vendedores le dan
+// seguimiento a su cartera de cuentas, cómo registran actividades. Estas
+// actividades sin necesariamente generar una oportunidad, porque puede ser
+// que le hablen al contador... esa actividad tiene que estar programada,
+// pero no necesariamente genera una oportunidad." Autorizado el 14/oct
+// ("reusar bitácora existente + sincronizar a CRM"): mismo patrón que la
+// bitácora de Proyección (pipeline_actividades / TIPO_ACTIVIDAD_LABEL /
+// construirComentarioActividad, arriba), pero la tabla (cartera_actividades)
+// se liga directo a la Cuenta en vez de a una negociación, y el comentario se
+// manda al CRM como comentario de Cuenta (vía /api/crm-comentarios, el mismo
+// endpoint que ya usan los comentarios manuales de esta ficha) en vez de
+// como comentario de Oportunidad.
+async function fcCargarActividades(clienteId,numCliente){
+  const box=document.getElementById('fcActividadesBox');
+  if(!box) return;
+  const {data,error}=await sb.from('cartera_actividades')
+    .select('*').eq('cliente_cartera_id',clienteId)
+    .order('fecha_programada',{ascending:true});
+  if(error){box.innerHTML='<div style="font-size:11px;color:var(--red);">No se pudo cargar la bitácora.</div>';return;}
+  window._fcActividadesActual=data||[];
+  fcRenderActividadesBox(clienteId,numCliente);
+}
+
+function fcRenderActividadesBox(clienteId,numCliente){
+  const box=document.getElementById('fcActividadesBox');
+  if(!box) return;
+  const actividades=window._fcActividadesActual||[];
+  const pendientes=actividades.filter(a=>!a.completada);
+  const hechas=actividades.filter(a=>a.completada);
+  const filaAct=(a)=>{
+    const fechaTxt=`${a.fecha_programada}${a.hora_programada?' '+String(a.hora_programada).slice(0,5):''}`;
+    if(a.completada){
+      return `<div style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;background:var(--surface-2,#f4f6f8);">
+        <div style="font-size:11px;color:var(--text3);">${fechaTxt} · ${TIPO_ACTIVIDAD_LABEL[a.tipo_actividad]||a.tipo_actividad} · ✅ completada</div>
+        ${a.resultado?`<div style="font-size:12px;margin-top:2px;"><b>${a.resultado}</b></div>`:''}
+        ${a.nota?`<div style="font-size:12px;color:var(--text2);margin-top:2px;">${a.nota}</div>`:''}
+      </div>`;
+    }
+    return `<div id="fcActRow_${a.id}" style="padding:8px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <div style="font-size:12px;"><b>${fechaTxt}</b> · ${TIPO_ACTIVIDAD_LABEL[a.tipo_actividad]||a.tipo_actividad}${a.nota?' — '+a.nota:''}</div>
+        <button onclick="fcMostrarFormCompletarActividad('${a.id}','${clienteId}','${(numCliente||'').replace(/'/g,"\\'")}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;white-space:nowrap;">✓ Completar</button>
+      </div>
+      <div id="fcFormCompletar_${a.id}"></div>
+    </div>`;
+  };
+  box.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <div style="font-size:12px;color:var(--text3);">Para seguimientos que no necesariamente abren una Oportunidad.</div>
+      <button onclick="fcMostrarFormNuevaActividad('${clienteId}')" style="background:none;border:1px solid var(--navy);color:var(--navy);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;white-space:nowrap;">+ Programar</button>
+    </div>
+    <div id="fcFormNuevaActividad_${clienteId}"></div>
+    ${pendientes.length?`<div style="font-size:11px;font-weight:600;color:var(--text3);margin:6px 0 4px;">PENDIENTES</div>${pendientes.map(filaAct).join('')}`:''}
+    ${hechas.length?`<div style="font-size:11px;font-weight:600;color:var(--text3);margin:10px 0 4px;">HISTORIAL</div>${hechas.slice().reverse().map(filaAct).join('')}`:''}
+    ${!pendientes.length&&!hechas.length?'<div style="font-size:11px;color:var(--text3);">Sin actividades registradas todavía.</div>':''}
+  `;
+  // guarda numCliente para los botones de completar (los onclick solo
+  // pasan ids simples, el form de completar reusa este valor vía closure
+  // al volver a llamar fcRenderActividadesBox tras guardar)
+  box.dataset.numCliente=numCliente||'';
+}
+
+function fcMostrarFormNuevaActividad(clienteId){
+  const cont=document.getElementById('fcFormNuevaActividad_'+clienteId);
+  if(!cont) return;
+  const hoy=todayLocal();
+  cont.innerHTML=`<div style="border:1px dashed var(--border);border-radius:6px;padding:10px;margin-bottom:8px;">
+    <div class="form-grid fg3" style="gap:8px;">
+      <div class="form-field">
+        <label>Tipo</label>
+        <select id="fcActTipo_${clienteId}" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">
+          ${pipeOpcionesTipoActividad('llamada')}
+        </select>
+      </div>
+      <div class="form-field">
+        <label>Fecha</label>
+        <input type="date" id="fcActFecha_${clienteId}" value="${hoy}">
+      </div>
+      <div class="form-field">
+        <label>Hora (opcional)</label>
+        <input type="time" id="fcActHora_${clienteId}">
+      </div>
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>Nota</label>
+        <input type="text" id="fcActNota_${clienteId}" placeholder="Ej: Llamarle al contador para ver cómo va">
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:8px;">
+      <button onclick="fcGuardarNuevaActividad('${clienteId}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">Guardar</button>
+      <button onclick="document.getElementById('fcFormNuevaActividad_${clienteId}').innerHTML=''" style="background:none;border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;color:var(--text2);">Cancelar</button>
+    </div>
+  </div>`;
+}
+
+async function fcGuardarNuevaActividad(clienteId){
+  const tipo=document.getElementById('fcActTipo_'+clienteId)?.value||'llamada';
+  const fecha=document.getElementById('fcActFecha_'+clienteId)?.value;
+  const hora=document.getElementById('fcActHora_'+clienteId)?.value||null;
+  const nota=document.getElementById('fcActNota_'+clienteId)?.value||null;
+  if(!fecha){alert('Falta la fecha');return;}
+  const {error}=await sb.from('cartera_actividades').insert({
+    cliente_cartera_id:clienteId,
+    usuario_id:currentUser.id,
+    tipo_actividad:tipo,
+    fecha_programada:fecha,
+    hora_programada:hora,
+    nota,
+  });
+  if(error){alert('Error: '+error.message);return;}
+  const contForm=document.getElementById('fcFormNuevaActividad_'+clienteId);
+  if(contForm) contForm.innerHTML='';
+  const numCliente=document.getElementById('fcActividadesBox')?.dataset.numCliente||'';
+  await fcSincronizarActividadCrm(numCliente,tipo,fecha,hora,null,nota);
+  await fcCargarActividades(clienteId,numCliente);
+}
+
+function fcMostrarFormCompletarActividad(actividadId,clienteId,numCliente){
+  const cont=document.getElementById('fcFormCompletar_'+actividadId);
+  if(!cont) return;
+  cont.innerHTML=`<div style="margin-top:8px;border-top:1px dashed var(--border);padding-top:8px;">
+    <div class="form-grid fg3" style="gap:8px;">
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>Resultado</label>
+        <select id="fcActResultado_${actividadId}" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">
+          <option value="Positivo">Positivo</option>
+          <option value="Neutral">Neutral — sigue en proceso</option>
+          <option value="Negativo">Negativo</option>
+        </select>
+      </div>
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>Comentario</label>
+        <input type="text" id="fcActComentario_${actividadId}" placeholder="Qué pasó en esta actividad...">
+      </div>
+      <div class="form-field">
+        <label>Programar siguiente (opcional)</label>
+        <input type="date" id="fcActSiguienteFecha_${actividadId}">
+      </div>
+      <div class="form-field" style="grid-column:2/4;">
+        <label>Nota de la siguiente</label>
+        <input type="text" id="fcActSiguienteNota_${actividadId}" placeholder="Ej: Volver a llamar el viernes">
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:8px;">
+      <button onclick="fcGuardarCompletarActividad('${actividadId}','${clienteId}','${(numCliente||'').replace(/'/g,"\\'")}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">Guardar</button>
+      <button onclick="document.getElementById('fcFormCompletar_${actividadId}').innerHTML=''" style="background:none;border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;color:var(--text2);">Cancelar</button>
+    </div>
+  </div>`;
+}
+
+async function fcGuardarCompletarActividad(actividadId,clienteId,numCliente){
+  const resultado=document.getElementById('fcActResultado_'+actividadId)?.value||'Neutral';
+  const nota=document.getElementById('fcActComentario_'+actividadId)?.value||null;
+  const sigFecha=document.getElementById('fcActSiguienteFecha_'+actividadId)?.value||null;
+  const sigNota=document.getElementById('fcActSiguienteNota_'+actividadId)?.value||null;
+
+  const {error}=await sb.from('cartera_actividades').update({
+    completada:true,
+    fecha_completada:new Date().toISOString(),
+    resultado,
+    nota,
+    updated_at:new Date().toISOString(),
+  }).eq('id',actividadId);
+  if(error){alert('Error: '+error.message);return;}
+
+  const actOriginal=(window._fcActividadesActual||[]).find(a=>a.id===actividadId);
+  await fcSincronizarActividadCrm(numCliente,actOriginal?.tipo_actividad,actOriginal?.fecha_programada,actOriginal?.hora_programada,resultado,nota);
+
+  if(sigFecha){
+    await sb.from('cartera_actividades').insert({
+      cliente_cartera_id:clienteId,
+      usuario_id:currentUser.id,
+      tipo_actividad:'llamada',
+      fecha_programada:sigFecha,
+      nota:sigNota,
+    });
+  }
+  await fcCargarActividades(clienteId,numCliente);
+}
+
+// Comentario de bitácora de Cartera, como comentario real de la Cuenta en el
+// CRM — mismo formato (construirComentarioActividad) que usa Proyección,
+// reusando el endpoint /api/crm-comentarios (tipo=cuenta) que ya usan los
+// comentarios manuales de esta misma ficha. Best-effort: si falla, la
+// actividad ya quedó guardada en la app.
+async function fcSincronizarActividadCrm(numCliente,tipo,fecha,hora,resultado,nota){
+  if(!numCliente) return;
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const contenido=construirComentarioActividad(tipo,fecha,hora,resultado,nota).replace('[Proyección]','[Cartera]');
+    const res=await fetch('/api/crm-comentarios',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body:JSON.stringify({tipo:'cuenta',num_cliente:numCliente,comentario:contenido}),
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok) console.error('CRM comentario (actividad cartera) failed',j);
+  }catch(e){
+    console.error('CRM comentario (actividad cartera) error',e);
+  }
 }
 
 // Jp, 2026-10-13: lee/agrega comentarios del CRM a nivel Cuenta, vía el nuevo
