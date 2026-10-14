@@ -152,8 +152,13 @@ export default async function handler(req, res) {
       const tipo = body.tipo;
       if (!body.comentario || !body.comentario.trim()) return res.status(400).json({ ok: false, error: 'Falta el texto del comentario' });
       const crmid = await obtenerCrmId(tipo, body);
-      await agregarComentario(crmid, body.comentario.trim());
-      return res.status(200).json({ ok: true });
+      const resultado = await agregarComentario(crmid, body.comentario.trim());
+      // Jp, 2026-10-14 — se regresa el id del comentario recién creado
+      // (ModComments) para poder adjuntarle un documento específico después
+      // (ver api/crm-documento.js): Jp pidió que los documentos queden
+      // colgados del comentario exacto de la bitácora con el que se suben,
+      // no de forma general de la Cuenta — igual que se ve en el CRM.
+      return res.status(200).json({ ok: true, comentario_id: resultado?.id || null });
     }
     return res.status(405).json({ ok: false, error: 'Método no soportado' });
   } catch (err) {

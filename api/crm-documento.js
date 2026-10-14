@@ -1,42 +1,48 @@
 // api/crm-documento.js
 //
-// Jp, 2026-10-14 — segunda parte del feature de documentos adjuntos que pidió
-// el 13/oct ("necesitamos agregar la posibilidad de agregar documentos, que
-// estos documentos queden integrados en la aplicación, pero que se repliquen
-// en CRM, porque CRM tiene esa función de agregar documentos"). Autorizado
-// explícitamente a construir "ambos niveles" (Supabase + replicar en Vtiger).
+// Jp, 2026-10-13/14 — feature de documentos adjuntos ("que estos documentos
+// queden integrados en la aplicación, pero que se repliquen en CRM").
 //
-// Flujo (ver también index.html, funciones fcSubirDocumentoCrm / pipeSubirDocumentoCrm):
+// *** Corrección 2026-10-14, tras la primera prueba en vivo de Jp: ***
+//   a) El create de Documents fallaba con "ACCESS_DENIED / Permission to
+//      perform the operation is denied for id" — causa: faltaba el campo
+//      assigned_user_id (Vtiger lo exige para casi cualquier create, igual
+//      que ya se sabía por crm-crear-oportunidad.js). Corregido abajo,
+//      mismo patrón: usuarios.crm_user_id del vendedor, o el usuario
+//      "Analisis" (19x27) de respaldo si no está ligado.
+//   b) Jp aclaró que el documento NO debe colgar de forma general de la
+//      Cuenta/Oportunidad — debe quedar ligado al comentario ESPECÍFICO de
+//      la bitácora con el que se sube (así se ve en el CRM: cada comentario
+//      trae su propio archivo, como en la captura que mandó de la
+//      Oportunidad de Jordi Enrique Ramos Rivera). Por eso este endpoint
+//      ahora acepta un `crm_comentario_id` (el id de ModComments que ya se
+//      creó al sincronizar esa actividad — ver api/crm-comentarios.js y
+//      api/crm-agregar-comentario.js, los dos ya regresan ese id) y, si
+//      viene, relaciona el Document a ESE comentario en vez de a la
+//      Cuenta/Oportunidad completa.
+//
+// Flujo (ver index.html, función compartida subirDocumentoAdjunto):
 //   1) El navegador sube el archivo directo a Supabase Storage (bucket
-//      "crm-documentos") y guarda una fila en la tabla crm_documentos con
+//      "crm-documentos") y guarda una fila en crm_documentos con
 //      crm_sync_estatus='pendiente'.
-//   2) El navegador llama a este endpoint con el id de esa fila. Este
-//      endpoint genera una URL firmada de larga duración hacia el archivo en
-//      Storage, y crea un registro en el módulo "Documents" de Vtiger como
-//      "External URL" apuntando a esa URL firmada (no sube el binario a
-//      Vtiger — eso sería un segundo paso, más adelante, si se necesita).
-//   3) Si Vtiger lo soporta, además liga el documento al registro de la
-//      Cuenta u Oportunidad (operation=addRelatedRecord). Si esa relación en
-//      particular no existe en esta instalación de Vtiger, el documento igual
-//      queda creado (solo no se ve colgado del folio) y se reporta el error
-//      de la relación aparte, sin tronar todo el request.
+//   2) Se sincroniza primero el comentario de la actividad al CRM (ya
+//      existente) y se obtiene su id.
+//   3) El navegador llama a este endpoint con el id de la fila de
+//      crm_documentos Y el id del comentario. Este endpoint genera una URL
+//      firmada de larga duración hacia el archivo en Storage, crea un
+//      registro en el módulo "Documents" de Vtiger como "External URL"
+//      apuntando a esa URL, y lo relaciona al comentario (o, si no hay
+//      comentario, de respaldo a la Cuenta/Oportunidad — compatibilidad).
 //
-// *** NOTA PARA Jp: esta es la primera vez que se prueba crear/relacionar
-// documentos contra este Vtiger en vivo — los nombres de campos del módulo
-// Documents (filelocationtype, folderid, etc.) son los estándar de Vtiger,
-// pero cada instalación puede tener variaciones (folderid obligatorio con
-// otro valor, campos custom, etc.). Si al probarlo el create falla, revisa el
-// mensaje de error que regresa (lo mandamos tal cual del webservice) — con
-// eso ajustamos el payload, igual que se hizo con "Tipo de Servicio" en
-// api/crm-describir-oportunidades.js. ***
-//
-// POST { crm_documento_id (uuid de la fila en crm_documentos) }
-//   -> genera la URL firmada, crea el Document en Vtiger, intenta relacionarlo,
-//      actualiza crm_documentos.crm_sync_estatus/crm_documento_id/crm_sync_error.
+// POST { crm_documento_id (uuid de la fila en crm_documentos), crm_comentario_id?, vendedor_usuario_id? }
+//   -> genera la URL firmada, crea el Document en Vtiger, lo relaciona,
+//      actualiza crm_documentos.crm_sync_estatus/crm_documento_id/crm_comentario_id/crm_sync_error.
 //
 // Variables de entorno: las mismas que api/crm-comentarios.js —
 // VTIGER_BASE_URL, VTIGER_USER, VTIGER_ACCESS_KEY, SUPABASE_URL,
 // SUPABASE_SERVICE_ROLE_KEY.
+
+const VTIGER_USUARIO_RESPALDO = '19x27'; // Analisis — mismo respaldo que los demás endpoints de Fase 3/4.
 
 import crypto from 'node:crypto';
 
@@ -136,7 +142,18 @@ async function crearUrlFirmada(storagePath) {
   return `${SUPABASE_URL}/storage/v1${json.signedURL}`;
 }
 
-async function crearDocumentoVtiger(sessionName, nombreArchivo, urlFirmada, notas) {
+async function resolverAssignedUserId(vendedorUsuarioId) {
+  if (!vendedorUsuarioId) return VTIGER_USUARIO_RESPALDO;
+  const url = `${SUPABASE_URL}/rest/v1/usuarios?id=eq.${encodeURIComponent(vendedorUsuarioId)}&select=crm_user_id`;
+  const res = await fetch(url, {
+    headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
+  });
+  if (!res.ok) return VTIGER_USUARIO_RESPALDO;
+  const rows = await res.json().catch(() => []);
+  return rows?.[0]?.crm_user_id || VTIGER_USUARIO_RESPALDO;
+}
+
+async function crearDocumentoVtiger(sessionName, nombreArchivo, urlFirmada, notas, assignedUserId) {
   const ext = (nombreArchivo.split('.').pop() || '').toLowerCase();
   const record = {
     notes: notas || nombreArchivo,
@@ -146,6 +163,7 @@ async function crearDocumentoVtiger(sessionName, nombreArchivo, urlFirmada, nota
     fileurl: urlFirmada,
     filestatus: 1,
     folderid: 'T2', // carpeta raíz por defecto de Vtiger — si esta instalación usa otra, ajustar aquí
+    assigned_user_id: assignedUserId, // Jp, 2026-10-14: faltaba — causaba el ACCESS_DENIED del primer intento
   };
   const body = new URLSearchParams({ operation: 'create', sessionName, element: JSON.stringify(record), elementType: 'Documents' });
   const json = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body }).then((r) => r.json());
@@ -181,24 +199,32 @@ export default async function handler(req, res) {
 
   try {
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    const { crm_documento_id } = body;
+    const { crm_documento_id, crm_comentario_id, vendedor_usuario_id } = body;
     if (!crm_documento_id) return res.status(400).json({ ok: false, error: 'Falta crm_documento_id' });
 
     const fila = await obtenerFilaDocumento(crm_documento_id);
     if (!fila) return res.status(404).json({ ok: false, error: 'No existe ese documento en crm_documentos' });
 
-    // Resuelve el id real de Vtiger (Cuenta u Oportunidad) para relacionar.
-    let crmId = null;
-    if (fila.entidad_tipo === 'cuenta' && fila.cliente_cartera_id) {
-      const numCliente = await obtenerNumClienteDeCuenta(fila.cliente_cartera_id);
-      if (numCliente) crmId = await resolverAccountIdCrm(numCliente);
-    } else if (fila.entidad_tipo === 'oportunidad' && fila.pipeline_vendedor_id) {
-      crmId = await obtenerPotentialIdDeOportunidad(fila.pipeline_vendedor_id);
+    // Jp, 2026-10-14: prioridad — si viene el id del comentario de bitácora
+    // con el que se subió el archivo, el documento se relaciona a ESE
+    // comentario (como en el CRM real). Si no viene (caso de respaldo, o
+    // llamadas viejas), se cae al comportamiento anterior: relacionar de
+    // forma general a la Cuenta/Oportunidad.
+    let crmId = crm_comentario_id || null;
+    let relacionadoAComentario = !!crm_comentario_id;
+    if (!crmId) {
+      if (fila.entidad_tipo === 'cuenta' && fila.cliente_cartera_id) {
+        const numCliente = await obtenerNumClienteDeCuenta(fila.cliente_cartera_id);
+        if (numCliente) crmId = await resolverAccountIdCrm(numCliente);
+      } else if (fila.entidad_tipo === 'oportunidad' && fila.pipeline_vendedor_id) {
+        crmId = await obtenerPotentialIdDeOportunidad(fila.pipeline_vendedor_id);
+      }
     }
 
+    const assignedUserId = await resolverAssignedUserId(vendedor_usuario_id || fila.subido_por);
     const urlFirmada = await crearUrlFirmada(fila.storage_path);
     const sessionName = await vtigerLogin();
-    const documento = await crearDocumentoVtiger(sessionName, fila.nombre_archivo, urlFirmada, `Subido desde App VENTAS`);
+    const documento = await crearDocumentoVtiger(sessionName, fila.nombre_archivo, urlFirmada, `Subido desde App VENTAS`, assignedUserId);
 
     let relacionError = null;
     if (crmId) {
@@ -208,11 +234,14 @@ export default async function handler(req, res) {
         relacionError = String(e?.message || e);
       }
     } else {
-      relacionError = 'No se encontró el registro de Vtiger (Cuenta/Oportunidad) para relacionar — el documento se creó suelto.';
+      relacionError = relacionadoAComentario
+        ? null
+        : 'No se encontró el registro de Vtiger (Cuenta/Oportunidad) para relacionar — el documento se creó suelto.';
     }
 
     await actualizarFilaDocumento(crm_documento_id, {
       crm_documento_id: documento.id || documento.documentsid || null,
+      crm_comentario_id: crm_comentario_id || null,
       crm_sync_estatus: relacionError ? 'error' : 'ok',
       crm_sync_error: relacionError,
     });
