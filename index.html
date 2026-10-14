@@ -5327,7 +5327,7 @@ function buildVendorUI(){
   });
   // Fila 2 (consulta/referencia): Cartera, Proyección, Histórico, Promociones, Reglas de comisión
   const _tabsBottom=[];
-  if(esVendedor)_tabsBottom.push({l:'💼 Cartera',v:'cartera'},{l:'📋 Suscripciones',v:'suscripciones'});
+  if(esVendedor)_tabsBottom.push({l:'💼 Cartera',v:'cartera'},{l:'📁 Proyectos',v:'proyectos'},{l:'📋 Suscripciones',v:'suscripciones'});
   _tabsBottom.push({l:'Proyección',v:'proyeccion'},{l:'Histórico',v:'historico'},{l:'🏷 Promociones',v:'promos'},{l:'📜 Reglas de comisión',v:'reglas'},{l:'🖥 Servidores',v:'servidores'},{l:'🔑 Licencias TS Plus',v:'tsplus'});
   if(_tabsBottom.length){
     _t2.style.display='flex';
@@ -5358,6 +5358,7 @@ function swV(id){
   if(id==='miMes')renderVendorMiMes();
   else if(id==='anual')renderVendorAnual();
   else if(id==='cartera')renderCarteraVendedor();
+  else if(id==='proyectos')renderProyectosModulo();
   else if(id==='suscripciones')renderVendedorSuscripcionesModulo();
   else if(id==='registro')renderRegistroForm();
   else if(id==='proyeccion')renderProyeccion();
@@ -5372,6 +5373,7 @@ async function renderVendor(){
   if(currentVendTab==='miMes')renderVendorMiMes();
   else if(currentVendTab==='anual')renderVendorAnual();
   else if(currentVendTab==='cartera')renderCarteraVendedor();
+  else if(currentVendTab==='proyectos')renderProyectosModulo();
   else if(currentVendTab==='suscripciones')renderVendedorSuscripcionesModulo();
   else if(currentVendTab==='registro')renderRegistroForm();
   else if(currentVendTab==='proyeccion')renderProyeccion();
@@ -7993,7 +7995,7 @@ async function ejecutarVinculacionOportunidadActual(){
 // ── CARTERA DE CUENTAS ──────────────────────────────────────────────────────
 let currentCarteraSub='disponibles';
 let carteraSortCol=null, carteraSortDir=1;
-let carteraFiltroTexto='', carteraFiltroProducto='', carteraFiltroPeriodicidad='', carteraFiltroVendedor='', carteraFiltroTipo='';
+let carteraFiltroTexto='', carteraFiltroProducto='', carteraFiltroSistema='', carteraFiltroPeriodicidad='', carteraFiltroVendedor='', carteraFiltroTipo='';
 function toggleCarteraFiltroVendedor(vendedorId){
   carteraFiltroVendedor=(carteraFiltroVendedor===vendedorId)?'':vendedorId;
   renderCarteraVendorBotones();
@@ -8078,6 +8080,7 @@ function renderCarteraStats(lista){
 
 async function renderCarteraVendedor(){
   const mc=document.getElementById('mainContent');
+  mc.classList.remove('full-width'); // Jp, 2026-10-14: si antes se visitó una vista ancha (ej. Proyección) y no se regresó al ancho normal, Cartera se quedaba "ensanchada" — forzar el modo compacto siempre al entrar.
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando cartera...</div>';
   const limiteActividad=new Date(Date.now()-CARTERA_DIAS_SIN_SEGUIMIENTO*86400000).toISOString();
   const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas},{data:sistemasCartera},{data:proyectosActivos},{data:pipeActivo}]=await Promise.all([
@@ -8131,13 +8134,17 @@ async function renderCarteraVendedor(){
     <div id="carteraVendedorBotones" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
   </div>
   <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;">
-    <div style="flex:1;min-width:200px;position:relative;">
-      <input type="text" id="carteraFiltroTextoInput" placeholder="Buscar por nombre, RFC, número de cliente..." value="${carteraFiltroTexto}" oninput="onCarteraFiltroChange()" style="width:100%;padding:8px 36px 8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
-      ${carteraFiltroTexto?`<button onclick="carteraFiltroTexto='';document.getElementById('carteraFiltroTextoInput').value='';document.getElementById('carteraFiltroProductoInput').value='';carteraFiltroProducto='';swCartera(currentCarteraSub)" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;line-height:1;">✕</button>`:''}
+    <div style="flex:0 1 220px;min-width:160px;position:relative;">
+      <input type="text" id="carteraFiltroTextoInput" placeholder="Nombre, RFC, número..." value="${carteraFiltroTexto}" oninput="onCarteraFiltroChange()" style="width:100%;padding:8px 36px 8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
+      ${carteraFiltroTexto?`<button onclick="carteraFiltroTexto='';document.getElementById('carteraFiltroTextoInput').value='';swCartera(currentCarteraSub)" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;line-height:1;">✕</button>`:''}
     </div>
     <select id="carteraFiltroProductoInput" onchange="onCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
-      <option value="">Todos los productos</option>
+      <option value="">Todas las suscripciones</option>
       ${productos.map(p=>`<option value="${p}" ${carteraFiltroProducto===p?'selected':''}>${p}</option>`).join('')}
+    </select>
+    <select id="carteraFiltroSistemaInput" onchange="onCarteraFiltroChange()" style="padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;" title="Filtra por sistema/licencia en 'Sistemas y licencias' de la ficha — independiente de Suscripciones.">
+      <option value="">Todos los sistemas</option>
+      ${SISTEMAS_CATALOGO.map(s=>`<option value="${s.key}" ${carteraFiltroSistema===s.key?'selected':''}>${s.label}</option>`).join('')}
     </select>
   </div>
   <div id="carteraContenido"></div>`;
@@ -8163,21 +8170,29 @@ function carteraPrioridadScore(cl){
 
 function swCartera(sub){
   currentCarteraSub=sub;
-  if(sub!=='todos') carteraFiltroVendedor=''; // Jp, 2026-10-13: el filtro por vendedor solo tiene sentido/se ve en "Todos los clientes".
+  // Jp, 2026-10-14: antes se limpiaba el filtro de vendedor al salir de "Todos
+  // los clientes" — eso rompía "Sin seguimiento" (se mezclaban los vendedores)
+  // porque el filtro de vendedor se borraba solo. Ya no se borra automático;
+  // solo se quita con el botón de vendedor (toggleCarteraFiltroVendedor) o
+  // manualmente. La fila de botones de vendedor se ve en "Todos" y en "Sin
+  // seguimiento" (los únicos sub-tabs donde Jp pidió poder filtrar por vendedor
+  // sin ser forzosamente "mi cartera").
   ['todos','mia','activos','sin_seguimiento'].forEach(s=>{
     const btn=document.getElementById('carteraSub_'+s);
     if(btn) btn.classList.toggle('active',s===sub);
   });
   const wrapVend=document.getElementById('carteraVendedorBotonesWrap');
+  const muestraFiltroVendedor=(sub==='todos'||sub==='sin_seguimiento');
   if(wrapVend){
-    wrapVend.style.display=(sub==='todos')?'flex':'none';
-    if(sub==='todos') renderCarteraVendorBotones();
+    wrapVend.style.display=muestraFiltroVendedor?'flex':'none';
+    if(muestraFiltroVendedor) renderCarteraVendorBotones();
   }
   const clientes=window._cartClientes||[];
   const limiteSinSeguimiento=new Date(Date.now()-CARTERA_DIAS_SIN_SEGUIMIENTO*86400000);
   const actividadReciente=window._cartActividadReciente||new Set();
   const q=(carteraFiltroTexto||'').toLowerCase();
   const prod=carteraFiltroProducto||'';
+  const sistema=carteraFiltroSistema||'';
   const vend=carteraFiltroVendedor||'';
   // Jp, 2026-10-14: "deberían de ser filtros en los cuales si yo le doy
   // aliado, me debería demostrar todas las pólizas aliado" — las tarjetas de
@@ -8186,18 +8201,23 @@ function swCartera(sub){
   // onCarteraFiltroTipoClick / render de conteosTipo).
   const tipoCat=CARTERA_TIPO_CATEGORIAS.find(c=>c.key===carteraFiltroTipo);
 
-  let filtrados=clientes.filter(cl=>{
-    // Filtro de texto
+  // Jp, 2026-10-14: "necesito que no se mueva ese, esos números" — las
+  // tarjetas de conteo (Aliado/Aspel/Eventual/24-7/Cursos) deben quedar FIJAS
+  // mientras te mueves entre ellas, no recalcularse sobre la lista ya filtrada
+  // por tipo (si no, al dar clic en "Aliado" las demás se van a 0 y "Total
+  // cuentas" deja de mostrar el total real). Por eso aquí se separa: una
+  // "lista base" (sub-pestaña + vendedor + texto + suscripción + sistema, SIN
+  // el filtro de tipo) para las tarjetas, y la lista final (con el filtro de
+  // tipo encima) para lo que se pinta abajo.
+  const filtradosBase=clientes.filter(cl=>{
     const matchQ=!q||(cl.razon_social||'').toLowerCase().includes(q)||(cl.rfc||'').toLowerCase().includes(q)||(cl.num_cliente||'').toLowerCase().includes(q)||(cl.alias_nombres||[]).some(a=>(a||'').toLowerCase().includes(q));
-    // Filtro de producto (al menos una suscripción con ese producto)
+    // Filtro de suscripción (al menos una suscripción con ese producto)
     const matchProd=!prod||(cl._suscripciones||[]).some(s=>s.producto===prod);
-    // Filtro de vendedor (solo visible/activo en "Todos los clientes")
+    // Filtro de sistema (Sistemas y licencias de la ficha, ej. SAE/COI/NOI) — independiente de suscripciones.
+    const matchSistema=!sistema||(cl._sistemas||[]).some(s=>s.sistema===sistema);
+    // Filtro de vendedor (visible/activo en "Todos los clientes" y "Sin seguimiento")
     const matchVend=!vend||(vend==='__sin_vendedor__'?!cl.vendedor_asignado:cl.vendedor_asignado===vend);
-    // Filtro de tipo (tarjetas Aliado/Aspel/Eventual/Cursos, clic arriba) —
-    // Jp, 2026-10-14: debe exigir proyecto (póliza) activo, igual que las
-    // tarjetas de conteo, si no el filtro y el número no coinciden.
-    const matchTipo=!tipoCat||(tipoCat.match(cl.tipo_cliente)&&clienteTieneProyectoActivo(cl));
-    if(!matchQ||!matchProd||!matchVend||!matchTipo) return false;
+    if(!matchQ||!matchProd||!matchSistema||!matchVend) return false;
     // Filtro por sub-pestaña
     if(sub==='todos') return true;
     if(sub==='mia') return cl.vendedor_asignado===currentUser.id;
@@ -8206,7 +8226,13 @@ function swCartera(sub){
     return true;
   });
 
-  renderCarteraStats(filtrados); // Jp, 2026-10-14: tarjetas de conteo reactivas a sub-pestaña/vendedor/búsqueda, no globales.
+  renderCarteraStats(filtradosBase); // Jp, 2026-10-14: tarjetas de conteo sobre la lista base (sin el filtro de tipo) — quedan fijas al moverte entre ellas.
+
+  // Filtro de tipo (tarjetas Aliado/Aspel/Eventual/Cursos, clic arriba) —
+  // Jp, 2026-10-14: debe exigir proyecto (póliza) activo, igual que las
+  // tarjetas de conteo, si no el filtro y el número no coinciden. Este SÍ
+  // afecta la lista que se pinta abajo, solo no afecta los conteos de arriba.
+  let filtrados=tipoCat?filtradosBase.filter(cl=>tipoCat.match(cl.tipo_cliente)&&clienteTieneProyectoActivo(cl)):filtradosBase;
 
   // Agrupar: principales primero (ordenados por prioridad de póliza), subcuentas debajo de su padre
   const principales=filtrados.filter(c=>!c.cliente_padre_id).sort((a,b)=>carteraPrioridadScore(a)-carteraPrioridadScore(b));
@@ -8224,7 +8250,7 @@ function swCartera(sub){
   if(!cont) return;
   if(!agrupados.length){
     cont.innerHTML=`<div style="text-align:center;padding:50px 20px;color:var(--text3);font-size:13px;">
-      ${q||prod||vend?'Ningún cliente coincide con los filtros aplicados.':sub==='mia'?'Aún no tienes clientes asignados.':sub==='activos'?'No hay clientes con rating Activo.':sub==='sin_seguimiento'?'Todos los clientes tienen seguimiento reciente.':'No hay clientes en la cartera aún.'}
+      ${q||prod||sistema||vend||tipoCat?'Ningún cliente coincide con los filtros aplicados.':sub==='mia'?'Aún no tienes clientes asignados.':sub==='activos'?'No hay clientes con rating Activo.':sub==='sin_seguimiento'?'Todos los clientes tienen seguimiento reciente.':'No hay clientes en la cartera aún.'}
     </div>`;
     return;
   }
@@ -8297,6 +8323,227 @@ function toggleFichaCliente(id){
   const abierto=det.style.display!=='none';
   det.style.display=abierto?'none':'block';
   if(arrow) arrow.textContent=abierto?'▸':'▾';
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MÓDULO "PROYECTOS" (Jp, 2026-10-14) — vive entre Cartera y Suscripciones.
+// Muestra los proyectos de CRM (tabla proyectos_crm, sincronizada a diario por
+// api/cron/sync-crm-proyectos.js), con foco en pólizas vigentes. Por default
+// solo muestra los que están "En curso"; hay botón para ver Históricos
+// (Concluido/Archivado) u Otros (Asignación/Detenido/Parcialmente concluido/
+// Confirmado por cliente — estatus "intermedios" que no son ni un proyecto
+// activo normal ni uno cerrado).
+let currentProyectosSub='mios', proyectosFiltroEstado='activos', proyectosFiltroTipo='', proyectosFiltroTexto='', proyectosFiltroVendedor='';
+
+// Jp, 2026-10-14: Vtiger no acentúa consistente ("Poliza Backup" vs "Póliza
+// Elite") — mismo problema que normalizarTipoProyecto() en el cron de sync,
+// aquí en el frontend para que los filtros rápidos no fallen por un acento.
+function normTipoProyectoFE(v){
+  return (v||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim().replace(/\s+/g,' ');
+}
+const PROYECTOS_TIPO_CATEGORIAS=[
+  {key:'aliado',label:'🛡 Pólizas Aliado',color:'#1A1F29',set:new Set(['poliza aliado core','poliza aliado empresa','poliza aliado prime','poliza aliado especial'])},
+  {key:'aspel',label:'📦 Pólizas ASPEL',color:'#1D5FA8',set:new Set(['poliza siigo aspel'])},
+  {key:'servicio',label:'🔧 Servicio',color:'#2980B9',set:new Set(['servicio en sitio','servicio remoto'])},
+  {key:'capacitacion',label:'🎓 Capacitación',color:'#27AE60',set:new Set(['capacitacion','capacitacion grupal'])},
+  {key:'backup',label:'🗄 Pólizas Backup',color:'#9AA3AB',set:new Set(['poliza backup'])},
+];
+function proyectoMatchTipoCat(p,cat){ return cat.set.has(normTipoProyectoFE(p.tipo_proyecto)); }
+
+// Jp, 2026-10-14: "los históricos van a ser los que tengan estado concluido,
+// archivado, y nada más. Los que van a estar en activo son los que están en
+// curso. Y las demás... vamos a dejarlo como en otros." Confirmado contra
+// datos reales (2026-10-14): estatus_proyecto que existen hoy son "En curso",
+// "Concluido", "En Asignación", "Confirmado por Cliente", "Parcialmente
+// Concluido" (y algunos null) — "Archivado"/"Detenido por Cliente"/"Detenido
+// por Soporte" están en el picklist de CRM pero ningún proyecto los tiene
+// todavía; se dejan contemplados para cuando aparezcan.
+const PROYECTOS_ESTATUS_GRUPO={
+  activos:new Set(['En curso']),
+  historicos:new Set(['Concluido','Archivado']),
+  otros:new Set(['En Asignación','Detenido por Cliente','Detenido por Soporte','Parcialmente Concluido','Confirmado por Cliente']),
+};
+function grupoDeEstatusProyecto(estatus){
+  for(const g of ['activos','historicos','otros']){ if(PROYECTOS_ESTATUS_GRUPO[g].has(estatus)) return g; }
+  return 'otros'; // null o estatus no contemplado — cae en "Otros" para no perderse de vista.
+}
+function calcularTiempoRestanteProyecto(p){
+  if(p.estatus_proyecto!=='En curso') return fmtFecha(p.fecha_fin_real)?`Terminó: ${fmtFecha(p.fecha_fin_real)}`:'—';
+  if(!p.fecha_fin_prevista) return 'Sin fecha de término prevista';
+  const dias=Math.ceil((new Date(p.fecha_fin_prevista+'T00:00:00')-new Date(new Date().toDateString()))/86400000);
+  if(dias>0) return `${dias} día${dias===1?'':'s'} restante${dias===1?'':'s'}`;
+  if(dias===0) return 'Vence hoy';
+  return `Vencido hace ${Math.abs(dias)} día${Math.abs(dias)===1?'':'s'}`;
+}
+
+async function renderProyectosModulo(){
+  const mc=document.getElementById('mainContent');
+  mc.classList.remove('full-width');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando proyectos...</div>';
+  const [{data:proyectos},{data:vendedores}]=await Promise.all([
+    sb.from('proyectos_crm').select('*,cliente_cartera:cliente_cartera_id(id,razon_social,num_cliente,vendedor_asignado)').order('fecha_actualizacion_crm',{ascending:false}),
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'),
+  ]);
+  window._proyectosCRM=proyectos||[];
+  window._proyectosVendedores=vendedores||[];
+
+  mc.innerHTML=`
+  <div style="margin-bottom:16px;">
+    <div style="font-size:18px;font-weight:600;color:var(--text);">Proyectos</div>
+    <div style="font-size:12px;color:var(--text3);">Proyectos de CRM (pólizas, servicios, capacitaciones). Sincronizan a diario. Por default solo se muestran los que están "En curso".</div>
+  </div>
+  <div id="proyectosStatsWrap"></div>
+  <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+    <button onclick="swProyectos('mios')" id="proyectosSub_mios" class="cartera-subtab">Mis proyectos</button>
+    <button onclick="swProyectos('todos')" id="proyectosSub_todos" class="cartera-subtab">Todos los clientes</button>
+  </div>
+  <div id="proyectosVendedorBotonesWrap" style="display:none;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
+    <span style="font-size:11px;color:var(--text3);">Filtrar por vendedor:</span>
+    <div id="proyectosVendedorBotones" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+  </div>
+  <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
+    <button onclick="swProyectosEstado('activos')" id="proyectosEstado_activos" class="cartera-subtab">✅ Activos (en curso)</button>
+    <button onclick="swProyectosEstado('historicos')" id="proyectosEstado_historicos" class="cartera-subtab">🗂 Históricos</button>
+    <button onclick="swProyectosEstado('otros')" id="proyectosEstado_otros" class="cartera-subtab">⏸ Otros</button>
+  </div>
+  <div style="margin-bottom:12px;">
+    <input type="text" id="proyectosFiltroTextoInput" placeholder="Buscar por nombre del proyecto, cliente, RFC, número de cliente..." value="${proyectosFiltroTexto}" oninput="onProyectosFiltroChange()" style="width:100%;max-width:420px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
+  </div>
+  <div id="proyectosContenido"></div>`;
+
+  currentProyectosSub='mios';
+  proyectosFiltroEstado='activos';
+  renderProyectosVendorBotones();
+  swProyectos('mios');
+}
+
+function renderProyectosVendorBotones(){
+  const cont=document.getElementById('proyectosVendedorBotones');
+  if(!cont) return;
+  const vendedores=window._proyectosVendedores||[];
+  cont.innerHTML=vendedores.map(v=>`<button onclick="toggleProyectosFiltroVendedor('${v.id}')" class="cartera-subtab" style="${proyectosFiltroVendedor===v.id?'background:var(--navy);color:#fff;border-color:var(--navy);':''}">${v.nombre}</button>`).join('');
+}
+function toggleProyectosFiltroVendedor(vendedorId){
+  proyectosFiltroVendedor=(proyectosFiltroVendedor===vendedorId)?'':vendedorId;
+  renderProyectosVendorBotones();
+  swProyectos(currentProyectosSub);
+}
+function onProyectosFiltroChange(){
+  proyectosFiltroTexto=document.getElementById('proyectosFiltroTextoInput')?.value||'';
+  swProyectos(currentProyectosSub);
+}
+function swProyectosEstado(grupo){
+  proyectosFiltroEstado=grupo;
+  swProyectos(currentProyectosSub);
+}
+function onProyectosFiltroTipoClick(key){
+  proyectosFiltroTipo=(proyectosFiltroTipo===key)?'':key;
+  swProyectos(currentProyectosSub);
+}
+function renderProyectosStats(listaBase){
+  const wrap=document.getElementById('proyectosStatsWrap');
+  if(!wrap) return;
+  const conteosTipo=PROYECTOS_TIPO_CATEGORIAS.map(c=>({...c,total:listaBase.filter(p=>proyectoMatchTipoCat(p,c)).length}));
+  wrap.innerHTML=`
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:10px;">
+    <div class="card" style="padding:10px 12px;border-left:3px solid var(--teal);" title="Total de proyectos en esta vista (según Activos/Históricos/Otros arriba)">
+      <div style="font-size:10px;color:var(--text3);">📁 Total proyectos</div>
+      <div style="font-size:18px;font-weight:700;color:var(--teal);">${listaBase.length}</div>
+    </div>
+    ${conteosTipo.map(c=>`<div class="card" onclick="onProyectosFiltroTipoClick('${c.key}')" style="padding:10px 12px;cursor:pointer;border-left:3px solid ${c.color};${proyectosFiltroTipo===c.key?`outline:2px solid ${c.color};outline-offset:-2px;`:''}" title="Clic para filtrar por ${c.label}">
+      <div style="font-size:10px;color:var(--text3);">${c.label}</div>
+      <div style="font-size:18px;font-weight:700;color:${c.color};">${c.total}</div>
+    </div>`).join('')}
+  </div>
+  ${proyectosFiltroTipo?`<div style="margin-bottom:10px;font-size:11px;color:var(--text2);">Filtrando por: <b>${PROYECTOS_TIPO_CATEGORIAS.find(c=>c.key===proyectosFiltroTipo)?.label||''}</b> <span onclick="onProyectosFiltroTipoClick('${proyectosFiltroTipo}')" style="cursor:pointer;color:var(--red);margin-left:6px;">✕ quitar</span></div>`:''}`;
+}
+
+function swProyectos(sub){
+  currentProyectosSub=sub;
+  ['mios','todos'].forEach(s=>{
+    const btn=document.getElementById('proyectosSub_'+s);
+    if(btn) btn.classList.toggle('active',s===sub);
+  });
+  ['activos','historicos','otros'].forEach(g=>{
+    const btn=document.getElementById('proyectosEstado_'+g);
+    if(btn) btn.classList.toggle('active',g===proyectosFiltroEstado);
+  });
+  const wrapVend=document.getElementById('proyectosVendedorBotonesWrap');
+  if(wrapVend){
+    wrapVend.style.display=(sub==='todos')?'flex':'none';
+    if(sub==='todos') renderProyectosVendorBotones();
+  }
+  const proyectos=window._proyectosCRM||[];
+  const q=(proyectosFiltroTexto||'').toLowerCase();
+  const vend=proyectosFiltroVendedor||'';
+
+  // Lista base: sub-pestaña (mios/todos) + vendedor + texto + grupo de estatus
+  // (Activos/Históricos/Otros), SIN el filtro de tipo — así las tarjetas de
+  // conteo por tipo quedan fijas igual que en Cartera (ver swCartera).
+  const listaBase=proyectos.filter(p=>{
+    const cl=p.cliente_cartera;
+    const matchSub=sub==='todos'||(cl&&cl.vendedor_asignado===currentUser.id);
+    const matchVend=!vend||(cl&&cl.vendedor_asignado===vend);
+    const matchQ=!q||(p.nombre_proyecto||'').toLowerCase().includes(q)||(cl?.razon_social||'').toLowerCase().includes(q)||(cl?.num_cliente||'').toLowerCase().includes(q);
+    const matchEstado=grupoDeEstatusProyecto(p.estatus_proyecto)===proyectosFiltroEstado;
+    return matchSub&&matchVend&&matchQ&&matchEstado;
+  });
+
+  renderProyectosStats(listaBase);
+
+  const tipoCat=PROYECTOS_TIPO_CATEGORIAS.find(c=>c.key===proyectosFiltroTipo);
+  const filtrados=tipoCat?listaBase.filter(p=>proyectoMatchTipoCat(p,tipoCat)):listaBase;
+  // Orden: prioridad de póliza primero (N1→N5), luego fecha de término prevista más próxima.
+  const ORDEN_NIVEL={N1:1,N2:2,N3:3,N4:4,N5:5};
+  filtrados.sort((a,b)=>{
+    const na=a.nivel_prioridad&&ORDEN_NIVEL[a.nivel_prioridad]?ORDEN_NIVEL[a.nivel_prioridad]:99;
+    const nb=b.nivel_prioridad&&ORDEN_NIVEL[b.nivel_prioridad]?ORDEN_NIVEL[b.nivel_prioridad]:99;
+    if(na!==nb) return na-nb;
+    return (a.fecha_fin_prevista||'9999-99-99').localeCompare(b.fecha_fin_prevista||'9999-99-99');
+  });
+
+  const cont=document.getElementById('proyectosContenido');
+  if(!cont) return;
+  if(!filtrados.length){
+    cont.innerHTML=`<div style="text-align:center;padding:50px 20px;color:var(--text3);font-size:13px;">Ningún proyecto coincide con los filtros aplicados.</div>`;
+    return;
+  }
+  cont.innerHTML=`<div style="display:grid;gap:8px;">${filtrados.map(fichaProyectoCRM).join('')}</div>`;
+}
+
+function fichaProyectoCRM(p){
+  const cl=p.cliente_cartera;
+  const tiempo=calcularTiempoRestanteProyecto(p);
+  const vencido=p.estatus_proyecto==='En curso'&&p.fecha_fin_prevista&&new Date(p.fecha_fin_prevista+'T00:00:00')<new Date(new Date().toDateString());
+  const colorNivel=p.nivel_prioridad?(POLIZA_NIVEL_COLOR[p.nivel_prioridad]||null):null;
+  return `<div class="card" style="padding:12px 16px;${colorNivel?`border-left:3px solid ${colorNivel};`:''}">
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start;">
+      <div style="min-width:0;flex:1;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:13px;font-weight:600;color:var(--text);">${p.nombre_proyecto||'(Sin nombre)'}</span>
+          ${p.nivel_prioridad?`<span class="pipe-badge" style="font-size:10px;background:${colorNivel||'var(--navy)'};color:#fff;">🛡 ${p.nivel_prioridad} ${p.nivel_label||''}</span>`:''}
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px;">${p.tipo_proyecto||'Sin tipo'} · <span style="font-weight:600;">${p.estatus_proyecto||'Sin estatus'}</span></div>
+        ${cl?`<div style="font-size:12px;color:var(--text2);margin-top:4px;">👤 ${cl.razon_social||'Sin nombre'} <span style="color:var(--text3);">(${cl.num_cliente||'—'})</span></div>`:'<div style="font-size:11px;color:var(--text3);font-style:italic;margin-top:4px;">Sin cuenta vinculada en la app</div>'}
+      </div>
+      <div style="text-align:right;flex-shrink:0;">
+        <div style="font-size:11px;color:var(--text3);">Inicio: ${fmtFecha(p.fecha_inicio)||'—'}</div>
+        <div style="font-size:11px;color:var(--text3);">Fin previsto: ${fmtFecha(p.fecha_fin_prevista)||'—'}</div>
+        <div style="font-size:11px;font-weight:600;color:${vencido?'var(--red)':'var(--teal)'};margin-top:2px;">${tiempo}</div>
+      </div>
+    </div>
+    ${cl?.id?`<div style="margin-top:8px;"><button onclick="irACuentaDesdeProyecto('${cl.id}')" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:4px 10px;font-size:11px;cursor:pointer;color:var(--navy);font-family:'Inter',sans-serif;">Ver cuenta →</button></div>`:''}
+  </div>`;
+}
+
+async function irACuentaDesdeProyecto(clienteId){
+  if(!clienteId) return;
+  currentVendTab='cartera';
+  const bottom=window._vendTabsBottom||[];
+  document.querySelectorAll('#tabsBar .tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('#tabsBar2 .tab').forEach((t,i)=>t.classList.toggle('active',bottom[i]==='cartera'));
+  await renderCarteraVendedor();
+  abrirFichaClienteModal(clienteId);
 }
 
 // Sistemas/licencias (Jp, 2026-10-06: tabla clientes_cartera_sistemas, llega del sync con el CRM — antes invisible en la app)
@@ -9412,6 +9659,7 @@ async function guardarFichaCliente(id){
 function onCarteraFiltroChange(){
   carteraFiltroTexto=document.getElementById('carteraFiltroTextoInput')?.value||'';
   carteraFiltroProducto=document.getElementById('carteraFiltroProductoInput')?.value||'';
+  carteraFiltroSistema=document.getElementById('carteraFiltroSistemaInput')?.value||'';
   swCartera(currentCarteraSub);
 }
 
@@ -9850,6 +10098,7 @@ function swDirCartera(sub){
 let _suscModuloSub='suscripciones';
 async function renderDirectorSuscripcionesModulo(){
   const mc=document.getElementById('mainContent');
+  mc.classList.remove('full-width');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando suscripciones...</div>';
   const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas}]=await Promise.all([
     carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)'),
@@ -9890,6 +10139,7 @@ async function renderDirectorSuscripcionesModulo(){
 // ya filtraban por defecto solo a las cuentas del vendedor en sesión.
 async function renderVendedorSuscripcionesModulo(){
   const mc=document.getElementById('mainContent');
+  mc.classList.remove('full-width'); // Jp, 2026-10-14: mismo fix que Cartera — forzar modo compacto al entrar.
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando suscripciones...</div>';
   const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas}]=await Promise.all([
     carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)'),
