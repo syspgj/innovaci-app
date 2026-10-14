@@ -8511,28 +8511,67 @@ function swProyectos(sub){
   cont.innerHTML=`<div style="display:grid;gap:8px;">${filtrados.map(fichaProyectoCRM).join('')}</div>`;
 }
 
+// Jp, 2026-10-14 (2da revisión): el campo "nombre_proyecto" es texto libre de
+// CRM y a veces no coincide con el "Tipo" real del proyecto — caso real
+// encontrado: KYO PRINT, proyecto PROJ2651 "...POLIZA INFINITO (RESGUARDO
+// 2026)..." con Tipo = "Póliza Siigo Aspel" (debió ser "Poliza Backup", como
+// su par del año anterior PROJ2434). Es un error de captura en CRM, no un bug
+// de la app — el sync solo refleja lo que hay en CRM. Esta función marca ese
+// tipo de inconsistencia (nombre dice "resguardo" pero el Tipo no es Backup)
+// para que salte a la vista sin tener que entrar a CRM a buscarla.
+function proyectoTipoSospechoso(p){
+  const nombre=(p.nombre_proyecto||'').toLowerCase();
+  const tipo=normTipoProyectoFE(p.tipo_proyecto);
+  return nombre.includes('resguardo')&&tipo!=='poliza backup';
+}
+function toggleFichaProyecto(id){
+  const det=document.getElementById('proyDetalle_'+id);
+  const arrow=document.getElementById('proyArrow_'+id);
+  if(!det) return;
+  const abierto=det.style.display!=='none';
+  det.style.display=abierto?'none':'block';
+  if(arrow) arrow.textContent=abierto?'▸':'▾';
+}
 function fichaProyectoCRM(p){
   const cl=p.cliente_cartera;
   const tiempo=calcularTiempoRestanteProyecto(p);
   const vencido=p.estatus_proyecto==='En curso'&&p.fecha_fin_prevista&&new Date(p.fecha_fin_prevista+'T00:00:00')<new Date(new Date().toDateString());
   const colorNivel=p.nivel_prioridad?(POLIZA_NIVEL_COLOR[p.nivel_prioridad]||null):null;
-  return `<div class="card" style="padding:12px 16px;${colorNivel?`border-left:3px solid ${colorNivel};`:''}">
+  const colorTiempo=vencido?'var(--red)':(p.estatus_proyecto==='En curso'?'var(--teal)':'var(--text3)');
+  const sospechoso=proyectoTipoSospechoso(p);
+  const idDom=(p.crm_projectid||'').replace(/[^a-zA-Z0-9_-]/g,'');
+  return `<div class="card" style="padding:0;overflow:hidden;${colorNivel?`border-left:3px solid ${colorNivel};`:''}">
+    <div style="padding:12px 16px;cursor:pointer;" onclick="toggleFichaProyecto('${idDom}')">
     <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:flex-start;">
       <div style="min-width:0;flex:1;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:11px;color:var(--text3);" id="proyArrow_${idDom}">▸</span>
           <span style="font-size:13px;font-weight:600;color:var(--text);">${p.nombre_proyecto||'(Sin nombre)'}</span>
           ${p.nivel_prioridad?`<span class="pipe-badge" style="font-size:10px;background:${colorNivel||'var(--navy)'};color:#fff;">🛡 ${p.nivel_prioridad} ${p.nivel_label||''}</span>`:''}
+          ${sospechoso?`<span class="pipe-badge" title="El nombre dice 'resguardo' pero el Tipo en CRM no es Póliza Backup — probable error de captura, revisar y corregir en CRM." style="font-size:10px;background:var(--red-bg);color:var(--red);border:1px solid var(--red);">⚠️ Revisar Tipo en CRM</span>`:''}
         </div>
-        <div style="font-size:11px;color:var(--text3);margin-top:2px;">${p.tipo_proyecto||'Sin tipo'} · <span style="font-weight:600;">${p.estatus_proyecto||'Sin estatus'}</span></div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px;">${p.tipo_proyecto||'Sin tipo'} · <span style="font-weight:600;">${p.estatus_proyecto||'Sin estatus'}</span>${p.crm_project_no?` · ${p.crm_project_no}`:''}</div>
         ${cl?`<div style="font-size:12px;color:var(--text2);margin-top:4px;">👤 ${cl.razon_social||'Sin nombre'} <span style="color:var(--text3);">(${cl.num_cliente||'—'})</span></div>`:'<div style="font-size:11px;color:var(--text3);font-style:italic;margin-top:4px;">Sin cuenta vinculada en la app</div>'}
       </div>
       <div style="text-align:right;flex-shrink:0;">
+        <div class="pipe-badge" style="font-size:12px;font-weight:700;background:${colorTiempo};color:#fff;margin-bottom:4px;">⏱ ${tiempo}</div>
         <div style="font-size:11px;color:var(--text3);">Inicio: ${fmtFecha(p.fecha_inicio)||'—'}</div>
         <div style="font-size:11px;color:var(--text3);">Fin previsto: ${fmtFecha(p.fecha_fin_prevista)||'—'}</div>
-        <div style="font-size:11px;font-weight:600;color:${vencido?'var(--red)':'var(--teal)'};margin-top:2px;">${tiempo}</div>
       </div>
     </div>
-    ${cl?.id?`<div style="margin-top:8px;"><button onclick="irACuentaDesdeProyecto('${cl.id}')" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:4px 10px;font-size:11px;cursor:pointer;color:var(--navy);font-family:'Inter',sans-serif;">Ver cuenta →</button></div>`:''}
+    </div>
+    <div id="proyDetalle_${idDom}" style="display:none;border-top:1px solid var(--border);padding:12px 16px;background:var(--surf2);">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;margin-bottom:10px;">
+        <div><span style="color:var(--text3);">Núm. proyecto CRM:</span> ${p.crm_project_no||'—'}</div>
+        <div><span style="color:var(--text3);">Prioridad (CRM):</span> ${p.prioridad||'—'}</div>
+        <div><span style="color:var(--text3);">Progreso:</span> ${p.progreso||'—'}</div>
+        <div><span style="color:var(--text3);">Fin real:</span> ${fmtFecha(p.fecha_fin_real)||'—'}</div>
+        <div><span style="color:var(--text3);">Creado en CRM:</span> ${p.fecha_creacion_crm?fmtFecha(p.fecha_creacion_crm.slice(0,10)):'—'}</div>
+        <div><span style="color:var(--text3);">Actualizado en CRM:</span> ${p.fecha_actualizacion_crm?fmtFecha(p.fecha_actualizacion_crm.slice(0,10)):'—'}</div>
+        ${p.descripcion?`<div style="grid-column:1/-1;"><span style="color:var(--text3);">Descripción:</span> ${p.descripcion}</div>`:''}
+      </div>
+      ${cl?.id?`<button onclick="event.stopPropagation();irACuentaDesdeProyecto('${cl.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:5px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Ver cuenta →</button>`:''}
+    </div>
   </div>`;
 }
 
