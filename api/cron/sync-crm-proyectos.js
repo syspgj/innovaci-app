@@ -269,6 +269,14 @@ export default async function handler(req, res) {
         vendedor_asignado: cliente?.vendedor_asignado || null,
         fecha_creacion_crm: parseFechaHoraCRM(p.createdtime),
         fecha_actualizacion_crm: parseFechaHoraCRM(p.modifiedtime),
+        // Jp, 2026-10-14 — "Horas Remotas Disponibles" y "Tiempo Restante"
+        // son campos de texto libre del CRM (NO se calculan), solo
+        // aplican a proyectos tipo póliza. Confirmado por coincidencia
+        // exacta de texto contra capturas reales de Jp (ASPID PROJ2487,
+        // COMESA PROJ2654): cf_992 = Horas Remotas Disponibles, cf_1028 =
+        // Tiempo Restante.
+        horas_remotas_disponibles: p.cf_992 || null,
+        tiempo_restante: p.cf_1028 || null,
         updated_at: new Date().toISOString(),
       };
     });

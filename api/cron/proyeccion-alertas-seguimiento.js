@@ -41,7 +41,7 @@ const FROM_EMAIL = process.env.REPORTE_FROM_EMAIL || 'Innovaci OS <reportes@inno
 // Jp, 2026-10-14: "necesito que me llegue copia a mi correo" — copia oculta
 // (bcc) de cada correo de seguimiento diario que se manda a un vendedor, para
 // que Jp vea lo mismo que ellos sin que les aparezca su correo en el mensaje.
-const JP_BCC_EMAIL = 'sys.pgj@gmail.com';
+const JP_BCC_EMAIL = 'joss@innovaci.com.mx';
 
 const TIPO_LABEL = { llamada: 'Llamada', correo: 'Correo', visita: 'Visita', otro: 'Actividad' };
 
