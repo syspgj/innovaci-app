@@ -8030,37 +8030,67 @@ async function carteraFetchTodosClientes(selectStr){
   return todos;
 }
 
-// Jp, 2026-10-13: clasificación de cuentas por tipo_cliente (CRM, campo "Tipo")
-// para los contadores de arriba de Cartera de cuentas. "Cliente Poliza Total" se
-// muestra como "Aliado" (Jp lo renombró así en el CRM, aunque el dato crudo siga
-// diciendo "Total" — el merge CRM→Supabase es manual, no se ha vuelto a correr
-// desde el rename; cuando se corra, el dato crudo cambiará solo y esto lo sigue
-// capturando igual). "24-jul"/"24/7" son el mismo bug de Excel (interpretó el
-// texto "24/7" como fecha) — se unen con "Cliente Servicio Eventual" en una sola
-// categoría, confirmado con Jp.
+// Jp, 2026-10-14: clasificación de cuentas por tipo_cliente (CRM, campo "Tipo")
+// para los contadores de arriba de Cartera de cuentas — ahora separados en 5
+// categorías (antes Eventual y 24/7 estaban juntas) y el conteo de cada una
+// ya NO es solo "tiene ese Tipo", sino "tiene ese Tipo Y además tiene un
+// proyecto activo en el CRM" (ver cl._proyectosActivos en renderCarteraVendedor)
+// — confirmado con Jp: "cuántos clientes con póliza aliado ACTIVA tiene".
+// "Cliente Poliza Total" se muestra como "Aliado" (Jp lo renombró así en el
+// CRM, aunque el dato crudo siga diciendo "Total"). "24-jul" es un bug viejo
+// de Excel (interpretó el texto "24/7" como fecha).
 const CARTERA_TIPO_CATEGORIAS=[
   {key:'aliado',label:'🛡 Aliado',color:'#1A1F29',match:t=>t==='Cliente Poliza Total'||t==='Cliente Poliza Aliado'},
   {key:'aspel',label:'📦 Aspel',color:'#1D5FA8',match:t=>t==='Cliente Poliza Aspel'},
-  {key:'eventual',label:'🧰 Eventual 24/7',color:'#2980B9',match:t=>t==='Cliente Servicio Eventual'||t==='24-jul'||t==='24/7'},
+  {key:'eventual',label:'🧰 Servicio Eventual',color:'#2980B9',match:t=>t==='Cliente Servicio Eventual'},
+  {key:'24_7',label:'📡 24/7',color:'#E53935',match:t=>t==='24/7'||t==='24-jul'},
   {key:'cursos',label:'🎓 Cursos grupales',color:'#27AE60',match:t=>t==='Cliente Cursos Grupales'},
 ];
 function carteraTipoClienteLabel(t){
   if(t==='Cliente Poliza Total') return 'Cliente Póliza Aliado';
-  if(t==='24-jul'||t==='24/7'||t==='Cliente Servicio Eventual') return 'Cliente Servicio Eventual 24/7';
+  if(t==='24-jul') return '24/7';
   return t;
+}
+function clienteTieneProyectoActivo(cl){
+  return !!(cl._proyectosActivos&&cl._proyectosActivos.length);
+}
+// Jp, 2026-10-14: tarjetas de arriba de Cartera — total de cuentas en el
+// alcance actual (vendedor/sub-pestaña) + conteo por Tipo con proyecto
+// activo. Se recalcula cada vez que cambia la sub-pestaña o el filtro de
+// vendedor (ver swCartera), no solo al entrar al módulo.
+function renderCarteraStats(lista){
+  const wrap=document.getElementById('carteraStatsWrap');
+  if(!wrap) return;
+  const conteosTipo=CARTERA_TIPO_CATEGORIAS.map(c=>({...c,total:lista.filter(cl=>c.match(cl.tipo_cliente)&&clienteTieneProyectoActivo(cl)).length}));
+  wrap.innerHTML=`
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:10px;">
+    <div class="card" style="padding:10px 12px;border-left:3px solid var(--teal);" title="Total de cuentas en esta vista">
+      <div style="font-size:10px;color:var(--text3);">👥 Total cuentas</div>
+      <div style="font-size:18px;font-weight:700;color:var(--teal);">${lista.length}</div>
+    </div>
+    ${conteosTipo.map(c=>`<div class="card" onclick="onCarteraFiltroTipoClick('${c.key}')" style="padding:10px 12px;cursor:pointer;border-left:3px solid ${c.color};${carteraFiltroTipo===c.key?`outline:2px solid ${c.color};outline-offset:-2px;`:''}" title="Clic para filtrar por ${c.label} con proyecto activo">
+      <div style="font-size:10px;color:var(--text3);">${c.label}</div>
+      <div style="font-size:18px;font-weight:700;color:${c.color};">${c.total}</div>
+    </div>`).join('')}
+  </div>
+  ${carteraFiltroTipo?`<div style="margin-bottom:10px;font-size:11px;color:var(--text2);">Filtrando por: <b>${CARTERA_TIPO_CATEGORIAS.find(c=>c.key===carteraFiltroTipo)?.label||''}</b> (con proyecto activo) <span onclick="onCarteraFiltroTipoClick('${carteraFiltroTipo}')" style="cursor:pointer;color:var(--red);margin-left:6px;">✕ quitar</span></div>`:''}`;
 }
 
 async function renderCarteraVendedor(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando cartera...</div>';
   const limiteActividad=new Date(Date.now()-CARTERA_DIAS_SIN_SEGUIMIENTO*86400000).toISOString();
-  const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas},{data:sistemasCartera},{data:polizasVig},{data:pipeActivo}]=await Promise.all([
+  const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas},{data:sistemasCartera},{data:proyectosActivos},{data:pipeActivo}]=await Promise.all([
     carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)'), // Jp, 2026-10-05: paginado — ver carteraFetchTodosClientes arriba.
     sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
     sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'), // Jp, 2026-10-05: el filtro "Todos los vendedores" traía TODOS los usuarios (Capacitación, Administración, asesores, mesa de control...) — ahora solo rol='vendedor'.
     sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden'),
     sb.from('clientes_cartera_sistemas').select('*'), // Jp, 2026-10-06: licencias Aspel/Siigo por cliente (SAE/COI/NOI/FACTURE/BANCO/CAJA/PROD/ADM/SIIGO_FISCAL/SIIGO_NUBE), llegan del sync con el CRM — ver ficha completa.
-    sb.from('clientes_polizas').select('cliente_cartera_id,poliza_catalogo_id,polizas_catalogo(nombre,categoria,prioridad_codigo,prioridad_nombre)').eq('estatus','VIGENTE').not('cliente_cartera_id','is',null), // Jp, 2026-10-13: antes solo se traía en el dashboard de Dirección — faltaba aquí para el orden/color por prioridad de póliza.
+    // Jp, 2026-10-14: "qué póliza tiene" y el distintivo N1 Black/etc. ahora
+    // salen de Proyectos (proyectos_crm.activo=true), no de clientes_polizas
+    // — un proyecto en curso es la fuente real de "¿tiene póliza activa?"
+    // (ver conversación del 2026-10-14, casos ACTIA/ASPID/Nenes/Ramtav).
+    sb.from('proyectos_crm').select('cliente_cartera_id,nombre_proyecto,tipo_proyecto,estatus_proyecto,nivel_prioridad,nivel_label').eq('activo',true).not('cliente_cartera_id','is',null),
     sb.from('pipeline_vendedor').select('cliente_cartera_id,updated_at').not('cliente_cartera_id','is',null).gte('updated_at',limiteActividad) // Jp, 2026-10-13: Oportunidades tocadas en los últimos 90 días cuentan como seguimiento, no solo updated_at de la ficha.
   ]);
   window._cartClientes=clientes||[];
@@ -8069,28 +8099,26 @@ async function renderCarteraVendedor(){
   window._suscSistemas=sistemas||[];
   window._cartSistemasPorCliente=sistemasCartera||[];
   window._cartActividadReciente=new Set((pipeActivo||[]).map(p=>p.cliente_cartera_id));
-  // Adjuntar suscripciones, sistemas (licencias) y póliza vigente a cada cliente
+  // Adjuntar suscripciones, sistemas (licencias) y proyectos activos (póliza
+  // real en curso) a cada cliente. Si tiene más de un proyecto activo con
+  // nivel, se queda con el de nivel más alto (N1 antes que N5) para el
+  // distintivo y el orden de la lista.
+  const NIVEL_ORDEN_CARTERA={N1:1,N2:2,N3:3,N4:4,N5:5};
   window._cartClientes.forEach(cl=>{
     cl._suscripciones=(suscripciones||[]).filter(s=>s.cliente_id===cl.id);
     cl._sistemas=(sistemasCartera||[]).filter(s=>s.cliente_cartera_id===cl.id);
-    cl._polizaVigente=(polizasVig||[]).find(p=>p.cliente_cartera_id===cl.id)||null;
+    cl._proyectosActivos=(proyectosActivos||[]).filter(p=>p.cliente_cartera_id===cl.id);
+    cl._mejorProyecto=cl._proyectosActivos.slice().sort((a,b)=>(NIVEL_ORDEN_CARTERA[a.nivel_prioridad]||99)-(NIVEL_ORDEN_CARTERA[b.nivel_prioridad]||99))[0]||null;
   });
   const totalPendientesVincular=(suscripciones||[]).filter(s=>!s.cliente_id).length;
   const productos=[...new Set((suscripciones||[]).map(s=>s.producto).filter(Boolean))].sort();
-  const conteosTipo=CARTERA_TIPO_CATEGORIAS.map(c=>({...c,total:window._cartClientes.filter(cl=>c.match(cl.tipo_cliente)).length}));
 
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
     <div style="font-size:18px;font-weight:600;color:var(--text);">Cartera de cuentas</div>
     <div style="font-size:12px;color:var(--text3);">Da clic en un cliente para ver su ficha completa. Las suscripciones Aspel/Siigo viven en el módulo 📋 Suscripciones.</div>
   </div>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:14px;">
-    ${conteosTipo.map(c=>`<div class="card" onclick="onCarteraFiltroTipoClick('${c.key}')" style="padding:10px 12px;cursor:pointer;border-left:3px solid ${c.color};${carteraFiltroTipo===c.key?`outline:2px solid ${c.color};outline-offset:-2px;`:''}" title="Clic para filtrar por ${c.label}">
-      <div style="font-size:10px;color:var(--text3);">${c.label}</div>
-      <div style="font-size:18px;font-weight:700;color:${c.color};">${c.total}</div>
-    </div>`).join('')}
-  </div>
-  ${carteraFiltroTipo?`<div style="margin-bottom:10px;font-size:11px;color:var(--text2);">Filtrando por: <b>${CARTERA_TIPO_CATEGORIAS.find(c=>c.key===carteraFiltroTipo)?.label||''}</b> <span onclick="onCarteraFiltroTipoClick('${carteraFiltroTipo}')" style="cursor:pointer;color:var(--red);margin-left:6px;">✕ quitar</span></div>`:''}
+  <div id="carteraStatsWrap"></div>
   <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
     <button onclick="swCartera('mia')" id="carteraSub_mia" class="cartera-subtab">Mi cartera</button>
     <button onclick="swCartera('todos')" id="carteraSub_todos" class="cartera-subtab">Todos los clientes</button>
@@ -8126,7 +8154,10 @@ const CARTERA_DIAS_SIN_SEGUIMIENTO=90; // Jp, 2026-10-06: umbral para "Sin segui
 // dentro de ellos por nivel").
 const CARTERA_PRIORIDAD_ORDEN={N1:1,N2:2,N3:3,N4:4,N5:5};
 function carteraPrioridadScore(cl){
-  const cod=cl._polizaVigente?.polizas_catalogo?.prioridad_codigo;
+  // Jp, 2026-10-14: la prioridad real ahora sale del proyecto (póliza) activo
+  // en CRM, no del campo estático _polizaVigente — ver cl._mejorProyecto,
+  // calculado en renderCarteraVendedor desde proyectos_crm.
+  const cod=cl._mejorProyecto?.nivel_prioridad;
   return cod&&CARTERA_PRIORIDAD_ORDEN[cod]?CARTERA_PRIORIDAD_ORDEN[cod]:99;
 }
 
@@ -8162,8 +8193,10 @@ function swCartera(sub){
     const matchProd=!prod||(cl._suscripciones||[]).some(s=>s.producto===prod);
     // Filtro de vendedor (solo visible/activo en "Todos los clientes")
     const matchVend=!vend||(vend==='__sin_vendedor__'?!cl.vendedor_asignado:cl.vendedor_asignado===vend);
-    // Filtro de tipo (tarjetas Aliado/Aspel/Eventual/Cursos, clic arriba)
-    const matchTipo=!tipoCat||tipoCat.match(cl.tipo_cliente);
+    // Filtro de tipo (tarjetas Aliado/Aspel/Eventual/Cursos, clic arriba) —
+    // Jp, 2026-10-14: debe exigir proyecto (póliza) activo, igual que las
+    // tarjetas de conteo, si no el filtro y el número no coinciden.
+    const matchTipo=!tipoCat||(tipoCat.match(cl.tipo_cliente)&&clienteTieneProyectoActivo(cl));
     if(!matchQ||!matchProd||!matchVend||!matchTipo) return false;
     // Filtro por sub-pestaña
     if(sub==='todos') return true;
@@ -8172,6 +8205,8 @@ function swCartera(sub){
     if(sub==='sin_seguimiento') return (!cl.updated_at||new Date(cl.updated_at)<limiteSinSeguimiento)&&!actividadReciente.has(cl.id);
     return true;
   });
+
+  renderCarteraStats(filtrados); // Jp, 2026-10-14: tarjetas de conteo reactivas a sub-pestaña/vendedor/búsqueda, no globales.
 
   // Agrupar: principales primero (ordenados por prioridad de póliza), subcuentas debajo de su padre
   const principales=filtrados.filter(c=>!c.cliente_padre_id).sort((a,b)=>carteraPrioridadScore(a)-carteraPrioridadScore(b));
@@ -8203,7 +8238,7 @@ function fichaClienteCartera(cl,sub){
   const esSubcuenta=!!cl.cliente_padre_id;
   const hoy=new Date();
   const venceProximo=suscripciones.some(s=>s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000));
-  const nivelPoliza=cl._polizaVigente?.polizas_catalogo?.prioridad_codigo;
+  const nivelPoliza=cl._mejorProyecto?.nivel_prioridad;
   const colorBorde=esSubcuenta?'var(--teal)':venceProximo?'var(--red)':(nivelPoliza?POLIZA_NIVEL_COLOR[nivelPoliza]:null);
 
   return `<div class="card" style="padding:0;overflow:hidden;${esSubcuenta?'margin-left:24px;':''}${colorBorde?`border-left:3px solid ${colorBorde};`:''}">
@@ -8214,12 +8249,13 @@ function fichaClienteCartera(cl,sub){
           <span style="font-size:11px;color:var(--text3);">${cl.num_cliente||'—'}</span>
           <span style="font-size:14px;font-weight:600;color:var(--text);">${cl.razon_social||'Sin nombre'}</span>
           ${cl.rfc?`<span style="font-size:10px;color:var(--text3);">${cl.rfc}</span>`:''}
-          ${cl._polizaVigente?.polizas_catalogo?.prioridad_codigo?(()=>{const cod=cl._polizaVigente.polizas_catalogo.prioridad_codigo;const col=POLIZA_NIVEL_COLOR[cod]||'var(--navy)';return `<span title="Póliza vigente: ${cl._polizaVigente.polizas_catalogo.prioridad_nombre||''}" class="pipe-badge" style="font-size:10px;background:${col};color:#fff;">🛡 ${cod} ${POLIZA_NIVEL_ETIQUETA[cod]||''}</span>`;})():''}
+          ${nivelPoliza?(()=>{const col=POLIZA_NIVEL_COLOR[nivelPoliza]||'var(--navy)';return `<span title="Proyecto activo: ${cl._mejorProyecto?.nombre_proyecto||cl._mejorProyecto?.tipo_proyecto||''}" class="pipe-badge" style="font-size:10px;background:${col};color:#fff;">🛡 ${nivelPoliza} ${POLIZA_NIVEL_ETIQUETA[nivelPoliza]||''}</span>`;})():''}
         </div>
-        <div style="margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <div style="margin-top:4px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          ${cl.contacto_principal?`<span style="font-size:12px;font-weight:600;color:var(--text2);">👤 ${cl.contacto_principal}</span>`:''}
+          ${cl.telefono?`<span style="font-size:12px;font-weight:600;"><a href="tel:${cl.telefono}" onclick="event.stopPropagation()" style="color:var(--navy);">📞 ${cl.telefono}</a></span>`:''}
           ${(cl.sistemas_aspel||[]).map(s=>`<span class="pipe-badge" style="background:var(--teal-bg);color:var(--teal);font-size:10px;">${s}</span>`).join('')}
           ${vendedor?`<span style="font-size:11px;color:var(--text3);">· ${vendedor.nombre}</span>`:''}
-          ${cl.telefono?`<span style="font-size:11px;color:var(--text3);">· <a href="tel:${cl.telefono}" onclick="event.stopPropagation()" style="color:var(--navy);">${cl.telefono}</a></span>`:''}
         </div>
         ${suscripciones.length?`<div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">
           ${suscripciones.map(s=>{
@@ -8229,6 +8265,7 @@ function fichaClienteCartera(cl,sub){
             </span>`;
           }).join('')}
         </div>`:'<div style="font-size:11px;color:var(--text3);margin-top:4px;font-style:italic;">Sin suscripciones registradas</div>'}
+        ${cl._mejorProyecto?`<div style="margin-top:6px;font-size:11px;color:var(--text2);">🛡 <strong>Póliza:</strong> ${cl._mejorProyecto.nombre_proyecto||cl._mejorProyecto.tipo_proyecto||'—'}${cl._mejorProyecto.tipo_proyecto&&cl._mejorProyecto.nombre_proyecto?' ('+cl._mejorProyecto.tipo_proyecto+')':''}</div>`:''}
       </div>
       <div style="flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
         <span style="font-size:12px;color:var(--text3);" id="fichaArrow_${cl.id}">▸</span>
@@ -8666,7 +8703,7 @@ async function abrirFichaClienteModal(clienteId){
       <div style="font-size:22px;font-weight:700;color:#fff;margin-top:2px;">${cl.razon_social||'Sin nombre'}</div>
       <div style="font-size:12px;color:rgba(255,255,255,0.7);margin-top:2px;">${cl.rfc||'Sin RFC'} · <strong style="color:#fff;font-weight:700;">${cl.tipo_cliente?carteraTipoClienteLabel(cl.tipo_cliente):'Sin tipo'}</strong>${cl.rating?' · Rating: '+cl.rating:''}</div>
     </div>
-    ${cl._polizaVigente?.polizas_catalogo?.prioridad_codigo?(()=>{const cod=cl._polizaVigente.polizas_catalogo.prioridad_codigo;const col=POLIZA_NIVEL_COLOR[cod]||'#fff';return `<span title="Póliza vigente: ${cl._polizaVigente.polizas_catalogo.prioridad_nombre||''}" style="flex-shrink:0;background:${col};color:#fff;border-radius:var(--radpill);padding:6px 14px;font-size:12px;font-weight:700;">🛡 Prioridad ${cod} · ${POLIZA_NIVEL_ETIQUETA[cod]||''}</span>`;})():''}
+    ${cl._mejorProyecto?.nivel_prioridad?(()=>{const cod=cl._mejorProyecto.nivel_prioridad;const col=POLIZA_NIVEL_COLOR[cod]||'#fff';return `<span title="Proyecto activo: ${cl._mejorProyecto.nombre_proyecto||cl._mejorProyecto.tipo_proyecto||''}" style="flex-shrink:0;background:${col};color:#fff;border-radius:var(--radpill);padding:6px 14px;font-size:12px;font-weight:700;">🛡 Prioridad ${cod} · ${POLIZA_NIVEL_ETIQUETA[cod]||''}</span>`;})():''}
   </div>
   <div id="fichaClienteMsg" style="font-size:12px;color:var(--red);margin-bottom:10px;"></div>
   <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:16px;align-items:start;">
