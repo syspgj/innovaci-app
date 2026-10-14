@@ -125,7 +125,7 @@ async function sb(path, serviceKey) {
 // Jp, 2026-10-14: "necesito que me llegue copia a mi correo" — copia oculta
 // (bcc) de cada reporte semanal que se manda a un vendedor, mismo criterio
 // que en proyeccion-alertas-seguimiento.js.
-const JP_BCC_EMAIL = 'sys.pgj@gmail.com';
+const JP_BCC_EMAIL = 'joss@innovaci.com.mx';
 
 // ─── Envío de correo vía Resend (API REST directa, sin SDK) ────────────────
 async function enviarCorreo({ to, subject, html }, resendKey, fromEmail) {
