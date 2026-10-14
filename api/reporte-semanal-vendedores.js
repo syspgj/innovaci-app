@@ -122,12 +122,17 @@ async function sb(path, serviceKey) {
   return r.json();
 }
 
+// Jp, 2026-10-14: "necesito que me llegue copia a mi correo" — copia oculta
+// (bcc) de cada reporte semanal que se manda a un vendedor, mismo criterio
+// que en proyeccion-alertas-seguimiento.js.
+const JP_BCC_EMAIL = 'sys.pgj@gmail.com';
+
 // ─── Envío de correo vía Resend (API REST directa, sin SDK) ────────────────
 async function enviarCorreo({ to, subject, html }, resendKey, fromEmail) {
   const r = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${resendKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: fromEmail, to: [to], subject, html }),
+    body: JSON.stringify({ from: fromEmail, to: [to], bcc: [JP_BCC_EMAIL], subject, html }),
   });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`Resend -> ${r.status}: ${JSON.stringify(body)}`);
