@@ -514,6 +514,11 @@ function fmtFecha(iso){if(!iso)return null;const[y,m,d]=iso.split('-');return`${
 function fmtK(n){return n>=1000?'$'+(n/1000).toFixed(0)+'K':'$'+Math.round(n);}
 // Fecha local del dispositivo (evita bug UTC que cambia la fecha a las 6 PM en México)
 function todayLocal(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+// Jp, 2026-10-14: "la hora también estaría bien que inmediatamente
+// seleccionara la hora que está en ese momento, sin que yo le dé el
+// relojito" — usada para pre-llenar el campo hora al abrir "Programar
+// actividad" en Proyección y en Cartera.
+function horaActualLocal(){const d=new Date();return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');}
 function localDateStr(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
 // Últimos N días en orden descendente (hoy primero)
 function ultimosDias(n){const dias=[];const hoy=new Date();for(let i=0;i<n;i++){const d=new Date(hoy);d.setDate(hoy.getDate()-i);dias.push(localDateStr(d));}return dias;}
@@ -7119,6 +7124,20 @@ async function _guardarFilaPipeInterno(irASiguiente){
     if(!error&&orig&&orig.oportunidad_crm_id&&(orig.estatus!==payload.estatus||orig.probabilidad!==payload.probabilidad||orig.tipo_servicio!==payload.tipo_servicio)){
       await crmActualizarOportunidad(orig.oportunidad_crm_id,payload.estatus,payload.probabilidad,payload.tipo_servicio);
     }
+    // Jp, 2026-10-14: "cuando yo las ligue a una cuenta, debería de habilitarme
+    // el sistema a poderlo ligar también a una oportunidad que esté abierta
+    // en ese momento. O si no, que dé la opción de crearla" — bug encontrado:
+    // antes solo se creaba/ligaba la Oportunidad al CREAR la negociación
+    // (Fase 4), nunca al ligar una cuenta DESPUÉS a una ya existente. Se
+    // resuelve aquí, en el camino de edición: si la fila quedó con cuenta Y
+    // todavía no tenía Oportunidad ligada, se ofrece vincular una abierta
+    // existente de esa cuenta o crear una nueva — no se hace solo, se
+    // pregunta (a diferencia de Fase 4, donde sí se crea sin preguntar,
+    // porque ahí la negociación es nueva y no hay ambigüedad de con cuál
+    // Oportunidad pudiera corresponder).
+    if(!error&&cuentaId&&!orig?.oportunidad_crm_id){
+      await pipeOfrecerVincularOportunidad(id,cuentaId,payload);
+    }
   } else {
     const {data:nuevaFila,error:errIns}=await sb.from('pipeline_vendedor').insert(payload).select().single();
     error=errIns;
@@ -7205,6 +7224,61 @@ async function crmCrearOportunidadDesdeNuevaFila(fila,cuentaId,payload){
     console.error('CRM create error',e);
     alert('⚠️ Se guardó en Proyección, pero hubo un error de conexión al intentar crear la Oportunidad en el CRM.');
   }
+}
+
+// Jp, 2026-10-14: se llama cuando una negociación EXISTENTE (edición, no
+// alta) queda ligada a una cuenta real y todavía no tenía Oportunidad en el
+// CRM. Busca Oportunidades abiertas de esa cuenta que no estén ya ligadas a
+// otra negociación (mismo patrón de "pendientes de vincular" de arriba) y
+// ofrece elegir una, o crear una nueva — nunca se liga sola, sin preguntar.
+async function pipeOfrecerVincularOportunidad(filaId,cuentaId,payload){
+  try{
+    const {data:abiertas}=await sb.from('oportunidades_crm').select('*').eq('cliente_cartera_id',cuentaId).eq('abierta',true);
+    const {data:ligadas}=await sb.from('pipeline_vendedor').select('oportunidad_crm_id').not('oportunidad_crm_id','is',null);
+    const ligadasSet=new Set((ligadas||[]).map(r=>r.oportunidad_crm_id));
+    const candidatas=(abiertas||[]).filter(o=>!ligadasSet.has(o.id));
+    window._pipeOfrecerFilaId=filaId;
+    window._pipeOfrecerCuentaId=cuentaId;
+    window._pipeOfrecerPayload=payload;
+    window._pipeOfrecerCandidatas=candidatas;
+    const html=`
+      <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">Esta negociación ya quedó ligada a la cuenta, pero todavía no está ligada a ninguna Oportunidad del CRM.</div>
+      ${candidatas.length?`
+        <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:6px;">Oportunidades abiertas de esta cuenta — elige una para ligarla:</div>
+        <div style="display:grid;gap:6px;margin-bottom:12px;">
+          ${candidatas.map(o=>`<div onclick="pipeVincularOportunidadExistente('${o.id}')" style="cursor:pointer;padding:8px 10px;border:1px solid var(--border);border-radius:6px;">
+            <b style="font-size:12px;">${o.nombre_oportunidad||'Sin nombre'}</b>
+            <div style="font-size:10px;color:var(--text3);">${o.fase_venta||'—'} · ${fmt(o.monto||0)}${o.crm_folio?' · '+o.crm_folio:''}</div>
+          </div>`).join('')}
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:6px;">— o —</div>
+      `:'<div style="font-size:12px;color:var(--text3);margin-bottom:12px;">No hay Oportunidades abiertas de esta cuenta en el CRM todavía.</div>'}
+      <button onclick="pipeCrearOportunidadParaFilaExistente()" style="width:100%;background:var(--teal);color:#fff;border:none;border-radius:6px;padding:10px;font-size:12px;font-weight:600;cursor:pointer;">+ Crear Oportunidad nueva en el CRM</button>
+      <button onclick="document.getElementById('modalPipeOfrecerVinc')?.remove()" style="width:100%;margin-top:6px;background:none;border:1px solid var(--border);border-radius:6px;padding:8px;font-size:12px;cursor:pointer;color:var(--text2);">Ahora no</button>
+    `;
+    mkModal('modalPipeOfrecerVinc','🔗 Ligar a una Oportunidad del CRM',html,null,'Cerrar',true);
+  }catch(e){
+    console.error('pipeOfrecerVincularOportunidad error',e);
+  }
+}
+
+async function pipeVincularOportunidadExistente(oportunidadId){
+  const filaId=window._pipeOfrecerFilaId;
+  if(!filaId) return;
+  const {error}=await sb.from('pipeline_vendedor').update({oportunidad_crm_id:oportunidadId}).eq('id',filaId);
+  document.getElementById('modalPipeOfrecerVinc')?.remove();
+  if(error){alert('Error al vincular: '+error.message);return;}
+  renderProyeccion();
+}
+
+async function pipeCrearOportunidadParaFilaExistente(){
+  const filaId=window._pipeOfrecerFilaId;
+  const cuentaId=window._pipeOfrecerCuentaId;
+  const payload=window._pipeOfrecerPayload;
+  document.getElementById('modalPipeOfrecerVinc')?.remove();
+  if(!filaId||!cuentaId||!payload) return;
+  await crmCrearOportunidadDesdeNuevaFila({id:filaId},cuentaId,payload);
+  renderProyeccion();
 }
 
 async function crmActualizarOportunidad(oportunidadCrmId,fase_venta,probabilidad,tipo_servicio){
@@ -7439,8 +7513,8 @@ function pipeRenderActividadesBox(pipelineVendedorId){
     ${hechas.length?`<div style="font-size:11px;font-weight:600;color:var(--text3);margin:10px 0 4px;">HISTORIAL</div>${hechas.slice().reverse().map(filaAct).join('')}`:''}
     ${!pendientes.length&&!hechas.length?'<div style="font-size:11px;color:var(--text3);">Sin actividades registradas todavía.</div>':''}
     <div style="margin-top:10px;border-top:1px dashed var(--border);padding-top:8px;">
-      <div style="font-size:11px;font-weight:600;color:var(--text3);margin-bottom:4px;">📎 Documentos (cotizaciones, evidencias...)</div>
-      ${htmlUploaderDocumentos('oportunidad',pipelineVendedorId,'docListOportunidad_'+pipelineVendedorId)}
+      <div style="font-size:11px;font-weight:600;color:var(--text3);margin-bottom:4px;">📎 Documentos (cotizaciones, evidencias...) — se adjuntan desde "Programar actividad" o "Completar"</div>
+      ${htmlListaDocumentos('oportunidad',pipelineVendedorId,'docListOportunidad_'+pipelineVendedorId)}
     </div>
   `;
   cargarDocumentosAdjuntos('oportunidad',pipelineVendedorId,'docListOportunidad_'+pipelineVendedorId);
@@ -7463,12 +7537,34 @@ function pipeMostrarFormNuevaActividad(pipelineVendedorId){
         <input type="date" id="actFecha_${pipelineVendedorId}" value="${hoy}">
       </div>
       <div class="form-field">
-        <label>Hora (opcional)</label>
-        <input type="time" id="actHora_${pipelineVendedorId}">
+        <label>Hora</label>
+        <input type="time" id="actHora_${pipelineVendedorId}" value="${horaActualLocal()}">
       </div>
       <div class="form-field" style="grid-column:1/-1;">
         <label>Nota</label>
         <input type="text" id="actNota_${pipelineVendedorId}" placeholder="Ej: Llamar para confirmar respuesta del jefe">
+      </div>
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>📎 Adjuntar documento (opcional — ej. cotización enviada)</label>
+        <input type="file" id="actArchivo_${pipelineVendedorId}">
+      </div>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:11px;color:var(--text2);cursor:pointer;">
+      <input type="checkbox" id="actProgSiguiente_${pipelineVendedorId}" onchange="document.getElementById('actSiguienteWrap_${pipelineVendedorId}').style.display=this.checked?'grid':'none'">
+      ¿Programar ya la siguiente actividad? (para que la app te lo recuerde)
+    </label>
+    <div id="actSiguienteWrap_${pipelineVendedorId}" class="form-grid fg3" style="gap:8px;display:none;margin-top:6px;">
+      <div class="form-field">
+        <label>Fecha de la siguiente</label>
+        <input type="date" id="actSigFecha_${pipelineVendedorId}">
+      </div>
+      <div class="form-field">
+        <label>Hora (opcional)</label>
+        <input type="time" id="actSigHora_${pipelineVendedorId}">
+      </div>
+      <div class="form-field">
+        <label>Nota de la siguiente</label>
+        <input type="text" id="actSigNota_${pipelineVendedorId}" placeholder="Ej: Marcarle el miércoles a las 11">
       </div>
     </div>
     <div style="display:flex;gap:6px;margin-top:8px;">
@@ -7483,6 +7579,11 @@ async function pipeGuardarNuevaActividad(pipelineVendedorId){
   const fecha=document.getElementById('actFecha_'+pipelineVendedorId)?.value;
   const hora=document.getElementById('actHora_'+pipelineVendedorId)?.value||null;
   const nota=document.getElementById('actNota_'+pipelineVendedorId)?.value||null;
+  const archivo=document.getElementById('actArchivo_'+pipelineVendedorId)?.files?.[0]||null;
+  const progSiguiente=document.getElementById('actProgSiguiente_'+pipelineVendedorId)?.checked;
+  const sigFecha=document.getElementById('actSigFecha_'+pipelineVendedorId)?.value||null;
+  const sigHora=document.getElementById('actSigHora_'+pipelineVendedorId)?.value||null;
+  const sigNota=document.getElementById('actSigNota_'+pipelineVendedorId)?.value||null;
   if(!fecha){alert('Falta la fecha');return;}
   const {error}=await sb.from('pipeline_actividades').insert({
     pipeline_vendedor_id:pipelineVendedorId,
@@ -7498,7 +7599,23 @@ async function pipeGuardarNuevaActividad(pipelineVendedorId){
   // Jp, 2026-10-12: también al PROGRAMAR (no solo al completar) se manda el
   // comentario al CRM, con tipo + fecha + hora + nota — así queda registrado
   // allá desde el momento en que se agenda, no hasta que se marque hecha.
-  await pipeSincronizarComentarioCrm(pipelineVendedorId,tipo,fecha,hora,null,nota);
+  const comentarioId=await pipeSincronizarComentarioCrm(pipelineVendedorId,tipo,fecha,hora,null,nota);
+  // Jp, 2026-10-14: el documento (si se adjuntó) se liga al comentario que
+  // se acaba de crear, no de forma general a la Oportunidad.
+  if(archivo) await subirDocumentoAdjuntoActividad('oportunidad',pipelineVendedorId,archivo,comentarioId);
+  // Jp, 2026-10-14: "debería permitirme programar una siguiente actividad
+  // para que la app me lo recuerde" — ya existía al COMPLETAR, ahora también
+  // al registrar una nueva (sin marcar como completada todavía).
+  if(progSiguiente&&sigFecha){
+    await sb.from('pipeline_actividades').insert({
+      pipeline_vendedor_id:pipelineVendedorId,
+      usuario_id:currentUser.id,
+      tipo_actividad:'llamada',
+      fecha_programada:sigFecha,
+      hora_programada:sigHora,
+      nota:sigNota,
+    });
+  }
   await pipeRecalcularSiguientePaso(pipelineVendedorId);
   await pipeCargarActividades(pipelineVendedorId);
 }
@@ -7527,6 +7644,10 @@ function pipeMostrarFormCompletar(actividadId,pipelineVendedorId){
       <div class="form-field" style="grid-column:2/4;">
         <label>Nota de la siguiente</label>
         <input type="text" id="actSiguienteNota_${actividadId}" placeholder="Ej: Llamar de nuevo el viernes">
+      </div>
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>📎 Adjuntar documento (opcional — ej. cotización enviada)</label>
+        <input type="file" id="actArchivoCompletar_${actividadId}">
       </div>
     </div>
     <div style="display:flex;gap:6px;margin-top:8px;">
@@ -7574,7 +7695,9 @@ async function pipeGuardarCompletarActividad(actividadId,pipelineVendedorId){
   // Oportunidad real — ahora con tipo + fecha + hora de la actividad
   // original, no solo el resultado (Jp, 2026-10-12).
   const actOriginal=(window._pipeActividadesActual||[]).find(a=>a.id===actividadId);
-  await pipeSincronizarComentarioCrm(pipelineVendedorId,actOriginal?.tipo_actividad,actOriginal?.fecha_programada,actOriginal?.hora_programada,resultado,nota);
+  const comentarioId=await pipeSincronizarComentarioCrm(pipelineVendedorId,actOriginal?.tipo_actividad,actOriginal?.fecha_programada,actOriginal?.hora_programada,resultado,nota);
+  const archivo=document.getElementById('actArchivoCompletar_'+actividadId)?.files?.[0]||null;
+  if(archivo) await subirDocumentoAdjuntoActividad('oportunidad',pipelineVendedorId,archivo,comentarioId);
 
   if(sigFecha){
     await sb.from('pipeline_actividades').insert({
@@ -7614,12 +7737,17 @@ async function pipeRecalcularSiguientePaso(pipelineVendedorId){
 // (con resultado) una actividad — Jp, 2026-10-12. Consulta Supabase directo
 // en vez de usar el caché en memoria, porque al crear una negociación nueva
 // (primera actividad) todavía no existe en window._pipeRows.
+// Jp, 2026-10-14: ahora regresa el id del comentario creado en el CRM
+// (ModComments) — o null si no se pudo sincronizar — para poder adjuntarle
+// un documento específico justo a ESE comentario (ver
+// subirDocumentoAdjuntoActividad), en vez de ligarlo de forma general a la
+// Oportunidad.
 async function pipeSincronizarComentarioCrm(pipelineVendedorId,tipo,fecha,hora,resultado,nota){
   try{
     const {data:fila}=await sb.from('pipeline_vendedor').select('oportunidad_crm_id').eq('id',pipelineVendedorId).single();
-    if(!fila?.oportunidad_crm_id) return;
+    if(!fila?.oportunidad_crm_id) return null;
     const {data:o}=await sb.from('oportunidades_crm').select('crm_potentialid').eq('id',fila.oportunidad_crm_id).single();
-    if(!o?.crm_potentialid) return;
+    if(!o?.crm_potentialid) return null;
     const {data:sess}=await sb.auth.getSession();
     const token=sess?.session?.access_token;
     const contenido=construirComentarioActividad(tipo,fecha,hora,resultado,nota);
@@ -7629,9 +7757,11 @@ async function pipeSincronizarComentarioCrm(pipelineVendedorId,tipo,fecha,hora,r
       body:JSON.stringify({crm_potentialid:o.crm_potentialid,comentario:contenido,vendedor_usuario_id:currentUser.id}),
     });
     const j=await res.json().catch(()=>({}));
-    if(!res.ok||!j.ok) console.error('CRM comentario failed',j);
+    if(!res.ok||!j.ok){console.error('CRM comentario failed',j);return null;}
+    return j.id||null;
   }catch(e){
     console.error('CRM comentario error',e);
+    return null;
   }
 }
 
@@ -7639,15 +7769,24 @@ async function pipeSincronizarComentarioCrm(pipelineVendedorId,tipo,fecha,hora,r
 // Jp, 2026-10-13/14: pidió poder adjuntar documentos tanto en los comentarios
 // de Cuenta (Cartera) como en la bitácora de Oportunidad (Proyección) — ej.
 // cotizaciones enviadas al cliente — y que queden también en el módulo
-// Documents de Vtiger, no solo en la app. Autorizó construir "ambos niveles"
-// (Storage + réplica a Vtiger) el 14/oct. Ver api/crm-documento.js para la
-// parte que crea el registro en Vtiger — esa parte es best-effort: si falla
-// (instalación de Vtiger con campos distintos, etc.) el archivo igual queda
-// guardado y disponible en la app, solo se avisa que no se replicó.
-async function subirDocumentoAdjunto(entidadTipo,entidadId,file,containerIdLista){
+// Documents de Vtiger, no solo en la app.
+//
+// *** Rediseño 2026-10-14, tras la primera prueba en vivo de Jp: ***
+// "el documento se tiene que subir no de manera general a la oportunidad o a
+// la proyección, sino junto con el movimiento que se haga en bitácora" — ya
+// NO hay un botón suelto de "Adjuntar documento" a nivel Cuenta/Oportunidad.
+// El input de archivo vive DENTRO del formulario de "Programar actividad" /
+// "Completar actividad" (ver pipeGuardarNuevaActividad, pipeGuardarCompletarActividad,
+// fcGuardarNuevaActividad, fcGuardarCompletarActividad): primero se
+// sincroniza el comentario de esa actividad al CRM (ya existente,
+// pipeSincronizarComentarioCrm/fcSincronizarActividadCrm, que ahora regresan
+// el id del comentario creado), y LUEGO el documento se sube y se relaciona
+// a ESE comentario específico — igual que se ve en el CRM. Esta función se
+// queda como la pieza compartida que hace esa subida+réplica; la lista de
+// abajo (cargarDocumentosAdjuntos) sigue mostrando el histórico completo de
+// la Cuenta/Oportunidad, de solo lectura, con opción de borrar.
+async function subirDocumentoAdjuntoActividad(entidadTipo,entidadId,file,crmComentarioId){
   if(!file) return;
-  const msgEl=document.getElementById('docMsg_'+entidadId);
-  if(msgEl){msgEl.style.color='var(--text3)';msgEl.textContent='Subiendo...';}
   try{
     const nombreSeguro=file.name.replace(/[^a-zA-Z0-9_.\-]/g,'_');
     const path=`${entidadTipo}/${entidadId}/${Date.now()}_${nombreSeguro}`;
@@ -7664,30 +7803,25 @@ async function subirDocumentoAdjunto(entidadTipo,entidadId,file,containerIdLista
     else insertPayload.pipeline_vendedor_id=entidadId;
     const {data:fila,error:insErr}=await sb.from('crm_documentos').insert(insertPayload).select().single();
     if(insErr) throw insErr;
-    if(msgEl){msgEl.style.color='#27AE60';msgEl.textContent='✅ Subido — replicando en CRM...';}
     try{
       const {data:sess}=await sb.auth.getSession();
       const token=sess?.session?.access_token;
-      const res=await fetch('/api/crm-documento',{
+      await fetch('/api/crm-documento',{
         method:'POST',
         headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-        body:JSON.stringify({crm_documento_id:fila.id}),
+        body:JSON.stringify({crm_documento_id:fila.id,crm_comentario_id:crmComentarioId||null,vendedor_usuario_id:currentUser.id}),
       });
-      const j=await res.json().catch(()=>({}));
-      if(!res.ok||!j.ok||j.relacion_error){
-        if(msgEl){msgEl.style.color='var(--text3)';msgEl.textContent='✅ Subido (CRM: '+(j.relacion_error||j.error||'pendiente de revisar')+').';}
-      }else if(msgEl){
-        msgEl.style.color='#27AE60';msgEl.textContent='✅ Subido y replicado en CRM.';
-      }
     }catch(e){
-      if(msgEl){msgEl.style.color='var(--text3)';msgEl.textContent='✅ Subido (no se pudo replicar en CRM todavía).';}
+      console.error('réplica de documento a CRM falló',e);
     }
-    if(containerIdLista) cargarDocumentosAdjuntos(entidadTipo,entidadId,containerIdLista);
   }catch(e){
-    if(msgEl){msgEl.style.color='var(--red)';msgEl.textContent='Error: '+(e.message||e);}
+    console.error('subirDocumentoAdjuntoActividad error',e);
+    alert('No se pudo subir el documento: '+(e.message||e));
   }
 }
 
+// Lista de solo lectura (con borrar) de los documentos ya subidos para esta
+// Cuenta/Oportunidad — se muestra debajo de la bitácora.
 async function cargarDocumentosAdjuntos(entidadTipo,entidadId,containerId){
   const box=document.getElementById(containerId);
   if(!box) return;
@@ -7695,12 +7829,15 @@ async function cargarDocumentosAdjuntos(entidadTipo,entidadId,containerId){
   const {data,error}=await sb.from('crm_documentos').select('*').eq(campo,entidadId).order('created_at',{ascending:false});
   if(error){box.innerHTML='<div style="font-size:11px;color:var(--red);">No se pudieron cargar los documentos.</div>';return;}
   const docs=data||[];
-  if(!docs.length){box.innerHTML='<div style="font-size:11px;color:var(--text3);font-style:italic;">Sin documentos adjuntos.</div>';return;}
+  if(!docs.length){box.innerHTML='<div style="font-size:11px;color:var(--text3);font-style:italic;">Sin documentos adjuntos todavía — se agregan desde "Programar actividad" o "Completar".</div>';return;}
   box.innerHTML=docs.map(d=>{
     const estatus=d.crm_sync_estatus==='ok'?'🔗 en CRM':d.crm_sync_estatus==='error'?'⚠️ no replicado':'⏳ replicando...';
     return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
       <span style="font-size:12px;cursor:pointer;color:var(--navy);text-decoration:underline;" onclick="abrirDocumentoAdjunto('${d.storage_path.replace(/'/g,"\\'")}')">${d.nombre_archivo}</span>
-      <span style="font-size:10px;color:var(--text3);white-space:nowrap;" title="${d.crm_sync_error?String(d.crm_sync_error).replace(/"/g,'&quot;'):''}">${estatus}</span>
+      <span style="display:flex;align-items:center;gap:6px;white-space:nowrap;">
+        <span style="font-size:10px;color:var(--text3);" title="${d.crm_sync_error?String(d.crm_sync_error).replace(/"/g,'&quot;'):''}">${estatus}</span>
+        <span onclick="borrarDocumentoAdjunto('${d.id}','${d.storage_path.replace(/'/g,"\\'")}','${entidadTipo}','${entidadId}','${containerId}')" title="Eliminar" style="cursor:pointer;color:var(--red);font-size:13px;">🗑</span>
+      </span>
     </div>`;
   }).join('');
 }
@@ -7711,15 +7848,22 @@ async function abrirDocumentoAdjunto(storagePath){
   window.open(data.signedUrl,'_blank');
 }
 
-function htmlUploaderDocumentos(entidadTipo,entidadId,containerIdLista){
-  return `<div style="margin-top:8px;">
-    <div id="${containerIdLista}" style="margin-bottom:6px;font-size:11px;color:var(--text3);">Cargando documentos...</div>
-    <label style="display:inline-block;background:none;border:1px dashed var(--border);border-radius:6px;padding:6px 12px;font-size:11px;cursor:pointer;color:var(--text2);">
-      📎 Adjuntar documento
-      <input type="file" style="display:none;" onchange="subirDocumentoAdjunto('${entidadTipo}','${entidadId}',this.files[0],'${containerIdLista}')">
-    </label>
-    <span id="docMsg_${entidadId}" style="font-size:11px;margin-left:8px;"></span>
-  </div>`;
+// Jp, 2026-10-14: pidió poder quitar los documentos de prueba que subió —
+// borrado del lado de la app (Supabase Storage + fila), hecho desde el
+// cliente (supabase-js), NO vía SQL directo (el DELETE por SQL se sabe que
+// se cuelga en este entorno, ver nota en claude/app-ventas-stack.md). Esto
+// NO borra el Document ya creado en Vtiger si llegó a replicarse — eso se
+// borra manualmente allá si hace falta.
+async function borrarDocumentoAdjunto(id,storagePath,entidadTipo,entidadId,containerId){
+  if(!confirm('¿Eliminar este documento de la app? (si ya se replicó en el CRM, ahí se queda y hay que borrarlo aparte)')) return;
+  await sb.storage.from('crm-documentos').remove([storagePath]);
+  const {error}=await sb.from('crm_documentos').delete().eq('id',id);
+  if(error){alert('Error al eliminar: '+error.message);return;}
+  cargarDocumentosAdjuntos(entidadTipo,entidadId,containerId);
+}
+
+function htmlListaDocumentos(entidadTipo,entidadId,containerIdLista){
+  return `<div id="${containerIdLista}" style="font-size:11px;color:var(--text3);">Cargando documentos...</div>`;
 }
 
 // ── PROYECCIÓN ↔ CRM: pendientes de vincular ────────────────────────────────
@@ -7849,7 +7993,7 @@ async function ejecutarVinculacionOportunidadActual(){
 // ── CARTERA DE CUENTAS ──────────────────────────────────────────────────────
 let currentCarteraSub='disponibles';
 let carteraSortCol=null, carteraSortDir=1;
-let carteraFiltroTexto='', carteraFiltroProducto='', carteraFiltroPeriodicidad='', carteraFiltroVendedor='';
+let carteraFiltroTexto='', carteraFiltroProducto='', carteraFiltroPeriodicidad='', carteraFiltroVendedor='', carteraFiltroTipo='';
 function toggleCarteraFiltroVendedor(vendedorId){
   carteraFiltroVendedor=(carteraFiltroVendedor===vendedorId)?'':vendedorId;
   renderCarteraVendorBotones();
@@ -7941,11 +8085,12 @@ async function renderCarteraVendedor(){
     <div style="font-size:12px;color:var(--text3);">Da clic en un cliente para ver su ficha completa. Las suscripciones Aspel/Siigo viven en el módulo 📋 Suscripciones.</div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-bottom:14px;">
-    ${conteosTipo.map(c=>`<div class="card" style="padding:10px 12px;border-left:3px solid ${c.color};">
+    ${conteosTipo.map(c=>`<div class="card" onclick="onCarteraFiltroTipoClick('${c.key}')" style="padding:10px 12px;cursor:pointer;border-left:3px solid ${c.color};${carteraFiltroTipo===c.key?`outline:2px solid ${c.color};outline-offset:-2px;`:''}" title="Clic para filtrar por ${c.label}">
       <div style="font-size:10px;color:var(--text3);">${c.label}</div>
       <div style="font-size:18px;font-weight:700;color:${c.color};">${c.total}</div>
     </div>`).join('')}
   </div>
+  ${carteraFiltroTipo?`<div style="margin-bottom:10px;font-size:11px;color:var(--text2);">Filtrando por: <b>${CARTERA_TIPO_CATEGORIAS.find(c=>c.key===carteraFiltroTipo)?.label||''}</b> <span onclick="onCarteraFiltroTipoClick('${carteraFiltroTipo}')" style="cursor:pointer;color:var(--red);margin-left:6px;">✕ quitar</span></div>`:''}
   <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
     <button onclick="swCartera('mia')" id="carteraSub_mia" class="cartera-subtab">Mi cartera</button>
     <button onclick="swCartera('todos')" id="carteraSub_todos" class="cartera-subtab">Todos los clientes</button>
@@ -8003,6 +8148,12 @@ function swCartera(sub){
   const q=(carteraFiltroTexto||'').toLowerCase();
   const prod=carteraFiltroProducto||'';
   const vend=carteraFiltroVendedor||'';
+  // Jp, 2026-10-14: "deberían de ser filtros en los cuales si yo le doy
+  // aliado, me debería demostrar todas las pólizas aliado" — las tarjetas de
+  // conteo arriba de Cartera (Aliado/Aspel/Eventual/Cursos) antes eran solo
+  // informativas; ahora son clicables y filtran la lista (ver
+  // onCarteraFiltroTipoClick / render de conteosTipo).
+  const tipoCat=CARTERA_TIPO_CATEGORIAS.find(c=>c.key===carteraFiltroTipo);
 
   let filtrados=clientes.filter(cl=>{
     // Filtro de texto
@@ -8011,7 +8162,9 @@ function swCartera(sub){
     const matchProd=!prod||(cl._suscripciones||[]).some(s=>s.producto===prod);
     // Filtro de vendedor (solo visible/activo en "Todos los clientes")
     const matchVend=!vend||(vend==='__sin_vendedor__'?!cl.vendedor_asignado:cl.vendedor_asignado===vend);
-    if(!matchQ||!matchProd||!matchVend) return false;
+    // Filtro de tipo (tarjetas Aliado/Aspel/Eventual/Cursos, clic arriba)
+    const matchTipo=!tipoCat||tipoCat.match(cl.tipo_cliente);
+    if(!matchQ||!matchProd||!matchVend||!matchTipo) return false;
     // Filtro por sub-pestaña
     if(sub==='todos') return true;
     if(sub==='mia') return cl.vendedor_asignado===currentUser.id;
@@ -8578,8 +8731,8 @@ async function abrirFichaClienteModal(clienteId){
           <span id="fcComentarioCrmMsg" style="font-size:11px;color:var(--red);margin-left:8px;"></span>
         </div>
         <div style="margin-top:10px;border-top:1px dashed var(--border);padding-top:8px;">
-          <div style="font-size:11px;font-weight:600;color:var(--text3);margin-bottom:4px;">📎 Documentos</div>
-          ${htmlUploaderDocumentos('cuenta',clienteId,'docListCuenta_'+clienteId)}
+          <div style="font-size:11px;font-weight:600;color:var(--text3);margin-bottom:4px;">📎 Documentos — se adjuntan desde "Actividades de seguimiento" (abajo)</div>
+          ${htmlListaDocumentos('cuenta',clienteId,'docListCuenta_'+clienteId)}
         </div>`,
         'fcSeccionComentariosCrm'
       )}
@@ -8725,12 +8878,34 @@ function fcMostrarFormNuevaActividad(clienteId){
         <input type="date" id="fcActFecha_${clienteId}" value="${hoy}">
       </div>
       <div class="form-field">
-        <label>Hora (opcional)</label>
-        <input type="time" id="fcActHora_${clienteId}">
+        <label>Hora</label>
+        <input type="time" id="fcActHora_${clienteId}" value="${horaActualLocal()}">
       </div>
       <div class="form-field" style="grid-column:1/-1;">
         <label>Nota</label>
         <input type="text" id="fcActNota_${clienteId}" placeholder="Ej: Llamarle al contador para ver cómo va">
+      </div>
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>📎 Adjuntar documento (opcional)</label>
+        <input type="file" id="fcActArchivo_${clienteId}">
+      </div>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;margin-top:10px;font-size:11px;color:var(--text2);cursor:pointer;">
+      <input type="checkbox" id="fcActProgSiguiente_${clienteId}" onchange="document.getElementById('fcActSiguienteWrap_${clienteId}').style.display=this.checked?'grid':'none'">
+      ¿Programar ya la siguiente actividad? (para que la app te lo recuerde)
+    </label>
+    <div id="fcActSiguienteWrap_${clienteId}" class="form-grid fg3" style="gap:8px;display:none;margin-top:6px;">
+      <div class="form-field">
+        <label>Fecha de la siguiente</label>
+        <input type="date" id="fcActSigFecha_${clienteId}">
+      </div>
+      <div class="form-field">
+        <label>Hora (opcional)</label>
+        <input type="time" id="fcActSigHora_${clienteId}">
+      </div>
+      <div class="form-field">
+        <label>Nota de la siguiente</label>
+        <input type="text" id="fcActSigNota_${clienteId}" placeholder="Ej: Marcarle el miércoles a las 11">
       </div>
     </div>
     <div style="display:flex;gap:6px;margin-top:8px;">
@@ -8745,6 +8920,11 @@ async function fcGuardarNuevaActividad(clienteId){
   const fecha=document.getElementById('fcActFecha_'+clienteId)?.value;
   const hora=document.getElementById('fcActHora_'+clienteId)?.value||null;
   const nota=document.getElementById('fcActNota_'+clienteId)?.value||null;
+  const archivo=document.getElementById('fcActArchivo_'+clienteId)?.files?.[0]||null;
+  const progSiguiente=document.getElementById('fcActProgSiguiente_'+clienteId)?.checked;
+  const sigFecha=document.getElementById('fcActSigFecha_'+clienteId)?.value||null;
+  const sigHora=document.getElementById('fcActSigHora_'+clienteId)?.value||null;
+  const sigNota=document.getElementById('fcActSigNota_'+clienteId)?.value||null;
   if(!fecha){alert('Falta la fecha');return;}
   const {error}=await sb.from('cartera_actividades').insert({
     cliente_cartera_id:clienteId,
@@ -8758,7 +8938,18 @@ async function fcGuardarNuevaActividad(clienteId){
   const contForm=document.getElementById('fcFormNuevaActividad_'+clienteId);
   if(contForm) contForm.innerHTML='';
   const numCliente=document.getElementById('fcActividadesBox')?.dataset.numCliente||'';
-  await fcSincronizarActividadCrm(numCliente,tipo,fecha,hora,null,nota);
+  const comentarioId=await fcSincronizarActividadCrm(numCliente,tipo,fecha,hora,null,nota);
+  if(archivo) await subirDocumentoAdjuntoActividad('cuenta',clienteId,archivo,comentarioId);
+  if(progSiguiente&&sigFecha){
+    await sb.from('cartera_actividades').insert({
+      cliente_cartera_id:clienteId,
+      usuario_id:currentUser.id,
+      tipo_actividad:'llamada',
+      fecha_programada:sigFecha,
+      hora_programada:sigHora,
+      nota:sigNota,
+    });
+  }
   await fcCargarActividades(clienteId,numCliente);
 }
 
@@ -8787,6 +8978,10 @@ function fcMostrarFormCompletarActividad(actividadId,clienteId,numCliente){
         <label>Nota de la siguiente</label>
         <input type="text" id="fcActSiguienteNota_${actividadId}" placeholder="Ej: Volver a llamar el viernes">
       </div>
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>📎 Adjuntar documento (opcional)</label>
+        <input type="file" id="fcActArchivoCompletar_${actividadId}">
+      </div>
     </div>
     <div style="display:flex;gap:6px;margin-top:8px;">
       <button onclick="fcGuardarCompletarActividad('${actividadId}','${clienteId}','${(numCliente||'').replace(/'/g,"\\'")}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">Guardar</button>
@@ -8811,7 +9006,9 @@ async function fcGuardarCompletarActividad(actividadId,clienteId,numCliente){
   if(error){alert('Error: '+error.message);return;}
 
   const actOriginal=(window._fcActividadesActual||[]).find(a=>a.id===actividadId);
-  await fcSincronizarActividadCrm(numCliente,actOriginal?.tipo_actividad,actOriginal?.fecha_programada,actOriginal?.hora_programada,resultado,nota);
+  const comentarioId=await fcSincronizarActividadCrm(numCliente,actOriginal?.tipo_actividad,actOriginal?.fecha_programada,actOriginal?.hora_programada,resultado,nota);
+  const archivo=document.getElementById('fcActArchivoCompletar_'+actividadId)?.files?.[0]||null;
+  if(archivo) await subirDocumentoAdjuntoActividad('cuenta',clienteId,archivo,comentarioId);
 
   if(sigFecha){
     await sb.from('cartera_actividades').insert({
@@ -8830,8 +9027,10 @@ async function fcGuardarCompletarActividad(actividadId,clienteId,numCliente){
 // reusando el endpoint /api/crm-comentarios (tipo=cuenta) que ya usan los
 // comentarios manuales de esta misma ficha. Best-effort: si falla, la
 // actividad ya quedó guardada en la app.
+// Jp, 2026-10-14: regresa el id del comentario creado (ModComments) para
+// poder adjuntarle un documento específico (ver subirDocumentoAdjuntoActividad).
 async function fcSincronizarActividadCrm(numCliente,tipo,fecha,hora,resultado,nota){
-  if(!numCliente) return;
+  if(!numCliente) return null;
   try{
     const {data:sess}=await sb.auth.getSession();
     const token=sess?.session?.access_token;
@@ -8842,9 +9041,11 @@ async function fcSincronizarActividadCrm(numCliente,tipo,fecha,hora,resultado,no
       body:JSON.stringify({tipo:'cuenta',num_cliente:numCliente,comentario:contenido}),
     });
     const j=await res.json().catch(()=>({}));
-    if(!res.ok||!j.ok) console.error('CRM comentario (actividad cartera) failed',j);
+    if(!res.ok||!j.ok){console.error('CRM comentario (actividad cartera) failed',j);return null;}
+    return j.comentario_id||null;
   }catch(e){
     console.error('CRM comentario (actividad cartera) error',e);
+    return null;
   }
 }
 
@@ -9124,6 +9325,19 @@ function onCarteraFiltroChange(){
   carteraFiltroTexto=document.getElementById('carteraFiltroTextoInput')?.value||'';
   carteraFiltroProducto=document.getElementById('carteraFiltroProductoInput')?.value||'';
   swCartera(currentCarteraSub);
+}
+
+// Jp, 2026-10-14: clic en una tarjeta de conteo (Aliado/Aspel/Eventual/Cursos)
+// arriba de Cartera de cuentas — filtra la lista por ese tipo_cliente (clic de
+// nuevo, o en "✕ quitar", lo quita). Se re-renderiza toda la vista de Cartera
+// (renderCarteraVendedor reconstruye las tarjetas con el estado nuevo) pero
+// preservando la sub-pestaña en la que el usuario estaba parado, porque
+// renderCarteraVendedor por defecto siempre abre en "mia".
+async function onCarteraFiltroTipoClick(key){
+  carteraFiltroTipo=(carteraFiltroTipo===key)?'':key;
+  const subAntes=currentCarteraSub;
+  await renderCarteraVendedor();
+  swCartera(subAntes);
 }
 
 function aplicarFiltrosCartera(lista){
