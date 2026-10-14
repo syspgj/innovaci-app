@@ -137,16 +137,26 @@ async function fetchTodo(table, select) {
   return todos;
 }
 
+// Jp, 2026-10-14 — segundo bug encontrado en la primera corrida real:
+// cuando un proyecto no tiene fecha capturada, Vtiger no regresa "" sino el
+// literal "0000-00-00" (fecha cero de MySQL) — Postgres lo rechaza
+// ("date/time field value out of range"). Se filtra igual que un vacío.
+function esFechaVacia(v) {
+  if (!v) return true;
+  const soloDigitos = String(v).replace(/[^0-9]/g, '');
+  return /^0+$/.test(soloDigitos); // "0000-00-00", "0000-00-00 00:00:00", etc.
+}
+
 function parseFechaCRM(v) {
-  // Vtiger regresa fechas como "YYYY-MM-DD" o "" — se deja tal cual o null.
-  if (!v) return null;
+  // Vtiger regresa fechas como "YYYY-MM-DD", "" o "0000-00-00".
+  if (esFechaVacia(v)) return null;
   return v;
 }
 
 function parseFechaHoraCRM(v) {
   // createdtime/modifiedtime vienen como "YYYY-MM-DD HH:MM:SS" (hora local
   // del servidor Vtiger) — se manda tal cual, Postgres lo interpreta.
-  if (!v) return null;
+  if (esFechaVacia(v)) return null;
   return v;
 }
 
