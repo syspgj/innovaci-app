@@ -52,6 +52,49 @@ const SYNC_SECRET = process.env.SYNC_SECRET;
 // cerrados/archivados — todo lo demás es "activo".
 const ESTATUS_CERRADOS = new Set(['Archivado', 'Concluido']);
 
+// Jp, 2026-10-14 — nivel de prioridad/atención por tipo de póliza
+// (confirmado con la tabla "Niveles de prioridad, asignación y primer
+// contacto" y validado en el chat): solo los tipos de proyecto que SON
+// una póliza de soporte vigente tienen nivel; todo lo demás (resguardo,
+// capacitaciones, servicios sueltos, pólizas desfasadas/históricas) se
+// deja sin nivel a propósito — no es un hueco, Jp confirmó que no importa
+// que esas no tengan nivel. Las claves van normalizadas (sin acentos,
+// minúsculas) porque el CRM no acentúa consistente ("Poliza Backup" vs
+// "Póliza Elite") — ver normalizarTipoProyecto.
+const NIVEL_POR_TIPO_PROYECTO = {
+  'poliza elite': { codigo: 'N1', label: 'Black' },
+  'poliza aliado core': { codigo: 'N1', label: 'Black' },
+  'poliza aliado empresa': { codigo: 'N1', label: 'Black' },
+  'poliza aliado prime': { codigo: 'N1', label: 'Black' },
+  'poliza aliado especial': { codigo: 'N1', label: 'Black' },
+  'poliza infinito': { codigo: 'N2', label: 'Blue' },
+  'poliza mi empresa +': { codigo: 'N3', label: 'Gold' },
+  'circulo innovaci noi': { codigo: 'N3', label: 'Gold' },
+  'poliza profesionista': { codigo: 'N4', label: 'Green' },
+  'poliza emprendedor': { codigo: 'N5', label: 'Gray' },
+  'poliza siigo aspel': { codigo: 'N5', label: 'Gray' },
+  // Sin nivel a propósito (confirmado con Jp, 2026-10-14): Evento Gratuito,
+  // Servicio Remoto, Servicio en Sitio, Capacitacion, Capacitacion Grupal,
+  // Poliza Backup (es resguardo, no póliza de soporte — va aparte),
+  // Poliza Small, Póliza Total ASPEL/GOLD/RED/BLUE/BLACK, Póliza Especial
+  // N1, Póliza desfasada (todas desfasadas/históricas).
+};
+
+function normalizarTipoProyecto(v) {
+  if (!v) return '';
+  return v
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '') // quita acentos
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function resolverNivel(tipoProyecto) {
+  const clave = normalizarTipoProyecto(tipoProyecto);
+  return NIVEL_POR_TIPO_PROYECTO[clave] || null;
+}
+
 function md5(str) {
   return crypto.createHash('md5').update(str).digest('hex');
 }
@@ -203,6 +246,7 @@ export default async function handler(req, res) {
       const accountNo = accountId ? accountNoPorCrmId.get(accountId) || null : null;
       const cliente = accountNo ? clientePorNumCliente.get(accountNo) || null : null;
       const estatus = p.projectstatus || null;
+      const nivel = resolverNivel(p.projecttype);
       return {
         crm_projectid: p.id,
         crm_project_no: p.project_no || null,
@@ -210,6 +254,8 @@ export default async function handler(req, res) {
         tipo_proyecto: p.projecttype || null,
         estatus_proyecto: estatus,
         activo: estatus ? !ESTATUS_CERRADOS.has(estatus) : null,
+        nivel_prioridad: nivel?.codigo || null,
+        nivel_label: nivel?.label || null,
         progreso: p.progress || null,
         prioridad: p.projectpriority || null,
         fecha_inicio: parseFechaCRM(p.startdate),
