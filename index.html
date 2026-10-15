@@ -15268,16 +15268,36 @@ async function renderSubirProspectos(){
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:20px;margin-bottom:16px;">
       <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px;">Datos del evento</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
         <div class="form-field">
           <label>Nombre del evento</label>
-          <input type="text" id="nEvento" placeholder="Ej: Masterclass Reforma Laboral Oct26" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
+          <input type="text" id="nEvento" placeholder="Ej: Masterclass Reforma Laboral 2027 Parte 1" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
         </div>
         <div class="form-field">
           <label>Origen</label>
           <select id="nOrigen" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
             <option>Meta Ads</option><option>Facebook</option><option>Instagram</option><option>Manual</option>
           </select>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px;">
+        <div class="form-field">
+          <label>Tipo de evento</label>
+          <select id="nTipoEvento" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
+            <option value="">—</option>
+            <option>Masterclass</option>
+            <option>Taller o curso gratuito</option>
+            <option>Primer sesión del diplomado</option>
+            <option>Campaña de Valoraciones</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label>Fecha del evento</label>
+          <input type="date" id="nFechaEvento" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
+        </div>
+        <div class="form-field">
+          <label>Promoción de la Master</label>
+          <input type="text" id="nPromocion" placeholder="Ej: 20% primer mes" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
         </div>
       </div>
 
@@ -15331,7 +15351,12 @@ function prospNormalizarHeader(h){
 function prospDetectarColumnas(headers){
   const norm=headers.map(prospNormalizarHeader);
   const find=(preds)=>{ for(let i=0;i<norm.length;i++){ if(preds(norm[i])) return i; } return -1; };
-  const iNombre=find(h=>(h.includes('full_name')||h==='nombre'||h==='nombre_completo')&&!h.includes('empresa'));
+  // "nombre" por substring (no igualdad exacta) para cubrir variantes como
+  // "Nombre y apellido", "Nombre completo", etc. — excluyendo las columnas
+  // de Meta que también traen "name" pero no son la persona (ad_name,
+  // campaign_name, adset_name, form_name, company_name/nombre de empresa).
+  const EXCLUIR_NOMBRE=['ad_name','campaign_name','adset_name','form_name'];
+  const iNombre=find(h=>!EXCLUIR_NOMBRE.includes(h)&&!h.includes('empresa')&&!h.includes('company')&&(h.includes('nombre')||h.includes('full_name')||h==='name'));
   const iCorreo=find(h=>h.includes('email')||h.includes('correo')||h.includes('mail'));
   const iTel=find(h=>h.includes('phone')||h.includes('whatsapp')||h.includes('telefono')||h.includes('celular'));
   const iCampania=find(h=>h==='campaign_name');
@@ -15343,6 +15368,9 @@ async function procesarPaste(){
   const texto=document.getElementById('pastArea').value.trim();
   const eventoManual=document.getElementById('nEvento').value.trim();
   const origen=document.getElementById('nOrigen').value;
+  const tipoEvento=document.getElementById('nTipoEvento').value||null;
+  const fechaEvento=document.getElementById('nFechaEvento').value||null;
+  const promocion=document.getElementById('nPromocion').value.trim()||null;
   if(!texto){alert('Pega al menos la fila de encabezados y una fila de datos');return;}
 
   const filas=prospParsearDelimitado(texto);
@@ -15364,7 +15392,7 @@ async function procesarPaste(){
     if(!nombre&&!email&&!telefono) continue;
     if(/test@meta\.com/i.test(email)) continue; // filas de prueba de Meta — sección 6 del diseño
     if(iCampania>=0&&fila[iCampania]) campaniaDetectada=fila[iCampania];
-    parsed.push({nombre:nombre||'Sin nombre',telefono,email,origen,_fecha:iFecha>=0?fila[iFecha]:null});
+    parsed.push({nombre:nombre||'Sin nombre',telefono,email,origen,_fecha:iFecha>=0?fila[iFecha]:null,tipoEvento,fechaEvento,promocion});
   }
   if(!parsed.length){alert('No quedaron filas válidas después de filtrar vacías y de prueba.');return;}
 
@@ -15441,7 +15469,7 @@ async function subirProspectos(){
       if(error) throw error;
       insertados=insertedData?.length||0;
       if(insertedData){
-        const eventosNuevos=insertedData.map((row,i)=>({prospecto_id:row.id,evento:nuevosRows[i].evento,fecha_registro:nuevosRows[i]._fecha||hoyStr,origen:nuevosRows[i].origen}));
+        const eventosNuevos=insertedData.map((row,i)=>({prospecto_id:row.id,evento:nuevosRows[i].evento,fecha_registro:nuevosRows[i]._fecha||hoyStr,origen:nuevosRows[i].origen,tipo_evento:nuevosRows[i].tipoEvento,fecha_evento:nuevosRows[i].fechaEvento,promocion:nuevosRows[i].promocion}));
         await sb.from('prospecto_eventos').insert(eventosNuevos);
       }
     }
@@ -15452,7 +15480,7 @@ async function subirProspectos(){
       const yaTiene=new Set((eventosYa||[]).map(e=>`${e.prospecto_id}::${e.evento}`));
       const eventosExistentes=existentesRows
         .filter(p=>!yaTiene.has(`${p._match.id}::${p.evento}`))
-        .map(p=>({prospecto_id:p._match.id,evento:p.evento,fecha_registro:p._fecha||hoyStr,origen:p.origen}));
+        .map(p=>({prospecto_id:p._match.id,evento:p.evento,fecha_registro:p._fecha||hoyStr,origen:p.origen,tipo_evento:p.tipoEvento,fecha_evento:p.fechaEvento,promocion:p.promocion}));
       if(eventosExistentes.length){
         const {error}=await sb.from('prospecto_eventos').insert(eventosExistentes);
         if(error) throw error;
