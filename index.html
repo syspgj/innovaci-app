@@ -15416,20 +15416,41 @@ async function procesarPaste(){
   }
   parsed.forEach(p=>{ p._match=buscarExistente(p); });
 
-  const nuevos=parsed.filter(p=>!p._match).length;
-  const existentesN=parsed.length-nuevos;
+  // Deduplicar DENTRO del mismo lote — la misma persona puede aparecer más
+  // de una vez en la pestaña pegada (llenó el formulario dos veces). Sin
+  // esto, dos filas nuevas con el mismo correo/teléfono generaban dos
+  // prospectos duplicados, y dos filas que hacían match con el MISMO
+  // prospecto ya existente violaban la restricción única
+  // (prospecto_id, evento) de prospecto_eventos al subir — error real que
+  // Jp encontró el 2026-10-15 al pegar una lista con nombres repetidos.
+  const deduped=[]; let dupesEnLote=0;
+  for(const p of parsed){
+    if(p._match){
+      if(deduped.some(q=>q._match&&q._match.id===p._match.id)){ dupesEnLote++; continue; }
+    } else {
+      const yaEnLote=deduped.find(q=>!q._match&&(
+        (p.email&&q.email&&p.email.trim().toLowerCase()===q.email.trim().toLowerCase())||
+        (p.telefono&&tkTelefonosCoinciden(p.telefono,q.telefono))
+      ));
+      if(yaEnLote){ dupesEnLote++; continue; }
+    }
+    deduped.push(p);
+  }
+
+  const nuevos=deduped.filter(p=>!p._match).length;
+  const existentesN=deduped.length-nuevos;
 
   const preview=document.getElementById('previewArea');
   preview.innerHTML=`
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);overflow:hidden;">
     <div class="card-head">
-      <span class="card-title">Vista previa — ${parsed.length} filas · evento "${evento}"</span>
-      <span class="badge bt">${nuevos} nuevos · ${existentesN} ya existen (solo se les agrega el evento)</span>
+      <span class="card-title">Vista previa — ${deduped.length} filas · evento "${evento}"</span>
+      <span class="badge bt">${nuevos} nuevos · ${existentesN} ya existen (solo se les agrega el evento)${dupesEnLote?` · ${dupesEnLote} repetidos dentro del mismo archivo (omitidos)`:''}</span>
     </div>
     <table class="daily" style="font-size:12px;max-height:420px;display:block;overflow-y:auto;">
       <thead><tr><th>#</th><th>Nombre</th><th>Teléfono</th><th>Email</th><th>Acción</th></tr></thead>
       <tbody>
-        ${parsed.map((p,i)=>`<tr><td style="color:var(--text3);">${i+1}</td><td style="font-weight:500;">${p.nombre}</td>
+        ${deduped.map((p,i)=>`<tr><td style="color:var(--text3);">${i+1}</td><td style="font-weight:500;">${p.nombre}</td>
             <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
             <td style="font-size:11px;color:var(--text3);">${p.email||'—'}</td>
             <td>${p._match?`<span style="font-size:10px;font-weight:600;color:var(--gold);">Ya existe → agrega evento</span>`:`<span style="font-size:10px;font-weight:600;color:var(--teal);">Nuevo</span>`}</td>
@@ -15443,7 +15464,7 @@ async function procesarPaste(){
       </button>
     </div>
   </div>`;
-  window._parsedProspectos=parsed;
+  window._parsedProspectos=deduped;
 }
 
 async function subirProspectos(){
