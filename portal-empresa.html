@@ -281,6 +281,25 @@ function resultadoFila(f,criterioMin){
   if(f.estatus_final==='baja') return {texto:'Baja',clase:'bajo',motivo:f.estatus_final_motivo||null};
   return {texto:'En curso',clase:'curso',motivo:null};
 }
+// Clasificación unificada alto/bajo usada en 01 (anillo), 04 (análisis), 05
+// (recomendaciones) y 06 (servicios): toma primero el estatus final real
+// (constancia emitida, no acreditado, baja) y, si todavía no hay uno
+// registrado, cae a la calificación numérica capturada (examen/constancia)
+// contra el criterio mínimo — así nadie con una calificación real capturada
+// se queda fuera de la cuenta solo porque aún no se marcó su estatus_final
+// ni se le emitió constancia. Antes "acreditados"/"bajos" en el texto
+// automático se calculaban aparte de "No acreditado"/"Baja" de la tarjeta de
+// abajo y podían no coincidir (el caso de la auditoría del 2026-10-15: un
+// participante sin calificación numérica pero con estatus_final=no_acreditado
+// no se contaba en ningún lado del texto automático).
+function clasificarParticipante(f,criterioMin){
+  const r=resultadoFila(f,criterioMin);
+  if(r.clase!=='curso') return r;
+  const cal=calificacionDeFila(f);
+  if(cal==null) return r;
+  const criterioNum=parseInt(criterioMin)||80;
+  return cal>=criterioNum?{texto:`${cal}%`,clase:'alto',motivo:null}:{texto:`${cal}%`,clase:'bajo',motivo:null};
+}
 function resumenEjecutivoTexto(filas,g){
   const totalSesiones=g.sesiones_totales||null;
   const sesionesImpartidas=g.sesiones_impartidas||0;
@@ -318,11 +337,25 @@ function anilloSVG(pct,color,label,val){
 }
 
 // ── 02 Resultados individuales — misma gráfica de barras que el PDF, pero en la página.
-function indivBarsHtml(filas,criterioMin){
+function indivBarsHtml(filas,criterioMin,g){
   const criterioNum=parseInt(criterioMin)||80;
+  const totalPracticas=g&&g.practicas_totales?g.practicas_totales:null;
   return filas.map(f=>{
     const cal=calificacionDeFila(f);
-    if(cal==null) return `<div class="indiv-row"><div class="indiv-name">${f.participante_nombre}</div><div class="indiv-track"></div><div class="indiv-pct" style="color:var(--text3);font-size:11px;font-weight:600;">Sin dato</div></div>`;
+    if(cal==null){
+      // Antes, cualquier participante sin calificación numérica (examen o
+      // constancia) se veía igual aquí arriba: "Sin dato" en gris neutro —
+      // incluso cuando la tarjeta de abajo ya muestra un estatus final real
+      // (No acreditado / Baja). Eso escondía al único caso que de verdad
+      // importa para quien solo revisa este resumen. Jp, auditoría 2026-10-15.
+      if(f.estatus_final==='no_acreditado'||f.estatus_final==='baja'){
+        const r=resultadoFila(f,criterioMin);
+        const elegiblePracticas=(f.nivel_acceso==='plus'||f.nivel_acceso==='premium');
+        const pracTxt=(elegiblePracticas&&totalPracticas)?` · ${f.practicas_aprobadas||0}/${totalPracticas} prácticas`:'';
+        return `<div class="indiv-row"><div class="indiv-name">${f.participante_nombre}</div><div class="indiv-track"></div><div class="indiv-pct" style="color:var(--red);font-size:11px;font-weight:700;white-space:nowrap;">${r.texto}${pracTxt}</div></div>`;
+      }
+      return `<div class="indiv-row"><div class="indiv-name">${f.participante_nombre}</div><div class="indiv-track"></div><div class="indiv-pct" style="color:var(--text3);font-size:11px;font-weight:600;">Sin dato</div></div>`;
+    }
     const color=cal>=criterioNum?'var(--green)':(cal>=60?'var(--amber)':'var(--red)');
     return `<div class="indiv-row">
       <div class="indiv-name">${f.participante_nombre}</div>
@@ -365,13 +398,33 @@ function analisisAutoTexto(filas,g){
       partes.push(`La asistencia promedio del grupo fue de ${asistProm}%, con ${c100} de ${n} participante${n===1?'':'s'} cubriendo el 100% de ${refSesiones}.`);
     }
   }
-  const conResultado=filas.filter(f=>calificacionDeFila(f)!=null);
-  if(g.portal_finalizado&&conResultado.length){
-    const acreditados=conResultado.filter(f=>calificacionDeFila(f)>=criterioNum);
-    const pct=Math.round(100*acreditados.length/conResultado.length);
-    if(pct===100) partes.push(`Todos los participantes evaluados alcanzaron el criterio de acreditación (${criterioMin}), lo que refleja una comprensión sólida de los temas cubiertos.`);
-    else if(pct>=50) partes.push(`${acreditados.length} de ${conResultado.length} participantes alcanzaron el criterio de acreditación (${criterioMin}); el resto se beneficiaría de reforzamiento adicional.`);
-    else partes.push(`Solo ${acreditados.length} de ${conResultado.length} participantes alcanzaron el criterio de acreditación (${criterioMin}), lo que sugiere la necesidad de reforzar los temas del curso.`);
+  if(g.portal_finalizado&&n){
+    // Antes esta clasificación solo veía a quien tenía una calificación
+    // numérica capturada (examen o constancia); a un participante con
+    // estatus_final real (no acreditado / baja) pero sin esa calificación
+    // ni se contaba aquí. Usar resultadoFila para los tres casos deja
+    // consistente esta cifra con la tarjeta de abajo. Jp, auditoría
+    // 2026-10-15.
+    const clasificadas=filas.map(f=>clasificarParticipante(f,criterioMin));
+    const acreditados=clasificadas.filter(r=>r.clase==='alto').length;
+    const bajosFilas=filas.filter((f,i)=>clasificadas[i].clase==='bajo');
+    const pct=Math.round(100*acreditados/n);
+    if(pct===100) partes.push(`Todos los participantes alcanzaron el criterio de acreditación (${criterioMin}), lo que refleja una comprensión sólida de los temas cubiertos.`);
+    else if(pct>=50) partes.push(`${acreditados} de ${n} participantes alcanzaron el criterio de acreditación (${criterioMin}); el resto se beneficiaría de reforzamiento adicional.`);
+    else partes.push(`Solo ${acreditados} de ${n} participantes alcanzaron el criterio de acreditación (${criterioMin}), lo que sugiere la necesidad de reforzar los temas del curso.`);
+    // Se separa "no acreditado" (sigue en el curso, bajo desempeño) de
+    // "baja" (ya no está en el curso) — recomendar "reforzar temas" a
+    // alguien que se dio de baja no tiene sentido. Jp, 2026-10-15.
+    const bajoDesempeño=bajosFilas.filter(f=>f.estatus_final!=='baja');
+    const porBaja=bajosFilas.filter(f=>f.estatus_final==='baja');
+    if(bajoDesempeño.length&&bajoDesempeño.length<=3){
+      const nombres=bajoDesempeño.map(f=>f.participante_nombre).join(' y ');
+      partes.push(`En particular, ${nombres} ${bajoDesempeño.length===1?'no alcanzó':'no alcanzaron'} el criterio y se beneficiaría${bajoDesempeño.length===1?'':'n'} de seguimiento puntual.`);
+    }
+    if(porBaja.length&&porBaja.length<=3){
+      const nombresBaja=porBaja.map(f=>f.participante_nombre).join(' y ');
+      partes.push(`${nombresBaja} ${porBaja.length===1?'se dio':'se dieron'} de baja antes de concluir el curso.`);
+    }
   }
   const elegiblesPracticas=filas.filter(f=>f.nivel_acceso==='plus'||f.nivel_acceso==='premium');
   if(elegiblesPracticas.length&&g.practicas_totales){
@@ -382,16 +435,36 @@ function analisisAutoTexto(filas,g){
 }
 function recomendacionesAutoTexto(filas,g){
   const criterioMin=g.criterio_acreditacion||'80%';
-  const criterioNum=parseInt(criterioMin)||80;
-  const conResultado=filas.filter(f=>calificacionDeFila(f)!=null);
-  const bajos=conResultado.filter(f=>calificacionDeFila(f)<criterioNum);
+  // Misma corrección que en analisisAutoTexto: resultadoFila clasifica a
+  // TODOS los participantes (con o sin calificación numérica), así que un
+  // caso "no acreditado" sin examen/constancia capturado ya no se escapa de
+  // esta recomendación. Jp, auditoría 2026-10-15.
+  const bajosFilas=g.portal_finalizado?filas.filter(f=>clasificarParticipante(f,criterioMin).clase==='bajo'):[];
+  // Igual que en analisisAutoTexto: separar bajo desempeño (sigue en el
+  // curso) de baja (ya no está) — la recomendación de "reforzar temas" no
+  // aplica a quien se dio de baja. Jp, 2026-10-15.
+  const bajoDesempeño=bajosFilas.filter(f=>f.estatus_final!=='baja');
+  const porBaja=bajosFilas.filter(f=>f.estatus_final==='baja');
   const totalSesiones=g.sesiones_totales||null;
   const baseAsistencia=(g.sesiones_impartidas||0)>0?g.sesiones_impartidas:totalSesiones;
   const partes=[];
-  if(bajos.length){
-    partes.push(`Se recomienda dar seguimiento puntual a ${bajos.length===1?'1 participante':bajos.length+' participantes'} que no alcanzó el criterio de acreditación, reforzando los temas con mayor dificultad mediante sesiones de práctica adicionales.`);
-  } else if(conResultado.length){
+  if(bajoDesempeño.length){
+    if(bajoDesempeño.length<=3){
+      const nombres=bajoDesempeño.map(f=>f.participante_nombre).join(' y ');
+      partes.push(`Se recomienda dar seguimiento puntual a ${nombres}, quien${bajoDesempeño.length===1?'':'es'} ${bajoDesempeño.length===1?'no alcanzó':'no alcanzaron'} el criterio de acreditación, reforzando los temas con mayor dificultad mediante sesiones de práctica adicionales.`);
+    } else {
+      partes.push(`Se recomienda dar seguimiento puntual a ${bajoDesempeño.length} participantes que no alcanzaron el criterio de acreditación, reforzando los temas con mayor dificultad mediante sesiones de práctica adicionales.`);
+    }
+  } else if(g.portal_finalizado&&!porBaja.length){
     partes.push('Se recomienda mantener el ritmo de trabajo del grupo y aprovechar el dominio alcanzado aplicando lo aprendido en casos reales de la operación diaria.');
+  }
+  if(porBaja.length){
+    if(porBaja.length<=3){
+      const nombresBaja=porBaja.map(f=>f.participante_nombre).join(' y ');
+      partes.push(`Se recomienda dar seguimiento con ${nombresBaja} sobre el motivo de su baja del curso, antes de considerar una reinscripción o un curso de reforzamiento.`);
+    } else {
+      partes.push(`Se recomienda dar seguimiento con ${porBaja.length} participantes que se dieron de baja del curso, antes de considerar una reinscripción o un curso de reforzamiento.`);
+    }
   }
   if(baseAsistencia){
     const faltantes=filas.filter(f=>f.sesiones_asistidas<baseAsistencia);
@@ -471,7 +544,7 @@ function pintarResultado(filas){
   const resultadosIndivHtml=g.portal_finalizado?`
       <div class="panel">
         <div class="section-title">Resultados individuales</div>
-        <div class="indiv-bars">${indivBarsHtml(filas,criterioMin)}</div>
+        <div class="indiv-bars">${indivBarsHtml(filas,criterioMin,g)}</div>
       </div>
       <div class="panel">
         <div class="section-title">Interpretación de desempeño</div>
@@ -484,10 +557,18 @@ function pintarResultado(filas){
   const recomendacionesTexto=g.portal_finalizado?textoComplementado(recomendacionesAutoTexto(filas,g),g.portal_texto_recomendaciones):null;
 
   // 06: servicios complementarios de pago — mismo contenido y precios que ya
-  // se ofrecen en el reporte de alto rendimiento.
+  // se ofrecen en el reporte de alto rendimiento. Cuando hay 1-3 personas en
+  // riesgo (mismo criterio que recomendacionesAutoTexto), se nombran aquí en
+  // vez de ofrecer los servicios de forma genérica — para que el dueño sepa
+  // en quién aplicarían primero. Jp, auditoría 2026-10-15.
+  // Excluye a quien se dio de baja: estos servicios (práctica, desempeño)
+  // no aplican a alguien que ya no está en el curso. Jp, 2026-10-15.
+  const bajosServicio=g.portal_finalizado?filas.filter(f=>clasificarParticipante(f,criterioMin).clase==='bajo'&&f.estatus_final!=='baja'):[];
+  const sugerenciaServicioHtml=(bajosServicio.length&&bajosServicio.length<=3)?`<div class="desc" style="margin-bottom:14px;">Con base en los resultados de este grupo, estos servicios aplicarían especialmente para <b>${bajosServicio.map(f=>f.participante_nombre).join(' y ')}</b>, quien${bajosServicio.length===1?'':'es'} ${bajosServicio.length===1?'no alcanzó':'no alcanzaron'} el criterio de acreditación.</div>`:'';
   const serviciosHtml=g.portal_finalizado?`
       <div class="panel">
         <div class="section-title">Servicios complementarios disponibles</div>
+        ${sugerenciaServicioHtml}
         <div class="servicios-grid">
           <div class="servicio-card">
             <div class="servicio-nombre">Informe detallado de prácticas</div>
@@ -686,6 +767,13 @@ function descargarReporte(){
       doc.roundedRect(barX,y,w,5.5,1,1,'F');
       doc.setFontSize(8); doc.setFont('helvetica','bold'); doc.setTextColor(...navy);
       doc.text(`${cal}%`,barX+w+3,y+4.2);
+    } else if(f.estatus_final==='no_acreditado'||f.estatus_final==='baja'){
+      // Mismo criterio que en la página: si ya hay un estatus final real,
+      // no se muestra como "sin dato" aunque no exista una calificación
+      // numérica capturada. Jp, auditoría 2026-10-15.
+      const r=resultadoFila(f,String(criterioNum)+'%');
+      doc.setFontSize(8); doc.setFont('helvetica','bold'); doc.setTextColor(...red);
+      doc.text(r.texto,barX,y+4.2);
     } else {
       doc.setFontSize(8); doc.setTextColor(154,166,176); doc.text('Sin calificación capturada',barX,y+4.2);
     }
@@ -734,6 +822,20 @@ function descargarReporte(){
   doc.setDrawColor(230,230,230); doc.line(14,y,pageW-14,y); y+=10;
   doc.setFontSize(10); doc.setFont('helvetica','bold'); doc.setTextColor(...navy);
   doc.text('06  Servicios complementarios disponibles',14,y); y+=8;
+  {
+    // Misma sugerencia contextual que en la página: si hay 1-3 personas en
+    // riesgo, se nombran aquí en vez de ofrecer los servicios de forma
+    // genérica. Jp, auditoría 2026-10-15.
+    const criterioMin06=g.criterio_acreditacion||'80%';
+    const bajosServicioPdf=filas.filter(f=>clasificarParticipante(f,criterioMin06).clase==='bajo'&&f.estatus_final!=='baja');
+    if(bajosServicioPdf.length&&bajosServicioPdf.length<=3){
+      doc.setFontSize(8); doc.setFont('helvetica','normal'); doc.setTextColor(92,107,119);
+      const nombresPdf=bajosServicioPdf.map(f=>f.participante_nombre).join(' y ');
+      const txtPdf=`Con base en los resultados de este grupo, estos servicios aplicarían especialmente para ${nombresPdf}, quien${bajosServicioPdf.length===1?'':'es'} ${bajosServicioPdf.length===1?'no alcanzó':'no alcanzaron'} el criterio de acreditación.`;
+      const lineasPdf=doc.splitTextToSize(txtPdf,pageW-28);
+      doc.text(lineasPdf,14,y); y+=lineasPdf.length*4.2+6;
+    }
+  }
   const servicios=[
     ['Informe detallado de prácticas','$400 +IVA por participante',['Evaluación por ejercicio','Retroalimentación técnica específica']],
     ['Reporte de desempeño individual — nivel consultivo','$900 +IVA por participante',['Evaluación cualitativa del participante','Observaciones del instructor','Nivel de participación','Áreas de mejora específicas']],
@@ -754,6 +856,19 @@ function descargarReporte(){
     if(sy>servMaxY) servMaxY=sy;
   });
   y=servMaxY+4;
+
+  // Firma de quien impartió el curso — pendiente desde el Lote 26 (el
+  // reporte de muestra la incluía); ya existe el dato vía
+  // firmante_instructor_id (Lote 28), solo faltaba usarlo aquí. Jp,
+  // 2026-10-15.
+  if(g.instructor_nombre){
+    if(y>245){ doc.addPage(); y=20; } else { y+=10; }
+    doc.setDrawColor(200,200,200); doc.line(14,y,74,y); y+=5;
+    doc.setFontSize(9); doc.setFont('helvetica','bold'); doc.setTextColor(...navy);
+    doc.text(g.instructor_nombre,14,y); y+=4.5;
+    doc.setFontSize(8); doc.setFont('helvetica','normal'); doc.setTextColor(92,107,119);
+    doc.text(g.instructor_cargo||'Instructor(a)',14,y);
+  }
 
   const pageCount=doc.internal.getNumberOfPages();
   for(let i=1;i<=pageCount;i++){
