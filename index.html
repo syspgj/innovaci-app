@@ -5327,7 +5327,7 @@ function buildVendorUI(){
   });
   // Fila 2 (consulta/referencia): Cartera, Proyección, Histórico, Promociones, Reglas de comisión
   const _tabsBottom=[];
-  if(esVendedor)_tabsBottom.push({l:'💼 Cartera',v:'cartera'},{l:'📁 Proyectos',v:'proyectos'},{l:'📋 Suscripciones',v:'suscripciones'});
+  if(esVendedor)_tabsBottom.push({l:'💼 Cartera',v:'cartera'},{l:'🧲 Prospectos',v:'prospectosV'},{l:'📁 Proyectos',v:'proyectos'},{l:'📋 Suscripciones',v:'suscripciones'});
   _tabsBottom.push({l:'Proyección',v:'proyeccion'},{l:'Histórico',v:'historico'},{l:'🏷 Promociones',v:'promos'},{l:'📜 Reglas de comisión',v:'reglas'},{l:'🖥 Servidores',v:'servidores'},{l:'🔑 Licencias TS Plus',v:'tsplus'});
   if(_tabsBottom.length){
     _t2.style.display='flex';
@@ -5358,6 +5358,7 @@ function swV(id){
   if(id==='miMes')renderVendorMiMes();
   else if(id==='anual')renderVendorAnual();
   else if(id==='cartera')renderCarteraVendedor();
+  else if(id==='prospectosV')renderProspectosVendedor();
   else if(id==='proyectos')renderProyectosModulo();
   else if(id==='suscripciones')renderVendedorSuscripcionesModulo();
   else if(id==='registro')renderRegistroForm();
@@ -5373,6 +5374,7 @@ async function renderVendor(){
   if(currentVendTab==='miMes')renderVendorMiMes();
   else if(currentVendTab==='anual')renderVendorAnual();
   else if(currentVendTab==='cartera')renderCarteraVendedor();
+  else if(currentVendTab==='prospectosV')renderProspectosVendedor();
   else if(currentVendTab==='proyectos')renderProyectosModulo();
   else if(currentVendTab==='suscripciones')renderVendedorSuscripcionesModulo();
   else if(currentVendTab==='registro')renderRegistroForm();
@@ -7095,6 +7097,12 @@ async function guardarFilaPipe(irASiguiente){
 async function _guardarFilaPipeInterno(irASiguiente){
   const id=document.getElementById('pipeId').value;
   const cuentaId=document.getElementById('pipeCuentaId')?.value||null;
+  // Lote 35 (Jp, 2026-10-15): si esta negociación se abrió desde el módulo
+  // de Prospectos (agregarFilaPipeDesdeProspecto), el modal trae un hidden
+  // #pipeProspectoAppId. Se manda solo cuando existe, a propósito — así una
+  // edición posterior de una fila ya guardada (que no vuelve a traer ese
+  // hidden) nunca sobreescribe en silencio la liga ya guardada con null.
+  const prospectoAppId=document.getElementById('pipeProspectoAppId')?.value||null;
   const payload={
     usuario_id:currentUser.id,
     anio:currentYear, mes:currentMonth,
@@ -7116,6 +7124,7 @@ async function _guardarFilaPipeInterno(irASiguiente){
     // (pipeline_actividades). No se mandan en el payload a propósito, para
     // no sobrescribir en silencio el valor histórico que ya tuviera la fila.
   };
+  if(prospectoAppId) payload.prospecto_app_id=prospectoAppId;
   let error;
   if(id){
     ({error}=await sb.from('pipeline_vendedor').update(payload).eq('id',id));
@@ -13915,6 +13924,7 @@ const ESTATUS_COLORS = {
 };
 
 async function renderProspectos(){
+  window._prospectosVCtx=false; // este flujo (telemarketing) no es el módulo de Prospectos de Ventas — oculta el botón "+ Proyección" del modal si quedó prendido de una visita anterior
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando prospectos...</div>';
 
@@ -14061,6 +14071,148 @@ function filtrarProspectos(){
   });
   const tbody=document.getElementById('bodyProspectos');
   if(tbody) tbody.innerHTML=filtrados.map(p=>filaProspecto(p)).join('');
+}
+
+// ── PROSPECTOS (vista de vendedor) ───────────────────────────────────────────
+// Lote 35 (Jp, 2026-10-15): módulo de Prospectos para los vendedores B2B
+// (Dulce/Manuel), Fase 1 del plan documentado en
+// claude/prospectos-modulo-diseno.md. A diferencia de renderProspectos()
+// (telemarketing, gated por "campaña activa"), este NO depende de ninguna
+// campaña — muestra TODO lo que ya está canalizado a ese vendedor
+// (prospectos.vendedor_asignado = currentUser.id), igual que Cartera muestra
+// todas sus cuentas sin depender de nada más. Reutiliza el modal de detalle
+// (abrirDetalle) y la bitácora de llamadas que ya existían — solo cambia
+// cómo se arma la lista y agrega el cruce contra Cartera ("¿ya es cliente?")
+// y el botón para abrir una negociación en Proyección ya ligada al prospecto.
+async function renderProspectosVendedor(){
+  const mc=document.getElementById('mainContent');
+  mc.classList.remove('full-width');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando prospectos...</div>';
+  const [{data:prospectos},clientes]=await Promise.all([
+    sb.from('prospectos').select('*').eq('vendedor_asignado',currentUser.id).order('created_at',{ascending:false}),
+    (window._cartClientes&&window._cartClientes.length)?Promise.resolve(window._cartClientes):carteraFetchTodosClientes('id,razon_social,telefono,telefono2,telefono_whatsapp,correo_principal,otro_correo,email')
+  ]);
+  window._cartClientes=window._cartClientes&&window._cartClientes.length?window._cartClientes:clientes;
+  const ps=(prospectos||[]).map(p=>({...p,_cliente:prospectoMatchCliente(p,clientes)}));
+  // Si el cruce encontró una cuenta y el prospecto no la tenía guardada
+  // todavía, se guarda calladamente — así la próxima vez ya no hay que
+  // recalcular, y Cartera/Proyección también pueden apoyarse en el dato.
+  ps.filter(p=>p._cliente&&!p.cliente_cartera_id).forEach(p=>{
+    sb.from('prospectos').update({cliente_cartera_id:p._cliente.id}).eq('id',p.id);
+    p.cliente_cartera_id=p._cliente.id;
+  });
+  const total=ps.length;
+  const yaClientes=ps.filter(p=>p._cliente||p.cliente_cartera_id).length;
+  const eventosUnicos=[...new Set(ps.map(p=>p.evento).filter(Boolean))].sort();
+
+  mc.innerHTML=`
+  <div style="margin-bottom:16px;">
+    <div style="font-size:18px;font-weight:600;color:var(--text);">Mis prospectos</div>
+    <div style="font-size:12px;color:var(--text3);">${total} canalizados a ti ${yaClientes?`· <span style="color:var(--gold);font-weight:600;">⚠ ${yaClientes} ya son cliente</span>`:''}</div>
+  </div>
+  <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+    <select id="filtroEventoV" onchange="filtrarProspectosVendedor()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+      <option value="">Todos los eventos</option>
+      ${eventosUnicos.map(e=>`<option value="${e}">${e}</option>`).join('')}
+    </select>
+    <select id="filtroEstatusV" onchange="filtrarProspectosVendedor()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+      <option value="">Todos los estatus</option>
+      ${Object.keys(ESTATUS_COLORS).map(e=>`<option value="${e}">${e}</option>`).join('')}
+    </select>
+    <div style="position:relative;">
+      <input type="text" id="buscarProsV" placeholder="Buscar nombre, tel o correo..." oninput="filtrarProspectosVendedor()"
+        style="padding:7px 32px 7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;width:220px;box-sizing:border-box;">
+      <button onclick="document.getElementById('buscarProsV').value='';filtrarProspectosVendedor()" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:15px;">✕</button>
+    </div>
+  </div>
+  <div class="card">
+    <table class="daily" style="font-size:12px;">
+      <thead><tr>
+        <th>Nombre</th><th>Teléfono</th><th>Evento</th><th>Estatus</th><th>Último contacto</th><th>Acciones</th>
+      </tr></thead>
+      <tbody id="bodyProspectosV">
+        ${ps.map(p=>filaProspectoVendedor(p)).join('')}
+      </tbody>
+    </table>
+    ${!ps.length?`<div style="padding:24px;text-align:center;font-size:12px;color:var(--text3);">Todavía no tienes prospectos canalizados a tu nombre.</div>`:''}
+  </div>`;
+  window._prospectos=ps; // para que abrirDetalle/registrarLlamada funcionen igual que en el resto del módulo
+  window._prospectosVCtx=true; // le dice al modal de detalle que muestre el botón "+ Proyección"
+}
+
+// Match por correo/teléfono confirmado por Jp (2026-10-15) — el nombre se
+// descarta a propósito (viene inconsistente). Reutiliza tkTelefonosCoinciden
+// (últimos 10 dígitos) que ya usa Tickets para reconocer contactos.
+function prospectoMatchCliente(p,clientes){
+  if(!p.telefono&&!p.email) return null;
+  const correoP=(p.email||'').trim().toLowerCase();
+  for(const c of (clientes||[])){
+    if(correoP&&[c.correo_principal,c.otro_correo,c.email].some(e=>(e||'').trim().toLowerCase()===correoP)) return c;
+    if(p.telefono&&[c.telefono,c.telefono2,c.telefono_whatsapp].some(t=>tkTelefonosCoinciden(p.telefono,t))) return c;
+  }
+  return null;
+}
+
+function filaProspectoVendedor(p){
+  const col=ESTATUS_COLORS[p.estatus]||'#888';
+  const fecha=p.fecha_contacto?p.fecha_contacto.slice(5):'—';
+  const cliente=p._cliente;
+  return `<tr id="rowV_${p.id}">
+    <td style="font-weight:500;">
+      <span onclick="abrirDetalle('${p.id}')" style="cursor:pointer;color:var(--navy);border-bottom:1px solid rgba(13,34,64,0.2);" title="Ver detalle">${p.nombre}</span>
+      ${cliente?`<div style="margin-top:2px;"><span onclick="abrirFichaClienteModal('${cliente.id}')" style="cursor:pointer;font-size:10px;font-weight:600;color:var(--gold);background:var(--gold-bg);border-radius:4px;padding:1px 6px;">⚠ Ya es cliente</span></div>`:''}
+    </td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
+    <td style="font-size:11px;color:var(--text3);">${p.evento||'—'}</td>
+    <td><span style="font-size:11px;font-weight:600;color:${col};">${p.estatus}</span></td>
+    <td style="font-size:11px;color:var(--text3);">${fecha}</td>
+    <td>
+      <div style="display:flex;gap:5px;align-items:center;">
+        <button onclick="abrirDetalle('${p.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">Ver</button>
+        <button onclick="agregarFilaPipeDesdeProspecto('${p.id}')" title="Abrir una negociación en Proyección ligada a este prospecto" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Proyección</button>
+      </div>
+    </td>
+  </tr>`;
+}
+
+function filtrarProspectosVendedor(){
+  const filtro=document.getElementById('filtroEstatusV')?.value||'';
+  const filtroEv=document.getElementById('filtroEventoV')?.value||'';
+  const buscar=document.getElementById('buscarProsV')?.value.toLowerCase()||'';
+  const ps=window._prospectos||[];
+  const filtrados=ps.filter(p=>{
+    const matchEstatus=!filtro||p.estatus===filtro;
+    const matchEvento=!filtroEv||p.evento===filtroEv;
+    const matchBuscar=!buscar||(p.nombre||'').toLowerCase().includes(buscar)||(p.telefono||'').includes(buscar)||(p.email||'').toLowerCase().includes(buscar);
+    return matchEstatus&&matchEvento&&matchBuscar;
+  });
+  const tbody=document.getElementById('bodyProspectosV');
+  if(tbody) tbody.innerHTML=filtrados.map(p=>filaProspectoVendedor(p)).join('');
+}
+
+// Abre el modal de "Nueva negociación" de Proyección, prellenado con los
+// datos de contacto del prospecto y ligado a él vía prospecto_app_id — para
+// que Proyección "recuerde" que esta negociación viene de un prospecto
+// (pedido explícito de Jp, 2026-10-15). Si el prospecto ya hizo match con
+// una cuenta real de Cartera, también se liga esa cuenta de una vez.
+async function agregarFilaPipeDesdeProspecto(prospectoId){
+  const p=(window._prospectos||[]).find(x=>x.id===prospectoId);
+  if(!p) return;
+  await agregarFilaPipe();
+  const inNombre=document.getElementById('pCliente'), inCNombre=document.getElementById('pContactoNombre'),
+        inCCorreo=document.getElementById('pContactoCorreo'), inCTel=document.getElementById('pContactoTelefono');
+  if(inNombre) inNombre.value=p.nombre||'';
+  if(inCNombre) inCNombre.value=p.nombre||'';
+  if(inCCorreo) inCCorreo.value=p.email||'';
+  if(inCTel) inCTel.value=p.telefono||'';
+  const hidden=document.createElement('input');
+  hidden.type='hidden'; hidden.id='pipeProspectoAppId'; hidden.value=prospectoId;
+  document.getElementById('modalPipe')?.appendChild(hidden);
+  const clienteId=p._cliente?.id||p.cliente_cartera_id;
+  if(clienteId){
+    const cta=(window._cartClientes||[]).find(c=>c.id===clienteId);
+    if(cta) await pipeMostrarCuentaLigada(cta.id,cta.razon_social);
+  }
 }
 
 async function actualizarEstatus(id, estatus){
@@ -14210,6 +14362,7 @@ async function abrirDetalle(id){
             <span style="color:${ESTATUS_COLORS[p.estatus]||'#888'};font-weight:600;">${p.estatus}</span>
             ${p.vendedor_asignado?` &nbsp;·&nbsp; <span style="color:var(--text3);">Vendedor: <b>${vendedoresB2B.find(v=>v.id===p.vendedor_asignado)?.nombre||'—'}</b></span>`:''}
           </div>
+          ${(p._cliente||p.cliente_cartera_id)?`<div style="margin-top:4px;"><span onclick="abrirFichaClienteModal('${(p._cliente?.id)||p.cliente_cartera_id}')" style="cursor:pointer;font-size:10px;font-weight:600;color:var(--gold);background:var(--gold-bg);border-radius:4px;padding:2px 8px;">⚠ Ya es cliente — ver ficha</span></div>`:''}
         </div>
         <div style="display:flex;gap:6px;align-items:center;">
           ${navBtn('prev',!hasPrev)}
@@ -14380,6 +14533,10 @@ async function abrirDetalle(id){
             style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
             Guardar y siguiente →
           </button>
+          ${window._prospectosVCtx?`<button onclick="agregarFilaPipeDesdeProspecto('${p.id}')" title="Abrir una negociación en Proyección ligada a este prospecto"
+            style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">
+            + Proyección
+          </button>`:''}
           <a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}" target="_blank"
             style="background:#25D366;color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;white-space:nowrap;">
             WhatsApp
