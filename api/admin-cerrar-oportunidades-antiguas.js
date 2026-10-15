@@ -10,6 +10,17 @@
 //   - Corte: fecha_cierre_prevista (closingdate en Vtiger) < 2025-12-01.
 //   - 109 oportunidades abiertas cumplen el criterio (ninguna en CAP).
 //
+// Corrección tras la 1ra corrida real (2026-10-14, misma noche): solo
+// cerró 1 de 109 — bug de paginación (ver supabaseGetTodo) ya corregido.
+// Con 108 candidatas restantes y cada una necesitando 2 llamadas a la API
+// de Vtiger (retrieve+update) de forma secuencial, una sola invocación
+// podría tardar más que el límite de ejecución de Vercel y cortarse a la
+// mitad sin avisar. Por seguridad este script ahora procesa en lotes:
+// cada vez que se abre la URL, procesa como máximo `limit` candidatas
+// (default 25, ajustable con &limit=N) y reporta cuántas quedan — hay que
+// refrescar/volver a abrir la misma URL varias veces hasta que
+// "restantes" salga en 0.
+//
 // Qué hace, por cada oportunidad candidata:
 //   1. Trae el registro completo de Vtiger (retrieve) usando crm_potentialid.
 //   2. Lo reenvía (update) con sales_stage="Cerrada-Perdida" y probability=0
@@ -133,6 +144,26 @@ async function supabasePatch(path, body) {
   if (!res.ok) throw new Error(`Supabase PATCH ${path} -> ${res.status}: ${await res.text()}`);
 }
 
+// Jp, 2026-10-14 (corrida real) — bug encontrado: `oportunidades_crm` tiene
+// ~5,100 filas y PostgREST/Supabase trunca en silencio cualquier consulta
+// sin paginar a 1,000 filas (mismo patrón ya documentado para
+// servicios_historicos en claude/mesa-control-operaciones.md). La primera
+// corrida de este script solo trajo 1,000 filas (por `id`, no por fecha) y
+// de esas solo 1 era candidata real — de ahí que haya cerrado solo 1 de 109.
+// Se pagina explícito, igual que fetchTodo() en sync-crm-proyectos.js.
+async function supabaseGetTodo(path, select) {
+  let todos = [];
+  let desde = 0;
+  const pageSize = 1000;
+  while (true) {
+    const rows = await supabaseGet(`${path}&select=${encodeURIComponent(select)}&limit=${pageSize}&offset=${desde}`);
+    todos = todos.concat(rows);
+    if (rows.length < pageSize) break;
+    desde += pageSize;
+  }
+  return todos;
+}
+
 export default async function handler(req, res) {
   const secret = req.query?.secret || req.headers['x-sync-secret'];
   if (!SYNC_SECRET || secret !== SYNC_SECRET) {
@@ -142,10 +173,12 @@ export default async function handler(req, res) {
 
   try {
     // Candidatas: todas las que tengan fecha_cierre_prevista antes del
-    // corte; se filtra "abierta" (fase no cerrada) en JS para no pelear
+    // corte (paginado completo, ver supabaseGetTodo — NO solo las primeras
+    // 1000); se filtra "abierta" (fase no cerrada) en JS para no pelear
     // con comas/acentos en el filtro not.in de PostgREST.
-    const candidatasRaw = await supabaseGet(
-      `oportunidades_crm?fecha_cierre_prevista=lt.${FECHA_CORTE}&select=id,crm_potentialid,nombre_oportunidad,fase_venta,probabilidad,fecha_cierre_prevista`
+    const candidatasRaw = await supabaseGetTodo(
+      `oportunidades_crm?fecha_cierre_prevista=lt.${FECHA_CORTE}`,
+      'id,crm_potentialid,nombre_oportunidad,fase_venta,probabilidad,fecha_cierre_prevista'
     );
     const candidatas = candidatasRaw.filter((o) => o.crm_potentialid && !FASES_CERRADAS.has(o.fase_venta));
 
@@ -159,13 +192,22 @@ export default async function handler(req, res) {
       });
     }
 
+    // Lote por invocación — evita que una corrida con muchas candidatas se
+    // corte a la mitad por el límite de duración de la función (cada
+    // candidata hace 2 llamadas secuenciales a Vtiger). Default 25; se
+    // ajusta con &limit=N. Hay que reabrir la misma URL hasta que
+    // "restantes" salga en 0.
+    const limitLote = Math.max(1, parseInt(req.query?.limit, 10) || 25);
+    const totalCandidatas = candidatas.length;
+    const loteActual = candidatas.slice(0, limitLote);
+
     const sessionName = await vtigerLogin();
     let actualizadasCRM = 0;
     let actualizadasApp = 0;
     let filasProyeccionActualizadas = 0;
     const errores = [];
 
-    for (const op of candidatas) {
+    for (const op of loteActual) {
       try {
         const registro = await vtigerRetrieve(sessionName, op.crm_potentialid);
         registro.sales_stage = 'Cerrada-Perdida';
@@ -200,13 +242,20 @@ export default async function handler(req, res) {
     return res.status(200).json({
       ok: true,
       corte: FECHA_CORTE,
-      total_candidatas: candidatas.length,
+      total_candidatas: totalCandidatas,
+      procesadas_este_lote: loteActual.length,
+      restantes: totalCandidatas - loteActual.length,
       actualizadas_crm: actualizadasCRM,
       actualizadas_app: actualizadasApp,
       filas_proyeccion_actualizadas: filasProyeccionActualizadas,
       errores,
+      siguiente_paso: totalCandidatas - loteActual.length > 0
+        ? 'Quedan candidatas por procesar — vuelve a abrir la misma URL para seguir con el siguiente lote.'
+        : 'Listo, no quedan candidatas pendientes.',
     });
   } catch (err) {
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 }
+
+export const config = { maxDuration: 300 };
