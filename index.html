@@ -15244,24 +15244,34 @@ async function agregarPorEvento(campanaId){
   setTimeout(()=>msgEl.remove(),3000);
 }
 
+// ─── Fase 2 (2026-10-15) — importador de leads de Meta/Sheets ───────────────
+// Reemplaza al importador manual original (Nombre,Teléfono,Email de una
+// línea). Ahora se pega la pestaña COMPLETA del Sheet (encabezados + filas),
+// tal cual se copia de Google Sheets (tab) o se exporta en CSV (coma, con
+// comillas) — ambas pestañas de Meta (MC_*) y NOI-general/COI-general
+// funcionan con el mismo cuadro. Decisiones confirmadas por Jp (2026-10-15):
+//  - Si el prospecto ya existe (match correo/teléfono, últimos 10 dígitos):
+//    NO se duplica — se le agrega el evento nuevo en prospecto_eventos.
+//  - Los prospectos nuevos entran SIN vendedor asignado (vendedor_asignado
+//    null) — quedan en el pool compartido de "🧲 Prospectos" para que
+//    cualquier vendedor les dé "Tomar", sin pasar por telemarketing.
 async function renderSubirProspectos(){
   const mc=document.getElementById('mainContent');
-  const {data:users}=await sb.from('usuarios').select('*').eq('rol','telemarketing').order('nombre');
   mc.innerHTML=`
-  <div style="max-width:680px;">
+  <div style="max-width:760px;">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
       <button onclick="swD('crm')" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:7px 14px;font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;">← Volver</button>
-      <div style="font-size:16px;font-weight:600;color:var(--text);">Subir prospectos</div>
+      <div style="font-size:16px;font-weight:600;color:var(--text);">Subir prospectos (Meta / Sheets)</div>
     </div>
 
-    <div class="insight">📋 <strong>Pega la lista de prospectos</strong> desde tu Google Sheet. Cada fila debe tener: Nombre, Teléfono, Email (opcional), Evento. Se repartirán automáticamente entre Joshua y Anwar.</div>
+    <div class="insight">📋 Selecciona la pestaña completa en Google Sheets (encabezados + filas), cópiala y pégala abajo tal cual — también funciona si subes un .csv exportado como texto. Detecto nombre/correo/teléfono automáticamente aunque el nombre de columna cambie por campaña. Si el prospecto ya existe (mismo correo o teléfono), no se duplica: solo se le agrega este evento a su historial.</div>
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:20px;margin-bottom:16px;">
       <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px;">Datos del evento</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
         <div class="form-field">
           <label>Nombre del evento</label>
-          <input type="text" id="nEvento" placeholder="Ej: Masterclass NOI Junio" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
+          <input type="text" id="nEvento" placeholder="Ej: Masterclass Reforma Laboral Oct26" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
         </div>
         <div class="form-field">
           <label>Origen</label>
@@ -15272,10 +15282,10 @@ async function renderSubirProspectos(){
       </div>
 
       <div class="form-field" style="margin-bottom:14px;">
-        <label>Pega los prospectos aquí (una línea por persona)</label>
-        <div style="font-size:11px;color:var(--text3);margin-bottom:6px;">Formato: Nombre, Teléfono, Email — o copia directo desde Sheets</div>
-        <textarea id="pastArea" rows="12" placeholder="Juan Pérez, 5512345678, juan@email.com&#10;María López, 5598765432&#10;Carlos Ruiz, 5511223344, carlos@mail.com"
-          style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'JetBrains Mono',monospace;resize:vertical;"></textarea>
+        <label>Pega aquí la pestaña completa (con encabezados)</label>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:6px;">Primera fila = encabezados. Acepta tabulador (copiado de Sheets) o coma (CSV exportado).</div>
+        <textarea id="pastArea" rows="14" placeholder="id	created_time	...	full_name	email	phone_number	lead_status&#10;123	2026-10-01...	Juan Pérez	juan@email.com	5512345678	new"
+          style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;font-family:'JetBrains Mono',monospace;resize:vertical;"></textarea>
       </div>
 
       <button onclick="procesarPaste()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
@@ -15285,44 +15295,121 @@ async function renderSubirProspectos(){
 
     <div id="previewArea"></div>
   </div>`;
-  window._teleUsers=users||[];
+}
+
+// Parser genérico tab/coma con soporte de comillas (Meta trae preguntas de
+// calificación que a veces incluyen comas dentro de un campo entrecomillado).
+function prospParsearDelimitado(texto){
+  const lineas=texto.replace(/\r\n/g,'\n').split('\n').filter(l=>l.length);
+  if(!lineas.length) return [];
+  const delim=(lineas[0].split('\t').length>lineas[0].split(',').length)?'\t':',';
+  function parseLinea(linea){
+    const out=[]; let cur=''; let enComillas=false;
+    for(let i=0;i<linea.length;i++){
+      const c=linea[i];
+      if(c==='"'){
+        if(enComillas&&linea[i+1]==='"'){ cur+='"'; i++; }
+        else enComillas=!enComillas;
+      } else if(c===delim&&!enComillas){ out.push(cur); cur=''; }
+      else cur+=c;
+    }
+    out.push(cur);
+    return out.map(s=>s.trim());
+  }
+  return lineas.map(parseLinea);
+}
+
+// Normaliza un encabezado para comparar sin acentos/mayúsculas/símbolos.
+function prospNormalizarHeader(h){
+  return (h||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+}
+
+// Detecta en qué columna vive nombre/correo/teléfono/campaña, sin importar
+// cómo se llamen exactamente (varían por campaña de Meta — ver sección 6 del
+// diseño: full_name/nombre_completo, email/correo_electronico,
+// phone_number/whatsapp_number/número_de_whatsapp).
+function prospDetectarColumnas(headers){
+  const norm=headers.map(prospNormalizarHeader);
+  const find=(preds)=>{ for(let i=0;i<norm.length;i++){ if(preds(norm[i])) return i; } return -1; };
+  const iNombre=find(h=>(h.includes('full_name')||h==='nombre'||h==='nombre_completo')&&!h.includes('empresa'));
+  const iCorreo=find(h=>h.includes('email')||h.includes('correo')||h.includes('mail'));
+  const iTel=find(h=>h.includes('phone')||h.includes('whatsapp')||h.includes('telefono')||h.includes('celular'));
+  const iCampania=find(h=>h==='campaign_name');
+  const iFecha=find(h=>h==='created_time');
+  return {iNombre,iCorreo,iTel,iCampania,iFecha};
 }
 
 async function procesarPaste(){
   const texto=document.getElementById('pastArea').value.trim();
-  const evento=document.getElementById('nEvento').value.trim()||'Sin evento';
+  const eventoManual=document.getElementById('nEvento').value.trim();
   const origen=document.getElementById('nOrigen').value;
-  if(!texto){alert('Pega al menos un prospecto');return;}
+  if(!texto){alert('Pega al menos la fila de encabezados y una fila de datos');return;}
 
-  const lineas=texto.split(/\r?\n/).filter(l=>l.trim());
-  const parsed=lineas.map(l=>{
-    const parts=l.split(/[,	]+/).map(p=>p.trim());
-    return {nombre:parts[0]||'Sin nombre',telefono:parts[1]||'',email:parts[2]||'',evento,origen};
-  });
+  const filas=prospParsearDelimitado(texto);
+  if(filas.length<2){alert('No encontré filas de datos debajo del encabezado.');return;}
+  const headers=filas[0];
+  const {iNombre,iCorreo,iTel,iCampania,iFecha}=prospDetectarColumnas(headers);
+  if(iNombre===-1&&iCorreo===-1&&iTel===-1){
+    alert('No pude reconocer columnas de nombre, correo o teléfono en el encabezado. Revisa que la primera línea pegada sea el encabezado real de la pestaña.');
+    return;
+  }
 
-  const users=window._teleUsers||[];
+  let campaniaDetectada='';
+  const parsed=[];
+  for(const fila of filas.slice(1)){
+    if(!fila.some(c=>c&&c.trim())) continue;
+    const nombre=iNombre>=0?(fila[iNombre]||'').trim():'';
+    const email=iCorreo>=0?(fila[iCorreo]||'').trim():'';
+    const telefono=iTel>=0?(fila[iTel]||'').trim():'';
+    if(!nombre&&!email&&!telefono) continue;
+    if(/test@meta\.com/i.test(email)) continue; // filas de prueba de Meta — sección 6 del diseño
+    if(iCampania>=0&&fila[iCampania]) campaniaDetectada=fila[iCampania];
+    parsed.push({nombre:nombre||'Sin nombre',telefono,email,origen,_fecha:iFecha>=0?fila[iFecha]:null});
+  }
+  if(!parsed.length){alert('No quedaron filas válidas después de filtrar vacías y de prueba.');return;}
+
+  const evento=eventoManual||campaniaDetectada||'Sin evento';
+  if(!eventoManual&&campaniaDetectada) document.getElementById('nEvento').value=campaniaDetectada;
+  parsed.forEach(p=>p.evento=evento);
+
+  // Cruce contra prospectos ya existentes (correo exacto o teléfono por
+  // últimos 10 dígitos — misma regla confirmada por Jp que usa el resto del
+  // módulo) para decidir, antes de subir, quién es nuevo y a quién solo se
+  // le va a agregar el evento.
+  const {data:existentes}=await sb.from('prospectos').select('id,nombre,telefono,email');
+  const ex=existentes||[];
+  function buscarExistente(p){
+    const correoP=(p.email||'').trim().toLowerCase();
+    for(const e of ex){
+      if(correoP&&(e.email||'').trim().toLowerCase()===correoP) return e;
+      if(p.telefono&&tkTelefonosCoinciden(p.telefono,e.telefono)) return e;
+    }
+    return null;
+  }
+  parsed.forEach(p=>{ p._match=buscarExistente(p); });
+
+  const nuevos=parsed.filter(p=>!p._match).length;
+  const existentesN=parsed.length-nuevos;
+
   const preview=document.getElementById('previewArea');
   preview.innerHTML=`
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);overflow:hidden;">
     <div class="card-head">
-      <span class="card-title">Vista previa — ${parsed.length} prospectos</span>
-      <span class="badge bt">Se repartirán entre ${users.map(u=>u.nombre.split(' ')[0]).join(' y ')}</span>
+      <span class="card-title">Vista previa — ${parsed.length} filas · evento "${evento}"</span>
+      <span class="badge bt">${nuevos} nuevos · ${existentesN} ya existen (solo se les agrega el evento)</span>
     </div>
-    <table class="daily" style="font-size:12px;">
-      <thead><tr><th>#</th><th>Nombre</th><th>Teléfono</th><th>Email</th><th>Asignado a</th></tr></thead>
+    <table class="daily" style="font-size:12px;max-height:420px;display:block;overflow-y:auto;">
+      <thead><tr><th>#</th><th>Nombre</th><th>Teléfono</th><th>Email</th><th>Acción</th></tr></thead>
       <tbody>
-        ${parsed.map((p,i)=>{
-          const u=users[i%users.length];
-          return `<tr><td style="color:var(--text3);">${i+1}</td><td style="font-weight:500;">${p.nombre}</td>
+        ${parsed.map((p,i)=>`<tr><td style="color:var(--text3);">${i+1}</td><td style="font-weight:500;">${p.nombre}</td>
             <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
             <td style="font-size:11px;color:var(--text3);">${p.email||'—'}</td>
-            <td><span style="font-size:11px;font-weight:600;color:${u?.nombre.includes('Joshua')?'#00A99D':'#0D2240'};">${u?.nombre.split(' ')[0]||'—'}</span></td>
-          </tr>`;
-        }).join('')}
+            <td>${p._match?`<span style="font-size:10px;font-weight:600;color:var(--gold);">Ya existe → agrega evento</span>`:`<span style="font-size:10px;font-weight:600;color:var(--teal);">Nuevo</span>`}</td>
+          </tr>`).join('')}
       </tbody>
     </table>
     <div style="padding:16px 20px;background:var(--surf2);display:flex;justify-content:space-between;align-items:center;">
-      <span style="font-size:12px;color:var(--text2);">${Math.ceil(parsed.length/2)} para cada uno · duplicados se detectarán por teléfono y email</span>
+      <span style="font-size:12px;color:var(--text2);">Los ${nuevos} nuevos entran sin vendedor asignado, al pool de "🧲 Prospectos".</span>
       <button onclick="subirProspectos()" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px 20px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
         ✅ Confirmar y subir
       </button>
@@ -15333,46 +15420,51 @@ async function procesarPaste(){
 
 async function subirProspectos(){
   const parsed=window._parsedProspectos||[];
-  const users=window._teleUsers||[];
-  if(!parsed.length||!users.length) return;
-
-  // Check duplicates by phone/email
-  const {data:existing}=await sb.from('prospectos').select('telefono,email');
-  const existTels=new Set((existing||[]).map(p=>p.telefono).filter(Boolean));
-  const existEmails=new Set((existing||[]).map(p=>p.email).filter(Boolean));
-
-  const nuevos=parsed.filter(p=>{
-    const dupTel=p.telefono&&existTels.has(p.telefono);
-    const dupEmail=p.email&&existEmails.has(p.email);
-    return !dupTel&&!dupEmail;
-  });
-  const duplicados=parsed.length-nuevos.length;
-
-  const hoy=new Date();
-  const toInsert=nuevos.map((p,i)=>({
-    ...p,
-    asignado_a:users[i%users.length].id,
-    estatus:'Nuevo',
-    anio:hoy.getFullYear(),
-    mes:hoy.getMonth()+1,
-  }));
-
-  if(!toInsert.length){
-    alert('Todos los prospectos ya existen en la base de datos (duplicados por teléfono/email).');
-    return;
-  }
-
+  if(!parsed.length) return;
   const btn=document.querySelector('button[onclick="subirProspectos()"]');
   if(btn){btn.disabled=true;btn.textContent='Subiendo...';}
 
-  const {error}=await sb.from('prospectos').insert(toInsert);
-  if(error){
-    alert('Error al subir: '+error.message);
-    if(btn){btn.disabled=false;btn.textContent='✅ Confirmar y subir';}
-  } else {
-    alert(`✅ ${toInsert.length} prospectos subidos correctamente.${duplicados>0?' '+duplicados+' duplicados omitidos.':''}`);
+  const hoy=new Date();
+  const hoyStr=todayLocal();
+  const nuevosRows=parsed.filter(p=>!p._match);
+  const existentesRows=parsed.filter(p=>p._match);
+
+  let insertados=0, eventosAgregados=0;
+  try{
+    if(nuevosRows.length){
+      const toInsert=nuevosRows.map(p=>({
+        nombre:p.nombre, telefono:p.telefono, email:p.email, evento:p.evento, origen:p.origen,
+        estatus:'Nuevo', anio:hoy.getFullYear(), mes:hoy.getMonth()+1,
+        vendedor_asignado:null, asignado_a:null,
+      }));
+      const {data:insertedData,error}=await sb.from('prospectos').insert(toInsert).select('id');
+      if(error) throw error;
+      insertados=insertedData?.length||0;
+      if(insertedData){
+        const eventosNuevos=insertedData.map((row,i)=>({prospecto_id:row.id,evento:nuevosRows[i].evento,fecha_registro:nuevosRows[i]._fecha||hoyStr,origen:nuevosRows[i].origen}));
+        await sb.from('prospecto_eventos').insert(eventosNuevos);
+      }
+    }
+    if(existentesRows.length){
+      // No duplicar el evento si el prospecto ya lo tenía registrado (p.ej. re-importar la misma pestaña por error).
+      const idsExistentes=[...new Set(existentesRows.map(p=>p._match.id))];
+      const {data:eventosYa}=await sb.from('prospecto_eventos').select('prospecto_id,evento').in('prospecto_id',idsExistentes);
+      const yaTiene=new Set((eventosYa||[]).map(e=>`${e.prospecto_id}::${e.evento}`));
+      const eventosExistentes=existentesRows
+        .filter(p=>!yaTiene.has(`${p._match.id}::${p.evento}`))
+        .map(p=>({prospecto_id:p._match.id,evento:p.evento,fecha_registro:p._fecha||hoyStr,origen:p.origen}));
+      if(eventosExistentes.length){
+        const {error}=await sb.from('prospecto_eventos').insert(eventosExistentes);
+        if(error) throw error;
+        eventosAgregados=eventosExistentes.length;
+      }
+    }
+    alert(`✅ Listo.\n${insertados} prospectos nuevos creados (sin vendedor, listos para "Tomar").\n${eventosAgregados} ya existían y se les agregó este evento a su historial.`);
     swD('crm');
     renderDirectorCRM();
+  }catch(error){
+    alert('Error al subir: '+error.message);
+    if(btn){btn.disabled=false;btn.textContent='✅ Confirmar y subir';}
   }
 }
 
