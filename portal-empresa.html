@@ -316,7 +316,12 @@ function resumenEjecutivoTexto(filas,g){
     partes.push(`${c100} de ${n} asistieron al 100%${sufijo}`);
   }
   if(g.portal_finalizado){
-    const acreditados=filas.filter(f=>resultadoFila(f,criterioMin).clase==='alto').length;
+    // Mismo criterio unificado que el análisis/recomendaciones de abajo
+    // (clasificarParticipante) — antes este resumen de arriba usaba solo
+    // resultadoFila (constancia emitida), así que podía decir "1 de 6 se
+    // acreditó" mientras el análisis decía "3 de 6 alcanzaron el criterio"
+    // para el mismo grupo. Jp, visto en el portal de demo, 2026-10-15.
+    const acreditados=filas.filter(f=>clasificarParticipante(f,criterioMin).clase==='alto').length;
     partes.push(`${acreditados} de ${n} se ${acreditados===1?'acreditó':'acreditaron'}`);
   }
   return partes.join(' · ');
@@ -473,7 +478,7 @@ function recomendacionesAutoTexto(filas,g){
   }
   if(baseAsistencia){
     const faltantes=filas.filter(f=>f.sesiones_asistidas<baseAsistencia);
-    if(faltantes.length) partes.push(`${faltantes.length===1?'1 participante':faltantes.length+' participantes'} no completó el 100% de las sesiones; se sugiere programar una sesión de repaso para cubrir los temas no vistos en vivo.`);
+    if(faltantes.length) partes.push(`${faltantes.length===1?'1 participante no completó':faltantes.length+' participantes no completaron'} el 100% de las sesiones; se sugiere programar una sesión de repaso para cubrir los temas no vistos en vivo.`);
   }
   partes.push('Para potenciar el retorno de la inversión en capacitación, se sugiere dar seguimiento al uso del sistema en el día a día y considerar una evaluación de desempeño individual más detallada (ver servicios complementarios).');
   return partes.join(' ');
@@ -537,7 +542,9 @@ function pintarResultado(filas){
   // sesiones ya dadas, no el total del curso) y, cuando ya finalizó, % de
   // acreditación — mismos datos que ya resume el texto, nomás en gráfica.
   const asistPromGrupo=baseAsistencia?Math.round(100*filas.reduce((s,f)=>s+f.sesiones_asistidas,0)/(baseAsistencia*filas.length)):null;
-  const acreditadosGrupo=g.portal_finalizado?filas.filter(f=>resultadoFila(f,criterioMin).clase==='alto').length:null;
+  // Mismo criterio unificado que el resto del portal (clasificarParticipante)
+  // — ver nota en resumenEjecutivoTexto. Jp, 2026-10-15.
+  const acreditadosGrupo=g.portal_finalizado?filas.filter(f=>clasificarParticipante(f,criterioMin).clase==='alto').length:null;
   const pctAcreditacionGrupo=(g.portal_finalizado&&filas.length)?Math.round(100*acreditadosGrupo/filas.length):null;
   const ringsHtml=`<div class="resumen-rings">
     ${asistPromGrupo!=null?anilloSVG(asistPromGrupo,'#5fd9cf','Asistencia',asistPromGrupo+'%'):''}
