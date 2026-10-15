@@ -14088,11 +14088,18 @@ async function renderProspectosVendedor(){
   const mc=document.getElementById('mainContent');
   mc.classList.remove('full-width');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando prospectos...</div>';
-  const [{data:prospectos},clientes]=await Promise.all([
-    sb.from('prospectos').select('*').eq('vendedor_asignado',currentUser.id).order('created_at',{ascending:false}),
-    (window._cartClientes&&window._cartClientes.length)?Promise.resolve(window._cartClientes):carteraFetchTodosClientes('id,razon_social,telefono,telefono2,telefono_whatsapp,correo_principal,otro_correo,email')
+  // Ampliado 2026-10-15 a pedido de Jp: el vendedor ve TODOS los prospectos
+  // (no solo los ya canalizados a su nombre) y puede "tomar" él mismo uno
+  // que esté sin asignar, en vez de depender de que telemarketing lo
+  // canalice primero. Se conserva la columna vendedor_asignado tal cual:
+  // "tomar" simplemente la llena con currentUser.id.
+  const [{data:prospectos},clientes,{data:vendedores}]=await Promise.all([
+    sb.from('prospectos').select('*').order('created_at',{ascending:false}),
+    (window._cartClientes&&window._cartClientes.length)?Promise.resolve(window._cartClientes):carteraFetchTodosClientes('id,razon_social,telefono,telefono2,telefono_whatsapp,correo_principal,otro_correo,email'),
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor')
   ]);
   window._cartClientes=window._cartClientes&&window._cartClientes.length?window._cartClientes:clientes;
+  window._vendedoresMap=Object.fromEntries((vendedores||[]).map(v=>[v.id,v.nombre]));
   const ps=(prospectos||[]).map(p=>({...p,_cliente:prospectoMatchCliente(p,clientes)}));
   // Si el cruce encontró una cuenta y el prospecto no la tenía guardada
   // todavía, se guarda calladamente — así la próxima vez ya no hay que
@@ -14102,15 +14109,23 @@ async function renderProspectosVendedor(){
     p.cliente_cartera_id=p._cliente.id;
   });
   const total=ps.length;
+  const mios=ps.filter(p=>p.vendedor_asignado===currentUser.id).length;
+  const sinAsignar=ps.filter(p=>!p.vendedor_asignado).length;
   const yaClientes=ps.filter(p=>p._cliente||p.cliente_cartera_id).length;
   const eventosUnicos=[...new Set(ps.map(p=>p.evento).filter(Boolean))].sort();
 
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
-    <div style="font-size:18px;font-weight:600;color:var(--text);">Mis prospectos</div>
-    <div style="font-size:12px;color:var(--text3);">${total} canalizados a ti ${yaClientes?`· <span style="color:var(--gold);font-weight:600;">⚠ ${yaClientes} ya son cliente</span>`:''}</div>
+    <div style="font-size:18px;font-weight:600;color:var(--text);">Prospectos</div>
+    <div style="font-size:12px;color:var(--text3);">${total} en total · ${mios} tuyos · ${sinAsignar} sin asignar ${yaClientes?`· <span style="color:var(--gold);font-weight:600;">⚠ ${yaClientes} ya son cliente</span>`:''}</div>
   </div>
   <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+    <select id="filtroAsignacionV" onchange="filtrarProspectosVendedor()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;font-weight:600;">
+      <option value="todos">Todos</option>
+      <option value="mios">Mía</option>
+      <option value="sin">Sin asignar</option>
+      <option value="otros">De otro vendedor</option>
+    </select>
     <select id="filtroEventoV" onchange="filtrarProspectosVendedor()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
       <option value="">Todos los eventos</option>
       ${eventosUnicos.map(e=>`<option value="${e}">${e}</option>`).join('')}
@@ -14128,13 +14143,13 @@ async function renderProspectosVendedor(){
   <div class="card">
     <table class="daily" style="font-size:12px;">
       <thead><tr>
-        <th>Nombre</th><th>Teléfono</th><th>Evento</th><th>Estatus</th><th>Último contacto</th><th>Acciones</th>
+        <th>Nombre</th><th>Teléfono</th><th>Evento</th><th>Estatus</th><th>Asignación</th><th>Último contacto</th><th>Acciones</th>
       </tr></thead>
       <tbody id="bodyProspectosV">
         ${ps.map(p=>filaProspectoVendedor(p)).join('')}
       </tbody>
     </table>
-    ${!ps.length?`<div style="padding:24px;text-align:center;font-size:12px;color:var(--text3);">Todavía no tienes prospectos canalizados a tu nombre.</div>`:''}
+    ${!ps.length?`<div style="padding:24px;text-align:center;font-size:12px;color:var(--text3);">Todavía no hay prospectos registrados.</div>`:''}
   </div>`;
   window._prospectos=ps; // para que abrirDetalle/registrarLlamada funcionen igual que en el resto del módulo
   window._prospectosVCtx=true; // le dice al modal de detalle que muestre el botón "+ Proyección"
@@ -14157,6 +14172,21 @@ function filaProspectoVendedor(p){
   const col=ESTATUS_COLORS[p.estatus]||'#888';
   const fecha=p.fecha_contacto?p.fecha_contacto.slice(5):'—';
   const cliente=p._cliente;
+  const esMio=p.vendedor_asignado===currentUser.id;
+  const sinAsignar=!p.vendedor_asignado;
+  const nombreOtro=!esMio&&!sinAsignar?(window._vendedoresMap||{})[p.vendedor_asignado]:'';
+  const asignacionHTML=esMio
+    ?`<span style="font-size:10px;font-weight:600;color:var(--teal);">Tuyo</span>`
+    :sinAsignar
+      ?`<span style="font-size:10px;font-weight:600;color:var(--text3);background:var(--bg2);border-radius:4px;padding:1px 6px;">Sin asignar</span>`
+      :`<span style="font-size:10px;color:var(--text3);" title="Canalizado a otro vendedor">De: ${nombreOtro||'otro vendedor'}</span>`;
+  const accionesHTML=esMio
+    ?`<button onclick="abrirDetalle('${p.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">Ver</button>
+       <button onclick="agregarFilaPipeDesdeProspecto('${p.id}')" title="Abrir una negociación en Proyección ligada a este prospecto" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Proyección</button>`
+    :sinAsignar
+      ?`<button onclick="abrirDetalle('${p.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">Ver</button>
+         <button onclick="tomarProspecto('${p.id}')" title="Asignarte este prospecto" style="background:var(--gold);color:#1a1a1a;border:none;border-radius:5px;padding:4px 9px;font-size:10px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Tomar</button>`
+      :`<button onclick="abrirDetalle('${p.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">Ver</button>`;
   return `<tr id="rowV_${p.id}">
     <td style="font-weight:500;">
       <span onclick="abrirDetalle('${p.id}')" style="cursor:pointer;color:var(--navy);border-bottom:1px solid rgba(13,34,64,0.2);" title="Ver detalle">${p.nombre}</span>
@@ -14165,11 +14195,11 @@ function filaProspectoVendedor(p){
     <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
     <td style="font-size:11px;color:var(--text3);">${p.evento||'—'}</td>
     <td><span style="font-size:11px;font-weight:600;color:${col};">${p.estatus}</span></td>
+    <td>${asignacionHTML}</td>
     <td style="font-size:11px;color:var(--text3);">${fecha}</td>
     <td>
       <div style="display:flex;gap:5px;align-items:center;">
-        <button onclick="abrirDetalle('${p.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">Ver</button>
-        <button onclick="agregarFilaPipeDesdeProspecto('${p.id}')" title="Abrir una negociación en Proyección ligada a este prospecto" style="background:var(--navy);color:#fff;border:none;border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">+ Proyección</button>
+        ${accionesHTML}
       </div>
     </td>
   </tr>`;
@@ -14178,16 +14208,42 @@ function filaProspectoVendedor(p){
 function filtrarProspectosVendedor(){
   const filtro=document.getElementById('filtroEstatusV')?.value||'';
   const filtroEv=document.getElementById('filtroEventoV')?.value||'';
+  const filtroAsig=document.getElementById('filtroAsignacionV')?.value||'todos';
   const buscar=document.getElementById('buscarProsV')?.value.toLowerCase()||'';
   const ps=window._prospectos||[];
   const filtrados=ps.filter(p=>{
     const matchEstatus=!filtro||p.estatus===filtro;
     const matchEvento=!filtroEv||p.evento===filtroEv;
+    const matchAsig=filtroAsig==='todos'
+      ||(filtroAsig==='mios'&&p.vendedor_asignado===currentUser.id)
+      ||(filtroAsig==='sin'&&!p.vendedor_asignado)
+      ||(filtroAsig==='otros'&&p.vendedor_asignado&&p.vendedor_asignado!==currentUser.id);
     const matchBuscar=!buscar||(p.nombre||'').toLowerCase().includes(buscar)||(p.telefono||'').includes(buscar)||(p.email||'').toLowerCase().includes(buscar);
-    return matchEstatus&&matchEvento&&matchBuscar;
+    return matchEstatus&&matchEvento&&matchAsig&&matchBuscar;
   });
   const tbody=document.getElementById('bodyProspectosV');
   if(tbody) tbody.innerHTML=filtrados.map(p=>filaProspectoVendedor(p)).join('');
+}
+
+// "Tomar" — el vendedor se autoasigna un prospecto sin asignar, sin
+// depender de que telemarketing lo canalice primero (pedido de Jp,
+// 2026-10-15, al ver que casi nada estaba canalizado).
+async function tomarProspecto(id){
+  if(!confirm('¿Asignarte este prospecto?')) return;
+  const {error}=await sb.from('prospectos').update({vendedor_asignado:currentUser.id}).eq('id',id);
+  if(error){ alert('Error al tomar el prospecto: '+error.message); return; }
+  const p=(window._prospectos||[]).find(p=>p.id===id);
+  if(p) p.vendedor_asignado=currentUser.id;
+  filtrarProspectosVendedor();
+  // refresca el encabezado de conteos sin recargar todo
+  const mios=(window._prospectos||[]).filter(p=>p.vendedor_asignado===currentUser.id).length;
+  const sinAsignar=(window._prospectos||[]).filter(p=>!p.vendedor_asignado).length;
+  const total=(window._prospectos||[]).length;
+  const header=document.querySelector('#mainContent > div:first-child > div:last-child');
+  if(header){
+    const yaClientes=(window._prospectos||[]).filter(p=>p._cliente||p.cliente_cartera_id).length;
+    header.innerHTML=`${total} en total · ${mios} tuyos · ${sinAsignar} sin asignar ${yaClientes?`· <span style="color:var(--gold);font-weight:600;">⚠ ${yaClientes} ya son cliente</span>`:''}`;
+  }
 }
 
 // Abre el modal de "Nueva negociación" de Proyección, prellenado con los
@@ -14195,6 +14251,20 @@ function filtrarProspectosVendedor(){
 // que Proyección "recuerde" que esta negociación viene de un prospecto
 // (pedido explícito de Jp, 2026-10-15). Si el prospecto ya hizo match con
 // una cuenta real de Cartera, también se liga esa cuenta de una vez.
+// Llamado desde el botón "+ Proyección" del modal de detalle (abrirDetalle).
+// Si el prospecto todavía no tiene vendedor, lo toma automáticamente para
+// quien está abriendo la negociación — así no se puede crear una Proyección
+// ligada a un prospecto que sigue "sin asignar" en la tabla.
+async function agregarFilaPipeDesdeProspectoModal(prospectoId){
+  const p=(window._prospectos||[]).find(x=>x.id===prospectoId);
+  if(p&&!p.vendedor_asignado){
+    const {error}=await sb.from('prospectos').update({vendedor_asignado:currentUser.id}).eq('id',prospectoId);
+    if(!error) p.vendedor_asignado=currentUser.id;
+  }
+  document.getElementById('modalDetalle')?.remove();
+  await agregarFilaPipeDesdeProspecto(prospectoId);
+}
+
 async function agregarFilaPipeDesdeProspecto(prospectoId){
   const p=(window._prospectos||[]).find(x=>x.id===prospectoId);
   if(!p) return;
@@ -14533,7 +14603,7 @@ async function abrirDetalle(id){
             style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
             Guardar y siguiente →
           </button>
-          ${window._prospectosVCtx?`<button onclick="agregarFilaPipeDesdeProspecto('${p.id}')" title="Abrir una negociación en Proyección ligada a este prospecto"
+          ${(window._prospectosVCtx&&(p.vendedor_asignado===currentUser.id||!p.vendedor_asignado))?`<button onclick="agregarFilaPipeDesdeProspectoModal('${p.id}')" title="Abrir una negociación en Proyección ligada a este prospecto"
             style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">
             + Proyección
           </button>`:''}
