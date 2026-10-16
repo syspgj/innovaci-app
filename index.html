@@ -13108,30 +13108,55 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
   const c=(window._cartClientes||[]).find(c=>c.id===clienteId);
   if(!c) return;
   const vendedor=(window._carteraVendedores||[]).find(v=>v.id===c.vendedor_asignado);
-  const {data:histRaw}=await sb.from('llamadas_cartera')
-    .select('*').eq('cliente_id',clienteId).eq('campana_id',campanaId).order('created_at',{ascending:false});
+  // Jp, 2026-10-16: "necesito que la ventana sea muy similar a la de
+  // telemarketing [prospectos]... sistemas, eventos, historial de campañas,
+  // historial de llamadas" — se trae lo mismo que abrirDetalle() trae para
+  // un prospecto, pero visto desde la cuenta: eventos de los prospectos que
+  // ya se cruzaron con esta cuenta (prospectos.cliente_cartera_id) y las
+  // campañas de cartera en las que ha estado esta cuenta.
+  const [{data:histRaw},{data:prospectosLigados},{data:campRel}]=await Promise.all([
+    sb.from('llamadas_cartera').select('*').eq('cliente_id',clienteId).eq('campana_id',campanaId).order('created_at',{ascending:false}),
+    sb.from('prospectos').select('id').eq('cliente_cartera_id',clienteId),
+    sb.from('campana_cartera_clientes').select('campana_id,fecha_agregado').eq('cliente_id',clienteId).order('fecha_agregado',{ascending:false})
+  ]);
   const hist=histRaw||[];
+  const idsProspectosLigados=(prospectosLigados||[]).map(p=>p.id);
+  let eventos=[];
+  if(idsProspectosLigados.length){
+    const {data:evData}=await sb.from('prospecto_eventos').select('*').in('prospecto_id',idsProspectosLigados).order('fecha_registro',{ascending:true});
+    eventos=evData||[];
+  }
+  let historialCampanasCC=[];
+  if((campRel||[]).length){
+    const idsCamp=[...new Set(campRel.map(r=>r.campana_id))];
+    const {data:campsInfo}=await sb.from('campanas_cartera').select('id,nombre').in('id',idsCamp);
+    historialCampanasCC=campRel.map(r=>({
+      nombre:(campsInfo||[]).find(cc=>cc.id===r.campana_id)?.nombre||'Campaña eliminada',
+      fecha:r.fecha_agregado
+    }));
+  }
   const suscs=c._suscripciones||[];
   const modal=document.createElement('div');
   modal.id='modalDetalleCuenta';
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;overflow-y:auto;';
   modal.innerHTML=`
-  <div style="background:#fff;border-radius:12px;max-width:500px;width:100%;margin:auto;overflow:hidden;">
+  <div style="background:#fff;border-radius:12px;max-width:880px;width:100%;margin:auto;overflow:hidden;">
     <div style="padding:18px 22px 12px;border-bottom:1px solid var(--border);background:var(--navy);">
       <div style="font-size:10px;color:rgba(255,255,255,0.6);font-family:'JetBrains Mono',monospace;">${c.num_cliente||''}</div>
       <div style="font-size:16px;font-weight:700;color:#fff;margin-top:2px;">${c.razon_social||'Sin nombre'}</div>
       <div style="font-size:11px;color:rgba(255,255,255,0.7);margin-top:2px;">${c.rfc||''} · ${c.tipo_cliente||''}</div>
       <div id="teleSistemasCliente_${clienteId}" style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">${renderBadgesSistemasTele(c,campanaId)}</div>
     </div>
-    <div style="padding:14px 22px;max-height:65vh;overflow-y:auto;">
-      <div style="display:grid;gap:4px;margin-bottom:12px;font-size:12px;">
+    <div style="padding:14px 22px;max-height:70vh;overflow-y:auto;display:grid;grid-template-columns:1fr 1fr;gap:22px;">
+    <div style="display:flex;flex-direction:column;gap:16px;min-width:0;">
+      <div style="display:grid;gap:4px;font-size:12px;">
         ${c.contacto_principal?`<div>👤 <strong>${c.contacto_principal}</strong></div>`:''}
         ${c.email?`<div>✉ <a href="mailto:${c.email}" style="color:var(--teal);">${c.email}</a></div>`:''}
         ${c.telefono?`<div>📞 <a href="tel:${c.telefono}" style="color:var(--navy);font-weight:600;">${c.telefono}</a>${c.telefono2?` &nbsp; <span style="color:var(--text3);">${c.telefono2}</span>`:''}</div>`:''}
         ${c.escritorio_servicios?`<div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">🔑 ${c.escritorio_servicios}</div>`:''}
         ${vendedor?`<div style="font-size:11px;color:var(--text3);">Vendedor: <strong>${vendedor.nombre}</strong></div>`:''}
       </div>
-      ${suscs.length?`<div style="margin-bottom:12px;">
+      ${suscs.length?`<div>
         <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Suscripciones</div>
         <div style="display:grid;gap:4px;">
           ${suscs.map(s=>{const v=s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
@@ -13143,9 +13168,57 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
             </div>`;}).join('')}
         </div>
       </div>`:''}
+
+      <!-- SISTEMAS -->
+      <div style="background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);padding:12px;">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">
+          🧩 Sistemas que tiene
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;" id="sistemasCuentaChecks_${clienteId}">
+          ${SISTEMAS_ASPEL_LIST.map(s=>`
+            <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;background:#fff;border:1px solid var(--border);border-radius:14px;padding:3px 10px 3px 8px;">
+              <input type="checkbox" value="${s.v}" ${(c.sistemas_aspel||[]).includes(s.v)?'checked':''} style="accent-color:var(--teal);">${s.l}
+            </label>`).join('')}
+        </div>
+        <button onclick="guardarSistemasCuentaTele('${clienteId}','${campanaId}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💾 Guardar sistemas</button>
+        <span id="sistemasCuentaMsg_${clienteId}" style="font-size:11px;margin-left:8px;"></span>
+      </div>
+
+      <!-- EVENTOS -->
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">
+          📅 Eventos registrados (${eventos.length})
+        </div>
+        ${eventos.length===0
+          ? `<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin eventos registrados</div>`
+          : eventos.map(ev=>`
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);margin-bottom:5px;font-size:12px;">
+              <div style="font-weight:500;color:var(--text);">${ev.evento}${ev.sistema_relacionado?` <span style="font-size:10px;font-weight:700;color:var(--teal);background:rgba(0,169,157,0.1);border-radius:4px;padding:1px 6px;margin-left:4px;">${ev.sistema_relacionado}</span>`:''}</div>
+              <div style="color:var(--text3);white-space:nowrap;margin-left:8px;">${ev.fecha_registro||'—'}</div>
+            </div>`).join('')}
+      </div>
+
+      <!-- HISTORIAL DE CAMPAÑAS -->
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">
+          🎯 Historial de campañas (${historialCampanasCC.length})
+        </div>
+        ${historialCampanasCC.length===0
+          ? `<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin campañas registradas</div>`
+          : historialCampanasCC.map(cc=>`
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:var(--teal-bg);border-radius:var(--radsm);margin-bottom:5px;font-size:12px;">
+              <div style="font-weight:500;color:var(--teal);">${cc.nombre}</div>
+              <div style="color:var(--text3);white-space:nowrap;margin-left:8px;">${cc.fecha?cc.fecha.slice(0,10):'—'}</div>
+            </div>`).join('')}
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:16px;min-width:0;">
       <!-- REGISTRAR LLAMADA -->
-      <div style="background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);padding:14px;margin-bottom:12px;">
+      <div style="background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);padding:14px;">
         <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;">📞 Registrar llamada</div>
+        <div style="background:#fff;border:1px solid var(--border);border-radius:var(--radsm);padding:8px 10px;margin-bottom:10px;font-size:11px;color:var(--text2);line-height:1.5;">
+          ✅ Durante la llamada valida los datos de contacto y pregunta <b>qué sistemas tiene</b> (SAE/COI/NOI/etc.) para marcarlos arriba en "Sistemas que tiene".
+        </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;">
           ${['No contestó','Buzón','Interesado','No le interesa','Volver a llamar','Registrado al taller','Canalizado a ventas'].map(r=>`
             <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:4px 6px;border-radius:4px;background:#fff;border:1px solid var(--border);">
@@ -13176,9 +13249,10 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
       </div>
       <!-- HISTORIAL -->
       <div>
-        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">🗂 Historial (${hist.length})</div>
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">🗂 Historial de llamadas (${hist.length})</div>
         <div id="histCuentaLlamadas">${renderLlamadasHtml(hist)}</div>
       </div>
+    </div>
     </div>
     <div style="padding:12px 22px;border-top:1px solid var(--border);display:flex;gap:8px;">
       <button onclick="guardarYCerrarCuentaTele('${clienteId}','${campanaId}')"
@@ -13192,6 +13266,19 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
     </div>
   </div>`;
   document.body.appendChild(modal);
+}
+
+async function guardarSistemasCuentaTele(clienteId,campanaId){
+  const wrap=document.getElementById('sistemasCuentaChecks_'+clienteId);
+  const checks=[...(wrap?.querySelectorAll('input:checked')||[])].map(i=>i.value);
+  const msg=document.getElementById('sistemasCuentaMsg_'+clienteId);
+  const {error}=await sb.from('clientes_cartera').update({sistemas_aspel:checks}).eq('id',clienteId);
+  if(error){if(msg){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}return;}
+  const c=(window._cartClientes||[]).find(c=>c.id===clienteId);
+  if(c) c.sistemas_aspel=checks;
+  const headerWrap=document.getElementById('teleSistemasCliente_'+clienteId);
+  if(headerWrap&&c) headerWrap.innerHTML=renderBadgesSistemasTele(c,campanaId);
+  if(msg){msg.style.color='var(--green)';msg.textContent='✓ Guardado';setTimeout(()=>{if(msg)msg.textContent='';},2500);}
 }
 
 function onResCuentaChange(){
