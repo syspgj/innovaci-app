@@ -11096,16 +11096,22 @@ async function guardarDatosCampana(campanaId){
 async function gestionarCampanaCartera(campanaId){
   const mc=document.getElementById('dirCarteraContenidoMain');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
-  const [{data:camp},{data:cuentasEnCamp},{data:todasCuentasRaw}]=await Promise.all([
+  const [{data:camp},{data:cuentasEnCamp},{data:todasCuentasRaw},{data:vendedoresCC}]=await Promise.all([
     sb.from('campanas_cartera').select('*').eq('id',campanaId).maybeSingle(),
     sb.from('campana_cartera_clientes').select('cliente_id').eq('campana_id',campanaId),
-    sb.from('clientes_cartera').select('id,num_cliente,razon_social,rfc,sistemas_aspel,telefono,tipo_cliente').order('razon_social')
+    sb.from('clientes_cartera').select('id,num_cliente,razon_social,rfc,sistemas_aspel,telefono,tipo_cliente,vendedor_asignado').order('razon_social'),
+    // Jp, 2026-10-16: "activarle una campaña a Carolina para que llame a los
+    // clientes que no tienen vendedor asignado" — hacía falta ver/filtrar por
+    // vendedor asignado aquí (antes la lista no traía ese dato en absoluto).
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre')
   ]);
   if(!camp){mc.innerHTML='<div style="padding:20px;color:var(--red);">Campaña no encontrada</div>';return;}
   const vistos=new Set();
   const todasCuentas=(todasCuentasRaw||[]).filter(c=>{if(vistos.has(c.id))return false;vistos.add(c.id);return true;});
   const idsEnCamp=new Set((cuentasEnCamp||[]).map(r=>r.cliente_id));
   const productos=[...new Set(todasCuentas.flatMap(c=>c.sistemas_aspel||[]).filter(Boolean))].sort();
+  const vendedoresMapCC={}; (vendedoresCC||[]).forEach(v=>{vendedoresMapCC[v.id]=v.nombre;});
+  window._campCartVendedoresMap=vendedoresMapCC;
 
   mc.innerHTML=`
   <button onclick="renderDirCarteraCampanas()" style="background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;margin-bottom:12px;">← Volver a campañas</button>
@@ -11143,6 +11149,11 @@ async function gestionarCampanaCartera(campanaId){
         <option value="">Todos los sistemas</option>
         ${productos.map(p=>`<option value="${p}">${p}</option>`).join('')}
       </select>
+      <select id="campCartFiltVendedor" onchange="filtrarListaCampCartera()" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">
+        <option value="">Todos los vendedores</option>
+        <option value="__sin_asignar__">⚠ Sin vendedor asignado</option>
+        ${(vendedoresCC||[]).map(v=>`<option value="${v.id}">${v.nombre}</option>`).join('')}
+      </select>
       <input type="text" id="campCartBuscar" placeholder="Buscar..." oninput="filtrarListaCampCartera()" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;width:180px;">
       <button onclick="seleccionarTodosCampCartera(true)" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:5px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✓ Seleccionar todos</button>
       <button onclick="seleccionarTodosCampCartera(false)" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:5px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✗ Quitar todos</button>
@@ -11151,15 +11162,18 @@ async function gestionarCampanaCartera(campanaId){
   </div>
   <div class="card" style="padding:0;max-height:520px;overflow-y:auto;">
     <div id="listaCampCartera">
-      ${(todasCuentas||[]).map(c=>`
-        <label style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;background:#fff;" class="camp-cart-fila" data-prod="${(c.sistemas_aspel||[]).join(',')}" data-razon="${(c.razon_social||'').toLowerCase()}">
+      ${(todasCuentas||[]).map(c=>{
+        const vendNombre=c.vendedor_asignado?(vendedoresMapCC[c.vendedor_asignado]||'—'):null;
+        return `
+      <label style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;background:#fff;" class="camp-cart-fila" data-prod="${(c.sistemas_aspel||[]).join(',')}" data-razon="${(c.razon_social||'').toLowerCase()}" data-vendedor="${c.vendedor_asignado||'__sin_asignar__'}">
           <input type="checkbox" data-id="${c.id}" ${idsEnCamp.has(c.id)?'checked':''} style="accent-color:var(--teal);flex-shrink:0;">
           <span style="font-size:10px;color:var(--text3);white-space:nowrap;font-family:'JetBrains Mono',monospace;">${c.num_cliente||''}</span>
           <span style="flex:1;font-weight:500;color:var(--text);">${c.razon_social||'Sin nombre'}</span>
           <span style="font-size:10px;color:var(--text3);white-space:nowrap;">${c.rfc||''}</span>
           ${(c.sistemas_aspel||[]).map(s=>`<span style="font-size:9px;background:rgba(0,169,157,0.1);color:var(--teal);border-radius:3px;padding:1px 5px;">${s}</span>`).join('')}
+          <span style="font-size:9px;white-space:nowrap;border-radius:3px;padding:1px 6px;${vendNombre?'background:var(--surf2);color:var(--text3);':'background:var(--gold-bg);color:var(--gold);font-weight:600;'}">${vendNombre?vendNombre:'⚠ Sin asignar'}</span>
           ${c.telefono?`<span style="font-size:10px;color:var(--text3);white-space:nowrap;">${c.telefono}</span>`:''}
-        </label>`).join('')}
+        </label>`;}).join('')}
     </div>
   </div>`;
   window._campCartCuentasTodas=todasCuentas||[];
@@ -11167,11 +11181,13 @@ async function gestionarCampanaCartera(campanaId){
 
 function filtrarListaCampCartera(){
   const prod=document.getElementById('campCartFiltProd')?.value||'';
+  const vend=document.getElementById('campCartFiltVendedor')?.value||'';
   const q=(document.getElementById('campCartBuscar')?.value||'').toLowerCase();
   document.querySelectorAll('#listaCampCartera .camp-cart-fila').forEach(fila=>{
     const matchProd=!prod||fila.dataset.prod?.includes(prod);
+    const matchVend=!vend||fila.dataset.vendedor===vend;
     const matchQ=!q||fila.dataset.razon?.includes(q);
-    fila.style.display=(matchProd&&matchQ)?'flex':'none';
+    fila.style.display=(matchProd&&matchVend&&matchQ)?'flex':'none';
   });
 }
 
@@ -15461,7 +15477,7 @@ async function renderSubirProspectos(){
       <div style="font-size:16px;font-weight:600;color:var(--text);">Subir prospectos (Meta / Sheets)</div>
     </div>
 
-    <div class="insight">📋 Selecciona la pestaña completa en Google Sheets (encabezados + filas), cópiala y pégala abajo tal cual — también funciona si subes un .csv exportado como texto. Detecto nombre/correo/teléfono automáticamente aunque el nombre de columna cambie por campaña. Si el prospecto ya existe (mismo correo o teléfono), no se duplica: solo se le agrega este evento a su historial.</div>
+    <div class="insight">📋 Selecciona la pestaña completa en Google Sheets (encabezados + filas), cópiala y pégala abajo tal cual — también funciona si subes un .csv exportado como texto. Detecto nombre/correo/teléfono automáticamente aunque el nombre de columna cambie por campaña. Si el prospecto ya existe (mismo correo o teléfono), no se duplica: solo se le agrega este evento a su historial. Si vuelves a subir la MISMA lista con el MISMO nombre de evento (p.ej. solo para agregar el Sistema relacionado o el Interés que la primera vez quedaron vacíos), no se crea un evento duplicado: se completa el dato que faltaba en ese mismo evento — nunca se pisa uno que ya tuviera algo capturado.</div>
 
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:20px;margin-bottom:16px;">
       <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px;">Datos del evento</div>
@@ -15719,6 +15735,7 @@ async function subirProspectos(){
         await sb.from('prospecto_eventos').insert(eventosNuevos);
       }
     }
+    let eventosActualizados=0;
     if(existentesRows.length){
       // Fill-gap: si el prospecto ya existente no tenía "Interés" capturado,
       // se le llena con el de este import — nunca se pisa uno que ya tuviera.
@@ -15726,20 +15743,49 @@ async function subirProspectos(){
       for(const p of conInteresNuevo){
         await sb.from('prospectos').update({interes:p.interes}).eq('id',p._match.id);
       }
-      // No duplicar el evento si el prospecto ya lo tenía registrado (p.ej. re-importar la misma pestaña por error).
+      // Jp, 2026-10-16: antes, si el prospecto ya tenía registrado ESTE MISMO
+      // evento (p.ej. volvió a pegar la lista de "Reforma Laboral 2027 Parte 1"
+      // para agregarle el Sistema relacionado que la primera vez dejó vacío),
+      // el import simplemente se saltaba esa fila — no duplicaba el evento,
+      // pero tampoco guardaba el dato nuevo, así que el Sistema relacionado se
+      // perdía en silencio. Ahora, igual que con "Interés" a nivel prospecto,
+      // se aplica fill-gap también al registro del evento: si el campo en
+      // prospecto_eventos está vacío y este import SÍ trae un valor, se llena;
+      // si ya tenía algo capturado, nunca se pisa. No hace falta un modo
+      // separado de "actualizar evento" — re-pegar la misma pestaña con más
+      // datos (p.ej. ya con Sistema relacionado) hace exactamente eso.
       const idsExistentes=[...new Set(existentesRows.map(p=>p._match.id))];
-      const {data:eventosYa}=await sb.from('prospecto_eventos').select('prospecto_id,evento').in('prospecto_id',idsExistentes);
-      const yaTiene=new Set((eventosYa||[]).map(e=>`${e.prospecto_id}::${e.evento}`));
-      const eventosExistentes=existentesRows
-        .filter(p=>!yaTiene.has(`${p._match.id}::${p.evento}`))
-        .map(p=>({prospecto_id:p._match.id,evento:p.evento,fecha_registro:p._fecha||hoyStr,origen:p.origen,tipo_evento:p.tipoEvento,sistema_relacionado:p.sistemaRelacionado,fecha_evento:p.fechaEvento,promocion:p.promocion}));
-      if(eventosExistentes.length){
-        const {error}=await sb.from('prospecto_eventos').insert(eventosExistentes);
+      const {data:eventosYa}=await sb.from('prospecto_eventos').select('id,prospecto_id,evento,sistema_relacionado,tipo_evento,fecha_evento,promocion,origen').in('prospecto_id',idsExistentes);
+      const porClave={};
+      (eventosYa||[]).forEach(e=>{ porClave[`${e.prospecto_id}::${e.evento}`]=e; });
+
+      const eventosNuevosRows=[];
+      for(const p of existentesRows){
+        const clave=`${p._match.id}::${p.evento}`;
+        const existente=porClave[clave];
+        if(!existente){
+          eventosNuevosRows.push({prospecto_id:p._match.id,evento:p.evento,fecha_registro:p._fecha||hoyStr,origen:p.origen,tipo_evento:p.tipoEvento,sistema_relacionado:p.sistemaRelacionado,fecha_evento:p.fechaEvento,promocion:p.promocion});
+          continue;
+        }
+        const relleno={};
+        if(p.sistemaRelacionado&&!existente.sistema_relacionado) relleno.sistema_relacionado=p.sistemaRelacionado;
+        if(p.tipoEvento&&!existente.tipo_evento) relleno.tipo_evento=p.tipoEvento;
+        if(p.fechaEvento&&!existente.fecha_evento) relleno.fecha_evento=p.fechaEvento;
+        if(p.promocion&&!existente.promocion) relleno.promocion=p.promocion;
+        if(p.origen&&!existente.origen) relleno.origen=p.origen;
+        if(Object.keys(relleno).length){
+          const {error}=await sb.from('prospecto_eventos').update(relleno).eq('id',existente.id);
+          if(error) throw error;
+          eventosActualizados++;
+        }
+      }
+      if(eventosNuevosRows.length){
+        const {error}=await sb.from('prospecto_eventos').insert(eventosNuevosRows);
         if(error) throw error;
-        eventosAgregados=eventosExistentes.length;
+        eventosAgregados=eventosNuevosRows.length;
       }
     }
-    alert(`✅ Listo.\n${insertados} prospectos nuevos creados (sin vendedor, listos para "Tomar").\n${eventosAgregados} ya existían y se les agregó este evento a su historial.`);
+    alert(`✅ Listo.\n${insertados} prospectos nuevos creados (sin vendedor, listos para "Tomar").\n${eventosAgregados} ya existían y se les agregó este evento a su historial.${eventosActualizados?`\n${eventosActualizados} ya tenían este mismo evento y se les completó un dato que les faltaba (Sistema relacionado, Interés, etc. — nunca se pisa lo que ya tenían).`:''}`);
     swD('crm');
     renderDirectorCRM();
   }catch(error){
