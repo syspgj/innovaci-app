@@ -96,6 +96,29 @@ async function resolverAccountIdCrm(numCliente) {
   return rows?.[0]?.crm_record_id || null;
 }
 
+// Jp, 2026-10-16 — Fase 3 de Prospectos↔CRM: resuelve el LEADID real de
+// Vtiger a partir del prospecto_id de la app (prospectos.prospecto_crm_id
+// -> prospectos_crm.crm_leadid). Si el prospecto no está ligado al CRM
+// todavía, no es un error del endpoint: se avisa claro para que quien
+// llama (registrarLlamada en index.html) decida no tronar por esto —
+// la mayoría de los prospectos, antes de pasar por Fase 4, no tienen
+// folio de CRM.
+async function resolverLeadIdCrm(prospectoId) {
+  const prosRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/prospectos?id=eq.${encodeURIComponent(prospectoId)}&select=prospecto_crm_id`,
+    { headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` } }
+  );
+  if (!prosRes.ok) throw new Error('No se pudo consultar prospectos: ' + (await prosRes.text()));
+  const prospectoCrmId = (await prosRes.json())?.[0]?.prospecto_crm_id;
+  if (!prospectoCrmId) return null;
+  const espejoRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/prospectos_crm?id=eq.${encodeURIComponent(prospectoCrmId)}&select=crm_leadid`,
+    { headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` } }
+  );
+  if (!espejoRes.ok) throw new Error('No se pudo consultar prospectos_crm: ' + (await espejoRes.text()));
+  return (await espejoRes.json())?.[0]?.crm_leadid || null;
+}
+
 async function obtenerCrmId(tipo, body) {
   if (tipo === 'oportunidad') {
     if (!body.crm_potentialid) throw new Error('Falta crm_potentialid');
@@ -107,7 +130,13 @@ async function obtenerCrmId(tipo, body) {
     if (!accountId) throw new Error(`La cuenta ${body.num_cliente} no tiene espejo en el CRM todavía (o nunca se ha sincronizado) — no se puede ligar a comentarios.`);
     return accountId;
   }
-  throw new Error('tipo debe ser "cuenta" u "oportunidad"');
+  if (tipo === 'prospecto') {
+    if (!body.prospecto_id) throw new Error('Falta prospecto_id');
+    const leadId = await resolverLeadIdCrm(body.prospecto_id);
+    if (!leadId) throw new Error('Este prospecto no tiene folio de CRM todavía — no se puede ligar a comentarios.');
+    return leadId;
+  }
+  throw new Error('tipo debe ser "cuenta", "oportunidad" o "prospecto"');
 }
 
 async function listarComentarios(crmid) {
