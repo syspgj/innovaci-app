@@ -13120,7 +13120,7 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
       <div style="font-size:10px;color:rgba(255,255,255,0.6);font-family:'JetBrains Mono',monospace;">${c.num_cliente||''}</div>
       <div style="font-size:16px;font-weight:700;color:#fff;margin-top:2px;">${c.razon_social||'Sin nombre'}</div>
       <div style="font-size:11px;color:rgba(255,255,255,0.7);margin-top:2px;">${c.rfc||''} · ${c.tipo_cliente||''}</div>
-      ${(c.sistemas_aspel||[]).length?`<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">${(c.sistemas_aspel||[]).map(s=>`<span style="background:rgba(255,255,255,0.15);color:#fff;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:600;">${s}</span>`).join('')}</div>`:''}
+      <div id="teleSistemasCliente_${clienteId}" style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">${renderBadgesSistemasTele(c,campanaId)}</div>
     </div>
     <div style="padding:14px 22px;max-height:65vh;overflow-y:auto;">
       <div style="display:grid;gap:4px;margin-bottom:12px;font-size:12px;">
@@ -13216,6 +13216,76 @@ async function registrarLlamadaCuentaTele(clienteId, campanaId){
   document.querySelectorAll('input[name="resCuenta"]').forEach(r=>r.checked=false);
   const nt=document.getElementById('notasCuentaLlamada');if(nt)nt.value='';
   const cb=document.getElementById('interesAdicionalCheck');if(cb){cb.checked=false;toggleInteresAdicional();}
+  // Jp, 2026-10-16: "necesito que los comentarios que resulten de la llamada
+  // se vean reflejados en CRM, a nivel cuenta" — mismo patrón que ya usan las
+  // actividades de Cartera y Proyección (fcSincronizarActividadCrm): manda un
+  // comentario real a la Cuenta en Vtiger vía /api/crm-comentarios. Best-effort
+  // — si falla, la llamada ya quedó guardada en la app, solo no se reflejó
+  // en el CRM (no se le avisa al usuario con un alert para no interrumpir el
+  // flujo de "Guardar y siguiente", pero se loguea en consola).
+  sincronizarLlamadaCarteraCrm(clienteId,campanaId,resultado,nota).catch(e=>console.error('CRM comentario (llamada cartera) error',e));
+}
+
+async function sincronizarLlamadaCarteraCrm(clienteId,campanaId,resultado,nota){
+  const c=(window._cartClientes||[]).find(c=>c.id===clienteId);
+  if(!c||!c.num_cliente) return;
+  const campActiva=window._teleCampActiva;
+  const nombreCampana=(campActiva&&campActiva.id===campanaId)?campActiva.nombre:'';
+  const contenido='[Cartera] Llamada de campaña'+(nombreCampana?` "${nombreCampana}"`:'')+` · ${resultado}`+(nota?`: ${nota}`:'');
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const res=await fetch('/api/crm-comentarios',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body:JSON.stringify({tipo:'cuenta',num_cliente:c.num_cliente,comentario:contenido}),
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok) console.error('CRM comentario (llamada cartera) failed',j);
+  }catch(e){
+    console.error('CRM comentario (llamada cartera) error',e);
+  }
+}
+
+// Jp, 2026-10-16: badges de sistema con botón "×" para quitarlo cuando el
+// cliente confirma por teléfono que ya no lo usa — "si ya no usan Aspel,
+// quitar que tienen el sistema de NOI o de COI o de banco para que ya no nos
+// aparezca en el registro". Quita el valor de clientes_cartera.sistemas_aspel
+// (el array que de verdad controla qué badges se ven en toda la app) y, de
+// paso, borra la fila correspondiente en clientes_cartera_sistemas (la tabla
+// de licencias/versión) si existía — y deja un comentario en el CRM a nivel
+// Cuenta para que quede el rastro de por qué se quitó (esta tabla es un
+// espejo de solo-consulta del CRM, así que esto NO cambia el campo real en
+// Vtiger — si se necesita que el CRM también lo refleje, es un paso aparte
+// a confirmar con Jp).
+function renderBadgesSistemasTele(c,campanaId){
+  return (c.sistemas_aspel||[]).map(s=>`<span style="background:rgba(255,255,255,0.15);color:#fff;border-radius:4px;padding:1px 4px 1px 7px;font-size:10px;font-weight:600;display:inline-flex;align-items:center;gap:4px;">${s}<span onclick="quitarSistemaCuentaTele('${c.id}','${s.replace(/'/g,"\\'")}','${campanaId}')" title="Quitar ${s} — ya no lo usa" style="cursor:pointer;opacity:0.75;font-weight:700;">✕</span></span>`).join('');
+}
+
+async function quitarSistemaCuentaTele(clienteId,sistema,campanaId){
+  if(!confirm(`¿Quitar ${sistema} de esta cuenta? Ya no aparecerá en las listas/filtros por sistema.`)) return;
+  const c=(window._cartClientes||[]).find(c=>c.id===clienteId);
+  if(!c) return;
+  const nuevoArray=(c.sistemas_aspel||[]).filter(s=>s!==sistema);
+  const {error}=await sb.from('clientes_cartera').update({sistemas_aspel:nuevoArray}).eq('id',clienteId);
+  if(error){alert('Error al quitar el sistema: '+error.message);return;}
+  c.sistemas_aspel=nuevoArray; // refleja en el cache local sin recargar todo
+  // Best-effort: también borra la fila de licencia/versión de ese sistema si existía.
+  await sb.from('clientes_cartera_sistemas').delete().eq('cliente_cartera_id',clienteId).eq('sistema',sistema);
+  const wrap=document.getElementById('teleSistemasCliente_'+clienteId);
+  if(wrap) wrap.innerHTML=renderBadgesSistemasTele(c,campanaId);
+  // Comentario en CRM para dejar rastro de por qué se quitó.
+  if(c.num_cliente){
+    try{
+      const {data:sess}=await sb.auth.getSession();
+      const token=sess?.session?.access_token;
+      await fetch('/api/crm-comentarios',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+        body:JSON.stringify({tipo:'cuenta',num_cliente:c.num_cliente,comentario:`[Cartera] Se quitó el sistema ${sistema} — cliente confirmó que ya no lo usa.`}),
+      });
+    }catch(e){ console.error('CRM comentario (quitar sistema) error',e); }
+  }
 }
 
 async function guardarYCerrarCuentaTele(clienteId,campanaId){
