@@ -11099,7 +11099,7 @@ async function gestionarCampanaCartera(campanaId){
   const [{data:camp},{data:cuentasEnCamp},{data:todasCuentasRaw},{data:vendedoresCC}]=await Promise.all([
     sb.from('campanas_cartera').select('*').eq('id',campanaId).maybeSingle(),
     sb.from('campana_cartera_clientes').select('cliente_id').eq('campana_id',campanaId),
-    sb.from('clientes_cartera').select('id,num_cliente,razon_social,rfc,sistemas_aspel,telefono,tipo_cliente,vendedor_asignado').order('razon_social'),
+    sb.from('clientes_cartera').select('id,num_cliente,razon_social,rfc,sistemas_aspel,telefono,tipo_cliente,vendedor_asignado,no_contactar').order('razon_social'),
     // Jp, 2026-10-16: "activarle una campaña a Carolina para que llame a los
     // clientes que no tienen vendedor asignado" — hacía falta ver/filtrar por
     // vendedor asignado aquí (antes la lista no traía ese dato en absoluto).
@@ -11165,10 +11165,10 @@ async function gestionarCampanaCartera(campanaId){
       ${(todasCuentas||[]).map(c=>{
         const vendNombre=c.vendedor_asignado?(vendedoresMapCC[c.vendedor_asignado]||'—'):null;
         return `
-      <label style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;background:#fff;" class="camp-cart-fila" data-prod="${(c.sistemas_aspel||[]).join(',')}" data-razon="${(c.razon_social||'').toLowerCase()}" data-vendedor="${c.vendedor_asignado||'__sin_asignar__'}">
+      <label style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;background:${c.no_contactar?'rgba(232,64,64,0.04)':'#fff'};" class="camp-cart-fila" data-prod="${(c.sistemas_aspel||[]).join(',')}" data-razon="${(c.razon_social||'').toLowerCase()}" data-vendedor="${c.vendedor_asignado||'__sin_asignar__'}">
           <input type="checkbox" data-id="${c.id}" ${idsEnCamp.has(c.id)?'checked':''} style="accent-color:var(--teal);flex-shrink:0;">
           <span style="font-size:10px;color:var(--text3);white-space:nowrap;font-family:'JetBrains Mono',monospace;">${c.num_cliente||''}</span>
-          <span style="flex:1;font-weight:500;color:var(--text);">${c.razon_social||'Sin nombre'}</span>
+          <span style="flex:1;font-weight:500;color:var(--text);">${c.razon_social||'Sin nombre'}${c.no_contactar?' <span style="color:var(--red);font-size:10px;">⛔ No contactar</span>':''}</span>
           <span style="font-size:10px;color:var(--text3);white-space:nowrap;">${c.rfc||''}</span>
           ${(c.sistemas_aspel||[]).map(s=>`<span style="font-size:9px;background:rgba(0,169,157,0.1);color:var(--teal);border-radius:3px;padding:1px 5px;">${s}</span>`).join('')}
           <span style="font-size:9px;white-space:nowrap;border-radius:3px;padding:1px 6px;${vendNombre?'background:var(--surf2);color:var(--text3);':'background:var(--gold-bg);color:var(--gold);font-weight:600;'}">${vendNombre?vendNombre:'⚠ Sin asignar'}</span>
@@ -13024,8 +13024,8 @@ async function renderTeleClientes(){
     </div>
     ${proyHtml}
     ${(()=>{
-      const resColors={'Interesado':'#27AE60','No le interesa':'#E84040','Buzón':'#F5A623','No contestó':'var(--text3)','Volver a llamar':'#2980B9','Pendiente':'rgba(0,0,0,0.15)'};
-      const resIconos={'Interesado':'✅','No le interesa':'❌','Buzón':'📵','No contestó':'📞','Volver a llamar':'🔄','Pendiente':'⏳'};
+      const resColors={'Interesado':'#27AE60','No le interesa':'#E84040','Buzón':'#F5A623','No contestó':'var(--text3)','Volver a llamar':'#2980B9','Solicita baja de servicio':'#E84040','Requiere visita del vendedor':'#8E44AD','Pendiente':'rgba(0,0,0,0.15)'};
+      const resIconos={'Interesado':'✅','No le interesa':'❌','Buzón':'📵','No contestó':'📞','Volver a llamar':'🔄','Solicita baja de servicio':'⚠️','Requiere visita del vendedor':'🧑‍💼','Pendiente':'⏳'};
       const desgloseHtml=Object.entries(resultadoCount).sort((a,b)=>b[1]-a[1]).map(([k,v])=>
         `<div onclick="filtrarTeleClientesPorResultado('${k}')" style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:4px 8px;border-radius:6px;transition:background 0.15s;" onmouseover="this.style.background='rgba(0,0,0,0.06)'" onmouseout="this.style.background='transparent'" id="badgeRes_${k.replace(/\s/g,'_')}">
           <span>${resIconos[k]||'•'}</span>
@@ -13220,7 +13220,7 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
           ✅ Durante la llamada valida los datos de contacto y pregunta <b>qué sistemas tiene</b> (SAE/COI/NOI/etc.) para marcarlos arriba en "Sistemas que tiene".
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;">
-          ${['No contestó','Buzón','Interesado','No le interesa','Volver a llamar','Registrado al taller','Canalizado a ventas'].map(r=>`
+          ${RESULTADOS_LLAMADA_CARTERA.map(r=>`
             <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;padding:4px 6px;border-radius:4px;background:#fff;border:1px solid var(--border);">
               <input type="radio" name="resCuenta" value="${r}" onchange="onResCuentaChange()" style="accent-color:var(--teal);">${r}
             </label>`).join('')}
@@ -13252,6 +13252,22 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
         <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">🗂 Historial de llamadas (${hist.length})</div>
         <div id="histCuentaLlamadas">${renderLlamadasHtml(hist)}</div>
       </div>
+
+      <!-- NOTAS GENERALES DE LA CUENTA (persistentes, no ligadas a una sola llamada) -->
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">✏️ Notas generales de la cuenta</div>
+        <textarea id="notasGeneralesCuenta" placeholder="Algo que no esté ligado a una llamada en particular (ej: quiere cancelar, cambió de dueño, pidió no llamarlo entre semana)..." rows="3"
+          style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;resize:vertical;box-sizing:border-box;">${c.notas||''}</textarea>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:8px;background:${c.no_contactar?'rgba(232,64,64,0.06)':'transparent'};padding:${c.no_contactar?'6px 8px':'0'};border-radius:6px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:${c.no_contactar?'var(--red)':'var(--text2)'};font-weight:${c.no_contactar?'600':'400'};">
+            <input type="checkbox" id="chkNoContactarCuenta" ${c.no_contactar?'checked':''} style="accent-color:var(--red);width:14px;height:14px;">
+            ⛔ No volver a contactar (excluir de futuras campañas)
+          </label>
+        </div>
+        <button onclick="guardarNotasGeneralesCuenta('${clienteId}')"
+          style="margin-top:8px;background:var(--navy);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💾 Guardar notas</button>
+        <span id="notasGeneralesMsg_${clienteId}" style="font-size:11px;margin-left:8px;"></span>
+      </div>
     </div>
     </div>
     <div style="padding:12px 22px;border-top:1px solid var(--border);display:flex;gap:8px;">
@@ -13263,9 +13279,24 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
         style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
         Guardar y siguiente →
       </button>
+      ${c.telefono?`<a href="https://wa.me/${(c.telefono_whatsapp||c.telefono).replace(/\D/g,'').length===10?'52'+(c.telefono_whatsapp||c.telefono).replace(/\D/g,''):(c.telefono_whatsapp||c.telefono).replace(/\D/g,'')}" target="_blank"
+        style="background:#25D366;color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;white-space:nowrap;">
+        WhatsApp
+      </a>`:''}
     </div>
   </div>`;
   document.body.appendChild(modal);
+}
+
+async function guardarNotasGeneralesCuenta(clienteId){
+  const notas=document.getElementById('notasGeneralesCuenta')?.value.trim()||'';
+  const noContactar=document.getElementById('chkNoContactarCuenta')?.checked||false;
+  const msg=document.getElementById('notasGeneralesMsg_'+clienteId);
+  const {error}=await sb.from('clientes_cartera').update({notas,no_contactar:noContactar,updated_at:new Date().toISOString()}).eq('id',clienteId);
+  if(error){if(msg){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}return;}
+  const c=(window._cartClientes||[]).find(c=>c.id===clienteId);
+  if(c){c.notas=notas;c.no_contactar=noContactar;}
+  if(msg){msg.style.color='var(--green)';msg.textContent='✓ Guardado';setTimeout(()=>{if(msg)msg.textContent='';},2500);}
 }
 
 async function guardarSistemasCuentaTele(clienteId,campanaId){
@@ -14249,8 +14280,13 @@ async function renderProspectos(){
   // (con al menos una llamada tuya registrada) sobre el total asignado, más
   // la proyección de cuándo terminas al ritmo actual.
   const {data:llamadasProsExist}=await sb.from('prospecto_llamadas')
-    .select('prospecto_id,created_at').in('prospecto_id',ps.map(p=>p.id)).eq('usuario_id',currentUser.id);
+    .select('prospecto_id,created_at,resultado').in('prospecto_id',ps.map(p=>p.id)).eq('usuario_id',currentUser.id).order('created_at',{ascending:false});
   const contactadosIds=new Set((llamadasProsExist||[]).map(l=>l.prospecto_id));
+  // Jp, 2026-10-16 (auditoría de cierre): resultado de la llamada más
+  // reciente por prospecto, para mostrarlo en la tabla (filaProspecto).
+  const resultadoProsMap={};
+  (llamadasProsExist||[]).forEach(l=>{ if(!resultadoProsMap[l.prospecto_id]) resultadoProsMap[l.prospecto_id]=l.resultado; });
+  window._resultadoProspectos=resultadoProsMap;
   const totalPros=ps.length, contactadosPros=contactadosIds.size, pctPros=totalPros>0?Math.round(contactadosPros/totalPros*100):0;
   const restantesPros=totalPros-contactadosPros;
   const porDiaPros={};
@@ -14326,7 +14362,7 @@ async function renderProspectos(){
     <table class="daily" style="font-size:12px;">
       <thead><tr>
         <th>Nombre</th><th>Teléfono</th><th>Evento</th>
-        <th>Estatus</th><th>Último contacto</th><th>Acciones</th>
+        <th>Estatus</th><th>Último contacto</th><th>Resultado</th><th>Acciones</th>
       </tr></thead>
       <tbody id="bodyProspectos">
         ${ps.map(p=>filaProspecto(p)).join('')}
@@ -14341,8 +14377,17 @@ async function renderProspectos(){
 function filaProspecto(p){
   const col=ESTATUS_COLORS[p.estatus]||'#888';
   const fecha=p.fecha_contacto?p.fecha_contacto.slice(5):'—';
+  // Jp, 2026-10-16 (auditoría de cierre): mostrar el resultado de la última
+  // llamada en la tabla, igual que ya hace Cartera en sus tarjetas — sin
+  // esto el agente tenía que abrir cada ficha para saber a quién ya le
+  // marcó y qué le dijo.
+  const resultado=window._resultadoProspectos?.[p.id];
+  const resColor=resultado==='Interesado'||resultado==='Canalizado a ventas'||resultado==='Compró el taller 24/7'?'#27AE60':resultado==='No le interesa'?'var(--red)':resultado?'var(--text3)':null;
+  const resCelda=resultado
+    ?`<span style="font-size:11px;font-weight:600;color:${resColor};">${resultado}</span>`
+    :`<span style="font-size:11px;color:var(--text3);font-style:italic;">Sin llamar</span>`;
   return `<tr id="row_${p.id}">
-    <td style="font-weight:500;">${p.nombre}</td>
+    <td style="font-weight:500;">${p.nombre}${p.no_contactar?' <span style="color:var(--red);font-size:10px;">⛔</span>':''}</td>
     <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
     <td style="font-size:11px;color:var(--text3);">${p.evento||'—'}</td>
     <td>
@@ -14352,6 +14397,7 @@ function filaProspecto(p){
       </select>
     </td>
     <td style="font-size:11px;color:var(--text3);">${fecha}</td>
+    <td>${resCelda}</td>
     <td>
       <div style="display:flex;gap:5px;align-items:center;">
         <button onclick="abrirDetalle('${p.id}')"
@@ -14681,6 +14727,15 @@ async function toggleNoContactar(id,checked){
 const RESULTADOS_LLAMADA=[
   'No contestó','Buzón','Interesado','No le interesa','Registrado al taller','Volver a llamar',
   'Canalizado a ventas','Compró el taller 24/7'
+];
+// Jp, 2026-10-16 (auditoría de cierre): Cartera llama a cuentas que YA son
+// clientes, no prospectos de un evento — "Registrado al taller" y
+// "Canalizado a ventas" (copiados de RESULTADOS_LLAMADA) no aplican aquí.
+// "¿Mostró interés en algo adicional?" ya se captura aparte con su propio
+// checkbox/texto en el formulario.
+const RESULTADOS_LLAMADA_CARTERA=[
+  'No contestó','Buzón','Interesado','No le interesa','Volver a llamar',
+  'Solicita baja de servicio','Requiere visita del vendedor'
 ];
 
 async function abrirDetalleDir(id){
@@ -15138,6 +15193,10 @@ async function registrarLlamada(prospecto_id){
   await sb.from('prospectos').update(updProspecto).eq('id',prospecto_id);
   const p=window._prospectos?.find(p=>p.id===prospecto_id);
   if(p) Object.assign(p,updProspecto);
+  // Jp, 2026-10-16 (auditoría de cierre): que la tabla de atrás refleje el
+  // resultado apenas se guarda la llamada, sin esperar a cerrar la ficha.
+  if(!window._resultadoProspectos) window._resultadoProspectos={};
+  window._resultadoProspectos[prospecto_id]=resultado;
   // Si compró, sumar el monto a la venta de cursos del día
   if(resultado==='Compró el taller 24/7'){
     const {data:regHoy}=await sb.from('registros_diarios').select('venta_cursos_tele').eq('usuario_id',currentUser.id).eq('fecha',hoy).maybeSingle();
