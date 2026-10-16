@@ -15201,6 +15201,13 @@ async function registrarLlamada(prospecto_id){
   // resultado apenas se guarda la llamada, sin esperar a cerrar la ficha.
   if(!window._resultadoProspectos) window._resultadoProspectos={};
   window._resultadoProspectos[prospecto_id]=resultado;
+  // Jp, 2026-10-16: sincronización con CRM (Fase 3) — la nota de la
+  // llamada queda como comentario en el Lead, y si el resultado cambió el
+  // estatus (Canalizado a ventas / Compró el taller 24/7) también se
+  // refleja allá. No bloquea ni avisa error al agente si el prospecto
+  // todavía no tiene folio de CRM.
+  sincronizarLlamadaProspectoCrm(prospecto_id,resultado,notas);
+  if(updProspecto.estatus) sincronizarProspectoCrm({prospecto_id,estatus:updProspecto.estatus});
   // Si compró, sumar el monto a la venta de cursos del día
   if(resultado==='Compró el taller 24/7'){
     const {data:regHoy}=await sb.from('registros_diarios').select('venta_cursos_tele').eq('usuario_id',currentUser.id).eq('fecha',hoy).maybeSingle();
@@ -15240,6 +15247,7 @@ async function guardarDatosProspecto(id){
   const p=window._prospectos?.find(p=>p.id===id);
   if(p) Object.assign(p,upd);
   if(msg){msg.style.color='var(--green)';msg.textContent='✓ Guardado';}
+  sincronizarProspectoCrm({prospecto_id:id,nombre,apellidos,empresa,puesto,telefono,email,origen,interes});
   // Actualizar nombre visible en el header del modal y en la fila de tabla
   const headerNombre=document.getElementById('modalNombreHeader');
   if(headerNombre) headerNombre.textContent=nombre;
@@ -15255,6 +15263,49 @@ async function guardarSistemasProspecto(id){
   const p=window._prospectos?.find(p=>p.id===id);
   if(p) p.sistemas_aspel=checks;
   if(msg){msg.style.color='var(--green)';msg.textContent='✓ Guardado';setTimeout(()=>{if(msg)msg.textContent='';},2500);}
+  sincronizarProspectoCrm({prospecto_id:id,sistema_aspel:checks.length?checks[checks.length-1]:'SIN INTERES'});
+}
+
+// ─── Sincronización Prospectos → CRM (Fase 3/4, Jp 2026-10-16) ─────────────
+// Ver claude/prospectos-crm-sincronizacion.md sección 6. Fire-and-forget
+// (nunca bloquea el guardado en la app ni muestra error al agente si el
+// CRM falla — solo se registra en consola, igual que ya hace Cartera con
+// sincronizarLlamadaCarteraCrm) salvo donde se indique lo contrario.
+async function sincronizarProspectoCrm(payload){
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const res=await fetch('/api/crm-actualizar-prospecto',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body:JSON.stringify(payload),
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok) console.error('CRM actualizar prospecto failed',j);
+  }catch(e){
+    console.error('CRM actualizar prospecto error',e);
+  }
+}
+
+// Postea la nota de una llamada como comentario en el Lead del CRM —
+// igual que sincronizarLlamadaCarteraCrm para cuentas. Si el prospecto no
+// tiene folio de CRM todavía, el endpoint regresa error controlado y aquí
+// solo se registra en consola (no molesta al agente).
+async function sincronizarLlamadaProspectoCrm(prospectoId,resultado,nota){
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const contenido=`[Prospectos] Llamada de telemarketing · ${resultado}`+(nota?`: ${nota}`:'');
+    const res=await fetch('/api/crm-comentarios',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body:JSON.stringify({tipo:'prospecto',prospecto_id:prospectoId,comentario:contenido}),
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok) console.error('CRM comentario (llamada prospecto) failed',j);
+  }catch(e){
+    console.error('CRM comentario (llamada prospecto) error',e);
+  }
 }
 
 async function guardarYCerrar(id){
@@ -15287,6 +15338,7 @@ async function guardarProspecto(id){
   await sb.from('prospectos').update(upd).eq('id',id);
   const p=window._prospectos?.find(p=>p.id===id);
   if(p){Object.assign(p,upd);}
+  if(estatus) sincronizarProspectoCrm({prospecto_id:id,estatus});
   if(estatus==='Canalizado a ventas'){
     const {data:vendedores}=await sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre');
     const lista=(vendedores||[]).map((v,i)=>`${i+1}. ${v.nombre}`).join('\n');
@@ -16377,6 +16429,30 @@ async function subirProspectos(){
         const eventosNuevos=insertedData.map((row,i)=>({prospecto_id:row.id,evento:nuevosRows[i].evento,fecha_registro:nuevosRows[i]._fecha||hoyStr,origen:nuevosRows[i].origen,tipo_evento:nuevosRows[i].tipoEvento,sistema_relacionado:nuevosRows[i].sistemaRelacionado,fecha_evento:nuevosRows[i].fechaEvento,promocion:nuevosRows[i].promocion}));
         await sb.from('prospecto_eventos').insert(eventosNuevos);
       }
+      // Jp, 2026-10-16: Fase 4 — TODOS los prospectos nuevos que suben por
+      // este importador se dan de alta también como Lead en el CRM, uno por
+      // uno (cada alta implica su propio login a Vtiger — hacerlo en
+      // paralelo arriesga tronar el login del CRM si el lote es grande).
+      // Si el lote es grande esto puede tardar varios minutos; se avisa en
+      // el botón y no se bloquea el resto de la subida si alguno falla.
+      let creadosCrm=0, fallidosCrm=0;
+      if(insertedData&&insertedData.length){
+        const {data:sess}=await sb.auth.getSession();
+        const token=sess?.session?.access_token;
+        for(let i=0;i<insertedData.length;i++){
+          if(btn) btn.textContent=`Dando de alta en CRM... (${i+1}/${insertedData.length})`;
+          try{
+            const res=await fetch('/api/crm-crear-prospecto',{
+              method:'POST',
+              headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+              body:JSON.stringify({prospecto_id:insertedData[i].id}),
+            });
+            const j=await res.json().catch(()=>({}));
+            if(res.ok&&j.ok&&!j.skipped) creadosCrm++;
+            else if(!res.ok||!j.ok){ fallidosCrm++; console.error('CRM crear prospecto failed',j); }
+          }catch(e){ fallidosCrm++; console.error('CRM crear prospecto error',e); }
+        }
+      }
     }
     let eventosActualizados=0;
     if(existentesRows.length){
@@ -16437,7 +16513,7 @@ async function subirProspectos(){
         eventosAgregados=eventosNuevosRows.length;
       }
     }
-    alert(`✅ Listo.\n${insertados} prospectos nuevos creados (sin vendedor, listos para "Tomar").\n${eventosAgregados} ya existían y se les agregó este evento a su historial.${eventosActualizados?`\n${eventosActualizados} ya tenían este mismo evento y se les completó un dato que les faltaba (Sistema relacionado, Interés, etc. — nunca se pisa lo que ya tenían).`:''}`);
+    alert(`✅ Listo.\n${insertados} prospectos nuevos creados (sin vendedor, listos para "Tomar").\n${eventosAgregados} ya existían y se les agregó este evento a su historial.${eventosActualizados?`\n${eventosActualizados} ya tenían este mismo evento y se les completó un dato que les faltaba (Sistema relacionado, Interés, etc. — nunca se pisa lo que ya tenían).`:''}${insertados?`\n${creadosCrm} de los nuevos se dieron de alta también en el CRM${fallidosCrm?` (${fallidosCrm} fallaron — revisa la consola; quedan en la app sin folio de CRM y se puede reintentar luego)`:''}.`:''}`);
     swD('crm');
     renderDirectorCRM();
   }catch(error){
