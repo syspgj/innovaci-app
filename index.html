@@ -8028,6 +8028,30 @@ function renderCarteraVendorBotones(){
 // invisible, aun con el `index.html` ya corregido y desplegado. La única
 // forma confiable de traer TODAS las filas es paginar con .range() hasta
 // que una página regrese menos filas de las pedidas.
+// Supabase/PostgREST limita cada select a 1000 filas por default — con
+// `prospectos` ya por encima de eso (pasó de 933 a ~1994 tras los imports
+// de Fase 2 del 2026-10-15/16), cualquier `.select('*')` sin paginar se
+// recorta en silencio a los primeros 1000. Esto rompía: el conteo del
+// director ("1000 total" cuando en realidad había más), el pool de
+// "🧲 Prospectos" del vendedor (los últimos ~1000 por created_at tapaban al
+// resto) y el cruce de duplicados al importar (no veía prospectos "viejos"
+// más allá de la fila 1000, por eso a veces no detectaba que alguien ya
+// existía). Mismo patrón de paginación que ya usa Cartera.
+async function prospFetchTodos(selectStr,orderCol,asc){
+  let todos=[], desde=0; const pageSize=1000;
+  while(true){
+    let q=sb.from('prospectos').select(selectStr);
+    if(orderCol) q=q.order(orderCol,{ascending:asc!==false});
+    const {data,error}=await q.range(desde,desde+pageSize-1);
+    if(error){ console.error('prospFetchTodos', error); break; }
+    if(!data||!data.length) break;
+    todos=todos.concat(data);
+    if(data.length<pageSize) break;
+    desde+=pageSize;
+  }
+  return todos;
+}
+
 async function carteraFetchTodosClientes(selectStr){
   let todos=[], desde=0; const pageSize=1000;
   while(true){
@@ -14093,8 +14117,8 @@ async function renderProspectosVendedor(){
   // que esté sin asignar, en vez de depender de que telemarketing lo
   // canalice primero. Se conserva la columna vendedor_asignado tal cual:
   // "tomar" simplemente la llena con currentUser.id.
-  const [{data:prospectos},clientes,{data:vendedores}]=await Promise.all([
-    sb.from('prospectos').select('*').order('created_at',{ascending:false}),
+  const [prospectos,clientes,{data:vendedores}]=await Promise.all([
+    prospFetchTodos('*','created_at',false),
     (window._cartClientes&&window._cartClientes.length)?Promise.resolve(window._cartClientes):carteraFetchTodosClientes('id,razon_social,telefono,telefono2,telefono_whatsapp,correo_principal,otro_correo,email'),
     sb.from('usuarios').select('id,nombre').eq('rol','vendedor')
   ]);
@@ -14801,8 +14825,8 @@ async function renderDirectorCRM(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
   const {data:users}=await sb.from('usuarios').select('*').eq('rol','telemarketing');
-  const [{data:prospectosRaw},{data:todosUsuarios},{data:vendedoresB2B}]=await Promise.all([
-    sb.from('prospectos').select('*').order('created_at',{ascending:false}),
+  const [prospectosRaw,{data:todosUsuarios},{data:vendedoresB2B}]=await Promise.all([
+    prospFetchTodos('*','created_at',false),
     sb.from('usuarios').select('id,nombre'),
     sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre')
   ]);
@@ -15136,7 +15160,7 @@ async function abrirCampana(campanaId){
   const {data:campana}=await sb.from('campanas').select('*').eq('id',campanaId).single();
   const {data:relaciones}=await sb.from('campana_prospectos').select('prospecto_id').eq('campana_id',campanaId);
   const idsEnCampana=new Set((relaciones||[]).map(r=>r.prospecto_id));
-  const {data:todosProspectos}=await sb.from('prospectos').select('id,nombre,telefono,evento,estatus,no_contactar').order('nombre');
+  const todosProspectos=await prospFetchTodos('id,nombre,telefono,evento,estatus,no_contactar','nombre',true);
   const ps=todosProspectos||[];
   const eventosUnicos=[...new Set(ps.map(p=>p.evento).filter(Boolean))].sort();
   window._campanaProspectosAll=ps;
@@ -15404,8 +15428,7 @@ async function procesarPaste(){
   // últimos 10 dígitos — misma regla confirmada por Jp que usa el resto del
   // módulo) para decidir, antes de subir, quién es nuevo y a quién solo se
   // le va a agregar el evento.
-  const {data:existentes}=await sb.from('prospectos').select('id,nombre,telefono,email');
-  const ex=existentes||[];
+  const ex=await prospFetchTodos('id,nombre,telefono,email');
   function buscarExistente(p){
     const correoP=(p.email||'').trim().toLowerCase();
     for(const e of ex){
