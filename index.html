@@ -8065,6 +8065,24 @@ async function carteraFetchTodosClientes(selectStr){
   return todos;
 }
 
+// Jp, 2026-10-16: fetch paginado genérico de prospecto_eventos (igual patrón
+// que prospFetchTodos/carteraFetchTodosClientes — el "Max Rows" de PostgREST
+// topa cada request a 1000 sin importar cuántos registros haya) — se usa para
+// resolver "Último evento"/"Sistema de interés" (más reciente) por prospecto
+// en la tabla "Prospectos del equipo" de Dirección.
+async function prospEventosFetchTodos(){
+  let todos=[], desde=0; const pageSize=1000;
+  while(true){
+    const {data,error}=await sb.from('prospecto_eventos').select('prospecto_id,evento,sistema_relacionado,fecha_evento,created_at').order('fecha_evento',{ascending:false,nullsFirst:false}).order('created_at',{ascending:false}).range(desde,desde+pageSize-1);
+    if(error){ console.error('prospEventosFetchTodos', error); break; }
+    if(!data||!data.length) break;
+    todos=todos.concat(data);
+    if(data.length<pageSize) break;
+    desde+=pageSize;
+  }
+  return todos;
+}
+
 // Jp, 2026-10-14: clasificación de cuentas por tipo_cliente (CRM, campo "Tipo")
 // para los contadores de arriba de Cartera de cuentas — ahora separados en 5
 // categorías (antes Eventual y 24/7 estaban juntas) y el conteo de cada una
@@ -8428,7 +8446,14 @@ function calcularTiempoRestanteProyecto(p){
   return `Vencido hace ${Math.abs(dias)} día${Math.abs(dias)===1?'':'s'}`;
 }
 
-async function renderProyectosModulo(){
+async function renderProyectosModulo(scope){
+  // scope (Jp, 2026-10-16): 'vendedor' (default, muestra el toggle "Mis
+  // proyectos / Todos los clientes") o 'director' (siempre ve todos los
+  // clientes, sin el toggle — Dirección no es dueña de cuentas propias).
+  // Reutiliza por completo swProyectos/fichaProyectoCRM/renderProyectosStats
+  // para que ambas vistas ("muy similar a la que tiene ventas") compartan
+  // siempre el mismo código y el mismo estilo de tarjetas.
+  window._proyectosScope=scope||'vendedor';
   const mc=document.getElementById('mainContent');
   mc.classList.remove('full-width');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando proyectos...</div>';
@@ -8445,10 +8470,11 @@ async function renderProyectosModulo(){
     <div style="font-size:12px;color:var(--text3);">Proyectos de CRM (pólizas, servicios, capacitaciones). Sincronizan a diario. Por default solo se muestran los que están "En curso".</div>
   </div>
   <div id="proyectosStatsWrap"></div>
+  ${window._proyectosScope==='director'?'':`
   <div style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
     <button onclick="swProyectos('mios')" id="proyectosSub_mios" class="cartera-subtab">Mis proyectos</button>
     <button onclick="swProyectos('todos')" id="proyectosSub_todos" class="cartera-subtab">Todos los clientes</button>
-  </div>
+  </div>`}
   <div id="proyectosVendedorBotonesWrap" style="display:none;gap:6px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
     <span style="font-size:11px;color:var(--text3);">Filtrar por vendedor:</span>
     <div id="proyectosVendedorBotones" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
@@ -8463,10 +8489,15 @@ async function renderProyectosModulo(){
   </div>
   <div id="proyectosContenido"></div>`;
 
-  currentProyectosSub='mios';
+  const subInicial=window._proyectosScope==='director'?'todos':'mios';
+  currentProyectosSub=subInicial;
   proyectosFiltroEstado='activos';
   renderProyectosVendorBotones();
-  swProyectos('mios');
+  swProyectos(subInicial);
+}
+
+async function renderDirectorProyectos(){
+  await renderProyectosModulo('director');
 }
 
 function renderProyectosVendorBotones(){
@@ -11379,6 +11410,7 @@ const VENTAS_SUBTABS=[
   {id:'crm',label:'📋 Prospectos'},
   {id:'campanas',label:'🎯 Campañas'},
   {id:'cartera',label:'💼 Cartera'},
+  {id:'proyectosdir',label:'📁 Proyectos'},
   {id:'suscripciones',label:'📋 Suscripciones'},
   {id:'proyecciondir',label:'📊 Proyección'},
   {id:'promociones',label:'🏷 Promociones'},
@@ -11435,6 +11467,7 @@ function renderDirectorTab(){
   else if(id==='crm')renderDirectorCRM();
   else if(id==='campanas')renderDirectorCampanas();
   else if(id==='cartera')renderDirectorCartera();
+  else if(id==='proyectosdir')renderDirectorProyectos();
   else if(id==='suscripciones')renderDirectorSuscripcionesModulo();
   else if(id==='proyecciondir')renderDirectorProyeccion();
   else if(id==='promociones')renderDirectorPromociones();
@@ -14860,12 +14893,28 @@ async function renderDirectorCRM(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
   const {data:users}=await sb.from('usuarios').select('*').eq('rol','telemarketing');
-  const [prospectosRaw,{data:todosUsuarios},{data:vendedoresB2B}]=await Promise.all([
+  const [prospectosRaw,{data:todosUsuarios},{data:vendedoresB2B},eventosRaw]=await Promise.all([
     prospFetchTodos('*','created_at',false),
     sb.from('usuarios').select('id,nombre'),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre')
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre'),
+    prospEventosFetchTodos() // Jp, 2026-10-16: para resolver "Último evento"/"Sistema de interés" (ver abajo).
   ]);
-  const ps=(prospectosRaw||[]).map(p=>({...p,usuarios:{nombre:(todosUsuarios||[]).find(u=>u.id===p.asignado_a)?.nombre||'—'}}));
+  // Jp, 2026-10-16: "Último evento" y "Sistema de interés" en esta tabla deben
+  // ser el MÁS RECIENTE de prospecto_eventos (un prospecto puede tener varios
+  // eventos/cargas) — no el campo plano prospectos.evento, que solo guarda el
+  // evento de la primera carga. eventosRaw ya viene ordenado del más reciente
+  // al más viejo (ver prospEventosFetchTodos), así que basta quedarnos con la
+  // primera fila que encontremos por prospecto_id.
+  const ultimoPorProspecto={};
+  (eventosRaw||[]).forEach(ev=>{ if(!ultimoPorProspecto[ev.prospecto_id]) ultimoPorProspecto[ev.prospecto_id]=ev; });
+  const ps=(prospectosRaw||[]).map(p=>{
+    const ult=ultimoPorProspecto[p.id];
+    return {...p,
+      usuarios:{nombre:(todosUsuarios||[]).find(u=>u.id===p.asignado_a)?.nombre||'—'},
+      _ultimoEvento:(ult&&ult.evento)||p.evento||'',
+      _sistemaInteres:(ult&&ult.sistema_relacionado)||''
+    };
+  });
   const total=ps.length;
   const canalizados=ps.filter(p=>p.estatus==='Canalizado a ventas').length;
   const nuevos=ps.filter(p=>p.estatus==='Nuevo').length;
@@ -14939,6 +14988,14 @@ async function renderDirectorCRM(){
       <option value="">Todos los estatus</option>
       ${Object.keys(ESTATUS_COLORS).map(e=>`<option value="${e}">${e}</option>`).join('')}
     </select>
+    <select id="dirFiltroEvento" onchange="dirFiltrar()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;max-width:220px;">
+      <option value="">Todos los eventos</option>
+      ${[...new Set(ps.map(p=>p._ultimoEvento).filter(Boolean))].sort().map(e=>`<option value="${e.replace(/"/g,'&quot;')}">${e}</option>`).join('')}
+    </select>
+    <select id="dirFiltroSistema" onchange="dirFiltrar()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+      <option value="">Todos los sistemas de interés</option>
+      ${[...new Set(ps.map(p=>p._sistemaInteres).filter(Boolean))].sort().map(s=>`<option value="${s.replace(/"/g,'&quot;')}">${s}</option>`).join('')}
+    </select>
     <div style="position:relative;">
       <input type="text" id="dirBuscar" placeholder="Buscar..." oninput="dirFiltrar()"
         style="padding:7px 32px 7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;width:180px;box-sizing:border-box;">
@@ -14949,10 +15006,7 @@ async function renderDirectorCRM(){
   <!-- TABLA -->
   <div class="card">
     <table class="daily" style="font-size:12px;">
-      <thead><tr>
-        <th>N°</th><th>Nombre</th><th>Teléfono</th><th>Evento</th>
-        <th>Asignado a</th><th>Estatus</th><th>VTiger</th><th>Fecha</th>
-      </tr></thead>
+      <thead id="dirHeadProspectos"></thead>
       <tbody id="dirBodyProspectos">
         ${ps.map(p=>filaProspectoDir(p)).join('')}
       </tbody>
@@ -14961,6 +15015,36 @@ async function renderDirectorCRM(){
   window._dirProspectos=ps;
   window._prospectos=ps; // también en _prospectos para que abrirDetalle funcione
   window._dirUsers=users||[];
+  dirRenderHead();
+}
+
+// Jp, 2026-10-16: columnas ordenables con clic (como pidió) — estado global
+// de sort para la tabla "Prospectos del equipo" de Dirección.
+let dirSortCol='', dirSortDir=1;
+const DIR_PROSPECTOS_COLS=[
+  {k:'numero_prospecto',l:'N°'},
+  {k:'nombre',l:'Nombre'},
+  {k:'telefono',l:'Teléfono'},
+  {k:'_ultimoEvento',l:'Último evento'},
+  {k:'_sistemaInteres',l:'Sistema de interés'},
+  {k:'_asignadoNombre',l:'Asignado a'},
+  {k:'estatus',l:'Estatus'},
+  {k:'vtiger_url',l:'VTiger'},
+  {k:'created_at',l:'Fecha'},
+];
+function dirRenderHead(){
+  const head=document.getElementById('dirHeadProspectos');
+  if(!head) return;
+  head.innerHTML=`<tr>${DIR_PROSPECTOS_COLS.map(c=>{
+    const activo=dirSortCol===c.k;
+    const flecha=activo?(dirSortDir===1?' ▲':' ▼'):'';
+    return `<th onclick="dirOrdenarPor('${c.k}')" style="cursor:pointer;user-select:none;white-space:nowrap;${activo?'color:var(--teal);':''}" title="Clic para ordenar">${c.l}${flecha}</th>`;
+  }).join('')}</tr>`;
+}
+function dirOrdenarPor(col){
+  if(dirSortCol===col) dirSortDir*=-1; else { dirSortCol=col; dirSortDir=1; }
+  dirRenderHead();
+  dirFiltrar();
 }
 
 // Fila de la tabla "Prospectos del equipo" (director) — compartida entre la
@@ -14974,7 +15058,8 @@ function filaProspectoDir(p){
       ${p.empresa?`<div style="font-size:10px;color:var(--text3);">${p.empresa}</div>`:''}
     </td>
     <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
-    <td style="font-size:11px;color:var(--text3);">${p.evento||'—'}</td>
+    <td style="font-size:11px;color:var(--text3);">${p._ultimoEvento||'—'}</td>
+    <td style="font-size:11px;">${p._sistemaInteres?`<span class="pipe-badge" style="font-size:10px;">${p._sistemaInteres}</span>`:'—'}</td>
     <td style="font-size:11px;">${p.usuarios?.nombre||'—'}</td>
     <td><span style="font-size:11px;font-weight:600;color:${col};">${p.estatus}</span></td>
     <td>${p.vtiger_url?`<a href="${p.vtiger_url}" target="_blank" style="font-size:11px;color:var(--teal);">Ver ↗</a>`:'—'}</td>
@@ -14985,14 +15070,31 @@ function filaProspectoDir(p){
 function dirFiltrar(){
   const asig=document.getElementById('dirFiltroAsig')?.value||'';
   const est=document.getElementById('dirFiltroEst')?.value||'';
+  const evt=document.getElementById('dirFiltroEvento')?.value||'';
+  const sis=document.getElementById('dirFiltroSistema')?.value||'';
   const bus=document.getElementById('dirBuscar')?.value.toLowerCase()||'';
   const ps=window._dirProspectos||[];
-  const f=ps.filter(p=>{
+  let f=ps.filter(p=>{
     const mA=!asig||p.asignado_a===asig;
     const mE=!est||p.estatus===est;
+    const mEvt=!evt||p._ultimoEvento===evt;
+    const mSis=!sis||p._sistemaInteres===sis;
     const mB=!bus||(p.nombre||'').toLowerCase().includes(bus)||(p.telefono||'').includes(bus);
-    return mA&&mE&&mB;
+    return mA&&mE&&mEvt&&mSis&&mB;
   });
+  if(dirSortCol){
+    const valor=p=>{
+      if(dirSortCol==='_asignadoNombre') return (p.usuarios?.nombre||'').toLowerCase();
+      const v=p[dirSortCol];
+      return v==null?'':(typeof v==='string'?v.toLowerCase():v);
+    };
+    f=f.slice().sort((a,b)=>{
+      const va=valor(a), vb=valor(b);
+      if(va<vb) return -1*dirSortDir;
+      if(va>vb) return 1*dirSortDir;
+      return 0;
+    });
+  }
   const tbody=document.getElementById('dirBodyProspectos');
   if(!tbody) return;
   tbody.innerHTML=f.map(p=>filaProspectoDir(p)).join('');
