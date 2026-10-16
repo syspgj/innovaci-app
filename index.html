@@ -15163,6 +15163,10 @@ async function abrirCampana(campanaId){
   const todosProspectos=await prospFetchTodos('id,nombre,telefono,evento,estatus,no_contactar','nombre',true);
   const ps=todosProspectos||[];
   const eventosUnicos=[...new Set(ps.map(p=>p.evento).filter(Boolean))].sort();
+  // Catálogo fijo (no se deriva de la tabla por distinct) para no depender de
+  // traer todas las filas de prospecto_eventos — mismo cap de 1000 filas de
+  // PostgREST que ya mordió al módulo una vez (ver prospFetchTodos arriba).
+  const SISTEMAS_RELACIONADOS=[{v:'SAE',l:'SAE'},{v:'COI',l:'COI'},{v:'NOI',l:'NOI'},{v:'FACTURE',l:'FACTURe'},{v:'BANCO',l:'Banco'},{v:'CAJA',l:'Caja'},{v:'PROD',l:'Producción'},{v:'ADM',l:'Administración'},{v:'SIIGO_FISCAL',l:'Siigo Fiscal'},{v:'SIIGO_NUBE',l:'Siigo Nube'}];
   window._campanaProspectosAll=ps;
   window._idsEnCampanaActual=idsEnCampana;
   window._campanaIdActual=campanaId;
@@ -15207,6 +15211,18 @@ async function abrirCampana(campanaId){
       <button onclick="agregarPorEvento('${campanaId}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Agregar todos del evento</button>
     </div>
     <div style="font-size:11px;color:var(--text3);margin-top:6px;">Se excluyen automáticamente los marcados como "No contactar"</div>
+  </div>
+
+  <div class="card" style="padding:16px;margin-bottom:16px;">
+    <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:10px;">Agregar prospectos por sistema relacionado</div>
+    <div style="display:flex;gap:8px;">
+      <select id="campSelSistema" style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+        <option value="">Selecciona un sistema...</option>
+        ${SISTEMAS_RELACIONADOS.map(s=>`<option value="${s.v}">${s.l}</option>`).join('')}
+      </select>
+      <button onclick="agregarPorSistema('${campanaId}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Agregar todos de ese sistema</button>
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin-top:6px;">Junta a todos los prospectos cuyo historial de eventos tenga ese sistema marcado (ej. todos los de NOI, de cualquier evento), excluyendo "No contactar".</div>
   </div>
 
   <div class="card">
@@ -15268,6 +15284,33 @@ async function agregarPorEvento(campanaId){
   setTimeout(()=>msgEl.remove(),3000);
 }
 
+async function agregarPorSistema(campanaId){
+  const sistema=document.getElementById('campSelSistema')?.value;
+  if(!sistema){alert('Selecciona un sistema primero');return;}
+  let eventosDelSistema=[], desde=0; const pageSize=1000;
+  while(true){
+    const {data,error:errPage}=await sb.from('prospecto_eventos').select('prospecto_id').eq('sistema_relacionado',sistema).range(desde,desde+pageSize-1);
+    if(errPage||!data||!data.length) break;
+    eventosDelSistema=eventosDelSistema.concat(data);
+    if(data.length<pageSize) break;
+    desde+=pageSize;
+  }
+  const idsProspectosConSistema=[...new Set(eventosDelSistema.map(e=>e.prospecto_id))];
+  if(!idsProspectosConSistema.length){alert('No hay prospectos con ese sistema');return;}
+  const {data:prospectosContactables}=await sb.from('prospectos').select('id').in('id',idsProspectosConSistema).eq('no_contactar',false);
+  const ids=(prospectosContactables||[]).map(p=>p.id);
+  if(!ids.length){alert('No hay prospectos contactables con ese sistema');return;}
+  const filas=ids.map(id=>({campana_id:campanaId,prospecto_id:id}));
+  const {error}=await sb.from('campana_prospectos').upsert(filas,{onConflict:'campana_id,prospecto_id',ignoreDuplicates:true});
+  if(error){alert('Error al agregar: '+error.message);return;}
+  await abrirCampana(campanaId);
+  const msgEl=document.createElement('div');
+  msgEl.textContent=`✓ ${ids.length} prospecto(s) agregado(s) a la campaña`;
+  msgEl.style.cssText='position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#27AE60;color:#fff;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.15);';
+  document.body.appendChild(msgEl);
+  setTimeout(()=>msgEl.remove(),3000);
+}
+
 // ─── Fase 2 (2026-10-15) — importador de leads de Meta/Sheets ───────────────
 // Reemplaza al importador manual original (Nombre,Teléfono,Email de una
 // línea). Ahora se pega la pestaña COMPLETA del Sheet (encabezados + filas),
@@ -15304,7 +15347,7 @@ async function renderSubirProspectos(){
           </select>
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px;">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
         <div class="form-field">
           <label>Tipo de evento</label>
           <select id="nTipoEvento" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
@@ -15315,6 +15358,24 @@ async function renderSubirProspectos(){
             <option>Campaña de Valoraciones</option>
           </select>
         </div>
+        <div class="form-field">
+          <label>Sistema relacionado</label>
+          <select id="nSistemaRelacionado" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
+            <option value="">—</option>
+            <option value="SAE">SAE</option>
+            <option value="COI">COI</option>
+            <option value="NOI">NOI</option>
+            <option value="FACTURE">FACTURe</option>
+            <option value="BANCO">Banco</option>
+            <option value="CAJA">Caja</option>
+            <option value="PROD">Producción</option>
+            <option value="ADM">Administración</option>
+            <option value="SIIGO_FISCAL">Siigo Fiscal</option>
+            <option value="SIIGO_NUBE">Siigo Nube</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
         <div class="form-field">
           <label>Fecha del evento</label>
           <input type="date" id="nFechaEvento" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
@@ -15393,6 +15454,7 @@ async function procesarPaste(){
   const eventoManual=document.getElementById('nEvento').value.trim();
   const origen=document.getElementById('nOrigen').value;
   const tipoEvento=document.getElementById('nTipoEvento').value||null;
+  const sistemaRelacionado=document.getElementById('nSistemaRelacionado').value||null;
   const fechaEvento=document.getElementById('nFechaEvento').value||null;
   const promocion=document.getElementById('nPromocion').value.trim()||null;
   if(!texto){alert('Pega al menos la fila de encabezados y una fila de datos');return;}
@@ -15416,7 +15478,7 @@ async function procesarPaste(){
     if(!nombre&&!email&&!telefono) continue;
     if(/test@meta\.com/i.test(email)) continue; // filas de prueba de Meta — sección 6 del diseño
     if(iCampania>=0&&fila[iCampania]) campaniaDetectada=fila[iCampania];
-    parsed.push({nombre:nombre||'Sin nombre',telefono,email,origen,_fecha:iFecha>=0?fila[iFecha]:null,tipoEvento,fechaEvento,promocion});
+    parsed.push({nombre:nombre||'Sin nombre',telefono,email,origen,_fecha:iFecha>=0?fila[iFecha]:null,tipoEvento,sistemaRelacionado,fechaEvento,promocion});
   }
   if(!parsed.length){alert('No quedaron filas válidas después de filtrar vacías y de prueba.');return;}
 
@@ -15467,7 +15529,7 @@ async function procesarPaste(){
   preview.innerHTML=`
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);overflow:hidden;">
     <div class="card-head">
-      <span class="card-title">Vista previa — ${deduped.length} filas · evento "${evento}"</span>
+      <span class="card-title">Vista previa — ${deduped.length} filas · evento "${evento}"${sistemaRelacionado?` · sistema ${sistemaRelacionado}`:''}</span>
       <span class="badge bt">${nuevos} nuevos · ${existentesN} ya existen (solo se les agrega el evento)${dupesEnLote?` · ${dupesEnLote} repetidos dentro del mismo archivo (omitidos)`:''}</span>
     </div>
     <table class="daily" style="font-size:12px;max-height:420px;display:block;overflow-y:auto;">
@@ -15513,7 +15575,7 @@ async function subirProspectos(){
       if(error) throw error;
       insertados=insertedData?.length||0;
       if(insertedData){
-        const eventosNuevos=insertedData.map((row,i)=>({prospecto_id:row.id,evento:nuevosRows[i].evento,fecha_registro:nuevosRows[i]._fecha||hoyStr,origen:nuevosRows[i].origen,tipo_evento:nuevosRows[i].tipoEvento,fecha_evento:nuevosRows[i].fechaEvento,promocion:nuevosRows[i].promocion}));
+        const eventosNuevos=insertedData.map((row,i)=>({prospecto_id:row.id,evento:nuevosRows[i].evento,fecha_registro:nuevosRows[i]._fecha||hoyStr,origen:nuevosRows[i].origen,tipo_evento:nuevosRows[i].tipoEvento,sistema_relacionado:nuevosRows[i].sistemaRelacionado,fecha_evento:nuevosRows[i].fechaEvento,promocion:nuevosRows[i].promocion}));
         await sb.from('prospecto_eventos').insert(eventosNuevos);
       }
     }
@@ -15524,7 +15586,7 @@ async function subirProspectos(){
       const yaTiene=new Set((eventosYa||[]).map(e=>`${e.prospecto_id}::${e.evento}`));
       const eventosExistentes=existentesRows
         .filter(p=>!yaTiene.has(`${p._match.id}::${p.evento}`))
-        .map(p=>({prospecto_id:p._match.id,evento:p.evento,fecha_registro:p._fecha||hoyStr,origen:p.origen,tipo_evento:p.tipoEvento,fecha_evento:p.fechaEvento,promocion:p.promocion}));
+        .map(p=>({prospecto_id:p._match.id,evento:p.evento,fecha_registro:p._fecha||hoyStr,origen:p.origen,tipo_evento:p.tipoEvento,sistema_relacionado:p.sistemaRelacionado,fecha_evento:p.fechaEvento,promocion:p.promocion}));
       if(eventosExistentes.length){
         const {error}=await sb.from('prospecto_eventos').insert(eventosExistentes);
         if(error) throw error;
