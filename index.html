@@ -13947,6 +13947,21 @@ const ESTATUS_COLORS = {
   'Canalizado a ventas':'#1a7a4a','Cliente 24/7':'#00A99D','No interesado':'#E84040','Perdido':'#999'
 };
 
+// Picklists calcadas del CRM Vtiger (confirmadas por Jp, 2026-10-16) — ver
+// claude/prospectos-crm-sincronizacion.md. "Origen del Prospecto" e "Interés"
+// se muestran/editan con esta misma lista para que el valor que se guarda en
+// la app sea literal al que usa el CRM (facilita la escritura de vuelta).
+const PROSPECTO_ORIGENES=['Cartera de ventas','Telemarketing','Facebook','Google','Mailing','Evento Aspel','Página Siigo Aspel','Referido','YouTube'];
+const PROSPECTO_INTERESES=['Cursos gratuitos','Curso empresarial','Diplomado NOI','Diplomado COI','Diplomado Excel','Taller SAE','Soporte Aspel','Sistema Aspel','Siigo Fiscal'];
+// Construye las <option> de una picklist, agregando el valor actual al
+// principio (marcado) si viene de datos viejos y no está en la lista oficial
+// — así nunca se pierde en silencio un valor histórico al abrir el modal.
+function opcionesPicklist(lista,valorActual,permiteVacio){
+  const extra=(valorActual&&!lista.includes(valorActual))?[valorActual]:[];
+  const opciones=[...extra,...lista];
+  return (permiteVacio?'<option value="">—</option>':'')+opciones.map(o=>`<option value="${o}" ${o===valorActual?'selected':''}>${o}</option>`).join('');
+}
+
 async function renderProspectos(){
   window._prospectosVCtx=false; // este flujo (telemarketing) no es el módulo de Prospectos de Ventas — oculta el botón "+ Proyección" del modal si quedó prendido de una visita anterior
   const mc=document.getElementById('mainContent');
@@ -14213,7 +14228,8 @@ function filaProspectoVendedor(p){
       :`<button onclick="abrirDetalle('${p.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">Ver</button>`;
   return `<tr id="rowV_${p.id}">
     <td style="font-weight:500;">
-      <span onclick="abrirDetalle('${p.id}')" style="cursor:pointer;color:var(--navy);border-bottom:1px solid rgba(13,34,64,0.2);" title="Ver detalle">${p.nombre}</span>
+      <span onclick="abrirDetalle('${p.id}')" style="cursor:pointer;color:var(--navy);border-bottom:1px solid rgba(13,34,64,0.2);" title="Ver detalle">${p.nombre}${p.apellidos?' '+p.apellidos:''}</span>
+      ${p.empresa?`<div style="font-size:10px;color:var(--text3);">${p.empresa}</div>`:''}
       ${cliente?`<div style="margin-top:2px;"><span onclick="abrirFichaClienteModal('${cliente.id}')" style="cursor:pointer;font-size:10px;font-weight:600;color:var(--gold);background:var(--gold-bg);border-radius:4px;padding:1px 6px;">⚠ Ya es cliente</span></div>`:''}
     </td>
     <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
@@ -14477,6 +14493,10 @@ async function abrirDetalle(id){
           <input type="text" id="editNombre" value="${(p.nombre||'').replace(/"/g,'&quot;')}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">
         </div>
         <div>
+          <div style="color:var(--text3);margin-bottom:2px;">Apellidos</div>
+          <input type="text" id="editApellidos" value="${(p.apellidos||'').replace(/"/g,'&quot;')}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">
+        </div>
+        <div>
           <div style="color:var(--text3);margin-bottom:2px;">Teléfono</div>
           <input type="text" id="editTelefono" value="${(p.telefono||'').replace(/"/g,'&quot;')}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace;">
         </div>
@@ -14488,13 +14508,25 @@ async function abrirDetalle(id){
           <div style="color:var(--text3);margin-bottom:2px;">Empresa</div>
           <input type="text" id="editEmpresa" value="${(p.empresa||'').replace(/"/g,'&quot;')}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
         </div>
+        <div>
+          <div style="color:var(--text3);margin-bottom:2px;">N° de prospecto</div>
+          <div style="font-weight:600;font-family:'JetBrains Mono',monospace;">${p.numero_prospecto||'—'}${p.prospecto_crm_id?' <span style="color:var(--teal);font-weight:400;" title="Ligado al CRM">· CRM</span>':''}</div>
+        </div>
         <div style="grid-column:1/-1;">
           <button onclick="guardarDatosProspecto('${p.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💾 Guardar datos</button>
           <span id="datosMsg" style="font-size:11px;margin-left:8px;"></span>
         </div>
         <div>
           <div style="color:var(--text3);margin-bottom:2px;">Origen</div>
-          <div style="font-weight:500;">${p.origen||'Meta Ads'}</div>
+          <select id="editOrigen" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
+            ${opcionesPicklist(PROSPECTO_ORIGENES,p.origen,false)}
+          </select>
+        </div>
+        <div>
+          <div style="color:var(--text3);margin-bottom:2px;">Interés</div>
+          <select id="editInteres" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
+            ${opcionesPicklist(PROSPECTO_INTERESES,p.interes,true)}
+          </select>
         </div>
         ${p.segmento?`
         <div style="grid-column:1/-1;">
@@ -14743,12 +14775,15 @@ async function registrarLlamada(prospecto_id){
 
 async function guardarDatosProspecto(id){
   const nombre=document.getElementById('editNombre')?.value.trim();
+  const apellidos=document.getElementById('editApellidos')?.value.trim()||null;
   const telefono=document.getElementById('editTelefono')?.value.trim();
   const email=document.getElementById('editEmail')?.value.trim();
   const empresa=document.getElementById('editEmpresa')?.value.trim();
+  const origen=document.getElementById('editOrigen')?.value||null;
+  const interes=document.getElementById('editInteres')?.value||null;
   const msg=document.getElementById('datosMsg');
   if(!nombre){if(msg){msg.style.color='var(--red)';msg.textContent='El nombre no puede quedar vacío';}return;}
-  const upd={nombre,telefono,email,empresa,updated_at:new Date().toISOString()};
+  const upd={nombre,apellidos,telefono,email,empresa,origen,interes,updated_at:new Date().toISOString()};
   const {error}=await sb.from('prospectos').update(upd).eq('id',id);
   if(error){if(msg){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}return;}
   const p=window._prospectos?.find(p=>p.id===id);
@@ -14915,30 +14950,36 @@ async function renderDirectorCRM(){
   <div class="card">
     <table class="daily" style="font-size:12px;">
       <thead><tr>
-        <th>Nombre</th><th>Teléfono</th><th>Evento</th>
+        <th>N°</th><th>Nombre</th><th>Teléfono</th><th>Evento</th>
         <th>Asignado a</th><th>Estatus</th><th>VTiger</th><th>Fecha</th>
       </tr></thead>
       <tbody id="dirBodyProspectos">
-        ${ps.map(p=>{
-          const col=ESTATUS_COLORS[p.estatus]||'#888';
-          return `<tr>
-            <td style="font-weight:500;">
-              <span onclick="abrirDetalleDir('${p.id}')" style="cursor:pointer;color:var(--navy);border-bottom:1px solid rgba(13,34,64,0.2);" title="Ver detalle">${p.nombre}</span>
-            </td>
-            <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
-            <td style="font-size:11px;color:var(--text3);">${p.evento||'—'}</td>
-            <td style="font-size:11px;">${p.usuarios?.nombre||'—'}</td>
-            <td><span style="font-size:11px;font-weight:600;color:${col};">${p.estatus}</span></td>
-            <td>${p.vtiger_url?`<a href="${p.vtiger_url}" target="_blank" style="font-size:11px;color:var(--teal);">Ver ↗</a>`:'—'}</td>
-            <td style="font-size:11px;color:var(--text3);">${p.created_at?p.created_at.slice(5,10):'—'}</td>
-          </tr>`;
-        }).join('')}
+        ${ps.map(p=>filaProspectoDir(p)).join('')}
       </tbody>
     </table>
   </div>`;
   window._dirProspectos=ps;
   window._prospectos=ps; // también en _prospectos para que abrirDetalle funcione
   window._dirUsers=users||[];
+}
+
+// Fila de la tabla "Prospectos del equipo" (director) — compartida entre la
+// carga inicial de renderDirectorCRM y dirFiltrar, para no duplicar el markup.
+function filaProspectoDir(p){
+  const col=ESTATUS_COLORS[p.estatus]||'#888';
+  return `<tr>
+    <td style="font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;">${p.numero_prospecto||'—'}</td>
+    <td style="font-weight:500;">
+      <span onclick="abrirDetalleDir('${p.id}')" style="cursor:pointer;color:var(--navy);border-bottom:1px solid rgba(13,34,64,0.2);" title="Ver detalle">${p.nombre}${p.apellidos?' '+p.apellidos:''}</span>
+      ${p.empresa?`<div style="font-size:10px;color:var(--text3);">${p.empresa}</div>`:''}
+    </td>
+    <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
+    <td style="font-size:11px;color:var(--text3);">${p.evento||'—'}</td>
+    <td style="font-size:11px;">${p.usuarios?.nombre||'—'}</td>
+    <td><span style="font-size:11px;font-weight:600;color:${col};">${p.estatus}</span></td>
+    <td>${p.vtiger_url?`<a href="${p.vtiger_url}" target="_blank" style="font-size:11px;color:var(--teal);">Ver ↗</a>`:'—'}</td>
+    <td style="font-size:11px;color:var(--text3);">${p.created_at?p.created_at.slice(5,10):'—'}</td>
+  </tr>`;
 }
 
 function dirFiltrar(){
@@ -14954,20 +14995,7 @@ function dirFiltrar(){
   });
   const tbody=document.getElementById('dirBodyProspectos');
   if(!tbody) return;
-  tbody.innerHTML=f.map(p=>{
-    const col=ESTATUS_COLORS[p.estatus]||'#888';
-    return `<tr>
-      <td style="font-weight:500;">
-        <span onclick="abrirDetalleDir('${p.id}')" style="cursor:pointer;color:var(--navy);border-bottom:1px solid rgba(13,34,64,0.2);" title="Ver detalle">${p.nombre}</span>
-      </td>
-      <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
-      <td style="font-size:11px;color:var(--text3);">${p.evento||'—'}</td>
-      <td style="font-size:11px;">${p.usuarios?.nombre||'—'}</td>
-      <td><span style="font-size:11px;font-weight:600;color:${col};">${p.estatus}</span></td>
-      <td>${p.vtiger_url?`<a href="${p.vtiger_url}" target="_blank" style="font-size:11px;color:var(--teal);">Ver ↗</a>`:'—'}</td>
-      <td style="font-size:11px;color:var(--text3);">${p.created_at?p.created_at.slice(5,10):'—'}</td>
-    </tr>`;
-  }).join('');
+  tbody.innerHTML=f.map(p=>filaProspectoDir(p)).join('');
 }
 
 // ─── CAMPAÑAS ───────────────────────────────────────────────────────────────
@@ -15343,7 +15371,7 @@ async function renderSubirProspectos(){
         <div class="form-field">
           <label>Origen</label>
           <select id="nOrigen" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
-            <option>Meta Ads</option><option>Facebook</option><option>Instagram</option><option>Manual</option>
+            ${PROSPECTO_ORIGENES.map(o=>`<option ${o==='Facebook'?'selected':''}>${o}</option>`).join('')}
           </select>
         </div>
       </div>
@@ -15358,6 +15386,15 @@ async function renderSubirProspectos(){
             <option>Campaña de Valoraciones</option>
           </select>
         </div>
+        <div class="form-field">
+          <label>Interés</label>
+          <select id="nInteres" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
+            <option value="">—</option>
+            ${PROSPECTO_INTERESES.map(o=>`<option>${o}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
         <div class="form-field">
           <label>Sistema relacionado</label>
           <select id="nSistemaRelacionado" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:'Inter',sans-serif;">
@@ -15455,6 +15492,7 @@ async function procesarPaste(){
   const origen=document.getElementById('nOrigen').value;
   const tipoEvento=document.getElementById('nTipoEvento').value||null;
   const sistemaRelacionado=document.getElementById('nSistemaRelacionado').value||null;
+  const interes=document.getElementById('nInteres').value||null;
   const fechaEvento=document.getElementById('nFechaEvento').value||null;
   const promocion=document.getElementById('nPromocion').value.trim()||null;
   if(!texto){alert('Pega al menos la fila de encabezados y una fila de datos');return;}
@@ -15478,7 +15516,7 @@ async function procesarPaste(){
     if(!nombre&&!email&&!telefono) continue;
     if(/test@meta\.com/i.test(email)) continue; // filas de prueba de Meta — sección 6 del diseño
     if(iCampania>=0&&fila[iCampania]) campaniaDetectada=fila[iCampania];
-    parsed.push({nombre:nombre||'Sin nombre',telefono,email,origen,_fecha:iFecha>=0?fila[iFecha]:null,tipoEvento,sistemaRelacionado,fechaEvento,promocion});
+    parsed.push({nombre:nombre||'Sin nombre',telefono,email,origen,interes,_fecha:iFecha>=0?fila[iFecha]:null,tipoEvento,sistemaRelacionado,fechaEvento,promocion});
   }
   if(!parsed.length){alert('No quedaron filas válidas después de filtrar vacías y de prueba.');return;}
 
@@ -15490,7 +15528,7 @@ async function procesarPaste(){
   // últimos 10 dígitos — misma regla confirmada por Jp que usa el resto del
   // módulo) para decidir, antes de subir, quién es nuevo y a quién solo se
   // le va a agregar el evento.
-  const ex=await prospFetchTodos('id,nombre,telefono,email');
+  const ex=await prospFetchTodos('id,nombre,telefono,email,interes');
   function buscarExistente(p){
     const correoP=(p.email||'').trim().toLowerCase();
     for(const e of ex){
@@ -15567,7 +15605,7 @@ async function subirProspectos(){
   try{
     if(nuevosRows.length){
       const toInsert=nuevosRows.map(p=>({
-        nombre:p.nombre, telefono:p.telefono, email:p.email, evento:p.evento, origen:p.origen,
+        nombre:p.nombre, telefono:p.telefono, email:p.email, evento:p.evento, origen:p.origen, interes:p.interes,
         estatus:'Nuevo', anio:hoy.getFullYear(), mes:hoy.getMonth()+1,
         vendedor_asignado:null, asignado_a:null,
       }));
@@ -15580,6 +15618,12 @@ async function subirProspectos(){
       }
     }
     if(existentesRows.length){
+      // Fill-gap: si el prospecto ya existente no tenía "Interés" capturado,
+      // se le llena con el de este import — nunca se pisa uno que ya tuviera.
+      const conInteresNuevo=existentesRows.filter(p=>p.interes&&!p._match.interes);
+      for(const p of conInteresNuevo){
+        await sb.from('prospectos').update({interes:p.interes}).eq('id',p._match.id);
+      }
       // No duplicar el evento si el prospecto ya lo tenía registrado (p.ej. re-importar la misma pestaña por error).
       const idsExistentes=[...new Set(existentesRows.map(p=>p._match.id))];
       const {data:eventosYa}=await sb.from('prospecto_eventos').select('prospecto_id,evento').in('prospecto_id',idsExistentes);
