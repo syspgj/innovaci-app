@@ -14386,8 +14386,18 @@ function filaProspecto(p){
   const resCelda=resultado
     ?`<span style="font-size:11px;font-weight:600;color:${resColor};">${resultado}</span>`
     :`<span style="font-size:11px;color:var(--text3);font-style:italic;">Sin llamar</span>`;
+  // Jp, 2026-10-16: indicativo de a qué está ligado este prospecto en el
+  // CRM — para que el agente/director sepa de un vistazo si ya tiene Lead
+  // (futuras ediciones solo actualizan ese Lead), si ya es Cuenta/cliente
+  // (no se crea Lead, se registra en su Cuenta), o si es un candidato
+  // nuevo todavía sin tocar el CRM.
+  const badgeCrm=p.cliente_cartera_id
+    ?'<span title="Ya es cliente — se registra en su Cuenta del CRM, no se crea Lead" style="font-size:9px;font-weight:700;color:#8E44AD;border:1px solid #8E44AD;border-radius:4px;padding:1px 4px;margin-left:5px;">🏢 CUENTA</span>'
+    :p.prospecto_crm_id
+      ?'<span title="Ya tiene Lead en el CRM — las ediciones aquí lo actualizan" style="font-size:9px;font-weight:700;color:#00A99D;border:1px solid #00A99D;border-radius:4px;padding:1px 4px;margin-left:5px;">🔗 LEAD</span>'
+      :'';
   return `<tr id="row_${p.id}">
-    <td style="font-weight:500;">${p.nombre}${p.no_contactar?' <span style="color:var(--red);font-size:10px;">⛔</span>':''}</td>
+    <td style="font-weight:500;">${p.nombre}${p.no_contactar?' <span style="color:var(--red);font-size:10px;">⛔</span>':''}${badgeCrm}</td>
     <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
     <td style="font-size:11px;color:var(--text3);">${p.evento||'—'}</td>
     <td>
@@ -14798,7 +14808,7 @@ async function abrirDetalle(id){
     <div style="padding:20px 22px 16px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:2;">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
         <div>
-          <div id="modalNombreHeader" style="font-size:16px;font-weight:700;color:var(--text);">${p.nombre}</div>
+          <div id="modalNombreHeader" style="font-size:16px;font-weight:700;color:var(--text);">${p.nombre}${p.cliente_cartera_id?' <span title="Ya es cliente — se registra en su Cuenta del CRM, no se crea Lead" style="font-size:9px;font-weight:700;color:#8E44AD;border:1px solid #8E44AD;border-radius:4px;padding:1px 4px;vertical-align:middle;">🏢 CUENTA</span>':p.prospecto_crm_id?' <span title="Ya tiene Lead en el CRM — las ediciones aquí lo actualizan" style="font-size:9px;font-weight:700;color:#00A99D;border:1px solid #00A99D;border-radius:4px;padding:1px 4px;vertical-align:middle;">🔗 LEAD</span>':' <span title="Todavía sin tocar el CRM — se dará de alta en el próximo ciclo o en el próximo guardado" style="font-size:9px;font-weight:600;color:var(--text3);border:1px solid var(--border);border-radius:4px;padding:1px 4px;vertical-align:middle;">Sin CRM</span>'}</div>
           <div style="font-size:11px;color:var(--text3);margin-top:2px;">
             ${idx+1} de ${ps.length} &nbsp;·&nbsp;
             <span style="color:${ESTATUS_COLORS[p.estatus]||'#888'};font-weight:600;">${p.estatus}</span>
@@ -15425,10 +15435,16 @@ async function renderDirectorCRM(){
       <div style="font-size:18px;font-weight:600;color:var(--text);">Prospectos del equipo</div>
       <div style="font-size:12px;color:var(--text3);">${total} total · ${canalizados} canalizados · ${interesados} interesados · ${nuevos} sin contactar</div>
     </div>
-    <button onclick="renderSubirProspectos()"
-      style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
-      ➕ Subir prospectos
-    </button>
+    <div style="display:flex;gap:8px;">
+      <button onclick="sincronizarProspectosPendientesCrm()" id="btnSyncProspectosPendientes"
+        style="background:#fff;color:var(--navy);border:1px solid var(--border);border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+        🔄 Sincronizar pendientes con CRM
+      </button>
+      <button onclick="renderSubirProspectos()"
+        style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+        ➕ Subir prospectos
+      </button>
+    </div>
   </div>
 
   <!-- STATS -->
@@ -15535,6 +15551,7 @@ function filaProspectoDir(p){
     <td style="font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;">${p.numero_prospecto||'—'}</td>
     <td style="font-weight:500;">
       <span onclick="abrirDetalleDir('${p.id}')" style="cursor:pointer;color:var(--navy);border-bottom:1px solid rgba(13,34,64,0.2);" title="Ver detalle">${p.nombre}${p.apellidos?' '+p.apellidos:''}</span>
+      ${p.cliente_cartera_id?'<span title="Ya es cliente — se registra en su Cuenta del CRM, no se crea Lead" style="font-size:9px;font-weight:700;color:#8E44AD;border:1px solid #8E44AD;border-radius:4px;padding:1px 4px;margin-left:5px;">🏢 CUENTA</span>':p.prospecto_crm_id?'<span title="Ya tiene Lead en el CRM" style="font-size:9px;font-weight:700;color:#00A99D;border:1px solid #00A99D;border-radius:4px;padding:1px 4px;margin-left:5px;">🔗 LEAD</span>':''}
       ${p.empresa?`<div style="font-size:10px;color:var(--text3);">${p.empresa}</div>`:''}
     </td>
     <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
@@ -16413,7 +16430,7 @@ async function subirProspectos(){
   const nuevosRows=parsed.filter(p=>!p._match);
   const existentesRows=parsed.filter(p=>p._match);
 
-  let insertados=0, eventosAgregados=0;
+  let insertados=0, eventosAgregados=0, creadosCrm=0, vinculadosCrm=0, marcadosCuentaCrm=0, fallidosCrm=0;
   try{
     if(nuevosRows.length){
       const toInsert=nuevosRows.map(p=>({
@@ -16435,7 +16452,6 @@ async function subirProspectos(){
       // paralelo arriesga tronar el login del CRM si el lote es grande).
       // Si el lote es grande esto puede tardar varios minutos; se avisa en
       // el botón y no se bloquea el resto de la subida si alguno falla.
-      let creadosCrm=0, fallidosCrm=0;
       if(insertedData&&insertedData.length){
         const {data:sess}=await sb.auth.getSession();
         const token=sess?.session?.access_token;
@@ -16448,8 +16464,14 @@ async function subirProspectos(){
               body:JSON.stringify({prospecto_id:insertedData[i].id}),
             });
             const j=await res.json().catch(()=>({}));
-            if(res.ok&&j.ok&&!j.skipped) creadosCrm++;
-            else if(!res.ok||!j.ok){ fallidosCrm++; console.error('CRM crear prospecto failed',j); }
+            // Jp, 2026-10-16: esta llamada ahora valida anti-duplicados antes
+            // de crear (ver api/crm-crear-prospecto.js) — puede terminar en
+            // 3 acciones distintas, no solo "creado".
+            if(res.ok&&j.ok){
+              if(j.accion==='creado_lead_nuevo') creadosCrm++;
+              else if(j.accion==='vinculado_lead_existente') vinculadosCrm++;
+              else if(j.accion==='marcado_como_cuenta') marcadosCuentaCrm++;
+            } else { fallidosCrm++; console.error('CRM crear prospecto failed',j); }
           }catch(e){ fallidosCrm++; console.error('CRM crear prospecto error',e); }
         }
       }
@@ -16513,13 +16535,54 @@ async function subirProspectos(){
         eventosAgregados=eventosNuevosRows.length;
       }
     }
-    alert(`✅ Listo.\n${insertados} prospectos nuevos creados (sin vendedor, listos para "Tomar").\n${eventosAgregados} ya existían y se les agregó este evento a su historial.${eventosActualizados?`\n${eventosActualizados} ya tenían este mismo evento y se les completó un dato que les faltaba (Sistema relacionado, Interés, etc. — nunca se pisa lo que ya tenían).`:''}${insertados?`\n${creadosCrm} de los nuevos se dieron de alta también en el CRM${fallidosCrm?` (${fallidosCrm} fallaron — revisa la consola; quedan en la app sin folio de CRM y se puede reintentar luego)`:''}.`:''}`);
+    alert(`✅ Listo.\n${insertados} prospectos nuevos creados (sin vendedor, listos para "Tomar").\n${eventosAgregados} ya existían y se les agregó este evento a su historial.${eventosActualizados?`\n${eventosActualizados} ya tenían este mismo evento y se les completó un dato que les faltaba (Sistema relacionado, Interés, etc. — nunca se pisa lo que ya tenían).`:''}${insertados?`\n\nEn el CRM: ${creadosCrm} Lead(s) nuevo(s) creados, ${vinculadosCrm} vinculado(s) a un Lead que ya existía (sin duplicar), ${marcadosCuentaCrm} resultaron ser clientes ya existentes (se marcaron como Cuenta, no como Lead)${fallidosCrm?`, ${fallidosCrm} fallaron (revisa la consola; se puede reintentar luego)`:''}.`:''}`);
     swD('crm');
     renderDirectorCRM();
   }catch(error){
     alert('Error al subir: '+error.message);
     if(btn){btn.disabled=false;btn.textContent='✅ Confirmar y subir';}
   }
+}
+
+// Jp, 2026-10-16 — lote retroactivo: aplica la misma validación anti-
+// duplicados de Fase 4 (ver api/crm-crear-prospecto.js) a los prospectos
+// que ya estaban en la app ANTES de que existiera esta validación (los que
+// se subieron cuando Fase 4 creaba un Lead sin checar nada primero). Llama
+// el mismo endpoint, uno por uno — es seguro de volver a correr (si se
+// detiene a la mitad, o si algo falló, se puede lanzar otra vez: los
+// prospectos ya resueltos se saltan de inmediato).
+async function sincronizarProspectosPendientesCrm(){
+  const btn=document.getElementById('btnSyncProspectosPendientes');
+  const {data:pendientes,error}=await sb.from('prospectos')
+    .select('id').is('prospecto_crm_id',null).is('cliente_cartera_id',null);
+  if(error){ alert('Error al buscar pendientes: '+error.message); return; }
+  const total=(pendientes||[]).length;
+  if(!total){ alert('No hay prospectos pendientes — todos ya están ligados a un Lead o marcados como Cuenta.'); return; }
+  if(!confirm(`Se van a revisar ${total} prospectos contra el CRM (uno por uno: ¿ya existe su Lead? ¿ya es cliente de Cartera? si no, se crea un Lead nuevo).\n\nCon un lote de este tamaño puede tardar varios minutos — no cierres esta pantalla mientras corre.\n\n¿Continuar?`)) return;
+
+  if(btn){btn.disabled=true;}
+  const {data:sess}=await sb.auth.getSession();
+  const token=sess?.session?.access_token;
+  let creados=0, vinculados=0, marcadosCuenta=0, fallidos=0;
+  for(let i=0;i<pendientes.length;i++){
+    if(btn) btn.textContent=`Sincronizando... (${i+1}/${total})`;
+    try{
+      const res=await fetch('/api/crm-crear-prospecto',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+        body:JSON.stringify({prospecto_id:pendientes[i].id}),
+      });
+      const j=await res.json().catch(()=>({}));
+      if(res.ok&&j.ok){
+        if(j.accion==='creado_lead_nuevo') creados++;
+        else if(j.accion==='vinculado_lead_existente') vinculados++;
+        else if(j.accion==='marcado_como_cuenta') marcadosCuenta++;
+      } else { fallidos++; console.error('Sync prospecto pendiente failed',pendientes[i].id,j); }
+    }catch(e){ fallidos++; console.error('Sync prospecto pendiente error',pendientes[i].id,e); }
+  }
+  if(btn){btn.disabled=false;btn.textContent='🔄 Sincronizar pendientes con CRM';}
+  alert(`✅ Lote terminado.\n${creados} Lead(s) nuevo(s) creados.\n${vinculados} ya tenían un Lead en el CRM — se ligaron (sin duplicar).\n${marcadosCuenta} resultaron ser clientes ya existentes — se marcaron como Cuenta y se registraron sus eventos como comentarios en esa Cuenta.${fallidos?`\n⚠️ ${fallidos} fallaron — revisa la consola; puedes volver a correr esta sincronización, los ya resueltos se saltan solos.`:''}`);
+  renderDirectorCRM();
 }
 
 // ─── PROYECCIÓN DIRECTOR (compilado Dulce + Manuel) ──────────────────────────
