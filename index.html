@@ -15604,6 +15604,70 @@ function prospDetectarColumnas(headers){
   return {iNombre,iCorreo,iTel,iCampania,iFecha};
 }
 
+// Jp, 2026-10-16: encontró que al pegar su lista maestra manual (NOI-general,
+// solo Nombre/Correo/Teléfono, SIN fila de encabezados) la app tomaba la
+// primera fila de DATOS como si fuera el encabezado — "Ricardo Olivos" /
+// "ricardo_olivos@msn.com" / "+529841881150" no contiene ninguna palabra que
+// prospDetectarColumnas reconozca como nombre o teléfono, así que esas dos
+// columnas quedaban sin detectar (y de pura casualidad el correo SÍ se
+// detectaba, porque dominios como "hotmail"/"gmail" contienen la palabra
+// "mail"). El resultado: 582 filas subieron con "Sin nombre" y teléfono "—",
+// sin ningún aviso de error. Esta función decide si la primera línea pegada
+// realmente PARECE un encabezado (puro texto corto, sin @ ni corridas largas
+// de dígitos) o si ya es un dato más — si es un dato, no se descarta como
+// encabezado y se procesa junto con el resto.
+function prospFilaPareceEncabezado(fila){
+  return !fila.some(c=>{
+    const s=(c||'').trim();
+    if(!s) return false;
+    if(s.includes('@')) return true; // trae correo -> es un dato, no un encabezado
+    if(s.replace(/\D/g,'').length>=7) return true; // trae un teléfono -> es un dato, no un encabezado
+    return false;
+  });
+}
+
+// Jp, 2026-10-16: respaldo cuando no hay fila de encabezados reconocible (o
+// el encabezado no trae nombre/teléfono con un nombre de columna conocido) —
+// adivina la columna por el CONTENIDO de una muestra de filas, no por el
+// nombre de la columna: correo = contiene "@"; teléfono = son casi puros
+// dígitos (7 a 15 dígitos reales); nombre = texto con letras, sin "@" y sin
+// ser mayormente dígitos. Solo asigna columnas que sigan libres (no pisa lo
+// que ya se detectó por nombre de encabezado).
+function prospDetectarColumnasPorContenido(filasDatos,yaOcupadas){
+  const numCols=filasDatos.reduce((m,f)=>Math.max(m,f.length),0);
+  const ocupadas=new Set(Object.values(yaOcupadas).filter(i=>i>=0));
+  const libres=[]; for(let i=0;i<numCols;i++){ if(!ocupadas.has(i)) libres.push(i); }
+  if(!libres.length) return {};
+  const muestra=filasDatos.slice(0,30);
+  const scores={};
+  libres.forEach(i=>{
+    let nCorreo=0,nTel=0,nTexto=0,nNoVacio=0;
+    muestra.forEach(f=>{
+      const v=(f[i]||'').trim();
+      if(!v) return;
+      nNoVacio++;
+      if(v.includes('@')){ nCorreo++; return; }
+      const digitos=v.replace(/\D/g,'');
+      if(digitos.length>=7&&digitos.length<=15&&digitos.length>=v.length-4){ nTel++; return; }
+      if(/[a-zA-ZÀ-ÿ]/.test(v)) nTexto++;
+    });
+    scores[i]={correo:nNoVacio?nCorreo/nNoVacio:0, tel:nNoVacio?nTel/nNoVacio:0, nombre:nNoVacio?nTexto/nNoVacio:0};
+  });
+  const resultado={};
+  const asignarMejor=(rol,umbral)=>{
+    let mejorCol=-1,mejorScore=umbral;
+    libres.forEach(i=>{
+      if(Object.values(resultado).includes(i)) return;
+      if(scores[i][rol]>mejorScore){ mejorScore=scores[i][rol]; mejorCol=i; }
+    });
+    if(mejorCol>=0) resultado[rol]=mejorCol;
+  };
+  asignarMejor('correo',0.5); // primero correo, es el más inconfundible (requiere "@")
+  asignarMejor('tel',0.5);
+  asignarMejor('nombre',0.3);
+  return resultado;
+}
+
 async function procesarPaste(){
   const texto=document.getElementById('pastArea').value.trim();
   const eventoManual=document.getElementById('nEvento').value.trim();
@@ -15615,18 +15679,33 @@ async function procesarPaste(){
   const promocion=document.getElementById('nPromocion').value.trim()||null;
   if(!texto){alert('Pega al menos la fila de encabezados y una fila de datos');return;}
 
-  const filas=prospParsearDelimitado(texto);
-  if(filas.length<2){alert('No encontré filas de datos debajo del encabezado.');return;}
-  const headers=filas[0];
-  const {iNombre,iCorreo,iTel,iCampania,iFecha}=prospDetectarColumnas(headers);
+  const filasCrudas=prospParsearDelimitado(texto);
+  if(!filasCrudas.length){alert('No encontré filas de datos en lo que pegaste.');return;}
+
+  // ¿La primera línea es un encabezado real, o ya es un dato (lista sin
+  // encabezados, como la maestra manual de Jp)? Ver prospFilaPareceEncabezado.
+  const primeraEsEncabezado=prospFilaPareceEncabezado(filasCrudas[0]);
+  const headers=primeraEsEncabezado?filasCrudas[0]:[];
+  const filasDatos=primeraEsEncabezado?filasCrudas.slice(1):filasCrudas;
+  if(!filasDatos.length){alert('No encontré filas de datos debajo del encabezado.');return;}
+
+  let {iNombre,iCorreo,iTel,iCampania,iFecha}=prospDetectarColumnas(headers);
+  if(iNombre===-1||iCorreo===-1||iTel===-1){
+    // Respaldo por contenido para lo que no se reconoció por nombre de columna
+    // (o porque no hay encabezados en absoluto) — nunca pisa lo que ya se detectó.
+    const porContenido=prospDetectarColumnasPorContenido(filasDatos,{iNombre,iCorreo,iTel});
+    if(iNombre===-1&&porContenido.nombre!==undefined) iNombre=porContenido.nombre;
+    if(iCorreo===-1&&porContenido.correo!==undefined) iCorreo=porContenido.correo;
+    if(iTel===-1&&porContenido.tel!==undefined) iTel=porContenido.tel;
+  }
   if(iNombre===-1&&iCorreo===-1&&iTel===-1){
-    alert('No pude reconocer columnas de nombre, correo o teléfono en el encabezado. Revisa que la primera línea pegada sea el encabezado real de la pestaña.');
+    alert('No pude reconocer columnas de nombre, correo o teléfono — ni por el encabezado ni por el contenido de las filas. Revisa el formato de lo que pegaste.');
     return;
   }
 
   let campaniaDetectada='';
   const parsed=[];
-  for(const fila of filas.slice(1)){
+  for(const fila of filasDatos){
     if(!fila.some(c=>c&&c.trim())) continue;
     const nombre=iNombre>=0?(fila[iNombre]||'').trim():'';
     const email=iCorreo>=0?(fila[iCorreo]||'').trim():'';
@@ -15683,6 +15762,7 @@ async function procesarPaste(){
 
   const preview=document.getElementById('previewArea');
   preview.innerHTML=`
+  ${!primeraEsEncabezado?`<div class="insight" style="margin-bottom:10px;border-color:var(--gold-b);background:var(--gold-bg);color:var(--gold);">⚠ No reconocí una fila de encabezados en lo que pegaste (la primera línea ya traía datos, no títulos de columna) — adiviné Nombre/Correo/Teléfono por el contenido de las filas. Revisa abajo que coincidan antes de subir; si algo quedó mal, agrega una fila de encabezados (Nombre, Correo, Teléfono) al inicio de lo que pegas y vuelve a previsualizar.</div>`:''}
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);overflow:hidden;">
     <div class="card-head">
       <span class="card-title">Vista previa — ${deduped.length} filas · evento "${evento}"${sistemaRelacionado?` · sistema ${sistemaRelacionado}`:''}</span>
