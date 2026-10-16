@@ -13024,8 +13024,8 @@ async function renderTeleClientes(){
     </div>
     ${proyHtml}
     ${(()=>{
-      const resColors={'Interesado':'#27AE60','No le interesa':'#E84040','Buzón':'#F5A623','No contestó':'var(--text3)','Volver a llamar':'#2980B9','Solicita baja de servicio':'#E84040','Requiere visita del vendedor':'#8E44AD','Pendiente':'rgba(0,0,0,0.15)'};
-      const resIconos={'Interesado':'✅','No le interesa':'❌','Buzón':'📵','No contestó':'📞','Volver a llamar':'🔄','Solicita baja de servicio':'⚠️','Requiere visita del vendedor':'🧑‍💼','Pendiente':'⏳'};
+      const resColors={'Interesado':'#27AE60','No le interesa':'#E84040','Buzón':'#F5A623','No contestó':'var(--text3)','Volver a llamar':'#2980B9','Solicita baja de servicio':'#E84040','Requiere reunión con vendedor':'#8E44AD','Pendiente':'rgba(0,0,0,0.15)'};
+      const resIconos={'Interesado':'✅','No le interesa':'❌','Buzón':'📵','No contestó':'📞','Volver a llamar':'🔄','Solicita baja de servicio':'⚠️','Requiere reunión con vendedor':'🧑‍💼','Pendiente':'⏳'};
       const desgloseHtml=Object.entries(resultadoCount).sort((a,b)=>b[1]-a[1]).map(([k,v])=>
         `<div onclick="filtrarTeleClientesPorResultado('${k}')" style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:4px 8px;border-radius:6px;transition:background 0.15s;" onmouseover="this.style.background='rgba(0,0,0,0.06)'" onmouseout="this.style.background='transparent'" id="badgeRes_${k.replace(/\s/g,'_')}">
           <span>${resIconos[k]||'•'}</span>
@@ -14735,7 +14735,7 @@ const RESULTADOS_LLAMADA=[
 // checkbox/texto en el formulario.
 const RESULTADOS_LLAMADA_CARTERA=[
   'No contestó','Buzón','Interesado','No le interesa','Volver a llamar',
-  'Solicita baja de servicio','Requiere visita del vendedor'
+  'Solicita baja de servicio','Requiere reunión con vendedor'
 ];
 
 async function abrirDetalleDir(id){
@@ -14840,6 +14840,10 @@ async function abrirDetalle(id){
         <div>
           <div style="color:var(--text3);margin-bottom:2px;">Empresa</div>
           <input type="text" id="editEmpresa" value="${(p.empresa||'').replace(/"/g,'&quot;')}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
+        </div>
+        <div>
+          <div style="color:var(--text3);margin-bottom:2px;">Puesto</div>
+          <input type="text" id="editPuesto" value="${(p.puesto||'').replace(/"/g,'&quot;')}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
         </div>
         <div>
           <div style="color:var(--text3);margin-bottom:2px;">N° de prospecto</div>
@@ -15225,11 +15229,12 @@ async function guardarDatosProspecto(id){
   const telefono=document.getElementById('editTelefono')?.value.trim();
   const email=document.getElementById('editEmail')?.value.trim();
   const empresa=document.getElementById('editEmpresa')?.value.trim();
+  const puesto=document.getElementById('editPuesto')?.value.trim()||null;
   const origen=document.getElementById('editOrigen')?.value||null;
   const interes=document.getElementById('editInteres')?.value||null;
   const msg=document.getElementById('datosMsg');
   if(!nombre){if(msg){msg.style.color='var(--red)';msg.textContent='El nombre no puede quedar vacío';}return;}
-  const upd={nombre,apellidos,telefono,email,empresa,origen,interes,updated_at:new Date().toISOString()};
+  const upd={nombre,apellidos,telefono,email,empresa,puesto,origen,interes,updated_at:new Date().toISOString()};
   const {error}=await sb.from('prospectos').update(upd).eq('id',id);
   if(error){if(msg){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}return;}
   const p=window._prospectos?.find(p=>p.id===id);
@@ -16147,7 +16152,14 @@ function prospDetectarColumnas(headers){
   const iTel=find(h=>h.includes('phone')||h.includes('whatsapp')||h.includes('telefono')||h.includes('celular'));
   const iCampania=find(h=>h==='campaign_name');
   const iFecha=find(h=>h==='created_time');
-  return {iNombre,iCorreo,iTel,iCampania,iFecha};
+  // Jp, 2026-10-16: si la lista que sube trae puesto/cargo de la persona y
+  // el nombre de su empresa (columnas típicas de Meta/Sheets), capturarlos —
+  // antes se detectaba "empresa"/"company" solo para EXCLUIRLo del nombre,
+  // nunca para guardarlo. "company_name" es el nombre de la empresa, no el
+  // de la campaña de Meta, así que no choca con company_name==ad metadata.
+  const iEmpresa=find(h=>h.includes('empresa')||h.includes('company'));
+  const iPuesto=find(h=>h.includes('puesto')||h.includes('cargo')||h.includes('job_title')||h.includes('jobtitle')||h.includes('position'));
+  return {iNombre,iCorreo,iTel,iCampania,iFecha,iEmpresa,iPuesto};
 }
 
 // Jp, 2026-10-16: encontró que al pegar su lista maestra manual (NOI-general,
@@ -16235,7 +16247,7 @@ async function procesarPaste(){
   const filasDatos=primeraEsEncabezado?filasCrudas.slice(1):filasCrudas;
   if(!filasDatos.length){alert('No encontré filas de datos debajo del encabezado.');return;}
 
-  let {iNombre,iCorreo,iTel,iCampania,iFecha}=prospDetectarColumnas(headers);
+  let {iNombre,iCorreo,iTel,iCampania,iFecha,iEmpresa,iPuesto}=prospDetectarColumnas(headers);
   if(iNombre===-1||iCorreo===-1||iTel===-1){
     // Respaldo por contenido para lo que no se reconoció por nombre de columna
     // (o porque no hay encabezados en absoluto) — nunca pisa lo que ya se detectó.
@@ -16256,10 +16268,12 @@ async function procesarPaste(){
     const nombre=iNombre>=0?(fila[iNombre]||'').trim():'';
     const email=iCorreo>=0?(fila[iCorreo]||'').trim():'';
     const telefono=iTel>=0?(fila[iTel]||'').trim():'';
+    const empresaFila=iEmpresa>=0?(fila[iEmpresa]||'').trim():'';
+    const puestoFila=iPuesto>=0?(fila[iPuesto]||'').trim():'';
     if(!nombre&&!email&&!telefono) continue;
     if(/test@meta\.com/i.test(email)) continue; // filas de prueba de Meta — sección 6 del diseño
     if(iCampania>=0&&fila[iCampania]) campaniaDetectada=fila[iCampania];
-    parsed.push({nombre:nombre||'Sin nombre',telefono,email,origen,interes,_fecha:iFecha>=0?fila[iFecha]:null,tipoEvento,sistemaRelacionado,fechaEvento,promocion});
+    parsed.push({nombre:nombre||'Sin nombre',telefono,email,empresa:empresaFila||null,puesto:puestoFila||null,origen,interes,_fecha:iFecha>=0?fila[iFecha]:null,tipoEvento,sistemaRelacionado,fechaEvento,promocion});
   }
   if(!parsed.length){alert('No quedaron filas válidas después de filtrar vacías y de prueba.');return;}
 
@@ -16271,7 +16285,7 @@ async function procesarPaste(){
   // últimos 10 dígitos — misma regla confirmada por Jp que usa el resto del
   // módulo) para decidir, antes de subir, quién es nuevo y a quién solo se
   // le va a agregar el evento.
-  const ex=await prospFetchTodos('id,nombre,telefono,email,interes');
+  const ex=await prospFetchTodos('id,nombre,telefono,email,interes,empresa,puesto');
   function buscarExistente(p){
     const correoP=(p.email||'').trim().toLowerCase();
     for(const e of ex){
@@ -16315,11 +16329,13 @@ async function procesarPaste(){
       <span class="badge bt">${nuevos} nuevos · ${existentesN} ya existen (solo se les agrega el evento)${dupesEnLote?` · ${dupesEnLote} repetidos dentro del mismo archivo (omitidos)`:''}</span>
     </div>
     <table class="daily" style="font-size:12px;max-height:420px;display:block;overflow-y:auto;">
-      <thead><tr><th>#</th><th>Nombre</th><th>Teléfono</th><th>Email</th><th>Acción</th></tr></thead>
+      <thead><tr><th>#</th><th>Nombre</th><th>Teléfono</th><th>Email</th><th>Empresa</th><th>Puesto</th><th>Acción</th></tr></thead>
       <tbody>
         ${deduped.map((p,i)=>`<tr><td style="color:var(--text3);">${i+1}</td><td style="font-weight:500;">${p.nombre}</td>
             <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
             <td style="font-size:11px;color:var(--text3);">${p.email||'—'}</td>
+            <td style="font-size:11px;color:var(--text3);">${p.empresa||'—'}</td>
+            <td style="font-size:11px;color:var(--text3);">${p.puesto||'—'}</td>
             <td>${p._match?`<span style="font-size:10px;font-weight:600;color:var(--gold);">Ya existe → agrega evento</span>`:`<span style="font-size:10px;font-weight:600;color:var(--teal);">Nuevo</span>`}</td>
           </tr>`).join('')}
       </tbody>
@@ -16350,6 +16366,7 @@ async function subirProspectos(){
     if(nuevosRows.length){
       const toInsert=nuevosRows.map(p=>({
         nombre:p.nombre, telefono:p.telefono, email:p.email, evento:p.evento, origen:p.origen, interes:p.interes,
+        empresa:p.empresa, puesto:p.puesto,
         estatus:'Nuevo', anio:hoy.getFullYear(), mes:hoy.getMonth()+1,
         vendedor_asignado:null, asignado_a:null,
       }));
@@ -16368,6 +16385,15 @@ async function subirProspectos(){
       const conInteresNuevo=existentesRows.filter(p=>p.interes&&!p._match.interes);
       for(const p of conInteresNuevo){
         await sb.from('prospectos').update({interes:p.interes}).eq('id',p._match.id);
+      }
+      // Jp, 2026-10-16: mismo fill-gap para empresa/puesto — si ya existía el
+      // prospecto pero sin esos datos, se completan con los de este import;
+      // nunca se pisa lo que ya tenía.
+      for(const p of existentesRows){
+        const relleno={};
+        if(p.empresa&&!p._match.empresa) relleno.empresa=p.empresa;
+        if(p.puesto&&!p._match.puesto) relleno.puesto=p.puesto;
+        if(Object.keys(relleno).length) await sb.from('prospectos').update(relleno).eq('id',p._match.id);
       }
       // Jp, 2026-10-16: antes, si el prospecto ya tenía registrado ESTE MISMO
       // evento (p.ej. volvió a pegar la lista de "Reforma Laboral 2027 Parte 1"
