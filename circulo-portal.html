@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Portal del socio — Círculo Innovaci</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --navy:#0e2233; --navy2:#0b3b5c; --teal:#12b3a8; --teal2:#0e8d85;
+  --border:#e7ebee; --text2:#5c6b77; --text3:#9aa6b0; --bg:#eef1f4;
+  --green:#1f8a5f; --greenbg:#e9f8f0; --amber:#b4791f; --amberbg:#fbf1e2;
+  --red:#b4441f; --redbg:#fdecea;
+}
+body{font-family:'Manrope',system-ui,sans-serif;background:var(--bg);color:var(--navy);min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:48px 16px;-webkit-font-smoothing:antialiased;}
+.wrap{width:100%;max-width:480px;}
+.wrap.expanded{max-width:720px;}
+.card{background:#fff;border:1px solid var(--border);border-radius:20px;padding:40px 36px;width:100%;box-shadow:0 1px 2px rgba(16,24,32,.04),0 12px 32px -16px rgba(16,24,32,.14);}
+.tagline{font-size:12px;color:var(--teal2);margin-bottom:26px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;}
+h1{font-size:18px;font-weight:800;margin-bottom:7px;}
+.sub{font-size:13px;color:var(--text2);margin-bottom:22px;line-height:1.55;}
+.field{margin-bottom:14px;}
+.field label{display:block;font-size:12px;font-weight:700;color:var(--text2);margin-bottom:5px;}
+.field input{width:100%;padding:11px 14px;border:1px solid var(--border);border-radius:10px;font-size:14px;font-family:'Manrope',sans-serif;outline:none;}
+.field input#fCodigo{text-transform:uppercase;letter-spacing:.08em;}
+.field input:focus{border-color:var(--teal);}
+.btn{width:100%;padding:13px;background:var(--teal);border:none;border-radius:10px;color:#fff;font-size:14px;font-weight:700;cursor:pointer;margin-top:6px;}
+.btn:disabled{opacity:.6;cursor:default;}
+.bad{color:var(--red);font-weight:600;font-size:13px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border);}
+.foot{font-size:11px;color:var(--text3);margin-top:22px;text-align:center;}
+
+.result-card{background:#fff;border-radius:20px;overflow:hidden;box-shadow:0 1px 2px rgba(16,24,32,.04),0 12px 32px -16px rgba(16,24,32,.14);}
+.result-topbar{height:5px;width:100%;background:linear-gradient(90deg,var(--navy2) 0%,var(--teal) 100%);}
+.result-head{padding:32px 36px 22px;}
+.result-brand{font-size:11px;font-weight:700;color:var(--text2);letter-spacing:.1em;text-transform:uppercase;}
+.result-name{font-size:24px;font-weight:800;margin-top:6px;}
+.result-sub{font-size:14px;font-weight:700;color:var(--teal2);margin-top:4px;}
+.badge{display:inline-block;padding:4px 11px;border-radius:99px;font-size:11px;font-weight:700;margin-top:10px;}
+.badge.activa{background:var(--greenbg);color:var(--green);}
+.badge.revision{background:var(--amberbg);color:var(--amber);}
+.badge.suspendida,.badge.vencida{background:var(--redbg);color:var(--red);}
+.result-body{padding:0 36px 32px;display:flex;flex-direction:column;gap:18px;}
+.section-title{font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px;}
+.panel{background:#f8f9fa;border:1px solid var(--border);border-radius:14px;padding:18px 20px;}
+.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;}
+.stat .k{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;margin-bottom:4px;}
+.stat .v{font-size:14px;font-weight:700;}
+.list-item{font-size:13px;color:var(--navy);padding:8px 0;border-top:1px solid #eef1f3;}
+.list-item:first-child{border-top:none;}
+.list-item small{display:block;color:var(--text3);font-weight:500;margin-top:2px;}
+.cta{display:block;text-align:center;background:var(--navy);color:#fff;text-decoration:none;padding:13px;border-radius:10px;font-weight:700;font-size:14px;}
+.aviso{background:var(--amberbg);color:var(--amber);border-radius:10px;padding:10px 14px;font-size:13px;font-weight:600;}
+</style>
+</head>
+<body>
+<div class="wrap" id="wrap">
+  <div class="card">
+    <div class="tagline">Círculo Innovaci</div>
+    <h1>Portal del socio</h1>
+    <div class="sub">Ingresa con tu correo y el código de acceso que te compartió Innovaci al confirmar tu membresía.</div>
+    <div class="field"><label>Correo</label><input id="fEmail" type="email" autocomplete="off"></div>
+    <div class="field"><label>Código de acceso</label><input id="fCodigo" placeholder="Ej. K7M2QX" autocomplete="off"></div>
+    <button class="btn" id="btnEntrar" onclick="entrar()">Ingresar</button>
+    <div id="resultadoError"></div>
+    <div class="foot">Grupo Innovaci · Círculo Innovaci</div>
+  </div>
+</div>
+<div id="resultadoWrap"></div>
+
+<script>
+// Mismo modelo que verificar.html / portal-empresa.html: anon key pública,
+// la protección es el correo+código (solo lo tiene el socio), no RLS por
+// sesión — ver claude/circulo-innovaci-arquitectura-membresias.md para el
+// porqué (el portal del socio NO usa Supabase Auth a propósito).
+const SURL='https://ydwouspzneacxfixlmmv.supabase.co';
+const SKEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlkd291c3B6bmVhY3hmaXhsbW12Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEzMzA5MzAsImV4cCI6MjA5NjkwNjkzMH0.uWB1VN2YT7ynTbHmfTWCOBHMRR54LdHJook7iOk7Mug';
+const sb=supabase.createClient(SURL,SKEY);
+
+const ESPECIALIDAD_LABEL={NOI:'Especialidad NOI',COI:'Especialidad COI',SAE:'Especialidad SAE'};
+const ESTADO_LABEL={activa:'Activa',revision:'En revisión',suspendida:'Suspendida',vencida:'Vencida'};
+
+function fmtFecha(f){
+  if(!f) return '—';
+  const [y,m,d]=f.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+async function entrar(){
+  const email=document.getElementById('fEmail').value.trim().toLowerCase();
+  const codigo=document.getElementById('fCodigo').value.trim().toUpperCase();
+  const err=document.getElementById('resultadoError');
+  err.innerHTML='';
+  if(!email || !codigo){ err.innerHTML='<div class="bad">Captura tu correo y tu código de acceso.</div>'; return; }
+
+  const btn=document.getElementById('btnEntrar');
+  btn.disabled=true; btn.textContent='Buscando…';
+  const {data,error}=await sb.from('circulo_portal_publico')
+    .select('*')
+    .eq('email_norm',email)
+    .eq('codigo_acceso',codigo)
+    .maybeSingle();
+  btn.disabled=false; btn.textContent='Ingresar';
+
+  if(error){ err.innerHTML=`<div class="bad">Ocurrió un error. Intenta de nuevo.</div>`; return; }
+  if(!data){ err.innerHTML='<div class="bad">No encontramos una membresía con ese correo y código. Verifica los datos o contacta a Innovaci.</div>'; return; }
+
+  mostrarResultado(data);
+}
+
+function mostrarResultado(m){
+  document.getElementById('wrap').style.display='none';
+  const avisos=(m.avisos||[]).map(a=>`<div class="aviso">${a.mensaje}</div>`).join('');
+  const constancias=(m.constancias||[]);
+  const beneficios=(m.beneficios_usados||[]);
+
+  const html=`
+  <div class="wrap expanded">
+    <div class="result-card">
+      <div class="result-topbar"></div>
+      <div class="result-head">
+        <div class="result-brand">Círculo Innovaci</div>
+        <div class="result-name">${m.nombre}</div>
+        <div class="result-sub">${ESPECIALIDAD_LABEL[m.especialidad]||m.especialidad} — ${m.plan==='socio_pro'?'Socio Pro':'Socio'}${m.costo_cero?' (vinculada, sin costo adicional)':''}</div>
+        <span class="badge ${m.estado}">${ESTADO_LABEL[m.estado]||m.estado}</span>
+      </div>
+      <div class="result-body">
+        ${avisos ? `<div>${avisos}</div>` : ''}
+        <div class="panel">
+          <div class="section-title">Tu membresía</div>
+          <div class="grid2">
+            <div class="stat"><div class="k">Activación</div><div class="v">${fmtFecha(m.fecha_activacion)}</div></div>
+            <div class="stat"><div class="k">Vigencia hasta</div><div class="v">${fmtFecha(m.fecha_vencimiento)}</div></div>
+          </div>
+        </div>
+        <div>
+          <div class="section-title">Tus cursos</div>
+          <a class="cta" href="https://odoo.com" target="_blank" rel="noopener">Entrar a Academia / Odoo →</a>
+        </div>
+        ${constancias.length ? `<div>
+          <div class="section-title">Tus constancias</div>
+          ${constancias.map(c=>`<div class="list-item">${c.tipo}<small>Folio ${c.folio} · emitida ${fmtFecha(c.fecha_emision)}</small></div>`).join('')}
+        </div>` : ''}
+        ${beneficios.length ? `<div>
+          <div class="section-title">Beneficios usados</div>
+          ${beneficios.map(b=>`<div class="list-item">${b.tipo}${b.detalle?` — ${b.detalle}`:''}<small>${fmtFecha(b.fecha)}</small></div>`).join('')}
+        </div>` : ''}
+        <div class="foot">¿Dudas sobre tu membresía? Escribe a Innovaci por WhatsApp o correo.</div>
+      </div>
+    </div>
+  </div>`;
+  document.getElementById('resultadoWrap').innerHTML=html;
+}
+</script>
+</body>
+</html>

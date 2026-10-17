@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Círculo Innovaci — Alta de socios (interno)</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --navy:#0e2233; --navy2:#0b3b5c; --teal:#12b3a8; --teal2:#0e8d85;
+  --border:#e7ebee; --text2:#5c6b77; --text3:#9aa6b0; --bg:#eef1f4;
+  --green:#1f8a5f; --greenbg:#e9f8f0; --amber:#b4791f; --amberbg:#fbf1e2;
+  --red:#b4441f; --redbg:#fdecea;
+}
+body{font-family:'Manrope',system-ui,sans-serif;background:var(--bg);color:var(--navy);min-height:100vh;padding:32px 16px;-webkit-font-smoothing:antialiased;}
+.wrap{max-width:980px;margin:0 auto;}
+h1{font-size:20px;font-weight:800;margin-bottom:4px;}
+.sub{font-size:13px;color:var(--text2);margin-bottom:22px;}
+.card{background:#fff;border:1px solid var(--border);border-radius:16px;padding:28px;margin-bottom:22px;box-shadow:0 1px 2px rgba(16,24,32,.04),0 12px 32px -16px rgba(16,24,32,.14);}
+.login-wrap{max-width:380px;margin:80px auto;}
+.field{margin-bottom:14px;}
+.field label{display:block;font-size:12px;font-weight:700;color:var(--text2);margin-bottom:5px;}
+.field input,.field select,.field textarea{width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;font-size:14px;font-family:'Manrope',sans-serif;outline:none;}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--teal);}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;}
+.btn{padding:11px 18px;background:var(--teal);border:none;border-radius:10px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;}
+.btn:disabled{opacity:.6;cursor:default;}
+.btn.secondary{background:#fff;color:var(--navy);border:1px solid #d7dde2;}
+.btn.small{padding:6px 10px;font-size:12px;}
+.msg{font-size:13px;margin-top:12px;padding:10px 14px;border-radius:10px;}
+.msg.ok{background:var(--greenbg);color:var(--green);}
+.msg.err{background:var(--redbg);color:var(--red);}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th{text-align:left;font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;padding:8px 10px;border-bottom:1px solid var(--border);}
+td{padding:10px;border-bottom:1px solid #f1f3f5;vertical-align:top;}
+.badge{display:inline-block;padding:3px 9px;border-radius:99px;font-size:11px;font-weight:700;}
+.badge.activa{background:var(--greenbg);color:var(--green);}
+.badge.revision{background:var(--amberbg);color:var(--amber);}
+.badge.suspendida,.badge.vencida{background:var(--redbg);color:var(--red);}
+.codigo{font-family:monospace;font-weight:700;letter-spacing:.05em;background:#f4f6f7;padding:3px 8px;border-radius:6px;}
+.hidden{display:none;}
+h2{font-size:14px;font-weight:800;margin-bottom:16px;}
+.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;}
+.topbar span{font-size:12px;color:var(--text2);}
+</style>
+</head>
+<body>
+
+<div id="loginWrap" class="login-wrap">
+  <div class="card">
+    <h1>Círculo Innovaci</h1>
+    <div class="sub">Alta de socios — acceso interno (usa tu cuenta de Innovaci OS)</div>
+    <div class="field"><label>Correo</label><input id="fEmail" type="email"></div>
+    <div class="field"><label>Contraseña</label><input id="fPass" type="password"></div>
+    <button class="btn" style="width:100%" onclick="login()">Entrar</button>
+    <div id="loginMsg"></div>
+  </div>
+</div>
+
+<div id="appWrap" class="wrap hidden">
+  <div class="topbar">
+    <div>
+      <h1>Círculo Innovaci — Socios</h1>
+      <div class="sub">Alta de membresías para el 20 de octubre. Ver <code>claude/circulo-innovaci-arquitectura-membresias.md</code> para el diseño completo.</div>
+    </div>
+    <span id="quienSoy"></span>
+  </div>
+
+  <div class="card">
+    <h2>+ Dar de alta un socio</h2>
+    <div class="row">
+      <div class="field"><label>Nombre completo</label><input id="nNombre"></div>
+      <div class="field"><label>Correo</label><input id="nEmail" type="email"></div>
+      <div class="field"><label>Teléfono</label><input id="nTelefono"></div>
+      <div class="field"><label>Empresa (si aplica)</label><input id="nEmpresa"></div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <div class="field"><label>Especialidad</label>
+        <select id="nEspecialidad"><option value="NOI">NOI</option><option value="COI">COI</option><option value="SAE">SAE</option></select>
+      </div>
+      <div class="field"><label>Plan</label>
+        <select id="nPlan"><option value="socio">Socio</option><option value="socio_pro">Socio Pro</option></select>
+      </div>
+      <div class="field"><label>Origen</label>
+        <select id="nOrigen" onchange="toggleCostoCero()"><option value="compra_directa">Compra directa (Shopify)</option><option value="vinculacion_aspel">Vinculación suscripción Aspel</option></select>
+      </div>
+      <div class="field" id="wrapCostoCero"><label>Costo</label>
+        <select id="nCostoCero"><option value="false">Con costo</option><option value="true">Costo cero (ya tiene suscripción vigente)</option></select>
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <div class="field"><label>Usuarios NOI vinculados (si empresa, 1-5/6-10/11+)</label><input id="nUsuariosVinculados" type="number" min="1"></div>
+      <div class="field"><label>Fecha de pago</label><input id="nFechaPago" type="date"></div>
+      <div class="field"><label>Fecha de activación (envío de credenciales)</label><input id="nFechaActivacion" type="date"></div>
+      <div class="field"><label>Vigencia (auto, +12 meses de activación)</label><input id="nFechaVencimiento" type="date" readonly style="background:#f7f8f9"></div>
+    </div>
+    <div class="field" style="margin-top:4px"><label>Notas (opcional)</label><textarea id="nNotas" rows="2"></textarea></div>
+    <button class="btn" style="margin-top:10px" onclick="crearMembresia()">Crear membresía y generar código de acceso</button>
+    <div id="altaMsg"></div>
+  </div>
+
+  <div class="card">
+    <h2>Socios dados de alta</h2>
+    <div id="listaMsg"></div>
+    <table>
+      <thead><tr><th>Nombre</th><th>Correo</th><th>Especialidad</th><th>Plan</th><th>Vigencia</th><th>Estado</th><th>Código de acceso</th><th></th></tr></thead>
+      <tbody id="tablaSocios"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const SURL='https://ydwouspzneacxfixlmmv.supabase.co';
+const SKEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlkd291c3B6bmVhY3hmaXhsbW12Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEzMzA5MzAsImV4cCI6MjA5NjkwNjkzMH0.uWB1VN2YT7ynTbHmfTWCOBHMRR54LdHJook7iOk7Mug';
+const sb=supabase.createClient(SURL,SKEY);
+
+function toggleCostoCero(){
+  document.getElementById('wrapCostoCero').style.display = document.getElementById('nOrigen').value==='vinculacion_aspel' ? '' : 'none';
+}
+
+// Código de acceso corto, sin caracteres ambiguos (0/O, 1/I), mismo estilo
+// que ya usa Portal de Empresas (ej. "K7M2QX").
+function generarCodigo(len=6){
+  const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let out='';
+  const rnd=new Uint32Array(len);
+  crypto.getRandomValues(rnd);
+  for(let i=0;i<len;i++) out+=chars[rnd[i]%chars.length];
+  return out;
+}
+
+document.getElementById('nFechaActivacion').addEventListener('change',e=>{
+  if(!e.target.value) return;
+  const d=new Date(e.target.value+'T00:00:00');
+  d.setFullYear(d.getFullYear()+1);
+  document.getElementById('nFechaVencimiento').value=d.toISOString().slice(0,10);
+});
+
+async function login(){
+  const email=document.getElementById('fEmail').value.trim();
+  const pass=document.getElementById('fPass').value;
+  const msg=document.getElementById('loginMsg');
+  msg.innerHTML='';
+  const {data,error}=await sb.auth.signInWithPassword({email,password:pass});
+  if(error){ msg.innerHTML=`<div class="msg err">${error.message}</div>`; return; }
+  await mostrarApp();
+}
+
+async function mostrarApp(){
+  const {data:sess}=await sb.auth.getSession();
+  if(!sess.session){ return; }
+  const {data:u}=await sb.from('usuarios').select('nombre,rol').eq('id',sess.session.user.id).maybeSingle();
+  if(!u){
+    document.getElementById('loginMsg').innerHTML='<div class="msg err">Esta cuenta no tiene un perfil interno en Innovaci OS.</div>';
+    await sb.auth.signOut();
+    return;
+  }
+  document.getElementById('loginWrap').classList.add('hidden');
+  document.getElementById('appWrap').classList.remove('hidden');
+  document.getElementById('quienSoy').textContent=`${u.nombre} · ${u.rol}`;
+  toggleCostoCero();
+  cargarSocios();
+}
+
+async function crearMembresia(){
+  const nombre=document.getElementById('nNombre').value.trim();
+  const email=document.getElementById('nEmail').value.trim().toLowerCase();
+  const msg=document.getElementById('altaMsg');
+  msg.innerHTML='';
+  if(!nombre || !email){ msg.innerHTML='<div class="msg err">Falta nombre o correo.</div>'; return; }
+
+  const origen=document.getElementById('nOrigen').value;
+  const payload={
+    nombre, email,
+    telefono: document.getElementById('nTelefono').value.trim()||null,
+    empresa: document.getElementById('nEmpresa').value.trim()||null,
+    especialidad: document.getElementById('nEspecialidad').value,
+    plan: document.getElementById('nPlan').value,
+    origen,
+    costo_cero: origen==='vinculacion_aspel' ? document.getElementById('nCostoCero').value==='true' : false,
+    usuarios_noi_vinculados: document.getElementById('nUsuariosVinculados').value ? Number(document.getElementById('nUsuariosVinculados').value) : null,
+    fecha_pago: document.getElementById('nFechaPago').value||null,
+    fecha_activacion: document.getElementById('nFechaActivacion').value||null,
+    fecha_vencimiento: document.getElementById('nFechaVencimiento').value||null,
+    notas: document.getElementById('nNotas').value.trim()||null,
+    codigo_acceso: generarCodigo(),
+    estado: 'activa',
+  };
+  const {data:sess}=await sb.auth.getSession();
+  payload.creado_por = sess.session?.user?.id || null;
+
+  const {data,error}=await sb.from('circulo_membresias').insert(payload).select().single();
+  if(error){ msg.innerHTML=`<div class="msg err">No se pudo crear: ${error.message}</div>`; return; }
+  msg.innerHTML=`<div class="msg ok">Socio creado. Código de acceso: <span class="codigo">${data.codigo_acceso}</span> — compártelo junto con su correo para que entre a su portal.</div>`;
+  ['nNombre','nTelefono','nEmpresa','nUsuariosVinculados','nNotas'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('nEmail').value='';
+  cargarSocios();
+}
+
+async function cargarSocios(){
+  const tbody=document.getElementById('tablaSocios');
+  const {data,error}=await sb.from('circulo_membresias').select('*').order('created_at',{ascending:false});
+  if(error){ document.getElementById('listaMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return; }
+  tbody.innerHTML=(data||[]).map(m=>`
+    <tr>
+      <td>${m.nombre}</td>
+      <td>${m.email}</td>
+      <td>${m.especialidad}</td>
+      <td>${m.plan==='socio_pro'?'Socio Pro':'Socio'}${m.costo_cero?' · costo cero':''}</td>
+      <td>${m.fecha_vencimiento||'—'}</td>
+      <td><span class="badge ${m.estado}">${m.estado}</span></td>
+      <td><span class="codigo">${m.codigo_acceso}</span></td>
+      <td></td>
+    </tr>
+  `).join('') || '<tr><td colspan="8" style="color:var(--text3)">Sin socios dados de alta todavía.</td></tr>';
+}
+
+sb.auth.getSession().then(({data:{session}})=>{ if(session) mostrarApp(); });
+</script>
+</body>
+</html>
