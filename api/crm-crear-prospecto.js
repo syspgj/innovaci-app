@@ -336,9 +336,18 @@ export default async function handler(req, res) {
     const sistemaAspel = (p.sistemas_aspel && p.sistemas_aspel.length) ? p.sistemas_aspel[p.sistemas_aspel.length - 1] : 'SIN INTERES';
 
     const sessionName = await vtigerLogin();
+    // Jp, 2026-10-16 — bug encontrado al correr el lote retroactivo en vivo:
+    // esta instalación de Vtiger exige "firstname" con valor (mandatory
+    // field) y antes se mandaba vacío cuando el prospecto no tenía
+    // apellidos capturados (el caso más común: los que suben por
+    // Meta/Sheets solo traen un campo "nombre"). Eso tronaba el alta con
+    // MANDATORY_FIELDS_MISSING para prácticamente todos los prospectos sin
+    // apellido — se corrige para que firstname siempre lleve el nombre
+    // completo cuando no hay apellido que separar.
+    const nombreCompleto = p.nombre || 'Prospecto';
     const element = {
-      lastname: p.apellidos || p.nombre || 'Prospecto',
-      firstname: p.apellidos ? (p.nombre || '') : '',
+      lastname: p.apellidos || nombreCompleto,
+      firstname: nombreCompleto,
       company: p.empresa || 'Sin empresa',
       designation: p.puesto || '',
       phone: p.telefono || '',

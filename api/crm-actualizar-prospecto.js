@@ -177,9 +177,16 @@ export default async function handler(req, res) {
     const sessionName = await vtigerLogin();
     const actual = await vtigerRetrieve(sessionName, crmLeadId);
     const record = { ...actual };
-    if (nombre !== undefined) record.firstname = apellidos ? nombre : '';
+    // Jp, 2026-10-16 — mismo bug encontrado y corregido en
+    // crm-crear-prospecto.js: esta instalación de Vtiger exige "firstname"
+    // con valor (mandatory field). Antes, si el prospecto no tenía
+    // apellidos, este endpoint mandaba firstname="" al actualizar — eso
+    // podía tronar un Lead que ya existía con MANDATORY_FIELDS_MISSING en
+    // cuanto se guardara cualquier cambio desde la app. firstname siempre
+    // debe llevar algo.
+    if (nombre !== undefined) record.firstname = nombre || record.firstname || 'Prospecto';
     if (apellidos !== undefined && apellidos) record.lastname = apellidos;
-    else if (nombre !== undefined && !apellidos) record.lastname = nombre || record.lastname;
+    else if (nombre !== undefined && !apellidos) record.lastname = nombre || record.lastname || 'Prospecto';
     if (empresa !== undefined && empresa) record.company = empresa;
     if (puesto !== undefined) record.designation = puesto || '';
     if (telefono !== undefined) record.phone = telefono || '';
