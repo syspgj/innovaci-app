@@ -54,6 +54,23 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
 .refdato{font-size:12px;color:var(--text2);margin-top:4px;}
 .serieok{color:var(--green);font-weight:700;}
 .serieerr{color:var(--red);font-weight:700;}
+.stat.clicable{cursor:pointer;transition:border-color .12s;}
+.stat.clicable:hover{border-color:var(--teal);}
+.stat.activo{border-color:var(--teal);background:#eefaf9;}
+.filtro-aviso{display:flex;align-items:center;gap:10px;background:#eefaf9;border:1px solid var(--teal);border-radius:10px;padding:8px 14px;margin-bottom:12px;font-size:13px;}
+.filtro-aviso button{background:none;border:none;color:var(--teal2);font-weight:700;cursor:pointer;font-size:13px;}
+.overlay{position:fixed;inset:0;background:rgba(14,34,51,.45);display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto;z-index:50;}
+.modal{background:#fff;border-radius:16px;padding:28px;width:100%;max-width:640px;}
+.modal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;}
+.modal-head button{background:none;border:none;font-size:20px;cursor:pointer;color:var(--text2);}
+.collapsible-head{display:flex;justify-content:space-between;align-items:center;cursor:pointer;}
+.collapsible-head .chev{transition:transform .15s;}
+.collapsible-head.open .chev{transform:rotate(180deg);}
+.solicitud-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-top:1px solid #f1f3f5;}
+.solicitud-row:first-child{border-top:none;}
+.solicitud-row .info{font-size:13px;}
+.solicitud-row .info small{display:block;color:var(--text3);margin-top:2px;}
+.solicitud-row .acciones{display:flex;gap:8px;flex-shrink:0;}
 </style>
 </head>
 <body>
@@ -71,16 +88,21 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
 
 <div id="appWrap" class="wrap hidden">
   <div class="topbar">
-    <div>
-      <h1>Círculo Innovaci — Socios</h1>
-      <div class="sub">Alta de membresías para el 20 de octubre. Ver <code>claude/circulo-innovaci-arquitectura-membresias.md</code> para el diseño completo.</div>
-    </div>
+    <h1>Círculo Innovaci — Socios</h1>
     <span id="quienSoy"></span>
   </div>
 
   <div class="card">
     <h2>Resumen</h2>
+    <div id="filtroAviso"></div>
     <div class="stats" id="statsWrap"></div>
+  </div>
+
+  <div class="card">
+    <h2>Solicitudes de socios</h2>
+    <div class="sub" style="margin-bottom:6px">Laboratorio, sesiones privadas, acompañantes y crédito por referido que los socios piden desde su portal. Tú las confirmas o rechazas aquí.</div>
+    <div id="solicitudesMsg"></div>
+    <div id="listaSolicitudes"></div>
   </div>
 
   <div class="card">
@@ -93,7 +115,11 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
   </div>
 
   <div class="card">
-    <h2>+ Dar de alta un socio</h2>
+    <div class="collapsible-head" id="altaHead" onclick="toggleAltaForm()">
+      <h2 style="margin-bottom:0">+ Dar de alta un socio</h2>
+      <span class="chev">▾</span>
+    </div>
+    <div id="altaBody" class="hidden" style="margin-top:18px">
     <div class="row">
       <div class="field"><label>Nombre completo</label><input id="nNombre"></div>
       <div class="field"><label>Correo</label><input id="nEmail" type="email"></div>
@@ -137,8 +163,11 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
     <div class="field" style="margin-top:4px"><label>Notas (opcional)</label><textarea id="nNotas" rows="2"></textarea></div>
     <button class="btn" style="margin-top:10px" onclick="crearMembresia()">Crear membresía y generar código de acceso</button>
     <div id="altaMsg"></div>
+    </div>
   </div>
 </div>
+
+<div id="modalWrap"></div>
 
 <script>
 const SURL='https://ydwouspzneacxfixlmmv.supabase.co';
@@ -146,6 +175,15 @@ const SKEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI
 const sb=supabase.createClient(SURL,SKEY);
 
 let clienteCarteraIdActual = null;
+let sociosActuales = [];
+let filtroActual = null; // {tipo:'plan'|'especialidad'|'vencer', valor}
+
+function toggleAltaForm(){
+  document.getElementById('altaBody').classList.toggle('hidden');
+  document.getElementById('altaHead').classList.toggle('open');
+}
+
+function cap(s){ return s ? s.charAt(0).toUpperCase()+s.slice(1) : s; }
 
 // Costo automático: compra directa siempre tiene costo; vinculación Aspel +
 // Socio es costo cero (ya paga la suscripción); vinculación Aspel + Socio Pro
@@ -254,9 +292,10 @@ async function mostrarApp(){
   }
   document.getElementById('loginWrap').classList.add('hidden');
   document.getElementById('appWrap').classList.remove('hidden');
-  document.getElementById('quienSoy').textContent=`${u.nombre} · ${u.rol}`;
+  document.getElementById('quienSoy').textContent=`${u.nombre} · ${cap(u.rol)}`;
   toggleOrigen();
   cargarSocios();
+  cargarSolicitudes();
 }
 
 async function crearMembresia(){
@@ -299,11 +338,31 @@ async function crearMembresia(){
 }
 
 async function cargarSocios(){
-  const tbody=document.getElementById('tablaSocios');
   const {data,error}=await sb.from('circulo_membresias').select('*').order('created_at',{ascending:false});
   if(error){ document.getElementById('listaMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return; }
-  const socios=data||[];
-  tbody.innerHTML=socios.map(m=>`
+  sociosActuales=data||[];
+  renderStats(sociosActuales);
+  renderTablaSocios();
+}
+
+function socioPasaFiltro(m){
+  if(!filtroActual) return true;
+  if(filtroActual.tipo==='plan') return m.plan===filtroActual.valor;
+  if(filtroActual.tipo==='especialidad') return m.especialidad===filtroActual.valor;
+  if(filtroActual.tipo==='vencer'){
+    if(!m.fecha_vencimiento) return false;
+    const hoy=new Date(); hoy.setHours(0,0,0,0);
+    const en30=new Date(); en30.setDate(hoy.getDate()+30);
+    const fv=new Date(m.fecha_vencimiento+'T00:00:00');
+    return fv>=hoy && fv<=en30;
+  }
+  return true;
+}
+
+function renderTablaSocios(){
+  const tbody=document.getElementById('tablaSocios');
+  const lista=sociosActuales.filter(socioPasaFiltro);
+  tbody.innerHTML=lista.map(m=>`
     <tr>
       <td>${m.nombre}</td>
       <td>${m.email}</td>
@@ -312,16 +371,25 @@ async function cargarSocios(){
       <td>${m.fecha_vencimiento||'—'}</td>
       <td><span class="badge ${m.estado}">${m.estado}</span></td>
       <td><span class="codigo">${m.codigo_acceso}</span></td>
-      <td></td>
+      <td><button class="btn secondary small" onclick="abrirEdicion('${m.id}')">Ver / Editar</button></td>
     </tr>
-  `).join('') || '<tr><td colspan="8" style="color:var(--text3)">Sin socios dados de alta todavía.</td></tr>';
+  `).join('') || `<tr><td colspan="8" style="color:var(--text3)">${filtroActual?'Ningún socio coincide con el filtro.':'Sin socios dados de alta todavía.'}</td></tr>`;
 
-  renderStats(socios);
+  const aviso=document.getElementById('filtroAviso');
+  aviso.innerHTML = filtroActual ? `<div class="filtro-aviso">Mostrando solo: ${filtroActual.label} <button onclick="quitarFiltro()">Quitar filtro ✕</button></div>` : '';
 }
+
+function aplicarFiltro(tipo,valor,label){
+  if(filtroActual && filtroActual.tipo===tipo && filtroActual.valor===valor){ filtroActual=null; }
+  else { filtroActual={tipo,valor,label}; }
+  renderStats(sociosActuales);
+  renderTablaSocios();
+}
+function quitarFiltro(){ filtroActual=null; renderStats(sociosActuales); renderTablaSocios(); }
 
 function renderStats(socios){
   const wrap=document.getElementById('statsWrap');
-  const hoy=new Date();
+  const hoy=new Date(); hoy.setHours(0,0,0,0);
   const en30=new Date(); en30.setDate(hoy.getDate()+30);
   const porPlan={socio:0,socio_pro:0};
   const porEsp={NOI:0,COI:0,SAE:0};
@@ -334,12 +402,125 @@ function renderStats(socios){
       if(fv>=hoy && fv<=en30) porVencer++;
     }
   });
+  const activo=(tipo,valor)=>filtroActual && filtroActual.tipo===tipo && filtroActual.valor===valor ? ' activo' : '';
   wrap.innerHTML=`
-    <div class="stat"><div class="k">Total socios</div><div class="v">${socios.length}</div></div>
-    <div class="stat"><div class="k">Socio / Socio Pro</div><div class="v">${porPlan.socio} / ${porPlan.socio_pro}</div></div>
-    <div class="stat"><div class="k">NOI / COI / SAE</div><div class="v">${porEsp.NOI} / ${porEsp.COI} / ${porEsp.SAE}</div></div>
-    <div class="stat"><div class="k">Vencen en 30 días</div><div class="v${porVencer?' warn':''}">${porVencer}</div></div>
+    <div class="stat clicable${filtroActual?'':' activo'}" onclick="quitarFiltro()"><div class="k">Total socios</div><div class="v">${socios.length}</div></div>
+    <div class="stat clicable${activo('plan','socio')}" onclick="aplicarFiltro('plan','socio','Plan Socio')"><div class="k">Socios</div><div class="v">${porPlan.socio}</div></div>
+    <div class="stat clicable${activo('plan','socio_pro')}" onclick="aplicarFiltro('plan','socio_pro','Plan Socio Pro')"><div class="k">Socios Pro</div><div class="v">${porPlan.socio_pro}</div></div>
+    <div class="stat clicable${activo('especialidad','NOI')}" onclick="aplicarFiltro('especialidad','NOI','Especialidad NOI')"><div class="k">NOI</div><div class="v">${porEsp.NOI}</div></div>
+    <div class="stat clicable${activo('especialidad','COI')}" onclick="aplicarFiltro('especialidad','COI','Especialidad COI')"><div class="k">COI</div><div class="v">${porEsp.COI}</div></div>
+    <div class="stat clicable${activo('especialidad','SAE')}" onclick="aplicarFiltro('especialidad','SAE','Especialidad SAE')"><div class="k">SAE</div><div class="v">${porEsp.SAE}</div></div>
+    <div class="stat clicable${activo('vencer',true)}" onclick="aplicarFiltro('vencer',true,'Vencen en 30 días')"><div class="k">Vencen en 30 días</div><div class="v${porVencer?' warn':''}">${porVencer}</div></div>
   `;
+}
+
+// --- Ver / editar un socio ---
+function abrirEdicion(id){
+  const m=sociosActuales.find(x=>x.id===id);
+  if(!m) return;
+  const campo=(label,id2,val,tipo='text')=>`<div class="field"><label>${label}</label><input id="${id2}" type="${tipo}" value="${val??''}"></div>`;
+  document.getElementById('modalWrap').innerHTML=`
+    <div class="overlay" onclick="if(event.target===this) cerrarModal()">
+      <div class="modal">
+        <div class="modal-head"><h2 style="margin-bottom:0">${m.nombre}</h2><button onclick="cerrarModal()">✕</button></div>
+        <div class="row">
+          ${campo('Nombre completo','eNombre',m.nombre)}
+          ${campo('Correo','eEmail',m.email,'email')}
+          ${campo('Teléfono','eTelefono',m.telefono)}
+          ${campo('Empresa','eEmpresa',m.empresa)}
+        </div>
+        <div class="row" style="margin-top:14px">
+          <div class="field"><label>Especialidad</label>
+            <select id="eEspecialidad">
+              <option value="NOI" ${m.especialidad==='NOI'?'selected':''}>NOI</option>
+              <option value="COI" ${m.especialidad==='COI'?'selected':''}>COI</option>
+              <option value="SAE" ${m.especialidad==='SAE'?'selected':''}>SAE</option>
+            </select>
+          </div>
+          <div class="field"><label>Plan</label>
+            <select id="ePlan">
+              <option value="socio" ${m.plan==='socio'?'selected':''}>Socio</option>
+              <option value="socio_pro" ${m.plan==='socio_pro'?'selected':''}>Socio Pro</option>
+            </select>
+          </div>
+          <div class="field"><label>Estado</label>
+            <select id="eEstado">
+              ${['activa','revision','suspendida','vencida'].map(s=>`<option value="${s}" ${m.estado===s?'selected':''}>${cap(s)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>Código de acceso</label><input id="eCodigo" value="${m.codigo_acceso}"></div>
+        </div>
+        <div class="row" style="margin-top:14px">
+          ${campo('Usuarios vinculados','eUsuarios',m.usuarios_noi_vinculados,'number')}
+          ${campo('Fecha de pago','eFechaPago',m.fecha_pago,'date')}
+          ${campo('Fecha de activación','eFechaActivacion',m.fecha_activacion,'date')}
+          ${campo('Vigencia','eFechaVencimiento',m.fecha_vencimiento,'date')}
+        </div>
+        <div class="field" style="margin-top:4px"><label>Notas</label><textarea id="eNotas" rows="2">${m.notas||''}</textarea></div>
+        <div style="display:flex;gap:10px;margin-top:14px">
+          <button class="btn" onclick="guardarEdicion('${m.id}')">Guardar cambios</button>
+          <button class="btn secondary" onclick="cerrarModal()">Cancelar</button>
+        </div>
+        <div id="modalMsg"></div>
+      </div>
+    </div>
+  `;
+}
+function cerrarModal(){ document.getElementById('modalWrap').innerHTML=''; }
+
+async function guardarEdicion(id){
+  const val=i=>document.getElementById(i).value;
+  const payload={
+    nombre: val('eNombre').trim(),
+    email: val('eEmail').trim().toLowerCase(),
+    telefono: val('eTelefono').trim()||null,
+    empresa: val('eEmpresa').trim()||null,
+    especialidad: val('eEspecialidad'),
+    plan: val('ePlan'),
+    estado: val('eEstado'),
+    codigo_acceso: val('eCodigo').trim().toUpperCase(),
+    usuarios_noi_vinculados: val('eUsuarios')?Number(val('eUsuarios')):null,
+    fecha_pago: val('eFechaPago')||null,
+    fecha_activacion: val('eFechaActivacion')||null,
+    fecha_vencimiento: val('eFechaVencimiento')||null,
+    notas: val('eNotas').trim()||null,
+  };
+  const {error}=await sb.from('circulo_membresias').update(payload).eq('id',id);
+  const msg=document.getElementById('modalMsg');
+  if(error){ msg.innerHTML=`<div class="msg err">${error.message}</div>`; return; }
+  cerrarModal();
+  cargarSocios();
+}
+
+// --- Solicitudes de beneficios (laboratorio, sesiones, acompañantes, crédito) ---
+// Las escribe circulo-portal.html en circulo_beneficios_uso con estado
+// 'solicitado' cuando el socio las pide; aquí se confirman o rechazan a mano
+// (nunca se otorgan automático). Por ahora esta lista estará vacía porque
+// esos flujos del portal todavía no están construidos (ver pendientes en
+// claude/circulo-innovaci-fase0-build-171026.md).
+async function cargarSolicitudes(){
+  const wrap=document.getElementById('listaSolicitudes');
+  const {data,error}=await sb.from('circulo_beneficios_uso')
+    .select('*, circulo_membresias(nombre,email)')
+    .eq('estado','solicitado')
+    .order('created_at',{ascending:true});
+  if(error){ document.getElementById('solicitudesMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return; }
+  const solicitudes=data||[];
+  wrap.innerHTML = solicitudes.map(s=>`
+    <div class="solicitud-row">
+      <div class="info">${s.circulo_membresias?.nombre||'—'} — ${s.tipo}${s.detalle?` (${s.detalle})`:''}<small>${s.circulo_membresias?.email||''} · solicitado ${new Date(s.created_at).toLocaleDateString('es-MX')}</small></div>
+      <div class="acciones">
+        <button class="btn small" onclick="resolverSolicitud('${s.id}','confirmado')">Confirmar</button>
+        <button class="btn secondary small" onclick="resolverSolicitud('${s.id}','rechazado')">Rechazar</button>
+      </div>
+    </div>
+  `).join('') || '<div class="sub">Sin solicitudes pendientes.</div>';
+}
+
+async function resolverSolicitud(id,nuevoEstado){
+  const {error}=await sb.from('circulo_beneficios_uso').update({estado:nuevoEstado}).eq('id',id);
+  if(error){ document.getElementById('solicitudesMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return; }
+  cargarSolicitudes();
 }
 
 sb.auth.getSession().then(({data:{session}})=>{ if(session) mostrarApp(); });

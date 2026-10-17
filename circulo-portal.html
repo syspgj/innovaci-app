@@ -15,7 +15,9 @@
   --red:#b4441f; --redbg:#fdecea;
 }
 body{font-family:'Manrope',system-ui,sans-serif;background:var(--bg);color:var(--navy);min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:48px 16px;-webkit-font-smoothing:antialiased;}
-.wrap{width:100%;max-width:480px;}
+.wrap{width:100%;max-width:560px;}
+.teaser{display:flex;gap:10px;margin-bottom:24px;}
+.teaser div{flex:1;background:#f8f9fa;border:1px solid var(--border);border-radius:12px;padding:12px 10px;text-align:center;font-size:11px;color:var(--text2);font-weight:700;}
 .wrap.expanded{max-width:720px;}
 .card{background:#fff;border:1px solid var(--border);border-radius:20px;padding:40px 36px;width:100%;box-shadow:0 1px 2px rgba(16,24,32,.04),0 12px 32px -16px rgba(16,24,32,.14);}
 .tagline{font-size:12px;color:var(--teal2);margin-bottom:26px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;}
@@ -67,8 +69,14 @@ h1{font-size:18px;font-weight:800;margin-bottom:7px;}
     <div class="tagline">Círculo Innovaci</div>
     <h1>Portal del socio</h1>
     <div class="sub">Ingresa con tu correo y el código de acceso que te compartió Innovaci al confirmar tu membresía.</div>
+    <div class="teaser">
+      <div>Tu vigencia</div>
+      <div>Tus cursos</div>
+      <div>Tus beneficios</div>
+    </div>
     <div class="field"><label>Correo</label><input id="fEmail" type="email" autocomplete="off"></div>
     <div class="field"><label>Código de acceso</label><input id="fCodigo" placeholder="Ej. K7M2QX" autocomplete="off"></div>
+    <div class="field"><label id="captchaLabel">Verificación</label><input id="fCaptcha" autocomplete="off" inputmode="numeric"></div>
     <button class="btn" id="btnEntrar" onclick="entrar()">Ingresar</button>
     <div id="resultadoError"></div>
     <div class="foot">Grupo Innovaci · Círculo Innovaci</div>
@@ -120,12 +128,32 @@ function diasRestantes(fv){
   return Math.round((v-hoy)/86400000);
 }
 
+// Verificación anti-bot simple (sin dependencias externas): una suma
+// aleatoria que un script automático no resuelve de un vistazo. No es una
+// protección fuerte tipo Cloudflare Turnstile — eso requeriría que Jp cree
+// una cuenta/llave en Cloudflare y mover esta consulta a un endpoint propio
+// que la valide del lado del servidor (queda anotado como mejora de Fase 1
+// en claude/circulo-innovaci-fase0-build-171026.md). Esto es un filtro
+// barato que sí detiene bots genéricos y además, junto con el bloqueo
+// temporal tras varios intentos fallidos, hace más lento un ataque de fuerza
+// bruta sobre el código de acceso.
+let captchaA=0, captchaB=0, intentosFallidos=0;
+function nuevoCaptcha(){
+  captchaA=Math.floor(Math.random()*8)+1;
+  captchaB=Math.floor(Math.random()*8)+1;
+  document.getElementById('captchaLabel').textContent=`¿Cuánto es ${captchaA} + ${captchaB}?`;
+  document.getElementById('fCaptcha').value='';
+}
+nuevoCaptcha();
+
 async function entrar(){
   const email=document.getElementById('fEmail').value.trim().toLowerCase();
   const codigo=document.getElementById('fCodigo').value.trim().toUpperCase();
+  const captcha=document.getElementById('fCaptcha').value.trim();
   const err=document.getElementById('resultadoError');
   err.innerHTML='';
   if(!email || !codigo){ err.innerHTML='<div class="bad">Captura tu correo y tu código de acceso.</div>'; return; }
+  if(Number(captcha)!==captchaA+captchaB){ err.innerHTML='<div class="bad">La verificación no es correcta.</div>'; nuevoCaptcha(); return; }
 
   const btn=document.getElementById('btnEntrar');
   btn.disabled=true; btn.textContent='Buscando…';
@@ -135,9 +163,22 @@ async function entrar(){
     .eq('codigo_acceso',codigo)
     .maybeSingle();
   btn.disabled=false; btn.textContent='Ingresar';
+  nuevoCaptcha();
 
   if(error){ err.innerHTML=`<div class="bad">Ocurrió un error. Intenta de nuevo.</div>`; return; }
-  if(!data){ err.innerHTML='<div class="bad">No encontramos una membresía con ese correo y código. Verifica los datos o contacta a Innovaci.</div>'; return; }
+  if(!data){
+    intentosFallidos++;
+    err.innerHTML='<div class="bad">No encontramos una membresía con ese correo y código. Verifica los datos o contacta a Innovaci.</div>';
+    if(intentosFallidos>=5){
+      let espera=20;
+      btn.disabled=true;
+      const t=setInterval(()=>{
+        espera--; btn.textContent=`Espera ${espera}s…`;
+        if(espera<=0){ clearInterval(t); btn.disabled=false; btn.textContent='Ingresar'; intentosFallidos=0; }
+      },1000);
+    }
+    return;
+  }
 
   mostrarResultado(data);
 }
