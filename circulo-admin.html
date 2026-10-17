@@ -44,6 +44,16 @@ td{padding:10px;border-bottom:1px solid #f1f3f5;vertical-align:top;}
 h2{font-size:14px;font-weight:800;margin-bottom:16px;}
 .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;}
 .topbar span{font-size:12px;color:var(--text2);}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px;}
+.stat{background:#f8f9fa;border:1px solid var(--border);border-radius:12px;padding:14px 16px;}
+.stat .k{font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;}
+.stat .v{font-size:22px;font-weight:800;}
+.stat .v.warn{color:var(--amber);}
+.costolabel{padding:10px 12px;border-radius:10px;background:#f4f6f7;font-size:13px;font-weight:700;}
+.costolabel.cero{background:var(--greenbg);color:var(--green);}
+.refdato{font-size:12px;color:var(--text2);margin-top:4px;}
+.serieok{color:var(--green);font-weight:700;}
+.serieerr{color:var(--red);font-weight:700;}
 </style>
 </head>
 <body>
@@ -69,36 +79,8 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
   </div>
 
   <div class="card">
-    <h2>+ Dar de alta un socio</h2>
-    <div class="row">
-      <div class="field"><label>Nombre completo</label><input id="nNombre"></div>
-      <div class="field"><label>Correo</label><input id="nEmail" type="email"></div>
-      <div class="field"><label>Teléfono</label><input id="nTelefono"></div>
-      <div class="field"><label>Empresa (si aplica)</label><input id="nEmpresa"></div>
-    </div>
-    <div class="row" style="margin-top:14px">
-      <div class="field"><label>Especialidad</label>
-        <select id="nEspecialidad"><option value="NOI">NOI</option><option value="COI">COI</option><option value="SAE">SAE</option></select>
-      </div>
-      <div class="field"><label>Plan</label>
-        <select id="nPlan"><option value="socio">Socio</option><option value="socio_pro">Socio Pro</option></select>
-      </div>
-      <div class="field"><label>Origen</label>
-        <select id="nOrigen" onchange="toggleCostoCero()"><option value="compra_directa">Compra directa (Shopify)</option><option value="vinculacion_aspel">Vinculación suscripción Aspel</option></select>
-      </div>
-      <div class="field" id="wrapCostoCero"><label>Costo</label>
-        <select id="nCostoCero"><option value="false">Con costo</option><option value="true">Costo cero (ya tiene suscripción vigente)</option></select>
-      </div>
-    </div>
-    <div class="row" style="margin-top:14px">
-      <div class="field"><label>Usuarios NOI vinculados (si empresa, 1-5/6-10/11+)</label><input id="nUsuariosVinculados" type="number" min="1"></div>
-      <div class="field"><label>Fecha de pago</label><input id="nFechaPago" type="date"></div>
-      <div class="field"><label>Fecha de activación (envío de credenciales)</label><input id="nFechaActivacion" type="date"></div>
-      <div class="field"><label>Vigencia (auto, +12 meses de activación)</label><input id="nFechaVencimiento" type="date" readonly style="background:#f7f8f9"></div>
-    </div>
-    <div class="field" style="margin-top:4px"><label>Notas (opcional)</label><textarea id="nNotas" rows="2"></textarea></div>
-    <button class="btn" style="margin-top:10px" onclick="crearMembresia()">Crear membresía y generar código de acceso</button>
-    <div id="altaMsg"></div>
+    <h2>Resumen</h2>
+    <div class="stats" id="statsWrap"></div>
   </div>
 
   <div class="card">
@@ -109,6 +91,53 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
       <tbody id="tablaSocios"></tbody>
     </table>
   </div>
+
+  <div class="card">
+    <h2>+ Dar de alta un socio</h2>
+    <div class="row">
+      <div class="field"><label>Nombre completo</label><input id="nNombre"></div>
+      <div class="field"><label>Correo</label><input id="nEmail" type="email"></div>
+      <div class="field"><label>Teléfono</label><input id="nTelefono"></div>
+      <div class="field"><label>Empresa (si aplica)</label><input id="nEmpresa"></div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <div class="field"><label>Especialidad</label>
+        <select id="nEspecialidad" onchange="actualizarCosto()"><option value="NOI">NOI</option><option value="COI">COI</option><option value="SAE">SAE</option></select>
+      </div>
+      <div class="field"><label>Plan</label>
+        <select id="nPlan" onchange="actualizarCosto()"><option value="socio">Socio</option><option value="socio_pro">Socio Pro</option></select>
+      </div>
+      <div class="field"><label>Origen</label>
+        <select id="nOrigen" onchange="toggleOrigen()"><option value="compra_directa">Compra directa</option><option value="vinculacion_aspel">Vinculación suscripción Aspel</option></select>
+      </div>
+      <div class="field"><label>Costo (automático)</label>
+        <div class="costolabel" id="costoLabel">Con costo</div>
+      </div>
+    </div>
+    <div class="row hidden" id="wrapSerie" style="margin-top:14px">
+      <div class="field" style="grid-column:span 2">
+        <label>Número de serie Aspel</label>
+        <div style="display:flex;gap:8px">
+          <input id="nNumSerie" style="flex:1">
+          <button type="button" class="btn secondary small" onclick="validarSerie()">Validar</button>
+        </div>
+        <div id="serieMsg" style="margin-top:6px;font-size:12px"></div>
+      </div>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <div class="field">
+        <label>Usuarios NOI/COI/SAE vinculados</label>
+        <input id="nUsuariosVinculados" type="number" min="1">
+        <div class="refdato" id="usuariosRef"></div>
+      </div>
+      <div class="field"><label>Fecha de pago</label><input id="nFechaPago" type="date"></div>
+      <div class="field"><label>Fecha de activación (envío de credenciales)</label><input id="nFechaActivacion" type="date"></div>
+      <div class="field"><label>Vigencia (auto, 12 meses - 1 día desde activación)</label><input id="nFechaVencimiento" type="date" readonly style="background:#f7f8f9"></div>
+    </div>
+    <div class="field" style="margin-top:4px"><label>Notas (opcional)</label><textarea id="nNotas" rows="2"></textarea></div>
+    <button class="btn" style="margin-top:10px" onclick="crearMembresia()">Crear membresía y generar código de acceso</button>
+    <div id="altaMsg"></div>
+  </div>
 </div>
 
 <script>
@@ -116,8 +145,71 @@ const SURL='https://ydwouspzneacxfixlmmv.supabase.co';
 const SKEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlkd291c3B6bmVhY3hmaXhsbW12Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEzMzA5MzAsImV4cCI6MjA5NjkwNjkzMH0.uWB1VN2YT7ynTbHmfTWCOBHMRR54LdHJook7iOk7Mug';
 const sb=supabase.createClient(SURL,SKEY);
 
-function toggleCostoCero(){
-  document.getElementById('wrapCostoCero').style.display = document.getElementById('nOrigen').value==='vinculacion_aspel' ? '' : 'none';
+let clienteCarteraIdActual = null;
+
+// Costo automático: compra directa siempre tiene costo; vinculación Aspel +
+// Socio es costo cero (ya paga la suscripción); vinculación Aspel + Socio Pro
+// tiene costo (paga la diferencia). Ver sección A.3 de
+// claude/circulo-innovaci-fase0-build-171026.md.
+function costoCeroCalc(){
+  const origen=document.getElementById('nOrigen').value;
+  const plan=document.getElementById('nPlan').value;
+  return origen==='vinculacion_aspel' && plan==='socio';
+}
+
+function actualizarCosto(){
+  const cero=costoCeroCalc();
+  const lbl=document.getElementById('costoLabel');
+  lbl.textContent = cero ? 'Costo cero (ya tiene suscripción vigente)' : 'Con costo';
+  lbl.className = 'costolabel'+(cero?' cero':'');
+}
+
+function toggleOrigen(){
+  const esAspel = document.getElementById('nOrigen').value==='vinculacion_aspel';
+  document.getElementById('wrapSerie').classList.toggle('hidden', !esAspel);
+  if(!esAspel){
+    clienteCarteraIdActual=null;
+    document.getElementById('serieMsg').innerHTML='';
+    document.getElementById('usuariosRef').textContent='';
+  }
+  actualizarCosto();
+}
+
+// Valida el número de serie contra suscripciones_cartera (mismo dato que ya
+// sincronizamos desde los reportes de renovación de Cartera). Si existe y no
+// es mensual, liga cliente_cartera_id automáticamente y muestra como
+// referencia (no autocompleta) el dato de usuarios que haya en
+// clientes_cartera_sistemas — ese campo es texto libre e inconsistente
+// ("1 USU | 1 EMP | SERV", "1U|2E|1S", etc.) y solo está lleno en ~65% de los
+// casos NOI, así que no es confiable para escribir el número automáticamente;
+// el staff lo captura a mano viendo la referencia.
+async function validarSerie(){
+  const serie=document.getElementById('nNumSerie').value.trim();
+  const msg=document.getElementById('serieMsg');
+  const ref=document.getElementById('usuariosRef');
+  msg.innerHTML=''; ref.textContent=''; clienteCarteraIdActual=null;
+  if(!serie){ msg.innerHTML='<span class="serieerr">Captura un número de serie.</span>'; return; }
+
+  const {data:sus,error}=await sb.from('suscripciones_cartera')
+    .select('cliente_id,periodicidad,estado')
+    .eq('numserie',serie)
+    .maybeSingle();
+  if(error || !sus){ msg.innerHTML='<span class="serieerr">No se encontró esa suscripción en Cartera.</span>'; return; }
+  if((sus.periodicidad||'').toLowerCase()==='mensual'){
+    msg.innerHTML='<span class="serieerr">Esta suscripción es mensual — no aplica para vinculación al Círculo (solo semestral/anual).</span>';
+    return;
+  }
+
+  clienteCarteraIdActual = sus.cliente_id;
+  msg.innerHTML=`<span class="serieok">Suscripción válida ✓ (${sus.periodicidad||'periodicidad no especificada'})</span>`;
+
+  const especialidad=document.getElementById('nEspecialidad').value;
+  const {data:sis}=await sb.from('clientes_cartera_sistemas')
+    .select('usuarios,sistema')
+    .eq('cliente_cartera_id',sus.cliente_id)
+    .ilike('sistema',`%${especialidad}%`)
+    .maybeSingle();
+  ref.textContent = (sis && sis.usuarios) ? `Dato en CRM (referencia, no exacta): ${sis.usuarios}` : 'Sin dato de usuarios en CRM para este sistema — captúralo a mano.';
 }
 
 // Código de acceso corto, sin caracteres ambiguos (0/O, 1/I), mismo estilo
@@ -133,8 +225,11 @@ function generarCodigo(len=6){
 
 document.getElementById('nFechaActivacion').addEventListener('change',e=>{
   if(!e.target.value) return;
+  // Vigencia confirmada por Jp (171026): 12 meses menos 1 día, para no
+  // traslapar con la fecha de renovación del año siguiente.
   const d=new Date(e.target.value+'T00:00:00');
   d.setFullYear(d.getFullYear()+1);
+  d.setDate(d.getDate()-1);
   document.getElementById('nFechaVencimiento').value=d.toISOString().slice(0,10);
 });
 
@@ -160,7 +255,7 @@ async function mostrarApp(){
   document.getElementById('loginWrap').classList.add('hidden');
   document.getElementById('appWrap').classList.remove('hidden');
   document.getElementById('quienSoy').textContent=`${u.nombre} · ${u.rol}`;
-  toggleCostoCero();
+  toggleOrigen();
   cargarSocios();
 }
 
@@ -179,7 +274,8 @@ async function crearMembresia(){
     especialidad: document.getElementById('nEspecialidad').value,
     plan: document.getElementById('nPlan').value,
     origen,
-    costo_cero: origen==='vinculacion_aspel' ? document.getElementById('nCostoCero').value==='true' : false,
+    costo_cero: costoCeroCalc(),
+    cliente_cartera_id: origen==='vinculacion_aspel' ? clienteCarteraIdActual : null,
     usuarios_noi_vinculados: document.getElementById('nUsuariosVinculados').value ? Number(document.getElementById('nUsuariosVinculados').value) : null,
     fecha_pago: document.getElementById('nFechaPago').value||null,
     fecha_activacion: document.getElementById('nFechaActivacion').value||null,
@@ -194,8 +290,11 @@ async function crearMembresia(){
   const {data,error}=await sb.from('circulo_membresias').insert(payload).select().single();
   if(error){ msg.innerHTML=`<div class="msg err">No se pudo crear: ${error.message}</div>`; return; }
   msg.innerHTML=`<div class="msg ok">Socio creado. Código de acceso: <span class="codigo">${data.codigo_acceso}</span> — compártelo junto con su correo para que entre a su portal.</div>`;
-  ['nNombre','nTelefono','nEmpresa','nUsuariosVinculados','nNotas'].forEach(id=>document.getElementById(id).value='');
+  ['nNombre','nTelefono','nEmpresa','nUsuariosVinculados','nNotas','nNumSerie'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('nEmail').value='';
+  document.getElementById('serieMsg').innerHTML='';
+  document.getElementById('usuariosRef').textContent='';
+  clienteCarteraIdActual=null;
   cargarSocios();
 }
 
@@ -203,7 +302,8 @@ async function cargarSocios(){
   const tbody=document.getElementById('tablaSocios');
   const {data,error}=await sb.from('circulo_membresias').select('*').order('created_at',{ascending:false});
   if(error){ document.getElementById('listaMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return; }
-  tbody.innerHTML=(data||[]).map(m=>`
+  const socios=data||[];
+  tbody.innerHTML=socios.map(m=>`
     <tr>
       <td>${m.nombre}</td>
       <td>${m.email}</td>
@@ -215,6 +315,31 @@ async function cargarSocios(){
       <td></td>
     </tr>
   `).join('') || '<tr><td colspan="8" style="color:var(--text3)">Sin socios dados de alta todavía.</td></tr>';
+
+  renderStats(socios);
+}
+
+function renderStats(socios){
+  const wrap=document.getElementById('statsWrap');
+  const hoy=new Date();
+  const en30=new Date(); en30.setDate(hoy.getDate()+30);
+  const porPlan={socio:0,socio_pro:0};
+  const porEsp={NOI:0,COI:0,SAE:0};
+  let porVencer=0;
+  socios.forEach(m=>{
+    if(m.plan in porPlan) porPlan[m.plan]++;
+    if(m.especialidad in porEsp) porEsp[m.especialidad]++;
+    if(m.fecha_vencimiento){
+      const fv=new Date(m.fecha_vencimiento+'T00:00:00');
+      if(fv>=hoy && fv<=en30) porVencer++;
+    }
+  });
+  wrap.innerHTML=`
+    <div class="stat"><div class="k">Total socios</div><div class="v">${socios.length}</div></div>
+    <div class="stat"><div class="k">Socio / Socio Pro</div><div class="v">${porPlan.socio} / ${porPlan.socio_pro}</div></div>
+    <div class="stat"><div class="k">NOI / COI / SAE</div><div class="v">${porEsp.NOI} / ${porEsp.COI} / ${porEsp.SAE}</div></div>
+    <div class="stat"><div class="k">Vencen en 30 días</div><div class="v${porVencer?' warn':''}">${porVencer}</div></div>
+  `;
 }
 
 sb.auth.getSession().then(({data:{session}})=>{ if(session) mostrarApp(); });

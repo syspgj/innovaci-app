@@ -52,6 +52,13 @@ h1{font-size:18px;font-weight:800;margin-bottom:7px;}
 .list-item small{display:block;color:var(--text3);font-weight:500;margin-top:2px;}
 .cta{display:block;text-align:center;background:var(--navy);color:#fff;text-decoration:none;padding:13px;border-radius:10px;font-weight:700;font-size:14px;}
 .aviso{background:var(--amberbg);color:var(--amber);border-radius:10px;padding:10px 14px;font-size:13px;font-weight:600;}
+.dias{display:flex;align-items:baseline;gap:8px;}
+.dias .n{font-size:28px;font-weight:800;}
+.dias .n.warn{color:var(--amber);}
+.dias .n.red{color:var(--red);}
+.dias .t{font-size:12px;color:var(--text2);}
+.beneficio{font-size:13px;color:var(--navy);padding:6px 0;display:flex;gap:8px;}
+.beneficio::before{content:'✓';color:var(--teal2);font-weight:800;}
 </style>
 </head>
 <body>
@@ -81,10 +88,36 @@ const sb=supabase.createClient(SURL,SKEY);
 const ESPECIALIDAD_LABEL={NOI:'Especialidad NOI',COI:'Especialidad COI',SAE:'Especialidad SAE'};
 const ESTADO_LABEL={activa:'Activa',revision:'En revisión',suspendida:'Suspendida',vencida:'Vencida'};
 
+// Contenido estático de "qué incluye" por plan — no depende de ninguna
+// integración, ver sección D.1 de claude/circulo-innovaci-fase0-build-171026.md.
+const BENEFICIOS_PLAN={
+  socio:[
+    'Acceso a tu especialidad dentro de Academia',
+    'Constancias de los cursos que tomes',
+    'Avisos y comunicados del Círculo Innovaci',
+  ],
+  socio_pro:[
+    'Acceso a tu especialidad dentro de Academia',
+    'Constancias de los cursos que tomes',
+    'Avisos y comunicados del Círculo Innovaci',
+    'Acceso a Laboratorio Virtual (sujeto a disponibilidad)',
+    '2 sesiones académicas privadas incluidas',
+    'Beneficios para compartir con acompañantes',
+    'Crédito por referido (solicítalo, no es automático)',
+  ],
+};
+
 function fmtFecha(f){
   if(!f) return '—';
   const [y,m,d]=f.split('-');
   return `${d}/${m}/${y}`;
+}
+
+function diasRestantes(fv){
+  if(!fv) return null;
+  const hoy=new Date(); hoy.setHours(0,0,0,0);
+  const v=new Date(fv+'T00:00:00');
+  return Math.round((v-hoy)/86400000);
 }
 
 async function entrar(){
@@ -114,6 +147,15 @@ function mostrarResultado(m){
   const avisos=(m.avisos||[]).map(a=>`<div class="aviso">${a.mensaje}</div>`).join('');
   const constancias=(m.constancias||[]);
   const beneficios=(m.beneficios_usados||[]);
+  const beneficiosPlan=BENEFICIOS_PLAN[m.plan]||[];
+
+  const dias=diasRestantes(m.fecha_vencimiento);
+  let diasHtml='—';
+  if(dias!==null){
+    const clase = dias<0 ? 'red' : (dias<=30 ? 'warn' : '');
+    const texto = dias<0 ? `Vencida hace ${Math.abs(dias)} días` : `${dias} días restantes`;
+    diasHtml = `<div class="dias"><span class="n ${clase}">${dias<0?Math.abs(dias):dias}</span><span class="t">${texto}</span></div>`;
+  }
 
   const html=`
   <div class="wrap expanded">
@@ -133,6 +175,11 @@ function mostrarResultado(m){
             <div class="stat"><div class="k">Activación</div><div class="v">${fmtFecha(m.fecha_activacion)}</div></div>
             <div class="stat"><div class="k">Vigencia hasta</div><div class="v">${fmtFecha(m.fecha_vencimiento)}</div></div>
           </div>
+          <div style="margin-top:12px">${diasHtml}</div>
+        </div>
+        <div class="panel">
+          <div class="section-title">Qué incluye tu membresía</div>
+          ${beneficiosPlan.map(b=>`<div class="beneficio">${b}</div>`).join('')}
         </div>
         <div>
           <div class="section-title">Tus cursos</div>
