@@ -236,7 +236,10 @@ async function enviarSolicitud(tipo,detalle,btn){
 
 function bloqueLaboratorio(beneficios){
   const previas=(beneficios||[]).filter(b=>b.tipo==='laboratorio');
-  const catalogo=CURSOS_CATALOGO[membresiaActual.especialidad]||[];
+  // Laboratorio Virtual solo aplica a diplomados, cursos y talleres del
+  // catálogo — las masterclasses NO dan este beneficio (confirmado por Jp,
+  // 181026).
+  const catalogo=(CURSOS_CATALOGO[membresiaActual.especialidad]||[]).filter(c=>c.tipo!=='Masterclass');
   const opciones=catalogo.length
     ? catalogo.map(c=>`<option>${formatCursoTitulo(c.titulo)}</option>`).join('')
     : CURSOS.map(c=>`<option>${c}</option>`).join('');
@@ -247,7 +250,7 @@ function bloqueLaboratorio(beneficios){
       <div style="font-size:11px;color:var(--text3);margin-top:4px">24/7: accedes a las grabaciones cuando quieras, a tu ritmo. En vivo: te unes en el horario que te confirme Capacitación.</div>
     </div>
     <button class="btn chico" onclick="solicitarLaboratorio(this)">Solicitar acceso</button>`;
-  return tarjetaBeneficio('laboratorio', '', 'Un acceso por curso elegible, en una sola modalidad — sujeto a disponibilidad, se asigna en hasta 15 días.', cuerpo);
+  return tarjetaBeneficio('laboratorio', '', 'Aplica a diplomados, cursos y talleres (no a masterclasses) — un acceso por curso elegible, en una sola modalidad, sujeto a disponibilidad. Se asigna en hasta 15 días.', cuerpo);
 }
 function solicitarLaboratorio(btn){
   const curso=document.getElementById('labCurso').value;
@@ -385,9 +388,16 @@ function mostrarResultado(m){
   const constancias=(m.constancias||[]);
   const beneficios=(m.beneficios_usados||[]);
   const cursos=CURSOS_CATALOGO[m.especialidad]||[];
-  const cursosHtml = cursos.length
-    ? cursos.map(c=>`<div class="list-item" style="display:flex;gap:10px;align-items:baseline"><span class="pill confirmado" style="flex-shrink:0">${c.tipo}</span><span>${formatCursoTitulo(c.titulo)}</span></div>`).join('')
-    : `<div style="font-size:12.5px;color:var(--text3)">El catálogo de esta especialidad se publicará pronto. Mientras tanto, entra a la Academia para ver lo disponible.</div>`;
+  const renderCurso=c=>`<div class="list-item" style="display:flex;gap:10px;align-items:baseline"><span class="pill confirmado" style="flex-shrink:0">${c.tipo}</span><span>${formatCursoTitulo(c.titulo)}</span></div>`;
+  const principales=cursos.filter(c=>c.tipo!=='Masterclass');
+  const masterclasses=cursos.filter(c=>c.tipo==='Masterclass');
+  const cursosHtml = cursos.length ? `
+    <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">Diplomados, cursos y talleres (dan acceso a Laboratorio Virtual)</div>
+    ${principales.length ? principales.map(renderCurso).join('') : '<div style="font-size:12px;color:var(--text3)">Ninguno publicado todavía.</div>'}
+    ${masterclasses.length ? `
+    <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin:16px 0 6px">Masterclasses (no dan acceso a Laboratorio Virtual)</div>
+    ${masterclasses.map(renderCurso).join('')}` : ''}
+  ` : `<div style="font-size:12.5px;color:var(--text3)">El catálogo de esta especialidad se publicará pronto. Mientras tanto, entra a la Academia para ver lo disponible.</div>`;
   const esPro=m.plan==='socio_pro';
   const esp=ESPECIALIDAD_COLOR[m.especialidad]||ESPECIALIDAD_COLOR.NOI;
   const styleVars=`--esp-color:${esp.c};--esp-bg:${esp.bg};`;

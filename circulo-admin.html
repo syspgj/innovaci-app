@@ -120,7 +120,7 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
     <h2>Socios dados de alta</h2>
     <div id="listaMsg"></div>
     <table>
-      <thead><tr><th>Nombre</th><th>Correo</th><th>Especialidad</th><th>Plan</th><th>Vigencia</th><th>Estado</th><th>Código de acceso</th><th></th></tr></thead>
+      <thead><tr id="theadSocios"></tr></thead>
       <tbody id="tablaSocios"></tbody>
     </table>
   </div>
@@ -135,11 +135,16 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
       <div class="field"><label>Nombre completo</label><input id="nNombre"></div>
       <div class="field"><label>Correo</label><input id="nEmail" type="email"></div>
       <div class="field"><label>Teléfono</label><input id="nTelefono"></div>
-      <div class="field"><label>Empresa (si aplica)</label><input id="nEmpresa"></div>
+      <div class="field" style="position:relative">
+        <label>Empresa (si aplica)</label>
+        <input id="nEmpresa" autocomplete="off" placeholder="Busca por razón social en Cartera..." oninput="buscarEmpresa()" onblur="setTimeout(()=>{document.getElementById('empresaResultados').style.display='none'},150)">
+        <div id="empresaResultados" style="position:absolute;z-index:10;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px -8px rgba(16,24,32,.25);max-height:220px;overflow-y:auto;width:100%;display:none"></div>
+        <div id="empresaSugerencia"></div>
+      </div>
     </div>
     <div class="row" style="margin-top:14px">
       <div class="field"><label>Especialidad</label>
-        <select id="nEspecialidad" onchange="actualizarCosto()"><option value="NOI">NOI</option><option value="COI">COI</option><option value="SAE">SAE</option></select>
+        <select id="nEspecialidad" onchange="actualizarCosto();sugerirSuscripcionEmpresa()"><option value="NOI">NOI</option><option value="COI">COI</option><option value="SAE">SAE</option></select>
       </div>
       <div class="field"><label>Plan</label>
         <select id="nPlan" onchange="actualizarCosto()"><option value="socio">Socio</option><option value="socio_pro">Socio Pro</option></select>
@@ -188,6 +193,23 @@ const sb=supabase.createClient(SURL,SKEY);
 let clienteCarteraIdActual = null;
 let sociosActuales = [];
 let filtroActual = null; // {tipo:'plan'|'especialidad'|'vencer', valor}
+let ordenActual = {campo:null, dir:'asc'};
+
+// Colores oficiales de marca de Aspel por especialidad (mismos que
+// circulo-portal.html) — para que NOI/COI/SAE se distingan a simple vista
+// en el resumen, pedido por Jp (181026).
+const ESPECIALIDAD_COLOR={
+  NOI:{c:'#f5821f',bg:'#fdf0e3'},
+  COI:{c:'#00add9',bg:'#e3f7fb'},
+  SAE:{c:'#ec0928',bg:'#fde8ea'},
+};
+
+// Empresa vinculada al catálogo de Cartera (clientes_cartera) — pedido por
+// Jp (181026): al elegir una empresa, si ya tiene una suscripción Aspel
+// semestral/anual vigente de la especialidad elegida, se sugiere vincularla
+// en vez de requerir que el staff conozca el número de serie de memoria.
+let empresaSeleccionada = null; // {id, razon_social}
+let empresaBuscarTimeout = null;
 
 function toggleAltaForm(){
   document.getElementById('altaBody').classList.toggle('hidden');
@@ -259,6 +281,60 @@ async function validarSerie(){
     .ilike('sistema',`%${especialidad}%`)
     .maybeSingle();
   ref.textContent = (sis && sis.usuarios) ? `Dato en CRM (referencia, no exacta): ${sis.usuarios}` : 'Sin dato de usuarios en CRM para este sistema — captúralo a mano.';
+}
+
+// Autocompletado de empresa contra Cartera (clientes_cartera) — pedido por
+// Jp (181026): al elegir la empresa, si ya tiene una suscripción Aspel
+// semestral/anual de la especialidad elegida, se sugiere vincularla en vez
+// de que el staff tenga que conocer el número de serie de memoria.
+function buscarEmpresa(){
+  empresaSeleccionada=null;
+  document.getElementById('empresaSugerencia').innerHTML='';
+  clearTimeout(empresaBuscarTimeout);
+  const q=document.getElementById('nEmpresa').value.trim();
+  const resWrap=document.getElementById('empresaResultados');
+  if(q.length<3){ resWrap.style.display='none'; resWrap.innerHTML=''; return; }
+  empresaBuscarTimeout=setTimeout(async ()=>{
+    const {data,error}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente').ilike('razon_social',`%${q}%`).order('razon_social').limit(8);
+    if(error || !data || !data.length){ resWrap.style.display='none'; resWrap.innerHTML=''; return; }
+    resWrap.innerHTML=data.map(c=>`<div style="padding:9px 12px;font-size:13px;cursor:pointer;border-bottom:1px solid #f1f3f5" onmousedown="seleccionarEmpresa('${c.id}','${(c.razon_social||'').replace(/'/g,"\\'")}')">${c.razon_social}${c.num_cliente?` <span style="color:var(--text3)">· ${c.num_cliente}</span>`:''}</div>`).join('');
+    resWrap.style.display='block';
+  },300);
+}
+
+async function seleccionarEmpresa(id,razonSocial){
+  empresaSeleccionada={id,razon_social:razonSocial};
+  document.getElementById('nEmpresa').value=razonSocial;
+  document.getElementById('empresaResultados').style.display='none';
+  document.getElementById('empresaResultados').innerHTML='';
+  await sugerirSuscripcionEmpresa();
+}
+
+async function sugerirSuscripcionEmpresa(){
+  const sugWrap=document.getElementById('empresaSugerencia');
+  sugWrap.innerHTML='';
+  if(!empresaSeleccionada) return;
+  const especialidad=document.getElementById('nEspecialidad').value;
+  const {data,error}=await sb.from('suscripciones_cartera')
+    .select('numserie,periodicidad,sistema,estado')
+    .eq('cliente_id',empresaSeleccionada.id)
+    .ilike('sistema',`%${especialidad}%`);
+  if(error || !data || !data.length) return;
+  const elegibles=data.filter(s=>(s.periodicidad||'').toLowerCase()!=='mensual');
+  if(!elegibles.length) return;
+  sugWrap.innerHTML=elegibles.map(s=>`
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:#eefaf9;border:1px solid var(--teal);border-radius:10px;padding:8px 12px;font-size:12.5px;margin-top:6px">
+      <span>${empresaSeleccionada.razon_social} ya tiene ${s.sistema||especialidad} · serie <strong>${s.numserie}</strong> (${s.periodicidad||'—'})</span>
+      <button type="button" class="btn secondary small" onclick="vincularSugerencia('${s.numserie}')">Vincular esta serie</button>
+    </div>
+  `).join('');
+}
+
+function vincularSugerencia(numserie){
+  document.getElementById('nOrigen').value='vinculacion_aspel';
+  toggleOrigen();
+  document.getElementById('nNumSerie').value=numserie;
+  validarSerie();
 }
 
 // Código de acceso corto, sin caracteres ambiguos (0/O, 1/I), mismo estilo
@@ -344,7 +420,9 @@ async function crearMembresia(){
   document.getElementById('nEmail').value='';
   document.getElementById('serieMsg').innerHTML='';
   document.getElementById('usuariosRef').textContent='';
+  document.getElementById('empresaSugerencia').innerHTML='';
   clienteCarteraIdActual=null;
+  empresaSeleccionada=null;
   cargarSocios();
 }
 
@@ -370,9 +448,48 @@ function socioPasaFiltro(m){
   return true;
 }
 
+// Columnas que se pueden ordenar — pedido por Jp (181026): poder ordenar
+// la lista de socios, sobre todo por vigencia.
+const COLUMNAS_SOCIOS=[
+  {campo:'nombre',label:'Nombre',ordenable:true},
+  {campo:'email',label:'Correo',ordenable:false},
+  {campo:'especialidad',label:'Especialidad',ordenable:true},
+  {campo:'plan',label:'Plan',ordenable:true},
+  {campo:'fecha_vencimiento',label:'Vigencia',ordenable:true},
+  {campo:'estado',label:'Estado',ordenable:true},
+  {campo:'codigo_acceso',label:'Código de acceso',ordenable:false},
+  {campo:null,label:'',ordenable:false},
+];
+
+function ordenarPor(campo){
+  if(ordenActual.campo===campo) ordenActual.dir = ordenActual.dir==='asc' ? 'desc' : 'asc';
+  else ordenActual = {campo, dir:'asc'};
+  renderTablaSocios();
+}
+
+function renderTheadSocios(){
+  document.getElementById('theadSocios').innerHTML = COLUMNAS_SOCIOS.map(c=>{
+    if(!c.ordenable) return `<th>${c.label}</th>`;
+    const activa=ordenActual.campo===c.campo;
+    const flecha=activa?(ordenActual.dir==='asc'?' ▲':' ▼'):'';
+    return `<th style="cursor:pointer;user-select:none" onclick="ordenarPor('${c.campo}')">${c.label}${flecha}</th>`;
+  }).join('');
+}
+
 function renderTablaSocios(){
+  renderTheadSocios();
   const tbody=document.getElementById('tablaSocios');
-  const lista=sociosActuales.filter(socioPasaFiltro);
+  let lista=sociosActuales.filter(socioPasaFiltro);
+  if(ordenActual.campo){
+    const campo=ordenActual.campo, dir=ordenActual.dir==='asc'?1:-1;
+    lista=[...lista].sort((a,b)=>{
+      const va=a[campo], vb=b[campo];
+      if(va==null && vb==null) return 0;
+      if(va==null) return 1;
+      if(vb==null) return -1;
+      return va>vb ? dir : va<vb ? -dir : 0;
+    });
+  }
   tbody.innerHTML=lista.map(m=>`
     <tr>
       <td>${m.nombre}</td>
@@ -414,13 +531,18 @@ function renderStats(socios){
     }
   });
   const activo=(tipo,valor)=>filtroActual && filtroActual.tipo===tipo && filtroActual.valor===valor ? ' activo' : '';
+  const espStat=(cod,nombre)=>{
+    const esp=ESPECIALIDAD_COLOR[cod];
+    const sel=activo('especialidad',cod);
+    return `<div class="stat clicable${sel}" style="border-left:3px solid ${esp.c};${sel?`background:${esp.bg}`:''}" onclick="aplicarFiltro('especialidad','${cod}','Especialidad ${cod}')"><div class="k" style="color:${esp.c}">${nombre}</div><div class="v" style="color:${esp.c}">${porEsp[cod]}</div></div>`;
+  };
   wrap.innerHTML=`
     <div class="stat clicable${filtroActual?'':' activo'}" onclick="quitarFiltro()"><div class="k">Total socios</div><div class="v">${socios.length}</div></div>
     <div class="stat clicable${activo('plan','socio')}" onclick="aplicarFiltro('plan','socio','Plan Socio')"><div class="k">Socios</div><div class="v">${porPlan.socio}</div></div>
     <div class="stat clicable${activo('plan','socio_pro')}" onclick="aplicarFiltro('plan','socio_pro','Plan Socio Pro')"><div class="k">Socios Pro</div><div class="v">${porPlan.socio_pro}</div></div>
-    <div class="stat clicable${activo('especialidad','NOI')}" onclick="aplicarFiltro('especialidad','NOI','Especialidad NOI')"><div class="k">NOI</div><div class="v">${porEsp.NOI}</div></div>
-    <div class="stat clicable${activo('especialidad','COI')}" onclick="aplicarFiltro('especialidad','COI','Especialidad COI')"><div class="k">COI</div><div class="v">${porEsp.COI}</div></div>
-    <div class="stat clicable${activo('especialidad','SAE')}" onclick="aplicarFiltro('especialidad','SAE','Especialidad SAE')"><div class="k">SAE</div><div class="v">${porEsp.SAE}</div></div>
+    ${espStat('NOI','NOI')}
+    ${espStat('COI','COI')}
+    ${espStat('SAE','SAE')}
     <div class="stat clicable${activo('vencer',true)}" onclick="aplicarFiltro('vencer',true,'Vencen en 30 días')"><div class="k">Vencen en 30 días</div><div class="v${porVencer?' warn':''}">${porVencer}</div></div>
   `;
 }
