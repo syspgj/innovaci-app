@@ -44,7 +44,7 @@ async function mandarTelegram(botToken, chatId, texto) {
   const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text: texto, parse_mode: 'Markdown' }),
+    body: JSON.stringify({ chat_id: chatId, text: texto, parse_mode: 'HTML' }),
   });
   if (!res.ok) {
     const t = await res.text();
@@ -56,6 +56,16 @@ async function mandarTelegram(botToken, chatId, texto) {
 
 const ESPECIALIDAD_LABEL = { NOI: 'NOI', COI: 'COI', SAE: 'SAE' };
 const PLAN_LABEL = { socio: 'Socio', socio_pro: 'Socio Pro' };
+
+// Escapa los 3 caracteres especiales de parse_mode:'HTML' de Telegram.
+// Necesario porque el nombre/detalle vienen de datos reales (nombre del
+// socio, su texto de dudas) y no deben poder romper el parseo del mensaje —
+// a diferencia de Markdown legacy, aquí basta escapar &, < y > (nada de
+// *, _, [ ] como en Markdown, que es justo lo que tronaba con
+// "@innovaci_karen").
+function esc(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 function fechaLarga(fechaIso) {
   if (!fechaIso) return '—';
@@ -103,15 +113,15 @@ export default async function handler(req, res) {
     // por si algún día cambia de cuenta de Telegram o se agrega otra
     // instructora. Si no se encuentra, el mensaje sale sin @mención (igual
     // que el patrón ya usado en academia-portal-avisar-instructora.js).
-    let mencionKaren = '*Karen*';
+    let mencionKaren = '<b>Karen</b>';
     if (skey) {
       try {
         const firmantes = await sb(`academia_firmantes?nombre=ilike.*karen*&select=nombre,telegram_usuario&limit=1`, 'GET', skey);
         const karen = (firmantes || [])[0];
         if (karen) {
           mencionKaren = karen.telegram_usuario
-            ? `${karen.telegram_usuario.trim()} — *${karen.nombre}*`
-            : `*${karen.nombre || 'Karen'}*`;
+            ? `${esc(karen.telegram_usuario.trim())} — <b>${esc(karen.nombre)}</b>`
+            : `<b>${esc(karen.nombre || 'Karen')}</b>`;
         }
       } catch (e) {
         // si falla la consulta, se sigue con la mención genérica — no debe
@@ -121,14 +131,14 @@ export default async function handler(req, res) {
 
     const especialidadLbl = ESPECIALIDAD_LABEL[especialidad] || especialidad || '—';
     const planLbl = PLAN_LABEL[plan] || plan || '—';
-    const socioRef = `${nombre}${numero_miembro ? ` (#${numero_miembro})` : ''}`;
+    const socioRef = `${esc(nombre)}${numero_miembro ? ` (#${esc(numero_miembro)})` : ''}`;
 
     const texto =
-      `📚 *Nueva solicitud de sesión académica privada — Círculo Innovaci*\n\n` +
-      `Socio: *${socioRef}*\n` +
-      `Plan: ${especialidadLbl} · ${planLbl}\n` +
-      `Solicitado: ${fechaLarga(solicitado_en)}\n\n` +
-      `Curso y dudas:\n${detalle}\n\n` +
+      `📚 <b>Nueva solicitud de sesión académica privada — Círculo Innovaci</b>\n\n` +
+      `Socio: <b>${socioRef}</b>\n` +
+      `Plan: ${esc(especialidadLbl)} · ${esc(planLbl)}\n` +
+      `Solicitado: ${esc(fechaLarga(solicitado_en))}\n\n` +
+      `Curso y dudas:\n${esc(detalle)}\n\n` +
       `${mencionKaren} ¿qué día y hora puedes atenderla? Responde aquí con la fecha y hora propuestas.`;
 
     await mandarTelegram(botToken, capacitacionChatId, texto);
