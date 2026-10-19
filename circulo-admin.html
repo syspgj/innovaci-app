@@ -106,14 +106,23 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
   <div class="card">
     <h2>Resumen</h2>
     <div id="filtroAviso"></div>
+    <div class="stats" id="statsWrapTop" style="margin-bottom:14px"></div>
     <div class="stats" id="statsWrap"></div>
   </div>
 
   <div class="card">
     <h2>Solicitudes de socios</h2>
-    <div class="sub" style="margin-bottom:6px">Laboratorio, sesiones privadas, acompañantes y crédito por referido que los socios piden desde su portal. Tú las confirmas o rechazas aquí.</div>
+    <div class="sub" style="margin-bottom:14px">Laboratorio, sesiones privadas, acompañantes y crédito por referido que los socios piden desde su portal. Tú las confirmas o rechazas aquí.</div>
     <div id="solicitudesMsg"></div>
-    <div id="listaSolicitudes"></div>
+
+    <h2 style="font-size:13px;color:var(--text2);margin-bottom:10px">🧪 Laboratorio Virtual</h2>
+    <div id="listaLaboratorio" style="margin-bottom:22px"></div>
+
+    <h2 style="font-size:13px;color:var(--text2);margin-bottom:10px">🎓 Sesiones académicas</h2>
+    <div id="listaSesiones" style="margin-bottom:22px"></div>
+
+    <h2 style="font-size:13px;color:var(--text2);margin-bottom:10px">🤝 Acompañante y crédito Innovaci</h2>
+    <div id="listaBeneficios"></div>
   </div>
 
   <div class="card">
@@ -539,10 +548,12 @@ function renderStats(socios){
     const sel=activo('especialidad',cod);
     return `<div class="stat clicable${sel}" style="border-left:3px solid ${esp.c};${sel?`background:${esp.bg}`:''}" onclick="aplicarFiltro('especialidad','${cod}','Especialidad ${cod}')"><div class="k" style="color:${esp.c}">${nombre}</div><div class="v" style="color:${esp.c}">${porEsp[cod]}</div></div>`;
   };
-  wrap.innerHTML=`
+  document.getElementById('statsWrapTop').innerHTML=`
     <div class="stat clicable${filtroActual?'':' activo'}" onclick="quitarFiltro()"><div class="k">Total socios</div><div class="v">${socios.length}</div></div>
     <div class="stat clicable${activo('plan','socio')}" onclick="aplicarFiltro('plan','socio','Plan Socio')"><div class="k">Socios</div><div class="v">${porPlan.socio}</div></div>
     <div class="stat clicable${activo('plan','socio_pro')}" onclick="aplicarFiltro('plan','socio_pro','Plan Socio Pro')"><div class="k">Socios Pro</div><div class="v">${porPlan.socio_pro}</div></div>
+  `;
+  wrap.innerHTML=`
     ${espStat('NOI','NOI')}
     ${espStat('COI','COI')}
     ${espStat('SAE','SAE')}
@@ -598,11 +609,60 @@ function abrirEdicion(id){
           <button class="btn secondary" onclick="cerrarModal()">Cancelar</button>
         </div>
         <div id="modalMsg"></div>
+        <div style="margin-top:22px;padding-top:18px;border-top:1px solid var(--border)">
+          <h2 style="font-size:13px">Historial del socio</h2>
+          <div id="histSocio" class="sub">Cargando historial…</div>
+        </div>
       </div>
     </div>
   `;
+  cargarHistorialSocio(m.id);
 }
 function cerrarModal(){ document.getElementById('modalWrap').innerHTML=''; }
+
+// Historial completo de un socio — laboratorio, sesiones privadas,
+// acompañante/crédito y constancias (cursos ya concluidos en Academia).
+// Pedido por Jp: ver todo esto en la ficha del socio sin tener que buscarlo
+// por separado. Reusa circulo_portal_publico, la misma vista que arma el
+// portal del socio, para no duplicar la lógica de los joins con Academia.
+async function cargarHistorialSocio(membresiaId){
+  const box=document.getElementById('histSocio');
+  const {data,error}=await sb.from('circulo_portal_publico')
+    .select('beneficios_usados,constancias')
+    .eq('membresia_id',membresiaId)
+    .single();
+  if(error){ box.innerHTML=`<span style="color:var(--red)">${error.message}</span>`; return; }
+  const beneficios=data?.beneficios_usados||[];
+  const constancias=data?.constancias||[];
+  if(!beneficios.length && !constancias.length){ box.innerHTML='Sin actividad todavía.'; return; }
+  const fh=(iso)=>iso?new Date(iso).toLocaleString('es-MX',{day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit'}):'—';
+  const fd=(f)=>f?new Date(f+'T00:00:00').toLocaleDateString('es-MX',{day:'numeric',month:'short',year:'numeric'}):'—';
+  const filaBeneficio=(b)=>{
+    let detalle='';
+    if(b.tipo==='laboratorio' && b.estado==='asignado'){
+      detalle=`Vigencia: ${fd(b.lab_fecha_inicio)} → ${fd(b.lab_fecha_fin)}`;
+    } else if(b.tipo==='sesion_academica'){
+      if(b.estado==='propuesta') detalle=`Fecha propuesta por Karen: ${fh(b.fecha_programada)}`;
+      else if(b.estado==='programada') detalle=`Confirmada: ${fh(b.fecha_programada)}${b.enlace_zoom?' · con Zoom':''}`;
+      else if(b.estado==='concluida'||b.estado==='no_asistio') detalle=`Sesión: ${fh(b.fecha_programada)}`;
+    } else if((b.tipo==='acompanante'||b.tipo==='credito_referido') && b.estado==='compra_confirmada'){
+      detalle=b.producto_comprado||'Compra confirmada';
+    }
+    return `<div style="font-size:12px;padding:6px 0;border-top:1px solid #f1f3f5">
+      <strong>${TIPO_BENEFICIO_LABEL[b.tipo]||b.tipo}</strong> — ${ESTADO_BENEFICIO_LABEL[b.estado]||b.estado}
+      <span style="color:var(--text3)"> · solicitado ${fh(b.solicitado_en)}</span>
+      ${detalle?`<div style="color:var(--text2);margin-top:2px">${detalle}</div>`:''}
+      ${b.detalle?`<div style="color:var(--text3);margin-top:2px;white-space:pre-wrap">${b.detalle}</div>`:''}
+    </div>`;
+  };
+  const filaConstancia=(c)=>`<div style="font-size:12px;padding:6px 0;border-top:1px solid #f1f3f5">
+    <strong>Constancia</strong> — folio ${c.folio||'—'} <span style="color:var(--text3)">· emitida ${fd(c.fecha_emision)}</span>
+  </div>`;
+  box.innerHTML = `
+    ${beneficios.map(filaBeneficio).join('')}
+    ${constancias.map(filaConstancia).join('')}
+  `;
+}
 
 async function guardarEdicion(id){
   const val=i=>document.getElementById(i).value;
@@ -670,7 +730,6 @@ const ESTADO_BENEFICIO_LABEL={
 };
 
 async function cargarSolicitudes(){
-  const wrap=document.getElementById('listaSolicitudes');
   // Se muestran las que siguen requiriendo una acción del admin — las
   // terminales (asignado/concluida/no_asistio/compra_confirmada/rechazado)
   // ya no aparecen aquí, quedan solo en el historial de cada socio.
@@ -680,7 +739,21 @@ async function cargarSolicitudes(){
     .order('created_at',{ascending:true});
   if(error){ document.getElementById('solicitudesMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return; }
   const solicitudes=data||[];
-  wrap.innerHTML = solicitudes.map(s=>{
+  // Separadas en 3 bloques — pedido por Jp (191026): laboratorio, sesiones
+  // académicas y beneficios (acompañante + crédito referido) cada uno en su
+  // propia tarjeta, en vez de una sola lista mezclada.
+  const porTipo={
+    laboratorio: solicitudes.filter(s=>s.tipo==='laboratorio'),
+    sesion_academica: solicitudes.filter(s=>s.tipo==='sesion_academica'),
+    beneficios: solicitudes.filter(s=>s.tipo==='acompanante'||s.tipo==='credito_referido'),
+  };
+  document.getElementById('listaLaboratorio').innerHTML = renderFilasSolicitudes(porTipo.laboratorio,'Sin solicitudes de laboratorio pendientes.');
+  document.getElementById('listaSesiones').innerHTML = renderFilasSolicitudes(porTipo.sesion_academica,'Sin solicitudes de sesiones académicas pendientes.');
+  document.getElementById('listaBeneficios').innerHTML = renderFilasSolicitudes(porTipo.beneficios,'Sin solicitudes de acompañante o crédito pendientes.');
+}
+
+function renderFilasSolicitudes(solicitudes, vacioTexto){
+  return solicitudes.map(s=>{
     const m=s.circulo_membresias||{};
     const nombre=(m.nombre||'—').replace(/'/g,"\\'");
     const email=m.email||'';
@@ -693,13 +766,15 @@ async function cargarSolicitudes(){
         acciones=`<button class="btn small" onclick="abrirEnviarKaren('${s.id}','${nombre}','${m.numero_miembro||''}','${m.especialidad||''}','${m.plan||''}')">Enviar a Karen (Telegram)</button>
                    <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar — dudas no especificadas</button>`;
       } else if(s.estado==='en_revision_karen'){
-        acciones=`<button class="btn small" onclick="abrirCapturarPropuesta('${s.id}','${s.estado}','${nombre}')">Capturar fecha propuesta por Karen</button>`;
+        acciones=`<button class="btn small" onclick="abrirCapturarPropuesta('${s.id}','${s.estado}','${nombre}')">Capturar fecha propuesta por Karen</button>
+                   <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar</button>`;
       } else if(s.estado==='propuesta'){
         const waDigits=(m.telefono||'').replace(/\D/g,'');
         const fechaTxt=s.fecha_programada?fmtFechaHoraAdmin(s.fecha_programada):'la fecha propuesta';
         const waMsg=encodeURIComponent(`Hola ${nombre.replace(/\\'/g,"'")}, ¿qué tal? Muy buenas tardes. Fíjate que ya lo revisamos y tu sesión académica privada puede ser el ${fechaTxt}. Agradeceremos que nos comentes si confirmas o deseas que busquemos otra fecha.`);
         acciones=`${waDigits?`<a class="btn secondary small" href="https://wa.me/${waDigits}?text=${waMsg}" target="_blank" rel="noopener">Enviar WhatsApp al socio</a>`:''}
-                   <button class="btn small" onclick="abrirConfirmarSesion('${s.id}','${s.estado}','${nombre}')">Confirmar sesión + Zoom</button>`;
+                   <button class="btn small" onclick="abrirConfirmarSesion('${s.id}','${s.estado}','${nombre}')">Confirmar sesión + Zoom</button>
+                   <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar</button>`;
       } else if(s.estado==='programada'){
         acciones=`<button class="btn small" onclick="abrirConcluirSesion('${s.id}','${s.estado}','concluida')">Marcar concluida (subir evidencia)</button>
                    <button class="btn secondary small" onclick="abrirConcluirSesion('${s.id}','${s.estado}','no_asistio')">No asistió</button>`;
@@ -720,7 +795,7 @@ async function cargarSolicitudes(){
       </div>
       <div class="acciones">${acciones}</div>
     </div>`;
-  }).join('') || '<div class="sub">Sin solicitudes pendientes de acción.</div>';
+  }).join('') || `<div class="sub">${vacioTexto}</div>`;
 }
 
 function fmtFechaHoraAdmin(iso){
