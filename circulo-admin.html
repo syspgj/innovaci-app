@@ -194,6 +194,8 @@ let clienteCarteraIdActual = null;
 let sociosActuales = [];
 let filtroActual = null; // {tipo:'plan'|'especialidad'|'vencer', valor}
 let ordenActual = {campo:null, dir:'asc'};
+let usuarioActualId = null; // para registrado_por en circulo_beneficios_historial
+let labBeneficioId = null; // solicitud de laboratorio que se está asignando en el modal
 
 // Colores oficiales de marca de Aspel por especialidad (mismos que
 // circulo-portal.html) — para que NOI/COI/SAE se distingan a simple vista
@@ -380,6 +382,7 @@ async function mostrarApp(){
   document.getElementById('loginWrap').classList.add('hidden');
   document.getElementById('appWrap').classList.remove('hidden');
   document.getElementById('quienSoy').textContent=`${u.nombre} · ${cap(u.rol)}`;
+  usuarioActualId = sess.session.user.id;
   toggleOrigen();
   cargarSocios();
   cargarSolicitudes();
@@ -627,48 +630,246 @@ async function guardarEdicion(id){
 
 // --- Solicitudes de beneficios (laboratorio, sesiones, acompañantes, crédito) ---
 // Las escribe circulo-portal.html en circulo_beneficios_uso con estado
-// 'solicitado' cuando el socio las pide; aquí se confirman o rechazan a mano
-// (nunca se otorgan automático). Por ahora esta lista estará vacía porque
-// esos flujos del portal todavía no están construidos (ver pendientes en
-// claude/circulo-innovaci-fase0-build-171026.md).
+// 'solicitado' cuando el socio las pide. A partir de la séptima ronda
+// (191026), cada tipo de beneficio tiene su propio ciclo de vida — ya no es
+// un simple "Confirmar/Rechazar" — para que nada se cierre sin una
+// evidencia real detrás (asignación real en Academia, fecha/hora + Zoom de
+// la sesión, o referencia de compra real en tienda), y cada cambio de
+// estado queda en circulo_beneficios_historial con fecha y quién lo hizo —
+// ver claude/circulo-innovaci-fase0-build-171026.md.
+//
+// Ciclos:
+//   laboratorio:        solicitado -> asignado (vinculado a una inscripción
+//                        real de Academia, de ahí salen sus fechas) | rechazado
+//   sesion_academica:    solicitado -> programada (fecha/hora real) ->
+//                        realizada (enlace de Zoom) -> concluida | no_asistio
+//                        (aquí se descuenta, no al solicitar) | rechazado
+//   acompanante /
+//   credito_referido:    solicitado -> compra_confirmada (referencia de
+//                        pedido + producto comprado, obligatorios) | rechazado
+
+const TIPO_BENEFICIO_LABEL={laboratorio:'Laboratorio Virtual',sesion_academica:'Sesión académica',acompanante:'Acompañante',credito_referido:'Crédito Innovaci'};
+const ESTADO_BENEFICIO_LABEL={
+  solicitado:'Pendiente de revisión', rechazado:'Rechazado',
+  asignado:'Asignado', programada:'Programada', realizada:'Realizada — pendiente de concluir',
+  concluida:'Concluida', no_asistio:'No asistió', compra_confirmada:'Compra confirmada',
+};
+
 async function cargarSolicitudes(){
   const wrap=document.getElementById('listaSolicitudes');
+  // Se muestran las que siguen requiriendo una acción del admin — las
+  // terminales (asignado/concluida/no_asistio/compra_confirmada/rechazado)
+  // ya no aparecen aquí, quedan solo en el historial de cada socio.
   const {data,error}=await sb.from('circulo_beneficios_uso')
     .select('*, circulo_membresias(nombre,email)')
-    .eq('estado','solicitado')
+    .in('estado',['solicitado','programada','realizada'])
     .order('created_at',{ascending:true});
   if(error){ document.getElementById('solicitudesMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return; }
   const solicitudes=data||[];
-  wrap.innerHTML = solicitudes.map(s=>`
-    <div class="solicitud-row">
-      <div class="info">${s.circulo_membresias?.nombre||'—'} — ${s.tipo}${s.detalle?` (${s.detalle})`:''}<small>${s.circulo_membresias?.email||''} · solicitado ${new Date(s.created_at).toLocaleDateString('es-MX')}</small></div>
-      <div class="acciones">
-        <button class="btn small" onclick="resolverSolicitud('${s.id}','confirmado','${s.tipo}')">Confirmar</button>
-        <button class="btn secondary small" onclick="resolverSolicitud('${s.id}','rechazado','${s.tipo}')">Rechazar</button>
+  wrap.innerHTML = solicitudes.map(s=>{
+    const nombre=(s.circulo_membresias?.nombre||'—').replace(/'/g,"\\'");
+    const email=s.circulo_membresias?.email||'';
+    let acciones='';
+    if(s.tipo==='laboratorio' && s.estado==='solicitado'){
+      acciones=`<button class="btn small" onclick="abrirAsignarLaboratorio('${s.id}','${nombre}','${email}')">Asignar en Academia</button>
+                 <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar</button>`;
+    } else if(s.tipo==='sesion_academica'){
+      if(s.estado==='solicitado'){
+        acciones=`<button class="btn small" onclick="abrirProgramarSesion('${s.id}','${s.estado}','${nombre}')">Programar</button>
+                   <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar</button>`;
+      } else if(s.estado==='programada'){
+        acciones=`<button class="btn small" onclick="abrirZoomSesion('${s.id}','${s.estado}','${nombre}')">Agregar Zoom y marcar realizada</button>`;
+      } else if(s.estado==='realizada'){
+        acciones=`<button class="btn small" onclick="concluirSesion('${s.id}','${s.estado}','concluida')">Marcar concluida</button>
+                   <button class="btn secondary small" onclick="concluirSesion('${s.id}','${s.estado}','no_asistio')">No asistió</button>`;
+      }
+    } else if((s.tipo==='acompanante' || s.tipo==='credito_referido') && s.estado==='solicitado'){
+      acciones=`<button class="btn small" onclick="abrirConfirmarCompra('${s.id}','${s.estado}','${nombre}','${TIPO_BENEFICIO_LABEL[s.tipo]}')">Confirmar compra</button>
+                 <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar</button>`;
+    }
+    return `<div class="solicitud-row">
+      <div class="info">${nombre} — ${TIPO_BENEFICIO_LABEL[s.tipo]||s.tipo}${s.detalle?` (${s.detalle})`:''}
+        <small>${email} · ${ESTADO_BENEFICIO_LABEL[s.estado]||s.estado} · solicitado ${new Date(s.created_at).toLocaleDateString('es-MX')}</small>
+        <small><a href="#" onclick="verHistorialBeneficio(event,'${s.id}')">Ver historial</a></small>
+        <div id="hist-${s.id}" class="hidden" style="margin-top:6px"></div>
       </div>
-    </div>
-  `).join('') || '<div class="sub">Sin solicitudes pendientes.</div>';
+      <div class="acciones">${acciones}</div>
+    </div>`;
+  }).join('') || '<div class="sub">Sin solicitudes pendientes de acción.</div>';
 }
 
-// Al confirmar una Sesión académica, se pide la fecha/hora acordada con el
-// socio y se agrega al detalle de su solicitud — así, aunque todavía no
-// existe un campo propio de "agendado" en la BD, el socio SÍ ve la fecha
-// confirmada en su portal (historial de ese beneficio), no solo la
-// palabra "Confirmado" (pedido por Jp, 191026).
-async function resolverSolicitud(id,nuevoEstado,tipo){
-  const updates={estado:nuevoEstado};
-  if(tipo==='sesion_academica' && nuevoEstado==='confirmado'){
-    const fecha=prompt('Fecha y hora acordada con el socio para su sesión académica (el socio la verá en su portal):','');
-    if(fecha===null) return; // el admin canceló el prompt, no se confirma nada
-    if(fecha.trim()){
-      const {data:row}=await sb.from('circulo_beneficios_uso').select('detalle').eq('id',id).maybeSingle();
-      const detalleActual=row?.detalle||'';
-      updates.detalle=detalleActual ? `${detalleActual} — Sesión agendada: ${fecha.trim()}` : `Sesión agendada: ${fecha.trim()}`;
-    }
-  }
+// Historial — cada cambio de estado de una solicitud, con quién y cuándo.
+// Pedido por Jp (191026): "no me han dado mis sesiones... tengo que tener
+// muy bien controlado" cuándo se solicitó cada cosa y cuándo se resolvió.
+async function registrarHistorialBeneficio(beneficioId, estadoAnterior, estadoNuevo, nota){
+  await sb.from('circulo_beneficios_historial').insert({
+    beneficio_uso_id: beneficioId,
+    estado_anterior: estadoAnterior,
+    estado_nuevo: estadoNuevo,
+    nota: nota||null,
+    registrado_por: usuarioActualId,
+  });
+}
+
+async function aplicarCambioBeneficio(id, estadoActual, updates, nota){
   const {error}=await sb.from('circulo_beneficios_uso').update(updates).eq('id',id);
-  if(error){ document.getElementById('solicitudesMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return; }
+  if(error){ document.getElementById('solicitudesMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return false; }
+  await registrarHistorialBeneficio(id, estadoActual, updates.estado, nota);
   cargarSolicitudes();
+  return true;
+}
+
+async function verHistorialBeneficio(ev,beneficioId){
+  ev.preventDefault();
+  const box=document.getElementById(`hist-${beneficioId}`);
+  if(!box.classList.contains('hidden')){ box.classList.add('hidden'); box.innerHTML=''; return; }
+  const {data,error}=await sb.from('circulo_beneficios_historial').select('*').eq('beneficio_uso_id',beneficioId).order('created_at',{ascending:true});
+  if(error){ box.innerHTML=`<span style="color:var(--red);font-size:11px">${error.message}</span>`; box.classList.remove('hidden'); return; }
+  box.innerHTML=(data||[]).map(h=>`<div style="font-size:11px;color:var(--text3)">${new Date(h.created_at).toLocaleString('es-MX')} — ${ESTADO_BENEFICIO_LABEL[h.estado_anterior]||h.estado_anterior||'—'} → ${ESTADO_BENEFICIO_LABEL[h.estado_nuevo]||h.estado_nuevo}${h.nota?` (${h.nota})`:''}</div>`).join('') || '<div style="font-size:11px;color:var(--text3)">Sin historial todavía.</div>';
+  box.classList.remove('hidden');
+}
+
+// Rechazar — disponible para cualquier tipo desde 'solicitado' (nota
+// opcional, para dejar registrado el motivo real).
+async function rechazarSolicitud(id, estadoActual){
+  const nota=prompt('Motivo del rechazo (opcional):','');
+  if(nota===null) return;
+  await aplicarCambioBeneficio(id, estadoActual, {estado:'rechazado'}, nota.trim()||null);
+}
+
+// --- Laboratorio Virtual: asignar a una inscripción real de Academia ---
+// En vez de "Confirmar" sin más, el admin busca al participante en Academia
+// y vincula el beneficio a su inscripción real — de ahí salen las fechas de
+// vigencia del laboratorio que ve el socio en su portal.
+function abrirAsignarLaboratorio(beneficioId, nombreSocio, emailSocio){
+  labBeneficioId=beneficioId;
+  document.getElementById('modalWrap').innerHTML=`
+    <div class="overlay" onclick="if(event.target===this) cerrarModal()">
+      <div class="modal">
+        <div class="modal-head"><h2 style="margin-bottom:0">Asignar Laboratorio Virtual — ${nombreSocio}</h2><button onclick="cerrarModal()">✕</button></div>
+        <div class="sub">Busca la inscripción real en Academia (por correo o nombre) para vincular este beneficio a sus fechas reales de laboratorio.</div>
+        <div class="field"><label>Buscar en Academia</label><input id="labBuscar" autocomplete="off" oninput="buscarInscripcionLab()" placeholder="Nombre o correo del participante" value="${emailSocio||''}"></div>
+        <div id="labResultados" style="margin-top:10px"></div>
+        <div id="modalMsg"></div>
+      </div>
+    </div>
+  `;
+  buscarInscripcionLab();
+}
+let labBuscarTimeout=null;
+async function buscarInscripcionLab(){
+  const q=document.getElementById('labBuscar').value.trim();
+  const wrap=document.getElementById('labResultados');
+  clearTimeout(labBuscarTimeout);
+  if(q.length<3){ wrap.innerHTML=''; return; }
+  labBuscarTimeout=setTimeout(async ()=>{
+    const {data:participantes,error:e1}=await sb.from('academia_participantes')
+      .select('id,nombre,mail')
+      .or(`nombre.ilike.%${q}%,mail.ilike.%${q}%`)
+      .limit(10);
+    if(e1 || !participantes || !participantes.length){ wrap.innerHTML='<div class="sub">Sin resultados en Academia.</div>'; return; }
+    const ids=participantes.map(p=>p.id);
+    const {data:inscripciones,error:e2}=await sb.from('academia_inscripciones')
+      .select('id,nivel_acceso,fecha_inicio_laboratorio,fecha_fin_laboratorio,participante_id,academia_generaciones(clave,academia_cursos(nombre))')
+      .in('participante_id',ids)
+      .order('created_at',{ascending:false})
+      .limit(20);
+    if(e2 || !inscripciones || !inscripciones.length){ wrap.innerHTML='<div class="sub">El participante existe en Academia pero no tiene inscripciones todavía.</div>'; return; }
+    const porParticipante=Object.fromEntries(participantes.map(p=>[p.id,p]));
+    wrap.innerHTML=inscripciones.map(i=>{
+      const p=porParticipante[i.participante_id]||{};
+      const curso=i.academia_generaciones?.academia_cursos?.nombre||'Curso';
+      const gen=i.academia_generaciones?.clave||'';
+      return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:#f8f9fa;border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;font-size:12.5px">
+        <span><strong>${p.nombre||'—'}</strong> (${p.mail||'—'})<br>${curso} · ${gen} · nivel ${i.nivel_acceso||'—'}<br>Laboratorio: ${i.fecha_inicio_laboratorio||'sin fecha'} → ${i.fecha_fin_laboratorio||'sin fecha'}</span>
+        <button type="button" class="btn small" onclick="asignarLaboratorio('${i.id}')">Asignar</button>
+      </div>`;
+    }).join('');
+  },300);
+}
+async function asignarLaboratorio(inscripcionId){
+  const ok=await aplicarCambioBeneficio(labBeneficioId,'solicitado',{estado:'asignado',academia_inscripcion_id:inscripcionId},'Asignado a inscripción real de Academia');
+  if(ok) cerrarModal();
+}
+
+// --- Sesión académica: programar -> Zoom/realizada -> concluida/no_asistio ---
+function abrirProgramarSesion(beneficioId, estadoActual, nombreSocio){
+  document.getElementById('modalWrap').innerHTML=`
+    <div class="overlay" onclick="if(event.target===this) cerrarModal()">
+      <div class="modal">
+        <div class="modal-head"><h2 style="margin-bottom:0">Programar sesión académica — ${nombreSocio}</h2><button onclick="cerrarModal()">✕</button></div>
+        <div class="field"><label>Fecha y hora acordada con el socio</label><input id="sesFechaProg" type="datetime-local"></div>
+        <div style="display:flex;gap:10px;margin-top:14px">
+          <button class="btn" onclick="confirmarProgramarSesion('${beneficioId}','${estadoActual}')">Guardar</button>
+          <button class="btn secondary" onclick="cerrarModal()">Cancelar</button>
+        </div>
+        <div id="modalMsg"></div>
+      </div>
+    </div>
+  `;
+}
+async function confirmarProgramarSesion(beneficioId, estadoActual){
+  const val=document.getElementById('sesFechaProg').value;
+  if(!val){ document.getElementById('modalMsg').innerHTML='<div class="msg err">Captura fecha y hora.</div>'; return; }
+  const iso=new Date(val).toISOString();
+  const ok=await aplicarCambioBeneficio(beneficioId, estadoActual, {estado:'programada', fecha_programada:iso}, null);
+  if(ok) cerrarModal();
+}
+
+function abrirZoomSesion(beneficioId, estadoActual, nombreSocio){
+  document.getElementById('modalWrap').innerHTML=`
+    <div class="overlay" onclick="if(event.target===this) cerrarModal()">
+      <div class="modal">
+        <div class="modal-head"><h2 style="margin-bottom:0">Enlace de Zoom — ${nombreSocio}</h2><button onclick="cerrarModal()">✕</button></div>
+        <div class="sub">Al guardar, el socio ya ve este enlace en su portal.</div>
+        <div class="field"><label>Enlace de la reunión</label><input id="sesZoom" placeholder="https://zoom.us/..."></div>
+        <div style="display:flex;gap:10px;margin-top:14px">
+          <button class="btn" onclick="confirmarZoomSesion('${beneficioId}','${estadoActual}')">Guardar y marcar realizada</button>
+          <button class="btn secondary" onclick="cerrarModal()">Cancelar</button>
+        </div>
+        <div id="modalMsg"></div>
+      </div>
+    </div>
+  `;
+}
+async function confirmarZoomSesion(beneficioId, estadoActual){
+  const val=document.getElementById('sesZoom').value.trim();
+  if(!val){ document.getElementById('modalMsg').innerHTML='<div class="msg err">Captura el enlace.</div>'; return; }
+  const ok=await aplicarCambioBeneficio(beneficioId, estadoActual, {estado:'realizada', enlace_zoom:val}, null);
+  if(ok) cerrarModal();
+}
+
+// Aquí es cuando se descuenta de verdad del saldo de 2/vigencia — pedido
+// explícito de Jp (191026): "hasta ese momento se da por concluido y
+// entonces ya se descuenta", no al solicitar.
+async function concluirSesion(beneficioId, estadoActual, resultado){
+  await aplicarCambioBeneficio(beneficioId, estadoActual, {estado:resultado}, null);
+}
+
+// --- Acompañante / Crédito referido: confirmar compra real en tienda ---
+function abrirConfirmarCompra(beneficioId, estadoActual, nombreSocio, tipoLabel){
+  document.getElementById('modalWrap').innerHTML=`
+    <div class="overlay" onclick="if(event.target===this) cerrarModal()">
+      <div class="modal">
+        <div class="modal-head"><h2 style="margin-bottom:0">Confirmar compra — ${tipoLabel} (${nombreSocio})</h2><button onclick="cerrarModal()">✕</button></div>
+        <div class="sub">Captura la referencia real del pedido en la tienda/Shopify antes de confirmar — esto es lo que respalda el descuento del beneficio.</div>
+        <div class="field"><label>Referencia / número de pedido</label><input id="compraRef"></div>
+        <div class="field"><label>Curso o producto comprado</label><input id="compraProducto"></div>
+        <div style="display:flex;gap:10px;margin-top:14px">
+          <button class="btn" onclick="confirmarCompraBeneficio('${beneficioId}','${estadoActual}')">Confirmar compra</button>
+          <button class="btn secondary" onclick="cerrarModal()">Cancelar</button>
+        </div>
+        <div id="modalMsg"></div>
+      </div>
+    </div>
+  `;
+}
+async function confirmarCompraBeneficio(beneficioId, estadoActual){
+  const ref=document.getElementById('compraRef').value.trim();
+  const prod=document.getElementById('compraProducto').value.trim();
+  if(!ref || !prod){ document.getElementById('modalMsg').innerHTML='<div class="msg err">Captura referencia y producto — es obligatorio para poder confirmar.</div>'; return; }
+  const ok=await aplicarCambioBeneficio(beneficioId, estadoActual, {estado:'compra_confirmada', referencia_pedido:ref, producto_comprado:prod}, null);
+  if(ok) cerrarModal();
 }
 
 sb.auth.getSession().then(({data:{session}})=>{ if(session) mostrarApp(); });

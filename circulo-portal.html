@@ -87,6 +87,9 @@ h1{font-size:23px;font-weight:800;margin-bottom:7px;text-align:center;}
 .pill.solicitado{background:var(--amberbg);color:var(--amber);}
 .pill.confirmado{background:var(--greenbg);color:var(--green);}
 .pill.rechazado{background:var(--redbg);color:var(--red);}
+.pill.programada,.pill.realizada{background:var(--amberbg);color:var(--amber);}
+.pill.asignado,.pill.compra_confirmada,.pill.concluida{background:var(--greenbg);color:var(--green);}
+.pill.no_asistio{background:#eef1f3;color:var(--text3);}
 .benefcard .desc{font-size:12px;color:var(--text2);margin-bottom:10px;}
 .sfield{margin-bottom:8px;}
 .sfield label{display:block;font-size:11px;font-weight:700;color:var(--text2);margin-bottom:4px;}
@@ -241,6 +244,11 @@ function fmtFecha(f){
   const [y,m,d]=f.split('-');
   return `${d}/${m}/${y}`;
 }
+function fmtFechaHora(iso){
+  if(!iso) return '—';
+  const d=new Date(iso);
+  return d.toLocaleString('es-MX',{day:'numeric',month:'long',hour:'numeric',minute:'2-digit'});
+}
 
 // Categorías de curso ya definidas en index.html (Academia) — el catálogo
 // real de cursos de Jp todavía no llega, así que por ahora se usa esta lista
@@ -255,7 +263,17 @@ function ultimaSolicitud(beneficios,tipo){
 }
 
 function pill(estado){
-  const txt={solicitado:'Pendiente de confirmación',confirmado:'Confirmado',rechazado:'Rechazado'}[estado]||estado;
+  const txt={
+    solicitado:'Pendiente de revisión',
+    confirmado:'Confirmado',
+    rechazado:'Rechazado',
+    asignado:'Asignado',
+    programada:'Programada',
+    realizada:'Realizada',
+    concluida:'Concluida',
+    no_asistio:'No asistió',
+    compra_confirmada:'Compra confirmada',
+  }[estado]||estado;
   return `<span class="pill ${estado}">${txt}</span>`;
 }
 
@@ -274,6 +292,48 @@ const BENEFICIO_INFO={
 function historialMini(items){
   if(!items || !items.length) return '';
   return `<div style="margin:0 0 12px">${items.map(b=>`<div class="list-item" style="padding:6px 0;font-size:12px">${b.detalle||''} ${pill(b.estado)}${b.fecha?`<small>${fmtFecha(b.fecha)}</small>`:''}</div>`).join('')}</div>`;
+}
+// Variante de historial para Laboratorio Virtual: cuando el admin ya asignó
+// el acceso a una inscripción real de Academia, muestra la vigencia real
+// (fecha_inicio_laboratorio/fecha_fin_laboratorio), no un "confirmado" vacío.
+function historialLaboratorio(items){
+  if(!items || !items.length) return '';
+  return `<div style="margin:0 0 12px">${items.map(b=>{
+    let extra='';
+    if(b.estado==='asignado' && (b.lab_fecha_inicio||b.lab_fecha_fin)){
+      extra=`<div style="font-size:11.5px;color:var(--text3);margin-top:4px">Vigencia del laboratorio: ${fmtFecha(b.lab_fecha_inicio)} → ${fmtFecha(b.lab_fecha_fin)}</div>`;
+    }
+    return `<div class="list-item" style="padding:6px 0;font-size:12px">${b.detalle||''} ${pill(b.estado)}${b.fecha?`<small>${fmtFecha(b.fecha)}</small>`:''}${extra}</div>`;
+  }).join('')}</div>`;
+}
+// Variante de historial para Sesión académica: muestra fecha/hora programada
+// y, cuando ya se agregó, el enlace de Zoom para entrar a la sesión —
+// pedido por Jp (191026): "en cuanto se concluya... se descuenta".
+function historialSesion(items){
+  if(!items || !items.length) return '';
+  return `<div style="margin:0 0 12px">${items.map(b=>{
+    let extra='';
+    if(b.estado==='programada' && b.fecha_programada){
+      extra=`<div style="font-size:12px;color:var(--navy);font-weight:700;margin-top:4px">Programada: ${fmtFechaHora(b.fecha_programada)}</div>`;
+    } else if(b.estado==='realizada'){
+      extra=`<div style="font-size:12px;color:var(--navy);margin-top:4px">${b.fecha_programada?`Fecha: ${fmtFechaHora(b.fecha_programada)}<br>`:''}${b.enlace_zoom?`<a href="${b.enlace_zoom}" target="_blank" rel="noopener" style="color:var(--brand-blue);font-weight:700">Entrar a tu sesión (Zoom) →</a>`:''}</div>`;
+    } else if((b.estado==='concluida' || b.estado==='no_asistio') && b.fecha_programada){
+      extra=`<div style="font-size:11.5px;color:var(--text3);margin-top:4px">Se realizó: ${fmtFechaHora(b.fecha_programada)}</div>`;
+    }
+    return `<div class="list-item" style="padding:6px 0;font-size:12px">${b.detalle||''} ${pill(b.estado)}${b.fecha?`<small>${fmtFecha(b.fecha)}</small>`:''}${extra}</div>`;
+  }).join('')}</div>`;
+}
+// Variante de historial para Acompañante / Crédito: cuando el admin ya
+// confirmó la compra real en tienda, muestra qué se compró.
+function historialCompra(items){
+  if(!items || !items.length) return '';
+  return `<div style="margin:0 0 12px">${items.map(b=>{
+    let extra='';
+    if(b.estado==='compra_confirmada' && b.producto_comprado){
+      extra=`<div style="font-size:11.5px;color:var(--text3);margin-top:4px">Compra confirmada: ${b.producto_comprado}</div>`;
+    }
+    return `<div class="list-item" style="padding:6px 0;font-size:12px">${b.detalle||''} ${pill(b.estado)}${b.fecha?`<small>${fmtFecha(b.fecha)}</small>`:''}${extra}</div>`;
+  }).join('')}</div>`;
 }
 function tarjetaBeneficio(tipo,pillHtml,descHtml,cuerpoHtml){
   const info=BENEFICIO_INFO[tipo];
@@ -325,8 +385,8 @@ function bloqueLaboratorio(beneficios){
           ✓ Resolver dudas prácticas antes de aplicarlas en tu empresa<br>
           ✓ Ganar confianza en un entorno seguro, sin afectar tu operación
         </div>
-        <div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-top:12px">No incluye: acompañamiento de instructor, uso con nómina productiva o información real de tu empresa, ni sustituye tu licencia comercial de Aspel NOI. Un acceso por curso elegible, en una sola modalidad, sujeto a disponibilidad — se asigna en hasta 15 días.</div>
-        ${historialMini(previas)}
+        <div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-top:12px">No incluye: acompañamiento de instructor, uso con nómina productiva o información real de tu empresa, ni sustituye tu licencia comercial de Aspel NOI. Un acceso por curso elegible, en una sola modalidad, sujeto a disponibilidad — se asigna en hasta 15 días, vinculado a tu inscripción real en Academia.</div>
+        ${historialLaboratorio(previas)}
       </div>
       <div>
         <div style="font-size:12.5px;font-weight:800;color:var(--navy);margin-bottom:10px">Solicita tu acceso</div>
@@ -353,7 +413,7 @@ function bloqueSesion(beneficios){
   const opcionesCurso=catalogo.length
     ? catalogo.map(c=>`<option>${formatCursoTitulo(c.titulo)}</option>`).join('')
     : CURSOS.map(c=>`<option>${c}</option>`).join('');
-  let cuerpo=historialMini(previas);
+  let cuerpo=historialSesion(previas);
   // Los campos quedan ocultos detrás de un botón de "Solicita tu sesión
   // académica" — pedido por Jp (191026, segunda ronda) para que la
   // tarjeta no se vea como un formulario desde el inicio.
@@ -368,7 +428,7 @@ function bloqueSesion(beneficios){
           <input type="checkbox" id="sesConfirmo" style="margin-top:2px">
           <span>Ya revisé la capacitación correspondiente y mi duda sigue sin resolverse</span>
         </label>
-        <div style="font-size:11.5px;color:var(--text2);line-height:1.5;margin-bottom:10px">Recuerda que tu membresía dispone de 2 sesiones académicas privadas. Al hacer esta solicitud, se descontará una.</div>
+        <div style="font-size:11.5px;color:var(--text2);line-height:1.5;margin-bottom:10px">Recuerda que tu membresía dispone de 2 sesiones académicas privadas. Esta solicitud ocupa uno de tus 2 lugares disponibles; se dará por utilizada hasta que la sesión se concluya.</div>
         <button class="btn chico" onclick="solicitarSesion(this)">Hacer solicitud</button>
       </div>
     </details>`;
@@ -388,8 +448,9 @@ function solicitarSesion(btn){
 
 function bloqueAcompanante(beneficios){
   const esPro=membresiaActual.plan==='socio_pro';
-  const cuerpo=`<button class="btn chico" onclick="solicitarAcompanante(this)">Solicítalo ahora</button>
-  <div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:10px">Cada beneficio que se emite es válido por 30 días y no es acumulable con otras promociones. Tu membresía incluye ${esPro?4:2} beneficios de acompañante al año.</div>`;
+  const previas=(beneficios||[]).filter(b=>b.tipo==='acompanante');
+  const cuerpo=`${historialCompra(previas)}<button class="btn chico" onclick="solicitarAcompanante(this)">Solicítalo ahora</button>
+  <div style="font-size:11px;color:var(--text3);line-height:1.5;margin-top:10px">Cada beneficio que se emite es válido por 30 días y no es acumulable con otras promociones. Tu membresía incluye ${esPro?4:2} beneficios de acompañante al año. Se confirma hasta que se registre la compra real del cupón.</div>`;
   return tarjetaBeneficio('acompanante','','',cuerpo);
 }
 function solicitarAcompanante(btn){
@@ -453,7 +514,7 @@ function bloqueCredito(beneficios){
       <div>
         <div style="font-size:13.5px;color:var(--navy);line-height:1.65;font-weight:600">Obtén saldo en tu cuenta para comprar cursos no incluidos — recomienda la membresía ${espLabel} de Círculo Innovaci a un colega, familiar o amigo.</div>
         <div style="font-size:13px;color:var(--text2);line-height:1.7;margin-top:8px">Si la adquiere, tú obtienes saldo para comprar algún otro curso o capacitación dentro de Innovaci. Nosotros nos comunicamos con tu recomendado, y en cuanto su compra quede confirmada, verás el saldo reflejado en tu Crédito Innovaci.</div>
-        ${historialMini(previas)}
+        ${historialCompra(previas)}
         <div class="sfield" style="margin-top:10px"><label>Nombre de tu conocido</label><input id="credNombre" placeholder="Nombre completo"></div>
         <div class="sfield"><label>Teléfono de tu conocido</label><input id="credTel" placeholder="10 dígitos" inputmode="tel"></div>
         <button class="btn chico" onclick="solicitarCredito(this)">Enviar recomendación</button>
@@ -682,7 +743,19 @@ function mostrarResultado(m){
       </div>
       ${beneficios.length ? `<div class="panel">
         <div class="section-title">Historial de beneficios</div>
-        ${beneficios.map(b=>`<div class="list-item">${(BENEFICIO_INFO[b.tipo]||{}).titulo||b.tipo}${b.detalle?` — ${b.detalle}`:''} ${pill(b.estado||'confirmado')}<small>${fmtFecha(b.fecha)}</small></div>`).join('')}
+        ${beneficios.map(b=>{
+          let extra='';
+          if(b.tipo==='sesion_academica'){
+            if(b.estado==='programada' && b.fecha_programada) extra=` · Programada: ${fmtFechaHora(b.fecha_programada)}`;
+            else if(b.estado==='realizada' && b.fecha_programada) extra=` · ${fmtFechaHora(b.fecha_programada)}${b.enlace_zoom?' · Zoom disponible arriba':''}`;
+            else if((b.estado==='concluida'||b.estado==='no_asistio') && b.fecha_programada) extra=` · ${fmtFechaHora(b.fecha_programada)}`;
+          } else if(b.tipo==='laboratorio' && b.estado==='asignado' && (b.lab_fecha_inicio||b.lab_fecha_fin)){
+            extra=` · Vigencia: ${fmtFecha(b.lab_fecha_inicio)} → ${fmtFecha(b.lab_fecha_fin)}`;
+          } else if((b.tipo==='acompanante'||b.tipo==='credito_referido') && b.estado==='compra_confirmada' && b.producto_comprado){
+            extra=` · ${b.producto_comprado}`;
+          }
+          return `<div class="list-item">${(BENEFICIO_INFO[b.tipo]||{}).titulo||b.tipo}${b.detalle?` — ${b.detalle}`:''} ${pill(b.estado||'confirmado')}<small>${fmtFecha(b.fecha)}${extra}</small></div>`;
+        }).join('')}
       </div>` : ''}
 
       <div class="foot">¿Dudas sobre tu membresía? Escribe a Innovaci por WhatsApp o correo.</div>
