@@ -643,15 +643,30 @@ async function cargarSolicitudes(){
     <div class="solicitud-row">
       <div class="info">${s.circulo_membresias?.nombre||'—'} — ${s.tipo}${s.detalle?` (${s.detalle})`:''}<small>${s.circulo_membresias?.email||''} · solicitado ${new Date(s.created_at).toLocaleDateString('es-MX')}</small></div>
       <div class="acciones">
-        <button class="btn small" onclick="resolverSolicitud('${s.id}','confirmado')">Confirmar</button>
-        <button class="btn secondary small" onclick="resolverSolicitud('${s.id}','rechazado')">Rechazar</button>
+        <button class="btn small" onclick="resolverSolicitud('${s.id}','confirmado','${s.tipo}')">Confirmar</button>
+        <button class="btn secondary small" onclick="resolverSolicitud('${s.id}','rechazado','${s.tipo}')">Rechazar</button>
       </div>
     </div>
   `).join('') || '<div class="sub">Sin solicitudes pendientes.</div>';
 }
 
-async function resolverSolicitud(id,nuevoEstado){
-  const {error}=await sb.from('circulo_beneficios_uso').update({estado:nuevoEstado}).eq('id',id);
+// Al confirmar una Sesión académica, se pide la fecha/hora acordada con el
+// socio y se agrega al detalle de su solicitud — así, aunque todavía no
+// existe un campo propio de "agendado" en la BD, el socio SÍ ve la fecha
+// confirmada en su portal (historial de ese beneficio), no solo la
+// palabra "Confirmado" (pedido por Jp, 191026).
+async function resolverSolicitud(id,nuevoEstado,tipo){
+  const updates={estado:nuevoEstado};
+  if(tipo==='sesion_academica' && nuevoEstado==='confirmado'){
+    const fecha=prompt('Fecha y hora acordada con el socio para su sesión académica (el socio la verá en su portal):','');
+    if(fecha===null) return; // el admin canceló el prompt, no se confirma nada
+    if(fecha.trim()){
+      const {data:row}=await sb.from('circulo_beneficios_uso').select('detalle').eq('id',id).maybeSingle();
+      const detalleActual=row?.detalle||'';
+      updates.detalle=detalleActual ? `${detalleActual} — Sesión agendada: ${fecha.trim()}` : `Sesión agendada: ${fecha.trim()}`;
+    }
+  }
+  const {error}=await sb.from('circulo_beneficios_uso').update(updates).eq('id',id);
   if(error){ document.getElementById('solicitudesMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return; }
   cargarSolicitudes();
 }
