@@ -641,9 +641,21 @@ async function guardarEdicion(id){
 // Ciclos:
 //   laboratorio:        solicitado -> asignado (vinculado a una inscripción
 //                        real de Academia, de ahí salen sus fechas) | rechazado
-//   sesion_academica:    solicitado -> programada (fecha/hora real) ->
-//                        realizada (enlace de Zoom) -> concluida | no_asistio
-//                        (aquí se descuenta, no al solicitar) | rechazado
+//   sesion_academica:    solicitado -> rechazado (si las dudas no están bien
+//                        especificadas — el socio puede volver a solicitar,
+//                        no cuenta contra su cupo de 2) | en_revision_karen
+//                        (el admin ya validó las dudas y las manda por
+//                        Telegram al canal Capacitación INN, @innovaci_karen)
+//                        -> propuesta (Karen responde en Telegram con una
+//                        fecha/hora; el admin la captura aquí — todavía no
+//                        es definitiva, el socio debe confirmarla por
+//                        WhatsApp) -> programada (el socio confirmó por
+//                        WhatsApp; el admin fija la fecha final + enlace de
+//                        Zoom, visible de inmediato en el portal) ->
+//                        concluida | no_asistio (tras la sesión, con
+//                        evidencia subida — aquí se descuenta, no al
+//                        solicitar) — pedido por Jp (191026, séptima/octava
+//                        rondas + esta ronda de control fino).
 //   acompanante /
 //   credito_referido:    solicitado -> compra_confirmada (referencia de
 //                        pedido + producto comprado, obligatorios) | rechazado
@@ -651,7 +663,9 @@ async function guardarEdicion(id){
 const TIPO_BENEFICIO_LABEL={laboratorio:'Laboratorio Virtual',sesion_academica:'Sesión académica',acompanante:'Acompañante',credito_referido:'Crédito Innovaci'};
 const ESTADO_BENEFICIO_LABEL={
   solicitado:'Pendiente de revisión', rechazado:'Rechazado',
-  asignado:'Asignado', programada:'Programada', realizada:'Realizada — pendiente de concluir',
+  asignado:'Asignado',
+  en_revision_karen:'Enviada a Karen (Telegram)', propuesta:'Fecha propuesta — falta confirmar con el socio',
+  programada:'Confirmada', realizada:'Realizada — pendiente de concluir',
   concluida:'Concluida', no_asistio:'No asistió', compra_confirmada:'Compra confirmada',
 };
 
@@ -661,41 +675,57 @@ async function cargarSolicitudes(){
   // terminales (asignado/concluida/no_asistio/compra_confirmada/rechazado)
   // ya no aparecen aquí, quedan solo en el historial de cada socio.
   const {data,error}=await sb.from('circulo_beneficios_uso')
-    .select('*, circulo_membresias(nombre,email)')
-    .in('estado',['solicitado','programada','realizada'])
+    .select('*, circulo_membresias(nombre,email,numero_miembro,telefono,especialidad,plan)')
+    .in('estado',['solicitado','en_revision_karen','propuesta','programada','realizada'])
     .order('created_at',{ascending:true});
   if(error){ document.getElementById('solicitudesMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return; }
   const solicitudes=data||[];
   wrap.innerHTML = solicitudes.map(s=>{
-    const nombre=(s.circulo_membresias?.nombre||'—').replace(/'/g,"\\'");
-    const email=s.circulo_membresias?.email||'';
+    const m=s.circulo_membresias||{};
+    const nombre=(m.nombre||'—').replace(/'/g,"\\'");
+    const email=m.email||'';
     let acciones='';
     if(s.tipo==='laboratorio' && s.estado==='solicitado'){
       acciones=`<button class="btn small" onclick="abrirAsignarLaboratorio('${s.id}','${nombre}','${email}')">Asignar en Academia</button>
                  <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar</button>`;
     } else if(s.tipo==='sesion_academica'){
       if(s.estado==='solicitado'){
-        acciones=`<button class="btn small" onclick="abrirProgramarSesion('${s.id}','${s.estado}','${nombre}')">Programar</button>
-                   <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar</button>`;
+        acciones=`<button class="btn small" onclick="abrirEnviarKaren('${s.id}','${nombre}','${m.numero_miembro||''}','${m.especialidad||''}','${m.plan||''}')">Enviar a Karen (Telegram)</button>
+                   <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar — dudas no especificadas</button>`;
+      } else if(s.estado==='en_revision_karen'){
+        acciones=`<button class="btn small" onclick="abrirCapturarPropuesta('${s.id}','${s.estado}','${nombre}')">Capturar fecha propuesta por Karen</button>`;
+      } else if(s.estado==='propuesta'){
+        const waDigits=(m.telefono||'').replace(/\D/g,'');
+        const fechaTxt=s.fecha_programada?fmtFechaHoraAdmin(s.fecha_programada):'la fecha propuesta';
+        const waMsg=encodeURIComponent(`Hola ${nombre.replace(/\\'/g,"'")}, ¿qué tal? Muy buenas tardes. Fíjate que ya lo revisamos y tu sesión académica privada puede ser el ${fechaTxt}. Agradeceremos que nos comentes si confirmas o deseas que busquemos otra fecha.`);
+        acciones=`${waDigits?`<a class="btn secondary small" href="https://wa.me/${waDigits}?text=${waMsg}" target="_blank" rel="noopener">Enviar WhatsApp al socio</a>`:''}
+                   <button class="btn small" onclick="abrirConfirmarSesion('${s.id}','${s.estado}','${nombre}')">Confirmar sesión + Zoom</button>`;
       } else if(s.estado==='programada'){
-        acciones=`<button class="btn small" onclick="abrirZoomSesion('${s.id}','${s.estado}','${nombre}')">Agregar Zoom y marcar realizada</button>`;
+        acciones=`<button class="btn small" onclick="abrirConcluirSesion('${s.id}','${s.estado}','concluida')">Marcar concluida (subir evidencia)</button>
+                   <button class="btn secondary small" onclick="abrirConcluirSesion('${s.id}','${s.estado}','no_asistio')">No asistió</button>`;
       } else if(s.estado==='realizada'){
-        acciones=`<button class="btn small" onclick="concluirSesion('${s.id}','${s.estado}','concluida')">Marcar concluida</button>
-                   <button class="btn secondary small" onclick="concluirSesion('${s.id}','${s.estado}','no_asistio')">No asistió</button>`;
+        acciones=`<button class="btn small" onclick="abrirConcluirSesion('${s.id}','${s.estado}','concluida')">Marcar concluida (subir evidencia)</button>
+                   <button class="btn secondary small" onclick="abrirConcluirSesion('${s.id}','${s.estado}','no_asistio')">No asistió</button>`;
       }
     } else if((s.tipo==='acompanante' || s.tipo==='credito_referido') && s.estado==='solicitado'){
       acciones=`<button class="btn small" onclick="abrirConfirmarCompra('${s.id}','${s.estado}','${nombre}','${TIPO_BENEFICIO_LABEL[s.tipo]}')">Confirmar compra</button>
                  <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar</button>`;
     }
     return `<div class="solicitud-row">
-      <div class="info">${nombre} — ${TIPO_BENEFICIO_LABEL[s.tipo]||s.tipo}${s.detalle?` (${s.detalle})`:''}
-        <small>${email} · ${ESTADO_BENEFICIO_LABEL[s.estado]||s.estado} · solicitado ${new Date(s.created_at).toLocaleDateString('es-MX')}</small>
+      <div class="info">${nombre}${m.numero_miembro?` <small>(#${m.numero_miembro})</small>`:''} — ${TIPO_BENEFICIO_LABEL[s.tipo]||s.tipo}
+        ${s.detalle?`<div style="font-size:12px;color:var(--text2);margin-top:3px;max-width:420px;white-space:pre-wrap">${s.detalle}</div>`:''}
+        <small>${email} · ${ESTADO_BENEFICIO_LABEL[s.estado]||s.estado} · solicitado ${new Date(s.created_at).toLocaleDateString('es-MX')}${s.fecha_programada?` · ${s.estado==='propuesta'?'Propuesta':'Fecha'}: ${fmtFechaHoraAdmin(s.fecha_programada)}`:''}</small>
         <small><a href="#" onclick="verHistorialBeneficio(event,'${s.id}')">Ver historial</a></small>
         <div id="hist-${s.id}" class="hidden" style="margin-top:6px"></div>
       </div>
       <div class="acciones">${acciones}</div>
     </div>`;
   }).join('') || '<div class="sub">Sin solicitudes pendientes de acción.</div>';
+}
+
+function fmtFechaHoraAdmin(iso){
+  if(!iso) return '—';
+  return new Date(iso).toLocaleString('es-MX',{day:'numeric',month:'long',hour:'numeric',minute:'2-digit'});
 }
 
 // Historial — cada cambio de estado de una solicitud, con quién y cuándo.
@@ -792,15 +822,26 @@ async function asignarLaboratorio(inscripcionId){
   if(ok) cerrarModal();
 }
 
-// --- Sesión académica: programar -> Zoom/realizada -> concluida/no_asistio ---
-function abrirProgramarSesion(beneficioId, estadoActual, nombreSocio){
+// --- Sesión académica: Karen (Telegram) -> propuesta -> WhatsApp socio ->
+// confirmar + Zoom -> concluir con evidencia / no asistió ---
+
+// Paso 1: el admin ya revisó que las dudas están bien especificadas y manda
+// la solicitud al canal "Capacitación INN" en Telegram, arrobando a Karen,
+// vía el endpoint api/circulo-sesion-avisar-telegram.js (mismo patrón que
+// academia-portal-avisar-instructora.js). Si Telegram falla, igual se
+// avanza el estado — el admin puede avisarle a Karen por otro medio y no
+// debe quedar la solicitud atorada por un problema de red.
+async function abrirEnviarKaren(beneficioId, nombreSocio, numeroMiembro, especialidad, plan){
+  document.getElementById('modalMsg')?.remove();
+  const {data:row}=await sb.from('circulo_beneficios_uso').select('detalle,created_at').eq('id',beneficioId).maybeSingle();
   document.getElementById('modalWrap').innerHTML=`
     <div class="overlay" onclick="if(event.target===this) cerrarModal()">
       <div class="modal">
-        <div class="modal-head"><h2 style="margin-bottom:0">Programar sesión académica — ${nombreSocio}</h2><button onclick="cerrarModal()">✕</button></div>
-        <div class="field"><label>Fecha y hora acordada con el socio</label><input id="sesFechaProg" type="datetime-local"></div>
+        <div class="modal-head"><h2 style="margin-bottom:0">Enviar a Karen por Telegram — ${nombreSocio}</h2><button onclick="cerrarModal()">✕</button></div>
+        <div class="sub">Se manda al canal Capacitación INN, arrobando a @innovaci_karen, con el curso y las dudas que capturó el socio:</div>
+        <div style="font-size:12.5px;background:#f8f9fa;border:1px solid var(--border);border-radius:10px;padding:10px 12px;white-space:pre-wrap">${row?.detalle||'—'}</div>
         <div style="display:flex;gap:10px;margin-top:14px">
-          <button class="btn" onclick="confirmarProgramarSesion('${beneficioId}','${estadoActual}')">Guardar</button>
+          <button class="btn" onclick="confirmarEnviarKaren('${beneficioId}','${nombreSocio}','${numeroMiembro}','${especialidad}','${plan}')">Enviar a Telegram</button>
           <button class="btn secondary" onclick="cerrarModal()">Cancelar</button>
         </div>
         <div id="modalMsg"></div>
@@ -808,23 +849,67 @@ function abrirProgramarSesion(beneficioId, estadoActual, nombreSocio){
     </div>
   `;
 }
-async function confirmarProgramarSesion(beneficioId, estadoActual){
-  const val=document.getElementById('sesFechaProg').value;
+async function confirmarEnviarKaren(beneficioId, nombreSocio, numeroMiembro, especialidad, plan){
+  const msgBox=document.getElementById('modalMsg');
+  msgBox.innerHTML='<div class="sub">Enviando...</div>';
+  try{
+    const {data:row}=await sb.from('circulo_beneficios_uso').select('detalle,created_at').eq('id',beneficioId).maybeSingle();
+    const resp=await fetch('/api/circulo-sesion-avisar-telegram',{
+      method:'POST', headers:{'content-type':'application/json'},
+      body:JSON.stringify({
+        nombre:nombreSocio, numero_miembro:numeroMiembro, especialidad, plan,
+        detalle:row?.detalle||'', solicitado_en:row?.created_at||null,
+      }),
+    });
+    const respData=await resp.json().catch(()=>({}));
+    if(!resp.ok || respData.ok===false){ throw new Error(respData.error||'Error desconocido'); }
+  }catch(e){
+    msgBox.innerHTML=`<div class="msg err">No se pudo enviar a Telegram (${e.message}). Avísale a Karen por otro medio; de todos modos se marca como enviada.</div>`;
+  }
+  const ok=await aplicarCambioBeneficio(beneficioId,'solicitado',{estado:'en_revision_karen'},'Enviado a Karen por Telegram');
+  if(ok) cerrarModal();
+}
+
+// Paso 2: Karen responde en Telegram (fuera del sistema) con una fecha —
+// el admin la captura aquí. Todavía NO es definitiva: falta que el socio
+// la confirme por WhatsApp (ver botón en la lista de solicitudes).
+function abrirCapturarPropuesta(beneficioId, estadoActual, nombreSocio){
+  document.getElementById('modalWrap').innerHTML=`
+    <div class="overlay" onclick="if(event.target===this) cerrarModal()">
+      <div class="modal">
+        <div class="modal-head"><h2 style="margin-bottom:0">Fecha propuesta por Karen — ${nombreSocio}</h2><button onclick="cerrarModal()">✕</button></div>
+        <div class="field"><label>Fecha y hora que propuso Karen en Telegram</label><input id="sesFechaProp" type="datetime-local"></div>
+        <div style="display:flex;gap:10px;margin-top:14px">
+          <button class="btn" onclick="confirmarCapturarPropuesta('${beneficioId}','${estadoActual}')">Guardar</button>
+          <button class="btn secondary" onclick="cerrarModal()">Cancelar</button>
+        </div>
+        <div id="modalMsg"></div>
+      </div>
+    </div>
+  `;
+}
+async function confirmarCapturarPropuesta(beneficioId, estadoActual){
+  const val=document.getElementById('sesFechaProp').value;
   if(!val){ document.getElementById('modalMsg').innerHTML='<div class="msg err">Captura fecha y hora.</div>'; return; }
   const iso=new Date(val).toISOString();
-  const ok=await aplicarCambioBeneficio(beneficioId, estadoActual, {estado:'programada', fecha_programada:iso}, null);
+  const ok=await aplicarCambioBeneficio(beneficioId, estadoActual, {estado:'propuesta', fecha_programada:iso}, null);
   if(ok) cerrarModal();
 }
 
-function abrirZoomSesion(beneficioId, estadoActual, nombreSocio){
+// Paso 3: el socio ya confirmó por WhatsApp (fuera del sistema, con el
+// botón de la lista) — el admin fija la fecha final + enlace de Zoom. El
+// portal del socio muestra "Confirmada" y el botón de Zoom en cuanto se
+// guarda.
+function abrirConfirmarSesion(beneficioId, estadoActual, nombreSocio){
   document.getElementById('modalWrap').innerHTML=`
     <div class="overlay" onclick="if(event.target===this) cerrarModal()">
       <div class="modal">
-        <div class="modal-head"><h2 style="margin-bottom:0">Enlace de Zoom — ${nombreSocio}</h2><button onclick="cerrarModal()">✕</button></div>
-        <div class="sub">Al guardar, el socio ya ve este enlace en su portal.</div>
-        <div class="field"><label>Enlace de la reunión</label><input id="sesZoom" placeholder="https://zoom.us/..."></div>
+        <div class="modal-head"><h2 style="margin-bottom:0">Confirmar sesión — ${nombreSocio}</h2><button onclick="cerrarModal()">✕</button></div>
+        <div class="sub">El socio ya confirmó la fecha por WhatsApp. Ajusta la fecha/hora final si cambió y agrega el enlace de Zoom.</div>
+        <div class="field"><label>Fecha y hora final</label><input id="sesFechaFinal" type="datetime-local"></div>
+        <div class="field"><label>Enlace de Zoom</label><input id="sesZoom" placeholder="https://zoom.us/..."></div>
         <div style="display:flex;gap:10px;margin-top:14px">
-          <button class="btn" onclick="confirmarZoomSesion('${beneficioId}','${estadoActual}')">Guardar y marcar realizada</button>
+          <button class="btn" onclick="confirmarSesionFinal('${beneficioId}','${estadoActual}')">Guardar — queda confirmada</button>
           <button class="btn secondary" onclick="cerrarModal()">Cancelar</button>
         </div>
         <div id="modalMsg"></div>
@@ -832,18 +917,51 @@ function abrirZoomSesion(beneficioId, estadoActual, nombreSocio){
     </div>
   `;
 }
-async function confirmarZoomSesion(beneficioId, estadoActual){
-  const val=document.getElementById('sesZoom').value.trim();
-  if(!val){ document.getElementById('modalMsg').innerHTML='<div class="msg err">Captura el enlace.</div>'; return; }
-  const ok=await aplicarCambioBeneficio(beneficioId, estadoActual, {estado:'realizada', enlace_zoom:val}, null);
+async function confirmarSesionFinal(beneficioId, estadoActual){
+  const fecha=document.getElementById('sesFechaFinal').value;
+  const zoom=document.getElementById('sesZoom').value.trim();
+  if(!zoom){ document.getElementById('modalMsg').innerHTML='<div class="msg err">Captura el enlace de Zoom.</div>'; return; }
+  const updates={estado:'programada', enlace_zoom:zoom};
+  if(fecha) updates.fecha_programada=new Date(fecha).toISOString();
+  const ok=await aplicarCambioBeneficio(beneficioId, estadoActual, updates, null);
   if(ok) cerrarModal();
 }
 
-// Aquí es cuando se descuenta de verdad del saldo de 2/vigencia — pedido
-// explícito de Jp (191026): "hasta ese momento se da por concluido y
-// entonces ya se descuenta", no al solicitar.
-async function concluirSesion(beneficioId, estadoActual, resultado){
-  await aplicarCambioBeneficio(beneficioId, estadoActual, {estado:resultado}, null);
+// Paso 4: tras la sesión, Karen reporta en Telegram que ya se dio — el
+// admin sube una captura/evidencia y concluye. Aquí es cuando se descuenta
+// de verdad del saldo de 2/vigencia — pedido explícito de Jp (191026):
+// "hasta ese momento se da por concluido y entonces ya se descuenta", no
+// al solicitar.
+function abrirConcluirSesion(beneficioId, estadoActual, resultado){
+  const tituloResultado = resultado==='concluida' ? 'Marcar sesión concluida' : 'Marcar como no asistió';
+  document.getElementById('modalWrap').innerHTML=`
+    <div class="overlay" onclick="if(event.target===this) cerrarModal()">
+      <div class="modal">
+        <div class="modal-head"><h2 style="margin-bottom:0">${tituloResultado}</h2><button onclick="cerrarModal()">✕</button></div>
+        <div class="sub">Sube una captura de pantalla u otra evidencia de que la sesión se realizó (opcional, pero recomendado para control).</div>
+        <div class="field"><label>Evidencia (imagen o PDF)</label><input id="sesEvidencia" type="file" accept="image/*,.pdf"></div>
+        <div style="display:flex;gap:10px;margin-top:14px">
+          <button class="btn" onclick="confirmarConcluirSesion('${beneficioId}','${estadoActual}','${resultado}')">${resultado==='concluida'?'Concluir':'Marcar no asistió'}</button>
+          <button class="btn secondary" onclick="cerrarModal()">Cancelar</button>
+        </div>
+        <div id="modalMsg"></div>
+      </div>
+    </div>
+  `;
+}
+async function confirmarConcluirSesion(beneficioId, estadoActual, resultado){
+  const msgBox=document.getElementById('modalMsg');
+  const file=document.getElementById('sesEvidencia').files[0];
+  const updates={estado:resultado};
+  if(file){
+    msgBox.innerHTML='<div class="sub">Subiendo evidencia...</div>';
+    const path=`circulo/sesion-academica/${beneficioId}-${Date.now()}-${file.name}`;
+    const {error:upErr}=await sb.storage.from('academia-evidencias').upload(path,file,{upsert:true});
+    if(upErr){ msgBox.innerHTML=`<div class="msg err">No se pudo subir la evidencia: ${upErr.message}. Puedes concluir sin ella o reintentar.</div>`; return; }
+    updates.evidencia_path=path;
+  }
+  const ok=await aplicarCambioBeneficio(beneficioId, estadoActual, updates, file?'Con evidencia adjunta':null);
+  if(ok) cerrarModal();
 }
 
 // --- Acompañante / Crédito referido: confirmar compra real en tienda ---
