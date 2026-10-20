@@ -10305,6 +10305,7 @@ async function renderDirectorSuscripcionesModulo(){
     <div style="display:flex;gap:6px;flex-wrap:wrap;">
       <button onclick="swSuscModulo('suscripciones')" id="suscModuloTab_suscripciones" class="cartera-subtab active">📋 Suscripciones</button>
       <button onclick="swSuscModulo('pendientes')" id="suscModuloTab_pendientes" class="cartera-subtab">🔗 Pendientes de vincular${totalPendientesVincular?` (${totalPendientesVincular})`:''}</button>
+      ${puedeCargarExcel?`<button onclick="swSuscModulo('comision')" id="suscModuloTab_comision" class="cartera-subtab">💰 Comisión Aspel</button>`:''}
       ${puedeCargarExcel?`<button onclick="abrirCargaExcelSuscripciones()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📎 Cargar Excel de renovaciones</button>`:''}
     </div>
   </div>
@@ -10355,12 +10356,13 @@ async function renderVendedorSuscripcionesModulo(){
 let _suscModuloScope='director';
 function swSuscModulo(sub){
   _suscModuloSub=sub;
-  ['suscripciones','todas','pendientes'].forEach(s=>{
+  ['suscripciones','todas','pendientes','comision'].forEach(s=>{
     const btn=document.getElementById('suscModuloTab_'+s);
     if(btn) btn.classList.toggle('active',s===sub);
   });
   if(sub==='pendientes') renderPendientesVincular(_suscModuloScope);
   else if(sub==='todas') renderTodasSuscripciones('director'); // "Ver todas" reutiliza el scope sin filtro de vendedor
+  else if(sub==='comision') renderComisionAspel();
   else renderTodasSuscripciones(_suscModuloScope);
 }
 
@@ -10832,6 +10834,297 @@ async function guardarCargaExcelSuscripciones(){
   document.getElementById('modalCargaSuscripciones')?.remove();
   alert(`✅ ${registros.length} suscripciones guardadas.`);
   renderDirectorCartera();
+}
+
+// ── Módulo "Comisión Aspel" (Jp, 2026-10-20): los Anexos PDF semanales que
+// Aspel manda automáticamente (normalmente los lunes) con las partidas que SÍ
+// generaron comisión esa semana — distinto del Excel mensual de pronóstico de
+// renovaciones ("📎 Cargar Excel de renovaciones", arriba). Jp sube el PDF tal
+// cual se lo manda Aspel; se parsea en el navegador (pdf.js, cargado solo al
+// entrar aquí) y cada partida se cruza por número de serie contra
+// suscripciones_cartera.numserie. Ver claude/comisiones-aspel-anexos-201026.md
+// para el diseño completo. Sin alertas en esta primera versión — solo
+// registro histórico, confirmado explícitamente por Jp.
+
+let _pdfJsCargado=false;
+function cargarPdfJs(){
+  return new Promise((resolve,reject)=>{
+    if(_pdfJsCargado&&window.pdfjsLib){resolve();return;}
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload=()=>{
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      _pdfJsCargado=true;
+      resolve();
+    };
+    s.onerror=()=>reject(new Error('No se pudo cargar el lector de PDF (pdf.js) desde el CDN.'));
+    document.head.appendChild(s);
+  });
+}
+
+// Reconstruye el texto del PDF como líneas leíbles, agrupando los items de
+// texto de pdf.js por coordenada Y (misma fila visual) y ordenando por X
+// dentro de cada fila — necesario porque getTextContent() no devuelve saltos
+// de línea, solo items posicionados.
+async function pdfExtraerLineas(arrayBuffer){
+  const pdf=await window.pdfjsLib.getDocument({data:arrayBuffer}).promise;
+  const todasLineas=[];
+  for(let p=1;p<=pdf.numPages;p++){
+    const page=await pdf.getPage(p);
+    const content=await page.getTextContent();
+    const items=content.items.map(it=>({str:it.str,x:it.transform[4],y:it.transform[5]})).filter(it=>it.str.trim()!=='');
+    items.sort((a,b)=>b.y-a.y||a.x-b.x);
+    const lineasPagina=[];
+    let actual=null;
+    items.forEach(it=>{
+      if(!actual||Math.abs(it.y-actual.y)>3){
+        actual={y:it.y,parts:[]};
+        lineasPagina.push(actual);
+      }
+      actual.parts.push(it);
+    });
+    lineasPagina.forEach(l=>{
+      l.parts.sort((a,b)=>a.x-b.x);
+      todasLineas.push(l.parts.map(x=>x.str).join(' ').replace(/\s+/g,' ').trim());
+    });
+  }
+  return todasLineas.filter(l=>l!=='');
+}
+
+// Parsea el texto ya reconstruido en líneas del formato real del Anexo Aspel
+// (confirmado con un PDF de ejemplo real, folio 4952908, 2026-10-20).
+function parsearAnexoAspelTexto(lineas){
+  const texto=lineas.join('\n');
+  const get=(re)=>{const m=texto.match(re);return m?m[1].trim():null;};
+  const distribuidor=get(/Distribuidor:\s*([^\n]+)/);
+  const poliza=get(/P[oó]liza:\s*(\S+)/);
+  const clave=get(/Clave:\s*(\S+)/);
+  const folio=get(/Folio:\s*(\S+)/);
+  let facturaDistribuidor=get(/Factura de Distribuidor:\s*([^\n]+)/);
+  if(facturaDistribuidor) facturaDistribuidor=facturaDistribuidor.replace(/\*/g,'').trim();
+  const fechaGenStr=get(/Fecha de Generaci[oó]n:\s*(\d{2}\/\d{2}\/\d{4})/);
+  let fechaGeneracion=null;
+  if(fechaGenStr){const[d,m,y]=fechaGenStr.split('/');fechaGeneracion=`${y}-${m}-${d}`;}
+  const fechaImpresionTexto=get(/Impresi[oó]n de Factura:\s*([^\n]+)/);
+  const montoTotalStr=get(/Monto Total Anexo:\s*\$?([\d,]+\.\d{2})/);
+  const montoTotal=montoTotalStr?parseFloat(montoTotalStr.replace(/,/g,'')):null;
+
+  const partidas=[];
+  let actual=null;
+  let enTabla=false;
+  const reFila=/^(\d{2}\/\d{2}\/\d{4})\s+(\S+)\s+(\S+)\s+(.+?)\s+(\$[\d,]+\.\d{2})\s*$/;
+  for(const linea of lineas){
+    if(/^FECHA\s+DOC/i.test(linea)){enTabla=true;continue;}
+    if(/Monto Total Anexo:/i.test(linea))break;
+    if(!enTabla)continue;
+    const m=linea.match(reFila);
+    if(m){
+      const[,fechaStr,doc,partida,descRaw,montoStr]=m;
+      const[d,mo,y]=fechaStr.split('/');
+      const desc=descRaw.replace(/\(cid:\d+\)/gi,'').trim();
+      const numSerieMatch=desc.match(/\(([^)]+)\)/);
+      let numserie=numSerieMatch?numSerieMatch[1].trim():null;
+      if(numserie&&!/^[A-Za-z0-9]{5,15}$/.test(numserie))numserie=null;
+      actual={fecha:`${y}-${mo}-${d}`,doc,partida,descripcion:desc,detalle:'',numserie,monto:parseFloat(montoStr.replace(/[$,]/g,''))};
+      partidas.push(actual);
+    } else if(actual){
+      actual.detalle=(actual.detalle?actual.detalle+' ':'')+linea.trim();
+    }
+  }
+  return{distribuidor,poliza,clave,folio,factura_distribuidor:facturaDistribuidor,fecha_generacion:fechaGeneracion,fecha_impresion_texto:fechaImpresionTexto,monto_total:montoTotal,partidas};
+}
+
+function cruzarPartidaConCartera(numserie){
+  if(!numserie)return{suscripcion_id:null,cliente_cartera_id:null,cliente_nombre:null};
+  const s=(window._cartSuscripciones||[]).find(x=>(x.numserie||'').trim().toUpperCase()===numserie.toUpperCase());
+  if(!s)return{suscripcion_id:null,cliente_cartera_id:null,cliente_nombre:null};
+  const cliente=(window._cartClientes||[]).find(c=>c.id===s.cliente_id);
+  return{suscripcion_id:s.id,cliente_cartera_id:s.cliente_id||null,cliente_nombre:cliente?cliente.razon_social:null};
+}
+
+async function renderComisionAspel(){
+  const cont=document.getElementById('dirCarteraContenidoMain');
+  if(!cont)return;
+  cont.innerHTML='<div class="loading"><div class="spinner"></div> Cargando anexos...</div>';
+  const{data:anexos,error}=await sb.from('comisiones_aspel_anexos').select('*').order('fecha_generacion',{ascending:false});
+  if(error){cont.innerHTML=`<div style="color:var(--red);">Error: ${error.message}</div>`;return;}
+  window._comisionAspelAnexos=anexos||[];
+  const{data:partidasTodas}=await sb.from('comisiones_aspel_partidas').select('anexo_id,cliente_cartera_id');
+  const porAnexo={};
+  (partidasTodas||[]).forEach(p=>{
+    if(!porAnexo[p.anexo_id])porAnexo[p.anexo_id]={total:0,ligadas:0};
+    porAnexo[p.anexo_id].total++;
+    if(p.cliente_cartera_id)porAnexo[p.anexo_id].ligadas++;
+  });
+  cont.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px;">
+      <div style="font-size:12px;color:var(--text3);max-width:560px;">Anexos semanales que Aspel manda con las comisiones confirmadas (distinto del Excel mensual de pronóstico). Cada partida se cruza automático contra Suscripciones por número de serie.</div>
+      <button onclick="abrirSubirAnexoAspel()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">📄 Subir Anexo PDF</button>
+    </div>
+    ${!anexos||!anexos.length?'<div class="card" style="padding:24px;text-align:center;color:var(--text3);font-size:13px;">Aún no se ha subido ningún Anexo.</div>':`
+    <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="text-align:left;color:var(--text3);border-bottom:1px solid var(--border);">
+        <th style="padding:8px;">Folio</th><th style="padding:8px;">Fecha generación</th><th style="padding:8px;">Factura distribuidor</th><th style="padding:8px;">Partidas</th><th style="padding:8px;">Ligadas a cliente</th><th style="padding:8px;text-align:right;">Monto total</th>
+      </tr></thead>
+      <tbody>${anexos.map(a=>{
+        const c=porAnexo[a.id]||{total:0,ligadas:0};
+        return`<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="verDetalleAnexoAspel('${a.id}')">
+          <td style="padding:8px;font-weight:600;">${a.folio}</td>
+          <td style="padding:8px;">${a.fecha_generacion||'—'}</td>
+          <td style="padding:8px;">${a.factura_distribuidor||'—'}</td>
+          <td style="padding:8px;">${c.total}</td>
+          <td style="padding:8px;">${c.ligadas}/${c.total} ${c.ligadas<c.total?'⚠':''}</td>
+          <td style="padding:8px;text-align:right;font-weight:600;">${fmt(a.monto_total)}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table></div>`}`;
+}
+
+function abrirSubirAnexoAspel(){
+  const html=`
+    <div style="margin-bottom:14px;padding:12px 16px;background:rgba(0,169,157,0.07);border:1px dashed var(--teal);border-radius:8px;">
+      <div style="font-size:12px;font-weight:600;color:var(--teal);margin-bottom:8px;">Sube el PDF del Anexo tal cual te lo manda Aspel</div>
+      <input type="file" id="comisionAspelPdf" accept=".pdf" onchange="procesarAnexoAspelPDF()" style="font-size:12px;width:100%;">
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;">Se extraen los datos automáticamente. Revisa la vista previa antes de guardar — puedes corregir a mano el número de serie donde el parseo no haya leído bien.</div>
+    </div>
+    <div id="comisionAspelResumen"></div>
+    <div id="comisionAspelDetalle" style="max-height:420px;overflow-y:auto;"></div>`;
+  mkModal('modalComisionAspel','📄 Subir Anexo PDF — Comisión Aspel',html,null,'Cerrar',true);
+}
+
+async function procesarAnexoAspelPDF(){
+  const file=document.getElementById('comisionAspelPdf')?.files?.[0];
+  if(!file)return;
+  const resumen=document.getElementById('comisionAspelResumen');
+  resumen.innerHTML='<div style="text-align:center;padding:16px;color:var(--text3);">Cargando lector de PDF...</div>';
+  try{await cargarPdfJs();}
+  catch(e){resumen.innerHTML=`<div style="color:var(--red);">${e.message} Revisa tu conexión e intenta de nuevo.</div>`;return;}
+  resumen.innerHTML='<div style="text-align:center;padding:16px;color:var(--text3);">Leyendo el PDF...</div>';
+  let datos;
+  try{
+    const buf=await file.arrayBuffer();
+    const lineas=await pdfExtraerLineas(buf);
+    datos=parsearAnexoAspelTexto(lineas);
+  }catch(e){resumen.innerHTML=`<div style="color:var(--red);">No se pudo leer el PDF: ${e.message}</div>`;return;}
+  if(!datos.folio||!datos.partidas.length){
+    resumen.innerHTML='<div style="color:var(--red);">No se reconoció el formato esperado (falta folio o partidas). Revisa que sea un Anexo de comisión de Aspel.</div>';
+    return;
+  }
+  datos.partidas.forEach(p=>{
+    const cruce=cruzarPartidaConCartera(p.numserie);
+    p._suscripcion_id=cruce.suscripcion_id;
+    p._cliente_cartera_id=cruce.cliente_cartera_id;
+    p._cliente_nombre=cruce.cliente_nombre;
+  });
+  datos.archivo_nombre=file.name;
+  window._comisionAspelPreview=datos;
+  renderizarPreviewAnexoAspel();
+}
+
+function renderizarPreviewAnexoAspel(){
+  const datos=window._comisionAspelPreview;
+  if(!datos)return;
+  const resumen=document.getElementById('comisionAspelResumen');
+  const detalle=document.getElementById('comisionAspelDetalle');
+  const existente=(window._comisionAspelAnexos||[]).find(a=>a.folio===datos.folio);
+  const ligadas=datos.partidas.filter(p=>p._cliente_cartera_id).length;
+
+  resumen.innerHTML=`
+    ${existente?`<div style="font-size:12px;color:var(--gold);background:rgba(245,166,35,0.1);padding:8px 12px;border-radius:6px;margin-bottom:10px;">⚠ Ya existe un Anexo guardado con el folio ${datos.folio}. Si guardas, se reemplazan sus datos.</div>`:''}
+    <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+      <button onclick="guardarAnexoAspel()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">✅ Guardar Anexo (${datos.partidas.length} partidas)</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px;">
+      <div class="card" style="padding:12px;"><div style="font-size:11px;color:var(--text3);">Folio</div><div style="font-size:16px;font-weight:700;color:var(--text);">${datos.folio}</div></div>
+      <div class="card" style="padding:12px;"><div style="font-size:11px;color:var(--text3);">Fecha generación</div><div style="font-size:14px;font-weight:700;color:var(--text);">${datos.fecha_generacion||'—'}</div></div>
+      <div class="card" style="padding:12px;"><div style="font-size:11px;color:var(--text3);">Partidas cruzadas</div><div style="font-size:16px;font-weight:700;color:${ligadas<datos.partidas.length?'var(--gold)':'#27AE60'};">${ligadas}/${datos.partidas.length}</div></div>
+      <div class="card" style="padding:12px;"><div style="font-size:11px;color:var(--text3);">Monto total</div><div style="font-size:16px;font-weight:700;color:var(--text);">${fmt(datos.monto_total||0)}</div></div>
+    </div>`;
+
+  detalle.innerHTML=`<div style="display:grid;gap:4px;">${datos.partidas.map((p,i)=>`
+    <div style="display:grid;grid-template-columns:90px 1fr 150px 90px;gap:8px;align-items:center;font-size:11px;padding:6px 8px;border-bottom:1px solid var(--border);">
+      <span>${p.fecha||'—'}</span>
+      <span>${p.descripcion}<br><span style="color:var(--text3);">Serie: <input value="${p.numserie||''}" onchange="corregirNumserieAnexoAspel(${i},this.value)" style="width:110px;font-size:11px;padding:2px 4px;border:1px solid var(--border);border-radius:4px;"></span></span>
+      <span style="color:${p._cliente_cartera_id?'#27AE60':'var(--gold)'};font-weight:600;">${p._cliente_nombre||(p.numserie?'⚠ sin coincidencia':'sin serie')}</span>
+      <span style="text-align:right;font-weight:600;">${fmt(p.monto)}</span>
+    </div>`).join('')}</div>`;
+}
+
+function corregirNumserieAnexoAspel(i,valor){
+  const datos=window._comisionAspelPreview;
+  if(!datos)return;
+  const p=datos.partidas[i];
+  p.numserie=valor.trim()||null;
+  const cruce=cruzarPartidaConCartera(p.numserie);
+  p._suscripcion_id=cruce.suscripcion_id;
+  p._cliente_cartera_id=cruce.cliente_cartera_id;
+  p._cliente_nombre=cruce.cliente_nombre;
+  renderizarPreviewAnexoAspel();
+}
+
+async function guardarAnexoAspel(){
+  const datos=window._comisionAspelPreview;
+  if(!datos||!datos.partidas.length){alert('No hay datos para guardar.');return;}
+  const existente=(window._comisionAspelAnexos||[]).find(a=>a.folio===datos.folio);
+  let anexoId;
+  const headerPayload={
+    folio:datos.folio,distribuidor:datos.distribuidor,poliza:datos.poliza,clave:datos.clave,
+    factura_distribuidor:datos.factura_distribuidor,fecha_generacion:datos.fecha_generacion,
+    fecha_impresion_texto:datos.fecha_impresion_texto,monto_total:datos.monto_total,
+    archivo_nombre:datos.archivo_nombre,actualizado_en:new Date().toISOString()
+  };
+  if(existente){
+    const{error}=await sb.from('comisiones_aspel_anexos').update(headerPayload).eq('id',existente.id);
+    if(error){alert('Error al guardar encabezado: '+error.message);return;}
+    anexoId=existente.id;
+    await sb.from('comisiones_aspel_partidas').delete().eq('anexo_id',anexoId);
+  }else{
+    const{data,error}=await sb.from('comisiones_aspel_anexos').insert({...headerPayload,creado_por:currentUser.id}).select().single();
+    if(error){alert('Error al guardar encabezado: '+error.message);return;}
+    anexoId=data.id;
+  }
+  const partidasPayload=datos.partidas.map(p=>({
+    anexo_id:anexoId,fecha:p.fecha,doc:p.doc,partida:p.partida,descripcion:p.descripcion,detalle:p.detalle,
+    numserie:p.numserie,monto:p.monto,suscripcion_id:p._suscripcion_id,cliente_cartera_id:p._cliente_cartera_id
+  }));
+  const{error:errorPartidas}=await sb.from('comisiones_aspel_partidas').insert(partidasPayload);
+  if(errorPartidas){alert('Encabezado guardado, pero hubo un error al guardar las partidas: '+errorPartidas.message);return;}
+  document.getElementById('modalComisionAspel')?.remove();
+  alert(`✅ Anexo ${datos.folio} guardado con ${partidasPayload.length} partidas.`);
+  renderComisionAspel();
+}
+
+async function verDetalleAnexoAspel(anexoId){
+  const anexo=(window._comisionAspelAnexos||[]).find(a=>a.id===anexoId);
+  if(!anexo)return;
+  const{data:partidas,error}=await sb.from('comisiones_aspel_partidas').select('*').eq('anexo_id',anexoId).order('fecha');
+  if(error){alert('Error: '+error.message);return;}
+  const clientesMap={};
+  (window._cartClientes||[]).forEach(c=>{clientesMap[c.id]=c.razon_social;});
+  const html=`
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:14px;font-size:12px;">
+      <div><b>Distribuidor:</b> ${anexo.distribuidor||'—'}</div>
+      <div><b>Póliza:</b> ${anexo.poliza||'—'} · <b>Clave:</b> ${anexo.clave||'—'}</div>
+      <div><b>Factura de distribuidor:</b> ${anexo.factura_distribuidor||'—'}</div>
+      <div><b>Fecha de generación:</b> ${anexo.fecha_generacion||'—'}</div>
+      <div style="grid-column:1/-1;"><b>Impresión de factura:</b> ${anexo.fecha_impresion_texto||'—'}</div>
+      <div style="grid-column:1/-1;"><b>Monto total del Anexo:</b> ${fmt(anexo.monto_total)}</div>
+    </div>
+    <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <thead><tr style="text-align:left;color:var(--text3);border-bottom:1px solid var(--border);">
+        <th style="padding:6px;">Fecha</th><th style="padding:6px;">Doc.</th><th style="padding:6px;">Descripción</th><th style="padding:6px;">Serie</th><th style="padding:6px;">Cliente</th><th style="padding:6px;text-align:right;">Monto</th>
+      </tr></thead>
+      <tbody>${(partidas||[]).map(p=>`
+        <tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:6px;">${p.fecha||'—'}</td>
+          <td style="padding:6px;">${p.doc||'—'}</td>
+          <td style="padding:6px;">${p.descripcion}${p.detalle?`<br><span style="color:var(--text3);font-size:10px;">${p.detalle}</span>`:''}</td>
+          <td style="padding:6px;">${p.numserie||'—'}</td>
+          <td style="padding:6px;color:${p.cliente_cartera_id?'#27AE60':'var(--gold)'};">${p.cliente_cartera_id?(clientesMap[p.cliente_cartera_id]||'—'):'⚠ sin coincidencia'}</td>
+          <td style="padding:6px;text-align:right;font-weight:600;">${fmt(p.monto)}</td>
+        </tr>`).join('')}</tbody>
+    </table></div>`;
+  mkModal('modalDetalleAnexoAspel',`Anexo ${anexo.folio}`,html,null,'Cerrar',true);
 }
 
 // Jp, 2026-10-07: colores oficiales por nivel de póliza (imagen de referencia
