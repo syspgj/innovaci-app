@@ -20171,7 +20171,7 @@ async function eliminarEgreso(id){
 let currentAdminTab='ingresos';
 function renderFinAdmin(){
   const c=finCont();
-  const ATABS=[{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'},{id:'rubros',l:'📊 Rubros'},{id:'rubros_config',l:'⚙️ Config. rubros'}];
+  const ATABS=[{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'},{id:'rubros',l:'📊 Rubros'},{id:'rubros_config',l:'⚙️ Config. rubros'},{id:'cloud',l:'🖥️ Servidores Cloud'}];
   c.innerHTML=`
   <div style="display:flex;gap:6px;margin-bottom:16px;border-bottom:2px solid var(--border);padding-bottom:0;">
     ${ATABS.map(t=>`<button onclick="swAdmin('${t.id}')" id="atab_${t.id}"
@@ -20184,7 +20184,7 @@ function renderFinAdmin(){
 
 function swAdmin(id){
   currentAdminTab=id;
-  [{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'},{id:'rubros',l:'📊 Rubros'},{id:'rubros_config',l:'⚙️ Config. rubros'}].forEach(t=>{
+  [{id:'ingresos',l:'Ingresos facturados'},{id:'gb',l:'Guillermo Blancas'},{id:'egresos_fact',l:'Egresos con factura'},{id:'rubros',l:'📊 Rubros'},{id:'rubros_config',l:'⚙️ Config. rubros'},{id:'cloud',l:'🖥️ Servidores Cloud'}].forEach(t=>{
     const b=document.getElementById('atab_'+t.id);
     if(!b)return;
     b.style.borderBottomColor=t.id===id?'var(--navy)':'transparent';
@@ -20199,7 +20199,209 @@ function dispatchAdminTab(id){
   else if(id==='gb')          renderAdminGB();
   else if(id==='rubros')      renderAdminRubros();
   else if(id==='rubros_config') renderAdminRubrosConfig();
+  else if(id==='cloud')       renderAdminCloud();
   else                        renderAdminEgresos();
+}
+
+// ─── Servidores Cloud — control de facturación/pago mensual ─────────────────
+// Pedido por Jp (201026): no duplica la captura de factura/cobro (eso sigue
+// viviendo en fact_ingresos, rubro='CLOUD') — esta pantalla es el contrato
+// por cliente (qué servidor, desde cuándo, día de facturación/pago) y el
+// estado que calcula el cron diario (api/cron/cloud-servidores-alertas.js)
+// cruzando ambas fuentes. El alta/edición del contrato es solo
+// Director/Administración (RLS lo exige también, no es solo UI).
+const CLOUD_ESTADO_LABEL={
+  activo:{l:'Activo',c:'#1f8a5f',bg:'#e9f8f0'},
+  pendiente_pago:{l:'Pendiente de pago',c:'#b4791f',bg:'#fbf1e2'},
+  pendiente_suspender:{l:'Pendiente de suspender',c:'#b4441f',bg:'#fdecea'},
+  suspendido:{l:'Suspendido',c:'#6b7785',bg:'#eef1f4'},
+  cancelado:{l:'Cancelado',c:'#9aa6b0',bg:'#f4f6f7'},
+};
+let cloudServidoresCache=[];
+let cloudClientesCache={};
+let cloudProductosCache=[];
+let cloudFiltroEstado=null;
+let cloudClienteSeleccionado=null; // {id, razon_social} — alta/edición
+
+function cloudPuedeAdministrar(){
+  return userProfile && (userProfile.rol==='director' || userProfile.rol==='administracion');
+}
+
+async function renderAdminCloud(){
+  const ac=adminCont();if(!ac)return;
+  ac.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+
+  const [{data:servidores,error:errServ},{data:productos}]=await Promise.all([
+    sb.from('clientes_servidores_cloud').select('*').order('creado_en',{ascending:false}),
+    sb.from('productos_servidores').select('*').eq('activo',true).order('orden'),
+  ]);
+  if(errServ){ ac.innerHTML=`<div style="color:var(--red);font-size:13px;">${errServ.message}</div>`; return; }
+  cloudServidoresCache=servidores||[];
+  cloudProductosCache=productos||[];
+
+  const clienteIds=[...new Set(cloudServidoresCache.map(s=>s.cliente_cartera_id))];
+  cloudClientesCache={};
+  if(clienteIds.length){
+    const {data:clientes}=await sb.from('clientes_cartera').select('id,razon_social').in('id',clienteIds);
+    (clientes||[]).forEach(c=>{cloudClientesCache[c.id]=c;});
+  }
+
+  renderAdminCloudContenido();
+}
+
+function renderAdminCloudContenido(){
+  const ac=adminCont();if(!ac)return;
+  const hoy=new Date();
+  const dia=hoy.getDate();
+
+  const conteos={activo:0,pendiente_pago:0,pendiente_suspender:0,suspendido:0,cancelado:0};
+  cloudServidoresCache.forEach(s=>{conteos[s.estado]=(conteos[s.estado]||0)+1;});
+  const montoMensualActivo=cloudServidoresCache.filter(s=>s.estado!=='cancelado').reduce((a,s)=>a+(s.monto_mensual||0),0);
+
+  const tarjetas=[
+    {id:null,l:'Todos',v:cloudServidoresCache.length},
+    {id:'activo',l:'Activos',v:conteos.activo||0},
+    {id:'pendiente_pago',l:'Pendientes de pago',v:conteos.pendiente_pago||0,warn:true},
+    {id:'pendiente_suspender',l:'Pendientes de suspender',v:conteos.pendiente_suspender||0,warn:true},
+    {id:'suspendido',l:'Suspendidos',v:conteos.suspendido||0},
+  ];
+
+  const filas=cloudServidoresCache
+    .filter(s=>!cloudFiltroEstado || s.estado===cloudFiltroEstado)
+    .map(s=>{
+      const cliente=cloudClientesCache[s.cliente_cartera_id];
+      const prod=cloudProductosCache.find(p=>p.id===s.producto_servidor_id);
+      const est=CLOUD_ESTADO_LABEL[s.estado]||{l:s.estado,c:'#333',bg:'#eee'};
+      return `<tr style="border-top:1px solid var(--border);cursor:${cloudPuedeAdministrar()?'pointer':'default'};" ${cloudPuedeAdministrar()?`onclick="abrirEdicionCloudServidor('${s.id}')"`:''}>
+        <td style="padding:9px 8px;font-size:12.5px;">${cliente?cliente.razon_social:'—'}</td>
+        <td style="padding:9px 8px;font-size:12.5px;">${s.nombre_servidor||(prod?prod.nombre:'—')}</td>
+        <td style="padding:9px 8px;font-size:12.5px;text-align:right;">${fmt(s.monto_mensual)}</td>
+        <td style="padding:9px 8px;font-size:11.5px;color:var(--text2);">Día ${s.dia_facturacion} / límite ${s.dia_limite_pago}</td>
+        <td style="padding:9px 8px;font-size:11.5px;color:var(--text2);">${s.fecha_ultima_factura||'—'}</td>
+        <td style="padding:9px 8px;"><span style="display:inline-block;padding:3px 9px;border-radius:99px;font-size:11px;font-weight:700;color:${est.c};background:${est.bg};">${est.l}</span></td>
+      </tr>`;
+    }).join('');
+
+  ac.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
+      <div style="font-size:12px;color:var(--text2);">Compromiso mensual vigente: <strong>${fmt(montoMensualActivo)}</strong> · Día ${dia} de hoy</div>
+      ${cloudPuedeAdministrar()?`<button onclick="abrirAltaCloudServidor()" style="padding:8px 16px;background:var(--teal);color:#fff;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">+ Nuevo servidor</button>`:''}
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px;">
+      ${tarjetas.map(t=>`
+        <div onclick="cloudFiltroEstado=${t.id?`'${t.id}'`:null};renderAdminCloudContenido();" style="cursor:pointer;background:#fff;border:1px solid ${cloudFiltroEstado===t.id?'var(--teal)':'var(--border)'};border-radius:12px;padding:12px 14px;">
+          <div style="font-size:10.5px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;">${t.l}</div>
+          <div style="font-size:20px;font-weight:800;color:${t.warn&&t.v>0?'var(--amber,#b4791f)':'var(--navy)'};">${t.v}</div>
+        </div>`).join('')}
+    </div>
+    <div style="background:#fff;border:1px solid var(--border);border-radius:14px;padding:4px 14px;overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead><tr style="text-align:left;">
+          <th style="padding:9px 8px;font-size:11px;color:var(--text3);text-transform:uppercase;">Cliente</th>
+          <th style="padding:9px 8px;font-size:11px;color:var(--text3);text-transform:uppercase;">Servidor</th>
+          <th style="padding:9px 8px;font-size:11px;color:var(--text3);text-transform:uppercase;text-align:right;">Mensual</th>
+          <th style="padding:9px 8px;font-size:11px;color:var(--text3);text-transform:uppercase;">Ciclo</th>
+          <th style="padding:9px 8px;font-size:11px;color:var(--text3);text-transform:uppercase;">Última factura</th>
+          <th style="padding:9px 8px;font-size:11px;color:var(--text3);text-transform:uppercase;">Estado</th>
+        </tr></thead>
+        <tbody>${filas||`<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text3);font-size:13px;">Sin servidores registrados todavía.</td></tr>`}</tbody>
+      </table>
+    </div>`;
+}
+
+function cloudFormularioServidor(s){
+  const cliente=s?cloudClientesCache[s.cliente_cartera_id]:cloudClienteSeleccionado;
+  return `
+    <div style="display:grid;gap:12px;">
+      <div style="position:relative;">
+        ${fld('Cliente',inp('cCliente','text','Buscar cuenta de Cartera...',cliente?cliente.razon_social:'','oninput="cloudBuscarCliente()"'))}
+        <div id="cClienteResultados" style="position:absolute;z-index:10;background:#fff;border:1px solid var(--border);border-radius:8px;width:100%;max-height:200px;overflow-y:auto;display:none;box-shadow:0 8px 20px rgba(0,0,0,.08);"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        ${fld('Modelo de servidor (catálogo)',`<select id="cProducto" onchange="cloudAutocompletarPrecio()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;"><option value="">— Sin catálogo / legado —</option>${cloudProductosCache.map(p=>`<option value="${p.id}" ${p.id===s?.producto_servidor_id?'selected':''}>${p.nombre} (${fmt(p.precio_mensual)}/mes)</option>`).join('')}</select>`)}
+        ${fld('Nombre/alias interno (opcional)',inp('cNombre','text','ej. CLIENTE-SRV1',s?.nombre_servidor||''))}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+        ${fld('Monto mensual',inp('cMonto','number','',s?.monto_mensual||''))}
+        ${fld('Día de facturación',inp('cDiaFact','number','',s?.dia_facturacion||7))}
+        ${fld('Día límite de pago',inp('cDiaLimite','number','',s?.dia_limite_pago||27))}
+      </div>
+      ${s?fld('Estado',`<select id="cEstado" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${Object.entries(CLOUD_ESTADO_LABEL).map(([k,v])=>`<option value="${k}" ${k===s.estado?'selected':''}>${v.l}</option>`).join('')}</select>`):''}
+      ${fld('Notas',`<textarea id="cNotas" rows="2" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${s?.notas||''}</textarea>`)}
+    </div>`;
+}
+
+function cloudAutocompletarPrecio(){
+  const id=document.getElementById('cProducto').value;
+  const p=cloudProductosCache.find(x=>x.id===id);
+  if(p) document.getElementById('cMonto').value=p.precio_mensual;
+}
+
+let cloudBuscarTimeout=null;
+function cloudBuscarCliente(){
+  cloudClienteSeleccionado=null;
+  clearTimeout(cloudBuscarTimeout);
+  const q=document.getElementById('cCliente').value.trim();
+  const wrap=document.getElementById('cClienteResultados');
+  if(q.length<3){ wrap.style.display='none'; wrap.innerHTML=''; return; }
+  cloudBuscarTimeout=setTimeout(async ()=>{
+    const {data}=await sb.from('clientes_cartera').select('id,razon_social').ilike('razon_social',`%${q}%`).order('razon_social').limit(8);
+    if(!data||!data.length){ wrap.style.display='none'; wrap.innerHTML=''; return; }
+    wrap.innerHTML=data.map(c=>`<div style="padding:8px 12px;font-size:12.5px;cursor:pointer;border-bottom:1px solid #f1f3f5;" onmousedown="cloudSeleccionarCliente('${c.id}','${(c.razon_social||'').replace(/'/g,"\\'")}')">${c.razon_social}</div>`).join('');
+    wrap.style.display='block';
+  },300);
+}
+function cloudSeleccionarCliente(id,razonSocial){
+  cloudClienteSeleccionado={id,razon_social:razonSocial};
+  document.getElementById('cCliente').value=razonSocial;
+  document.getElementById('cClienteResultados').style.display='none';
+}
+
+function abrirAltaCloudServidor(){
+  if(!cloudPuedeAdministrar()) return;
+  cloudClienteSeleccionado=null;
+  mkModal('modalCloudServidor','+ Nuevo servidor cloud',cloudFormularioServidor(null),'guardarCloudServidor','Guardar');
+}
+
+function abrirEdicionCloudServidor(id){
+  if(!cloudPuedeAdministrar()) return;
+  const s=cloudServidoresCache.find(x=>x.id===id);
+  if(!s) return;
+  cloudClienteSeleccionado=cloudClientesCache[s.cliente_cartera_id]||null;
+  mkModal('modalCloudServidor','Editar servidor cloud',cloudFormularioServidor(s),`guardarCloudServidor('${id}')`,'Guardar');
+}
+
+async function guardarCloudServidor(id){
+  if(!cloudClienteSeleccionado){
+    alert('Busca y selecciona el cliente de la lista.');
+    return;
+  }
+  const monto=Number(document.getElementById('cMonto').value);
+  if(!monto){ alert('Captura el monto mensual.'); return; }
+  const payload={
+    cliente_cartera_id: cloudClienteSeleccionado.id,
+    producto_servidor_id: document.getElementById('cProducto').value||null,
+    nombre_servidor: document.getElementById('cNombre').value.trim()||null,
+    monto_mensual: monto,
+    dia_facturacion: Number(document.getElementById('cDiaFact').value)||7,
+    dia_limite_pago: Number(document.getElementById('cDiaLimite').value)||27,
+    notas: document.getElementById('cNotas').value.trim()||null,
+  };
+  const estadoSel=document.getElementById('cEstado');
+  if(estadoSel) payload.estado=estadoSel.value;
+
+  if(id){
+    payload.actualizado_en=new Date().toISOString();
+    const {error}=await sb.from('clientes_servidores_cloud').update(payload).eq('id',id);
+    if(error){ alert('No se pudo guardar: '+error.message); return; }
+  }else{
+    const {data:sess}=await sb.auth.getSession();
+    payload.creado_por=sess.session?.user?.id||null;
+    const {error}=await sb.from('clientes_servidores_cloud').insert(payload);
+    if(error){ alert('No se pudo guardar: '+error.message); return; }
+  }
+  document.getElementById('modalCloudServidor')?.remove();
+  renderAdminCloud();
 }
 
 async function renderAdminRubros(){
