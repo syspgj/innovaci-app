@@ -7874,13 +7874,24 @@ async function subirDocumentoAdjuntoActividad(entidadTipo,entidadId,file,crmCome
     try{
       const {data:sess}=await sb.auth.getSession();
       const token=sess?.session?.access_token;
-      await fetch('/api/crm-documento',{
+      const res=await fetch('/api/crm-documento',{
         method:'POST',
         headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
         body:JSON.stringify({crm_documento_id:fila.id,crm_comentario_id:crmComentarioId||null,vendedor_usuario_id:currentUser.id}),
       });
+      const j=await res.json().catch(()=>({}));
+      // Jp, 2026-10-21: "no funciona" — antes este error solo quedaba en la
+      // consola del navegador (nadie lo veía) y en crm_documentos.crm_sync_error
+      // (solo visible consultando Supabase directo). Ahora se avisa también
+      // dentro de la app: el archivo YA quedó guardado en la App de cualquier
+      // forma (Storage + crm_documentos), solo falló la réplica a Vtiger.
+      if(!res.ok||!j.ok){
+        console.error('réplica de documento a CRM falló',j);
+        alert('El documento "'+file.name+'" se guardó en la App, pero NO se pudo replicar en el CRM (Vtiger).\n\nMotivo: '+(j.error||'error desconocido')+'\n\nEsto normalmente es un tema de permisos del usuario de integración en Vtiger sobre el módulo Documents (Configuración → Roles), no un dato capturado mal — avísale a soporte/Jp si se repite.');
+      }
     }catch(e){
       console.error('réplica de documento a CRM falló',e);
+      alert('El documento "'+file.name+'" se guardó en la App, pero no se pudo replicar en el CRM (sin conexión con el servidor). Intenta de nuevo más tarde.');
     }
   }catch(e){
     console.error('subirDocumentoAdjuntoActividad error',e);
