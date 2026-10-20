@@ -153,6 +153,33 @@ async function resolverAssignedUserId(vendedorUsuarioId) {
   return rows?.[0]?.crm_user_id || VTIGER_USUARIO_RESPALDO;
 }
 
+// Jp, 2026-10-21: "no funciona" — la réplica a Vtiger sigue fallando con
+// ACCESS_DENIED incluso con un vendedor real y válido como assigned_user_id
+// (Dulce Solano, 19x5), igual antes y después del fix de 2026-10-14 (ver
+// crm_documentos.crm_sync_error en Supabase, mismo error exacto en todos los
+// intentos). Eso descarta que sea un tema de datos/assigned_user_id — apunta
+// a que (a) el usuario de integración de Vtiger (VTIGER_USER) no tiene
+// permiso de Crear en el módulo Documents en su Rol/Perfil, o (b) el
+// folderid 'T2' (adivinado, ver nota original) no es válido en esta
+// instalación. Esta función consulta el "describe" del módulo Documents para
+// adjuntar al error justo qué carpetas existen de verdad — así, si vuelve a
+// fallar, el mensaje que ve Jp en la app ya trae la pista concreta en vez de
+// tener que pedir que se revise Supabase a mano.
+async function diagnosticarPermisosDocuments(sessionName) {
+  try {
+    const url = `${VTIGER_BASE_URL}/webservice.php?operation=describe&sessionName=${encodeURIComponent(sessionName)}&elementType=Documents`;
+    const json = await fetch(url).then((r) => r.json());
+    if (!json.success) return `No se pudo consultar describe(Documents): ${JSON.stringify(json.error || json)}`;
+    const campoFolder = (json.result?.fields || []).find((f) => f.name === 'folderid');
+    const carpetas = campoFolder?.picklistValues || campoFolder?.referenceTo || null;
+    return carpetas
+      ? `Carpetas/valores disponibles para "folderid" según Vtiger: ${JSON.stringify(carpetas).slice(0, 500)}`
+      : 'El describe del módulo Documents no trae opciones de carpeta visibles para este usuario — probable falta de permiso de Crear en Documents para el usuario de integración (revisar Configuración → Roles en Vtiger).';
+  } catch (e) {
+    return `No se pudo diagnosticar (describe falló): ${String(e?.message || e)}`;
+  }
+}
+
 async function crearDocumentoVtiger(sessionName, nombreArchivo, urlFirmada, notas, assignedUserId) {
   const ext = (nombreArchivo.split('.').pop() || '').toLowerCase();
   const record = {
@@ -224,7 +251,13 @@ export default async function handler(req, res) {
     const assignedUserId = await resolverAssignedUserId(vendedor_usuario_id || fila.subido_por);
     const urlFirmada = await crearUrlFirmada(fila.storage_path);
     const sessionName = await vtigerLogin();
-    const documento = await crearDocumentoVtiger(sessionName, fila.nombre_archivo, urlFirmada, `Subido desde App VENTAS`, assignedUserId);
+    let documento;
+    try {
+      documento = await crearDocumentoVtiger(sessionName, fila.nombre_archivo, urlFirmada, `Subido desde App VENTAS`, assignedUserId);
+    } catch (eCrear) {
+      const diagnostico = await diagnosticarPermisosDocuments(sessionName);
+      throw new Error(`${eCrear?.message || eCrear} — ${diagnostico}`);
+    }
 
     let relacionError = null;
     if (crmId) {
