@@ -20602,7 +20602,7 @@ function renderAdminCloudContenido(){
     </div>`;
 }
 
-function cloudFormularioServidor(s){
+function cloudFormularioServidor(s,facturas){
   const cliente=s?cloudClientesCache[s.cliente_cartera_id]:cloudClienteSeleccionado;
   return `
     <div style="display:grid;gap:12px;">
@@ -20619,8 +20619,36 @@ function cloudFormularioServidor(s){
         ${fld('Día de facturación',inp('cDiaFact','number','',s?.dia_facturacion||7))}
         ${fld('Día límite de pago',inp('cDiaLimite','number','',s?.dia_limite_pago||27))}
       </div>
+      ${fld('Fecha de inicio de contrato',inp('cFechaAlta','date','',s?.fecha_alta||new Date().toISOString().split('T')[0]))}
       ${s?fld('Estado',`<select id="cEstado" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${Object.entries(CLOUD_ESTADO_LABEL).map(([k,v])=>`<option value="${k}" ${k===s.estado?'selected':''}>${v.l}</option>`).join('')}</select>`):''}
       ${fld('Notas',`<textarea id="cNotas" rows="2" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${s?.notas||''}</textarea>`)}
+      ${s?cloudFacturasHtml(facturas):''}
+    </div>`;
+}
+
+// Jp, 2026-10-21: en la ficha de edición quiere ver las facturas que YA están
+// en Ingresos facturados (fact_ingresos, rubro CLOUD) para ese cliente — no
+// se capturan aquí, solo se muestran como consulta (la captura real sigue
+// viviendo en Finanzas → Ingresos facturados, para no duplicar esa fuente).
+function cloudFacturasHtml(facturas){
+  return `
+    <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:4px;">
+      <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;">Facturas emitidas en Ingresos (rubro Cloud)</div>
+      ${!facturas||!facturas.length?'<div style="font-size:12px;color:var(--text3);">Sin facturas registradas todavía en Ingresos facturados para este cliente.</div>':`
+      <div style="max-height:180px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;">
+        <table style="width:100%;border-collapse:collapse;font-size:11.5px;">
+          <thead><tr style="text-align:left;background:#fafbfc;">
+            <th style="padding:6px 8px;color:var(--text3);">Fecha</th><th style="padding:6px 8px;color:var(--text3);">Folio</th><th style="padding:6px 8px;color:var(--text3);text-align:right;">Total</th><th style="padding:6px 8px;color:var(--text3);">Cobrado</th>
+          </tr></thead>
+          <tbody>${facturas.map(f=>`
+            <tr style="border-top:1px solid var(--border);">
+              <td style="padding:6px 8px;">${f.fecha||'—'}</td>
+              <td style="padding:6px 8px;">${f.folio||'—'}</td>
+              <td style="padding:6px 8px;text-align:right;">${fmt(f.total)}</td>
+              <td style="padding:6px 8px;color:${f.cobrado?'#1f8a5f':'#b4791f'};font-weight:600;">${f.cobrado?'Sí':'No'}</td>
+            </tr>`).join('')}</tbody>
+        </table>
+      </div>`}
     </div>`;
 }
 
@@ -20656,12 +20684,17 @@ function abrirAltaCloudServidor(){
   mkModal('modalCloudServidor','+ Nuevo servidor cloud',cloudFormularioServidor(null),'guardarCloudServidor','Guardar');
 }
 
-function abrirEdicionCloudServidor(id){
+async function abrirEdicionCloudServidor(id){
   if(!cloudPuedeAdministrar()) return;
   const s=cloudServidoresCache.find(x=>x.id===id);
   if(!s) return;
   cloudClienteSeleccionado=cloudClientesCache[s.cliente_cartera_id]||null;
-  mkModal('modalCloudServidor','Editar servidor cloud',cloudFormularioServidor(s),`guardarCloudServidor('${id}')`,'Guardar');
+  let facturas=[];
+  if(s.cliente_cartera_id){
+    const {data}=await sb.from('fact_ingresos').select('folio,fecha,total,cobrado').eq('cliente_cartera_id',s.cliente_cartera_id).eq('rubro','CLOUD').order('fecha',{ascending:false});
+    facturas=data||[];
+  }
+  mkModal('modalCloudServidor','Editar servidor cloud',cloudFormularioServidor(s,facturas),`guardarCloudServidor('${id}')`,'Guardar');
 }
 
 async function guardarCloudServidor(id){
@@ -20678,6 +20711,7 @@ async function guardarCloudServidor(id){
     monto_mensual: monto,
     dia_facturacion: Number(document.getElementById('cDiaFact').value)||7,
     dia_limite_pago: Number(document.getElementById('cDiaLimite').value)||27,
+    fecha_alta: document.getElementById('cFechaAlta').value||new Date().toISOString().split('T')[0],
     notas: document.getElementById('cNotas').value.trim()||null,
   };
   const estadoSel=document.getElementById('cEstado');
