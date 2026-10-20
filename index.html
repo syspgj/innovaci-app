@@ -1064,7 +1064,7 @@ async function renderAcademiaDashboard(){
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando resumen...</div>';
 
   const [{data:generaciones,error:errG},{data:inscripciones,error:errI},{data:empresasAcc,error:errA},{data:notifsAcceso},{data:recordatorios},{data:sesionesGen}]=await Promise.all([
-    sb.from('academia_generaciones').select('*,curso:curso_id(id,nombre,tipo,modalidad,ventana_practicas_dias,practicas_extension_dias,sistema:sistema_id(clave,nombre))').order('clave'),
+    sb.from('academia_generaciones').select('*,curso:curso_id(id,nombre,tipo,modalidad,ventana_practicas_dias,practicas_extension_dias,sistema:sistema_id(clave,nombre,codigo_clave))').order('clave'),
     sb.from('academia_inscripciones').select('id,generacion_id,nivel_acceso,practicas_extension,fecha_fin_laboratorio,estatus_final,participante:participante_id(nombre),constancias:academia_constancias(enviada)'),
     sb.from('academia_empresas_acceso').select('numero,sistema:sistema_id(clave),asignaciones:academia_empresas_asignaciones(inscripcion_id,participante_nombre,curso_taller,fecha_inicio,fecha_fin,created_at)'),
     sb.from('academia_notificaciones_envios').select('inscripcion_id,tipo').eq('tipo','acceso_lab'),
@@ -1489,7 +1489,7 @@ async function renderAcademiaGeneraciones(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando generaciones...</div>';
   const {data:generaciones,error}=await sb.from('academia_generaciones')
-    .select('*,curso:curso_id(id,nombre,tipo,modalidad,ventana_practicas_dias,practicas_extension_dias,practicas_totales,sistema_id,sistema:sistema_id(clave,nombre))')
+    .select('*,curso:curso_id(id,nombre,tipo,modalidad,ventana_practicas_dias,practicas_extension_dias,practicas_totales,sistema_id,sistema:sistema_id(clave,nombre,codigo_clave))')
     .order('clave');
   if(error){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error cargando generaciones: ${error.message}</div>`;return;}
   window._academiaCache.generaciones=generaciones||[];
@@ -3130,7 +3130,15 @@ async function academiaAbrirNuevoAsistente(generacionId){
   // generación ya trae el sistema al inicio, el campo deja de pedirse y el
   // folio se arma directo desde la clave (ver academia_generar_folio, que
   // ahora acepta p_sistema vacío).
-  const sistemaClaveGen=(gen?.curso?.sistema?.clave||'').toUpperCase();
+  // Jp, 2026-10-20 (segunda vuelta): la primera versión de esto comparaba
+  // contra sistema.clave ("SIIGO_FISCAL"), pero la clave de la generación se
+  // arma con sistema.codigo_clave cuando existe ("SFISCAL") — para un
+  // sistema con código corto (como Siigo Fiscal), la comparación nunca
+  // coincidía, así que el campo manual se seguía pidiendo y el folio volvía
+  // a duplicar el sistema (caso real: "SFISCAL-SFISCAL-DRFC-OCT26-..."). Hay
+  // que comparar contra EXACTAMENTE lo mismo que usa
+  // academiaGenerarClaveGeneracion: codigo_clave si existe, si no clave.
+  const sistemaClaveGen=(gen?.curso?.sistema?.codigo_clave||gen?.curso?.sistema?.clave||'').toUpperCase();
   const claveEsAuto=!!(gen?.clave && sistemaClaveGen && gen.clave.toUpperCase().startsWith(sistemaClaveGen+'-'));
   // Vigencia individual (24/7, Jp 2026-09-01): solo aplica a Plus/Premium de
   // cursos de inscripción continua (diplomados desde cero, Pólizas Dinámicas,
