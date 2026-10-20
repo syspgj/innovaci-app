@@ -79,6 +79,14 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
 .solicitud-row .info{font-size:13px;}
 .solicitud-row .info small{display:block;color:var(--text3);margin-top:2px;}
 .solicitud-row .acciones{display:flex;gap:8px;flex-shrink:0;}
+.solicitudes-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;align-items:start;}
+.solicitudes-grid .col h2{font-size:13px;color:var(--text2);margin-bottom:10px;}
+.solicitudes-grid .solicitud-row{flex-direction:column;align-items:stretch;gap:8px;}
+.solicitudes-grid .solicitud-row .acciones{flex-wrap:wrap;}
+@media (max-width:860px){.solicitudes-grid{grid-template-columns:1fr;}}
+.razon-rechazo{font-size:12px;color:var(--red);margin-top:3px;}
+.ver-comentarios{font-size:12px;cursor:pointer;color:var(--teal2);background:none;border:none;padding:0;font-weight:700;}
+.comentarios-box{font-size:12px;color:var(--text2);margin-top:6px;background:#f8f9fa;border-radius:8px;padding:8px 10px;white-space:pre-wrap;}
 </style>
 </head>
 <body>
@@ -115,14 +123,20 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
     <div class="sub" style="margin-bottom:14px">Laboratorio, sesiones privadas, acompañantes y crédito por referido que los socios piden desde su portal. Tú las confirmas o rechazas aquí.</div>
     <div id="solicitudesMsg"></div>
 
-    <h2 style="font-size:13px;color:var(--text2);margin-bottom:10px">🧪 Laboratorio Virtual</h2>
-    <div id="listaLaboratorio" style="margin-bottom:22px"></div>
-
-    <h2 style="font-size:13px;color:var(--text2);margin-bottom:10px">🎓 Sesiones académicas</h2>
-    <div id="listaSesiones" style="margin-bottom:22px"></div>
-
-    <h2 style="font-size:13px;color:var(--text2);margin-bottom:10px">🤝 Acompañante y crédito Innovaci</h2>
-    <div id="listaBeneficios"></div>
+    <div class="solicitudes-grid">
+      <div class="col">
+        <h2>🧪 Laboratorio Virtual</h2>
+        <div id="listaLaboratorio"></div>
+      </div>
+      <div class="col">
+        <h2>🎓 Sesiones académicas</h2>
+        <div id="listaSesiones"></div>
+      </div>
+      <div class="col">
+        <h2>🤝 Acompañante y crédito Innovaci</h2>
+        <div id="listaBeneficios"></div>
+      </div>
+    </div>
   </div>
 
   <div class="card">
@@ -198,6 +212,20 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
 const SURL='https://ydwouspzneacxfixlmmv.supabase.co';
 const SKEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlkd291c3B6bmVhY3hmaXhsbW12Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEzMzA5MzAsImV4cCI6MjA5NjkwNjkzMH0.uWB1VN2YT7ynTbHmfTWCOBHMRR54LdHJook7iOk7Mug';
 const sb=supabase.createClient(SURL,SKEY);
+
+// Jp, 2026-10-21: correo de bienvenida (api/circulo-bienvenida-correo.js) +
+// botón de WhatsApp con los datos de acceso — mismo portal para ambos.
+const PORTAL_URL_WA='https://os.innovaci.com.mx/circulo-portal.html';
+async function reenviarCorreoBienvenida(id){
+  const caja=document.getElementById('reenvioCorreoMsg');
+  if(caja) caja.innerHTML='Enviando...';
+  try{
+    const r=await fetch('/api/circulo-bienvenida-correo',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({membresia_id:id})}).then(x=>x.json());
+    if(caja) caja.innerHTML=r.ok?'<span class="serieok">✓ Correo de bienvenida reenviado.</span>':`<span class="serieerr">⚠ No se pudo enviar (${r.error||'error desconocido'}).</span>`;
+  }catch(e){
+    if(caja) caja.innerHTML='<span class="serieerr">⚠ No se pudo enviar — revisa tu conexión.</span>';
+  }
+}
 
 let clienteCarteraIdActual = null;
 let sociosActuales = [];
@@ -427,7 +455,28 @@ async function crearMembresia(){
 
   const {data,error}=await sb.from('circulo_membresias').insert(payload).select().single();
   if(error){ msg.innerHTML=`<div class="msg err">No se pudo crear: ${error.message}</div>`; return; }
-  msg.innerHTML=`<div class="msg ok">Socio creado. Código de acceso: <span class="codigo">${data.codigo_acceso}</span> — compártelo junto con su correo para que entre a su portal.</div>`;
+
+  // Jp, 2026-10-21: en cuanto se crea el socio, se dispara (best-effort, sin
+  // bloquear el alta) el correo de bienvenida con buen diseño que ya trae
+  // sus datos de acceso — ver api/circulo-bienvenida-correo.js. Además se
+  // deja listo un botón para mandarle los mismos datos por WhatsApp, mismo
+  // patrón (wa.me) que ya se usa para avisar fechas de sesión académica.
+  fetch('/api/circulo-bienvenida-correo',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({membresia_id:data.id})})
+    .then(r=>r.json()).then(r=>{
+      const nota=document.getElementById('altaCorreoNota');
+      if(nota) nota.innerHTML=r.ok?'<span class="serieok">✓ Correo de bienvenida enviado.</span>':`<span class="serieerr">⚠ No se pudo enviar el correo de bienvenida (${r.error||'error desconocido'}) — compártele los datos a mano.</span>`;
+    }).catch(()=>{
+      const nota=document.getElementById('altaCorreoNota');
+      if(nota) nota.innerHTML='<span class="serieerr">⚠ No se pudo enviar el correo de bienvenida — compártele los datos a mano.</span>';
+    });
+
+  const waDigits=(data.telefono||'').replace(/\D/g,'');
+  const waTexto=encodeURIComponent(`Hola ${data.nombre}, ¡bienvenido/a al Círculo Innovaci! 🎉\n\nTus datos de acceso al portal de socios (${PORTAL_URL_WA}):\n• Correo: ${data.email}\n• Código de acceso: ${data.codigo_acceso}\n\nCualquier duda, aquí estamos.`);
+  msg.innerHTML=`<div class="msg ok">
+    Socio creado. Código de acceso: <span class="codigo">${data.codigo_acceso}</span>
+    <div id="altaCorreoNota" style="margin-top:6px;font-size:12.5px;">Enviando correo de bienvenida...</div>
+    <div style="margin-top:10px;">${waDigits?`<a class="btn secondary small" href="https://wa.me/${waDigits}?text=${waTexto}" target="_blank" rel="noopener">Enviar datos de acceso por WhatsApp</a>`:'<span style="font-size:12px;color:var(--text3)">Captura su teléfono para poder enviarle los datos por WhatsApp.</span>'}</div>
+  </div>`;
   ['nNombre','nTelefono','nEmpresa','nUsuariosVinculados','nNotas','nNumSerie'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('nEmail').value='';
   document.getElementById('serieMsg').innerHTML='';
@@ -609,6 +658,11 @@ function abrirEdicion(id){
           <button class="btn secondary" onclick="cerrarModal()">Cancelar</button>
         </div>
         <div id="modalMsg"></div>
+        <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;align-items:center;">
+          <button class="btn secondary small" onclick="reenviarCorreoBienvenida('${m.id}')">Reenviar correo de bienvenida</button>
+          ${(m.telefono||'').replace(/\D/g,'')?`<a class="btn secondary small" href="https://wa.me/${(m.telefono||'').replace(/\D/g,'')}?text=${encodeURIComponent(`Hola ${m.nombre}, te comparto tus datos de acceso al portal de socios del Círculo Innovaci (${PORTAL_URL_WA}):\n• Correo: ${m.email}\n• Código de acceso: ${m.codigo_acceso}`)}" target="_blank" rel="noopener">Enviar datos por WhatsApp</a>`:'<span class="sub">Sin teléfono capturado — no se puede enviar por WhatsApp.</span>'}
+        </div>
+        <div id="reenvioCorreoMsg" style="margin-top:4px;font-size:12px;"></div>
         <div style="margin-top:22px;padding-top:18px;border-top:1px solid var(--border)">
           <h2 style="font-size:13px">Historial del socio</h2>
           <div id="histSocio" class="sub">Cargando historial…</div>
@@ -653,6 +707,8 @@ async function cargarHistorialSocio(membresiaId){
       <span style="color:var(--text3)"> · solicitado ${fh(b.solicitado_en)}</span>
       ${detalle?`<div style="color:var(--text2);margin-top:2px">${detalle}</div>`:''}
       ${b.detalle?`<div style="color:var(--text3);margin-top:2px;white-space:pre-wrap">${b.detalle}</div>`:''}
+      ${b.estado==='rechazado' && b.nota?`<div style="color:var(--red);margin-top:2px">Motivo: ${b.nota}</div>`:''}
+      ${(b.estado==='concluida'||b.estado==='no_asistio') && b.nota?`<div style="color:var(--text2);margin-top:2px">Comentarios de la instructora: ${b.nota}</div>`:''}
     </div>`;
   };
   const filaConstancia=(c)=>`<div style="font-size:12px;padding:6px 0;border-top:1px solid #f1f3f5">
@@ -760,21 +816,21 @@ function renderFilasSolicitudes(solicitudes, vacioTexto){
     let acciones='';
     if(s.tipo==='laboratorio' && s.estado==='solicitado'){
       acciones=`<button class="btn small" onclick="abrirAsignarLaboratorio('${s.id}','${nombre}','${email}')">Asignar en Academia</button>
-                 <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar</button>`;
+                 <button class="btn secondary small" onclick="abrirRechazarSolicitud('${s.id}','${s.estado}','laboratorio')">Rechazar</button>`;
     } else if(s.tipo==='sesion_academica'){
       if(s.estado==='solicitado'){
         acciones=`<button class="btn small" onclick="abrirEnviarKaren('${s.id}','${nombre}','${m.numero_miembro||''}','${m.especialidad||''}','${m.plan||''}')">Enviar a Karen (Telegram)</button>
-                   <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar — dudas no especificadas</button>`;
+                   <button class="btn secondary small" onclick="abrirRechazarSolicitud('${s.id}','${s.estado}','sesion_academica')">Rechazar — dudas no especificadas</button>`;
       } else if(s.estado==='en_revision_karen'){
         acciones=`<button class="btn small" onclick="abrirCapturarPropuesta('${s.id}','${s.estado}','${nombre}')">Capturar fecha propuesta por Karen</button>
-                   <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar</button>`;
+                   <button class="btn secondary small" onclick="abrirRechazarSolicitud('${s.id}','${s.estado}','sesion_academica')">Rechazar</button>`;
       } else if(s.estado==='propuesta'){
         const waDigits=(m.telefono||'').replace(/\D/g,'');
         const fechaTxt=s.fecha_programada?fmtFechaHoraAdmin(s.fecha_programada):'la fecha propuesta';
         const waMsg=encodeURIComponent(`Hola ${nombre.replace(/\\'/g,"'")}, ¿qué tal? Muy buenas tardes. Fíjate que ya lo revisamos y tu sesión académica privada puede ser el ${fechaTxt}. Agradeceremos que nos comentes si confirmas o deseas que busquemos otra fecha.`);
         acciones=`${waDigits?`<a class="btn secondary small" href="https://wa.me/${waDigits}?text=${waMsg}" target="_blank" rel="noopener">Enviar WhatsApp al socio</a>`:''}
                    <button class="btn small" onclick="abrirConfirmarSesion('${s.id}','${s.estado}','${nombre}')">Confirmar sesión + Zoom</button>
-                   <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar</button>`;
+                   <button class="btn secondary small" onclick="abrirRechazarSolicitud('${s.id}','${s.estado}','sesion_academica')">Rechazar</button>`;
       } else if(s.estado==='programada'){
         acciones=`<button class="btn small" onclick="abrirConcluirSesion('${s.id}','${s.estado}','concluida')">Marcar concluida (subir evidencia)</button>
                    <button class="btn secondary small" onclick="abrirConcluirSesion('${s.id}','${s.estado}','no_asistio')">No asistió</button>`;
@@ -784,7 +840,7 @@ function renderFilasSolicitudes(solicitudes, vacioTexto){
       }
     } else if((s.tipo==='acompanante' || s.tipo==='credito_referido') && s.estado==='solicitado'){
       acciones=`<button class="btn small" onclick="abrirConfirmarCompra('${s.id}','${s.estado}','${nombre}','${TIPO_BENEFICIO_LABEL[s.tipo]}')">Confirmar compra</button>
-                 <button class="btn secondary small" onclick="rechazarSolicitud('${s.id}','${s.estado}')">Rechazar</button>`;
+                 <button class="btn secondary small" onclick="abrirRechazarSolicitud('${s.id}','${s.estado}','${s.tipo}')">Rechazar</button>`;
     }
     return `<div class="solicitud-row">
       <div class="info">${nombre}${m.numero_miembro?` <small>(#${m.numero_miembro})</small>`:''} — ${TIPO_BENEFICIO_LABEL[s.tipo]||s.tipo}
@@ -834,12 +890,63 @@ async function verHistorialBeneficio(ev,beneficioId){
   box.classList.remove('hidden');
 }
 
-// Rechazar — disponible para cualquier tipo desde 'solicitado' (nota
-// opcional, para dejar registrado el motivo real).
-async function rechazarSolicitud(id, estadoActual){
-  const nota=prompt('Motivo del rechazo (opcional):','');
-  if(nota===null) return;
-  await aplicarCambioBeneficio(id, estadoActual, {estado:'rechazado'}, nota.trim()||null);
+// Rechazar — disponible para cualquier tipo desde cualquier estado previo a
+// uno terminal. Pedido por Jp (191026): en vez de un prompt() de texto
+// libre, una lista de motivos típicos por tipo de beneficio (para que el
+// socio vea algo claro y consistente en su portal) + un campo aparte para
+// comentarios del personal de Capacitación. El motivo elegido (+ el
+// comentario, si lo hay) se guarda tanto en el historial como en
+// circulo_beneficios_uso.nota, que es lo que ve el socio en su portal.
+const MOTIVOS_RECHAZO={
+  sesion_academica:[
+    'Las dudas no están bien especificadas — vuelve a solicitar detallando tu duda puntual',
+    'Las dudas no corresponden al curso tomado',
+    'Ya se agotó el cupo de sesiones académicas de esta vigencia',
+  ],
+  laboratorio:[
+    'No se encontró una inscripción activa en Academia para este curso',
+    'Ya se le asignó un laboratorio en esta vigencia',
+  ],
+  acompanante:[
+    'No se encontró la compra o el cupón de acompañante',
+    'La referencia de pedido no corresponde a este beneficio',
+  ],
+  credito_referido:[
+    'No se encontró la compra referida con este crédito',
+    'La referencia de pedido no corresponde a este beneficio',
+  ],
+};
+function abrirRechazarSolicitud(id, estadoActual, tipo){
+  const opciones=MOTIVOS_RECHAZO[tipo]||[];
+  document.getElementById('modalWrap').innerHTML=`
+    <div class="overlay" onclick="if(event.target===this) cerrarModal()">
+      <div class="modal">
+        <div class="modal-head"><h2 style="margin-bottom:0">Rechazar solicitud</h2><button onclick="cerrarModal()">✕</button></div>
+        <div class="field"><label>Motivo (esto lo verá el socio en su portal)</label>
+          <select id="rechMotivo" onchange="document.getElementById('rechOtroWrap').classList.toggle('hidden', this.value!=='__otro__')">
+            ${opciones.map(o=>`<option value="${o.replace(/"/g,'&quot;')}">${o}</option>`).join('')}
+            <option value="__otro__">Otro (especificar)</option>
+          </select>
+        </div>
+        <div class="field ${opciones.length?'hidden':''}" id="rechOtroWrap"><label>Motivo específico</label><input id="rechOtro" placeholder="Describe el motivo"></div>
+        <div class="field"><label>Comentarios del personal de Capacitación (opcional, interno)</label><textarea id="rechComentarios" rows="2" placeholder="Notas internas adicionales, si aplica"></textarea></div>
+        <div style="display:flex;gap:10px;margin-top:14px">
+          <button class="btn" onclick="confirmarRechazarSolicitud('${id}','${estadoActual}')">Rechazar</button>
+          <button class="btn secondary" onclick="cerrarModal()">Cancelar</button>
+        </div>
+        <div id="modalMsg"></div>
+      </div>
+    </div>
+  `;
+}
+async function confirmarRechazarSolicitud(id, estadoActual){
+  const sel=document.getElementById('rechMotivo').value;
+  const motivo = sel==='__otro__' ? document.getElementById('rechOtro').value.trim() : sel;
+  if(!motivo){ document.getElementById('modalMsg').innerHTML='<div class="msg err">Indica un motivo.</div>'; return; }
+  const comentarios=document.getElementById('rechComentarios').value.trim();
+  const nota = comentarios ? `${motivo} — ${comentarios}` : motivo;
+  const ok=await aplicarCambioBeneficio(id, estadoActual, {estado:'rechazado', nota}, nota);
+  if(ok) cerrarModal();
 }
 
 // --- Laboratorio Virtual: asignar a una inscripción real de Academia ---
@@ -1015,6 +1122,7 @@ function abrirConcluirSesion(beneficioId, estadoActual, resultado){
         <div class="modal-head"><h2 style="margin-bottom:0">${tituloResultado}</h2><button onclick="cerrarModal()">✕</button></div>
         <div class="sub">Sube una captura de pantalla u otra evidencia de que la sesión se realizó (opcional, pero recomendado para control).</div>
         <div class="field"><label>Evidencia (imagen o PDF)</label><input id="sesEvidencia" type="file" accept="image/*,.pdf"></div>
+        <div class="field"><label>Comentarios de la instructora (los que te pasó Karen por Telegram sobre cómo salió la sesión)</label><textarea id="sesComentarios" rows="3" placeholder="Ej. Se resolvieron todas las dudas sobre reportes de inventario, el socio quedó conforme."></textarea></div>
         <div style="display:flex;gap:10px;margin-top:14px">
           <button class="btn" onclick="confirmarConcluirSesion('${beneficioId}','${estadoActual}','${resultado}')">${resultado==='concluida'?'Concluir':'Marcar no asistió'}</button>
           <button class="btn secondary" onclick="cerrarModal()">Cancelar</button>
@@ -1027,7 +1135,8 @@ function abrirConcluirSesion(beneficioId, estadoActual, resultado){
 async function confirmarConcluirSesion(beneficioId, estadoActual, resultado){
   const msgBox=document.getElementById('modalMsg');
   const file=document.getElementById('sesEvidencia').files[0];
-  const updates={estado:resultado};
+  const comentarios=document.getElementById('sesComentarios').value.trim()||null;
+  const updates={estado:resultado, nota:comentarios};
   if(file){
     msgBox.innerHTML='<div class="sub">Subiendo evidencia...</div>';
     const path=`circulo/sesion-academica/${beneficioId}-${Date.now()}-${file.name}`;
@@ -1035,7 +1144,7 @@ async function confirmarConcluirSesion(beneficioId, estadoActual, resultado){
     if(upErr){ msgBox.innerHTML=`<div class="msg err">No se pudo subir la evidencia: ${upErr.message}. Puedes concluir sin ella o reintentar.</div>`; return; }
     updates.evidencia_path=path;
   }
-  const ok=await aplicarCambioBeneficio(beneficioId, estadoActual, updates, file?'Con evidencia adjunta':null);
+  const ok=await aplicarCambioBeneficio(beneficioId, estadoActual, updates, comentarios?`Comentarios de la instructora: ${comentarios}`:(file?'Con evidencia adjunta':null));
   if(ok) cerrarModal();
 }
 
