@@ -144,6 +144,15 @@ details.panel.acc>.acc-body{padding:0 26px 24px;}
 .benefcard-2col{display:grid;grid-template-columns:1.15fr 1fr;gap:24px;}
 @media(max-width:640px){.benefcard-2col{grid-template-columns:1fr;}}
 
+/* Motivo de rechazo visible y "Ver comentarios de la instructora" — pedido
+   por Jp (191026, ronda de motivos de rechazo): el socio debe ver por qué
+   se rechazó una solicitud, y al concluir una sesión académica poder
+   expandir los comentarios reales que dejó su instructora. */
+.motivo-rechazo{font-size:11.5px;color:var(--red);margin-top:4px;}
+.ver-comentarios{font-size:11.5px;list-style:none;cursor:pointer;color:var(--brand-blue);font-weight:700;margin-top:4px;}
+.ver-comentarios::-webkit-details-marker{display:none;}
+.ver-comentarios-body{font-size:11.5px;color:var(--text3);margin-top:4px;white-space:pre-wrap;}
+
 /* Pantalla de bienvenida personal entre el login y la ficha completa —
    pedida por Jp (181026) para reforzar la sensación de pertenencia:
    "bienvenido Josué" antes de mostrar todo de golpe. */
@@ -250,10 +259,18 @@ function fmtFechaHora(iso){
   return d.toLocaleString('es-MX',{day:'numeric',month:'long',hour:'numeric',minute:'2-digit'});
 }
 
-// Categorías de curso ya definidas en index.html (Academia) — el catálogo
-// real de cursos de Jp todavía no llega, así que por ahora se usa esta lista
-// genérica para la solicitud de Laboratorio Virtual (ver pendiente en
-// claude/circulo-innovaci-fase0-build-171026.md).
+// Jp, 2026-10-20: el catálogo de "Solicitar laboratorio" YA NO es esta lista
+// estática — ahora sale en vivo de circulo_catalogo_laboratorio (vista
+// pública acotada de las generaciones reales de Academia que Jp marcó como
+// "Disponible para Círculo"). Antes se podía pedir un curso que ni siquiera
+// había arrancado, o una modalidad (en vivo/24-7) que ese curso ni ofrece —
+// ahora la modalidad sale fija de la generación real, no se elige aparte.
+// Ver academia_generaciones.circulo_disponible (checkbox en Editar
+// generación, Academia) y cargarCatalogoLaboratorio() más abajo.
+let catalogoLaboratorioActual=[];
+const MODALIDAD_LAB_LABEL={en_vivo:'En vivo','24_7':'24/7',in_company:'In company'};
+// Catálogo genérico de respaldo — sigue en uso por bloqueSesion() (Solicitar
+// sesión académica), que no se toca en este cambio.
 const CURSOS=['Empresarial','Diplomado 24/7','Diplomado en vivo','Taller 24/7','Taller en vivo','Desde cero'];
 
 let membresiaActual=null;
@@ -291,6 +308,12 @@ const BENEFICIO_INFO={
   // historial de beneficios de abajo.
   credito_referido:{icon:'',titulo:'Crédito Innovaci'},
 };
+// Motivo de rechazo — igual para los 4 tipos de beneficio, pedido por Jp
+// (191026): el socio debe ver por qué se rechazó, no solo el pill rojo.
+function motivoRechazo(b){
+  if(b.estado!=='rechazado' || !b.nota) return '';
+  return `<div class="motivo-rechazo">Motivo: ${b.nota}</div>`;
+}
 function historialMini(items){
   if(!items || !items.length) return '';
   return `<div style="margin:0 0 12px">${items.map(b=>`<div class="list-item" style="padding:6px 0;font-size:12px">${b.detalle||''} ${pill(b.estado)}${b.fecha?`<small>${fmtFecha(b.fecha)}</small>`:''}</div>`).join('')}</div>`;
@@ -305,7 +328,7 @@ function historialLaboratorio(items){
     if(b.estado==='asignado' && (b.lab_fecha_inicio||b.lab_fecha_fin)){
       extra=`<div style="font-size:11.5px;color:var(--text3);margin-top:4px">Vigencia del laboratorio: ${fmtFecha(b.lab_fecha_inicio)} → ${fmtFecha(b.lab_fecha_fin)}</div>`;
     }
-    return `<div class="list-item" style="padding:6px 0;font-size:12px">${b.detalle||''} ${pill(b.estado)}${b.fecha?`<small>${fmtFecha(b.fecha)}</small>`:''}${extra}</div>`;
+    return `<div class="list-item" style="padding:6px 0;font-size:12px">${b.detalle||''} ${pill(b.estado)}${b.fecha?`<small>${fmtFecha(b.fecha)}</small>`:''}${extra}${motivoRechazo(b)}</div>`;
   }).join('')}</div>`;
 }
 // Variante de historial para Sesión académica: muestra fecha/hora programada
@@ -326,7 +349,12 @@ function historialSesion(items){
     } else if((b.estado==='concluida' || b.estado==='no_asistio') && b.fecha_programada){
       extra=`<div style="font-size:11.5px;color:var(--text3);margin-top:4px">Se realizó: ${fmtFechaHora(b.fecha_programada)}</div>`;
     }
-    return `<div class="list-item" style="padding:6px 0;font-size:12px">${b.detalle||''} ${pill(b.estado)}${b.fecha?`<small>${fmtFecha(b.fecha)}</small>`:''}${extra}</div>`;
+    // Comentarios de la instructora al concluir — expandible, pedido por Jp
+    // (191026), en vez de mostrarse siempre abierto.
+    const comentarios = (b.estado==='concluida' || b.estado==='no_asistio') && b.nota
+      ? `<details><summary class="ver-comentarios">Ver comentarios de la instructora</summary><div class="ver-comentarios-body">${b.nota}</div></details>`
+      : '';
+    return `<div class="list-item" style="padding:6px 0;font-size:12px">${b.detalle||''} ${pill(b.estado)}${b.fecha?`<small>${fmtFecha(b.fecha)}</small>`:''}${extra}${motivoRechazo(b)}${comentarios}</div>`;
   }).join('')}</div>`;
 }
 // Variante de historial para Acompañante / Crédito: cuando el admin ya
@@ -338,7 +366,7 @@ function historialCompra(items){
     if(b.estado==='compra_confirmada' && b.producto_comprado){
       extra=`<div style="font-size:11.5px;color:var(--text3);margin-top:4px">Compra confirmada: ${b.producto_comprado}</div>`;
     }
-    return `<div class="list-item" style="padding:6px 0;font-size:12px">${b.detalle||''} ${pill(b.estado)}${b.fecha?`<small>${fmtFecha(b.fecha)}</small>`:''}${extra}</div>`;
+    return `<div class="list-item" style="padding:6px 0;font-size:12px">${b.detalle||''} ${pill(b.estado)}${b.fecha?`<small>${fmtFecha(b.fecha)}</small>`:''}${extra}${motivoRechazo(b)}</div>`;
   }).join('')}</div>`;
 }
 function tarjetaBeneficio(tipo,pillHtml,descHtml,cuerpoHtml){
@@ -374,13 +402,21 @@ async function enviarSolicitud(tipo,detalle,btn){
 // a la derecha; botón azul de marca en vez de naranja de especialidad.
 function bloqueLaboratorio(beneficios){
   const previas=(beneficios||[]).filter(b=>b.tipo==='laboratorio');
-  // Laboratorio Virtual solo aplica a diplomados, cursos y talleres del
-  // catálogo — las masterclasses NO dan este beneficio (confirmado por Jp,
-  // 181026).
-  const catalogo=(CURSOS_CATALOGO[membresiaActual.especialidad]||[]).filter(c=>c.tipo!=='Masterclass');
-  const opciones=catalogo.length
-    ? catalogo.map(c=>`<option>${formatCursoTitulo(c.titulo)}</option>`).join('')
-    : CURSOS.map(c=>`<option>${c}</option>`).join('');
+  // Jp, 2026-10-20: el curso y la modalidad ya no se eligen por separado —
+  // la modalidad es un dato FIJO de la generación real (no se puede pedir
+  // "en vivo" de un curso que solo existe 24/7), y la lista solo trae
+  // generaciones que Jp ya activó para el Círculo (ver
+  // catalogoLaboratorioActual, cargado en mostrarResultado()). Si todavía no
+  // hay ninguna activa para su especialidad, se avisa en vez de dejar
+  // solicitar "al aire".
+  const catalogo=catalogoLaboratorioActual||[];
+  const opciones=catalogo.map(c=>`<option value="${c.generacion_id}" data-modalidad="${c.curso_modalidad||''}">${c.curso_nombre}</option>`).join('');
+  const formularioHtml=catalogo.length
+    ? `<div class="sfield"><label>Curso</label><select id="labCurso" onchange="actualizarModalidadLab()">${opciones}</select></div>
+       <div class="sfield"><label>Modalidad</label><div id="labModalidadTxt" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;color:var(--text2);background:#f8f9fa;">—</div></div>
+       <div style="font-size:11px;color:var(--text3);margin-bottom:8px">La modalidad la define el curso elegido — 24/7: accedes a las grabaciones cuando quieras. En vivo: te unes en el horario que te confirme Capacitación.</div>
+       <button class="btn chico" style="background:var(--brand-blue)" onclick="solicitarLaboratorio(this)">Solicitar acceso</button>`
+    : `<div style="font-size:12.5px;color:var(--text3);line-height:1.6">Por ahora no hay ningún curso con Laboratorio Virtual disponible para solicitar en tu especialidad. En cuanto Capacitación active uno, aparecerá aquí.</div>`;
   return `<div class="benefcard">
     <div class="benefcard-titulo" style="margin-bottom:14px">Laboratorio Virtual</div>
     <div class="benefcard-2col">
@@ -396,18 +432,27 @@ function bloqueLaboratorio(beneficios){
       </div>
       <div>
         <div style="font-size:12.5px;font-weight:800;color:var(--navy);margin-bottom:10px">Solicita tu acceso</div>
-        <div class="sfield"><label>Curso</label><select id="labCurso">${opciones}</select></div>
-        <div class="sfield"><label>Modalidad</label><select id="labModalidad"><option>24/7</option><option>En vivo</option></select></div>
-        <div style="font-size:11px;color:var(--text3);margin-bottom:8px">24/7: accedes a las grabaciones cuando quieras. En vivo: te unes en el horario que te confirme Capacitación.</div>
-        <button class="btn chico" style="background:var(--brand-blue)" onclick="solicitarLaboratorio(this)">Solicitar acceso</button>
+        ${formularioHtml}
       </div>
     </div>
   </div>`;
 }
+// Refleja la modalidad REAL del curso elegido (no editable) — Jp, 2026-10-20.
+function actualizarModalidadLab(){
+  const sel=document.getElementById('labCurso');
+  const txt=document.getElementById('labModalidadTxt');
+  if(!sel||!txt) return;
+  const modalidad=sel.selectedOptions[0]?.dataset.modalidad||'';
+  txt.textContent=MODALIDAD_LAB_LABEL[modalidad]||modalidad||'—';
+}
 function solicitarLaboratorio(btn){
-  const curso=document.getElementById('labCurso').value;
-  const modalidad=document.getElementById('labModalidad').value;
-  enviarSolicitud('laboratorio',`${curso} — ${modalidad}`,btn);
+  const sel=document.getElementById('labCurso');
+  const opt=sel?.selectedOptions[0];
+  if(!opt){ return; }
+  const item=(catalogoLaboratorioActual||[]).find(c=>c.generacion_id===opt.value);
+  const modalidadTxt=MODALIDAD_LAB_LABEL[opt.dataset.modalidad]||opt.dataset.modalidad||'';
+  const detalle=`${opt.textContent} — ${modalidadTxt}${item?` (${item.generacion_clave})`:''}`;
+  enviarSolicitud('laboratorio',detalle,btn);
 }
 
 function bloqueSesion(beneficios){
@@ -621,10 +666,15 @@ function mostrarBienvenida(m){
   setTimeout(()=>{ const w=document.getElementById('welcomeWrap'); if(w) w.innerHTML=''; },2500);
 }
 
-function mostrarResultado(m){
+async function mostrarResultado(m){
   membresiaActual=m;
   document.getElementById('loginScreen').style.display='none';
   if(!bienvenidaMostrada){ bienvenidaMostrada=true; mostrarBienvenida(m); }
+  // Jp, 2026-10-20: catálogo real de Laboratorio Virtual (ver bloqueLaboratorio)
+  // — se carga aquí, antes de armar el HTML, para que ya esté listo al
+  // momento de pintar la sección.
+  const {data:catalogoLab}=await sb.from('circulo_catalogo_laboratorio').select('*').eq('especialidad',m.especialidad).order('curso_nombre');
+  catalogoLaboratorioActual=catalogoLab||[];
   const avisos=(m.avisos||[]).map(a=>`<div class="aviso">${a.mensaje}</div>`).join('');
   const constancias=(m.constancias||[]);
   const beneficios=(m.beneficios_usados||[]);
@@ -761,7 +811,9 @@ function mostrarResultado(m){
           } else if((b.tipo==='acompanante'||b.tipo==='credito_referido') && b.estado==='compra_confirmada' && b.producto_comprado){
             extra=` · ${b.producto_comprado}`;
           }
-          return `<div class="list-item">${(BENEFICIO_INFO[b.tipo]||{}).titulo||b.tipo}${b.detalle?` — ${b.detalle}`:''} ${pill(b.estado||'confirmado')}<small>${fmtFecha(b.fecha)}${extra}</small></div>`;
+          const comentarios = b.tipo==='sesion_academica' && (b.estado==='concluida'||b.estado==='no_asistio') && b.nota
+            ? `<details><summary class="ver-comentarios">Ver comentarios de la instructora</summary><div class="ver-comentarios-body">${b.nota}</div></details>` : '';
+          return `<div class="list-item">${(BENEFICIO_INFO[b.tipo]||{}).titulo||b.tipo}${b.detalle?` — ${b.detalle}`:''} ${pill(b.estado||'confirmado')}<small>${fmtFecha(b.fecha)}${extra}</small>${motivoRechazo(b)}${comentarios}</div>`;
         }).join('')}
       </div>` : ''}
 
@@ -769,6 +821,7 @@ function mostrarResultado(m){
     </div>
   </div>`;
   document.getElementById('resultadoWrap').innerHTML=html;
+  actualizarModalidadLab();
 }
 </script>
 </body>

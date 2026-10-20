@@ -119,15 +119,31 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
   </div>
 
   <div class="card">
+    <h2>🧪 Laboratorio Virtual</h2>
+    <div class="sub" style="margin-bottom:14px">Todo lo que necesitas controlar del beneficio de laboratorio en un solo lugar: lo ya asignado, lo que está por vencer, y las solicitudes nuevas por revisar.</div>
+    <div id="labVirtualMsg"></div>
+    <div class="solicitudes-grid">
+      <div class="col">
+        <h2>🔔 Por vencer (15 días)</h2>
+        <div id="listaLabPorVencer"></div>
+      </div>
+      <div class="col">
+        <h2>✅ Asignados (vigentes)</h2>
+        <div id="listaLabAsignados"></div>
+      </div>
+      <div class="col">
+        <h2>🆕 Solicitudes nuevas</h2>
+        <div id="listaLaboratorio"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>Solicitudes de socios</h2>
-    <div class="sub" style="margin-bottom:14px">Laboratorio, sesiones privadas, acompañantes y crédito por referido que los socios piden desde su portal. Tú las confirmas o rechazas aquí.</div>
+    <div class="sub" style="margin-bottom:14px">Sesiones privadas, acompañantes y crédito por referido que los socios piden desde su portal. Tú las confirmas o rechazas aquí.</div>
     <div id="solicitudesMsg"></div>
 
     <div class="solicitudes-grid">
-      <div class="col">
-        <h2>🧪 Laboratorio Virtual</h2>
-        <div id="listaLaboratorio"></div>
-      </div>
       <div class="col">
         <h2>🎓 Sesiones académicas</h2>
         <div id="listaSesiones"></div>
@@ -423,6 +439,7 @@ async function mostrarApp(){
   toggleOrigen();
   cargarSocios();
   cargarSolicitudes();
+  cargarLaboratorioVirtualAsignados();
 }
 
 async function crearMembresia(){
@@ -455,6 +472,28 @@ async function crearMembresia(){
 
   const {data,error}=await sb.from('circulo_membresias').insert(payload).select().single();
   if(error){ msg.innerHTML=`<div class="msg err">No se pudo crear: ${error.message}</div>`; return; }
+
+  // Jp, 2026-10-20: todo socio del Círculo también debe existir como
+  // "alumno" en Academia (App VENTAS) — así, cuando pida su acceso al
+  // Laboratorio Virtual, Capacitación solo tiene que inscribirlo en la
+  // generación correcta y asignarle el servidor/usuario Aspel desde Control
+  // de Accesos, en vez de primero tener que darlo de alta a mano. Usa el
+  // mismo mecanismo (busca por correo/teléfono antes de crear) que ya usa
+  // "Agregar asistente" dentro de Academia, para no duplicar participantes.
+  // Best-effort: si falla, el alta del socio en Círculo de todas formas ya
+  // quedó bien — se puede volver a intentar el vínculo a mano después.
+  try{
+    const {data:participanteId,error:errPart}=await sb.rpc('academia_find_or_create_participante',{
+      p_nombre: data.nombre,
+      p_mail: data.email,
+      p_telefono: data.telefono||null,
+      p_cliente_id: data.cliente_cartera_id||null,
+    });
+    if(!errPart && participanteId){
+      await sb.from('circulo_membresias').update({academia_participante_id:participanteId}).eq('id',data.id);
+      data.academia_participante_id=participanteId;
+    }
+  }catch(eAcad){ /* best-effort, ver comentario arriba */ }
 
   // Jp, 2026-10-21: en cuanto se crea el socio, se dispara (best-effort, sin
   // bloquear el alta) el correo de bienvenida con buen diseño que ya trae
@@ -491,8 +530,28 @@ async function cargarSocios(){
   const {data,error}=await sb.from('circulo_membresias').select('*').order('created_at',{ascending:false});
   if(error){ document.getElementById('listaMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return; }
   sociosActuales=data||[];
+  await cargarCursoActivoSocios();
   renderStats(sociosActuales);
   renderTablaSocios();
+}
+
+// "Curso activo" (Jp, 2026-10-20): de qué laboratorio del Círculo tiene
+// acceso vigente AHORA cada socio — sale del beneficio de laboratorio ya
+// ASIGNADO (vinculado a su inscripción real de Academia), no de un campo
+// aparte que se pudiera desincronizar.
+async function cargarCursoActivoSocios(){
+  const ids=sociosActuales.map(m=>m.id);
+  if(!ids.length) return;
+  const {data,error}=await sb.from('circulo_beneficios_uso')
+    .select('membresia_id,academia_inscripcion_id,academia_inscripciones(academia_generaciones(clave,academia_cursos(nombre)))')
+    .eq('tipo','laboratorio').eq('estado','asignado').in('membresia_id',ids);
+  if(error||!data) return;
+  const porMembresia={};
+  data.forEach(b=>{
+    const gen=b.academia_inscripciones?.academia_generaciones;
+    if(gen) porMembresia[b.membresia_id]=`${gen.academia_cursos?.nombre||''} (${gen.clave||''})`;
+  });
+  sociosActuales.forEach(m=>{ m._cursoActivo=porMembresia[m.id]||null; });
 }
 
 function socioPasaFiltro(m){
@@ -519,6 +578,7 @@ const COLUMNAS_SOCIOS=[
   {campo:'fecha_vencimiento',label:'Vigencia',ordenable:true},
   {campo:'estado',label:'Estado',ordenable:true},
   {campo:'codigo_acceso',label:'Código de acceso',ordenable:false},
+  {campo:null,label:'Curso activo',ordenable:false},
   {campo:null,label:'',ordenable:false},
 ];
 
@@ -560,9 +620,10 @@ function renderTablaSocios(){
       <td>${m.fecha_vencimiento||'—'}</td>
       <td><span class="badge ${m.estado}">${m.estado}</span></td>
       <td><span class="codigo">${m.codigo_acceso}</span></td>
+      <td>${m._cursoActivo?`<span style="font-size:11.5px;color:var(--teal);font-weight:600">${m._cursoActivo}</span>`:'<span style="color:var(--text3);font-size:11.5px">—</span>'}</td>
       <td><button class="btn secondary small" onclick="abrirEdicion('${m.id}')">Ver / Editar</button></td>
     </tr>
-  `).join('') || `<tr><td colspan="8" style="color:var(--text3)">${filtroActual?'Ningún socio coincide con el filtro.':'Sin socios dados de alta todavía.'}</td></tr>`;
+  `).join('') || `<tr><td colspan="9" style="color:var(--text3)">${filtroActual?'Ningún socio coincide con el filtro.':'Sin socios dados de alta todavía.'}</td></tr>`;
 
   const aviso=document.getElementById('filtroAviso');
   aviso.innerHTML = filtroActual ? `<div class="filtro-aviso">Mostrando solo: ${filtroActual.label} <button onclick="quitarFiltro()">Quitar filtro ✕</button></div>` : '';
@@ -790,7 +851,7 @@ async function cargarSolicitudes(){
   // terminales (asignado/concluida/no_asistio/compra_confirmada/rechazado)
   // ya no aparecen aquí, quedan solo en el historial de cada socio.
   const {data,error}=await sb.from('circulo_beneficios_uso')
-    .select('*, circulo_membresias(nombre,email,numero_miembro,telefono,especialidad,plan)')
+    .select('*, circulo_membresias(nombre,email,numero_miembro,telefono,especialidad,plan,academia_participante_id)')
     .in('estado',['solicitado','en_revision_karen','propuesta','programada','realizada'])
     .order('created_at',{ascending:true});
   if(error){ document.getElementById('solicitudesMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return; }
@@ -808,6 +869,45 @@ async function cargarSolicitudes(){
   document.getElementById('listaBeneficios').innerHTML = renderFilasSolicitudes(porTipo.beneficios,'Sin solicitudes de acompañante o crédito pendientes.');
 }
 
+// Jp, 2026-10-20: "Laboratorio Virtual" como sección propia — antes, en
+// cuanto un laboratorio quedaba "asignado" desaparecía de Solicitudes y solo
+// quedaba en el historial de cada socio; no había forma de ver de un
+// vistazo qué está vigente ni qué está por vencer. La vigencia sale de la
+// inscripción REAL de Academia (fecha_fin_laboratorio), nunca de un campo
+// aparte — mismo criterio que usa Academia/Control de Accesos.
+const DIAS_POR_VENCER_LAB=15;
+async function cargarLaboratorioVirtualAsignados(){
+  const {data,error}=await sb.from('circulo_beneficios_uso')
+    .select('id,membresia_id,academia_inscripcion_id,circulo_membresias(nombre,email,numero_miembro),academia_inscripciones(fecha_fin_laboratorio,academia_generaciones(clave,academia_cursos(nombre)))')
+    .eq('tipo','laboratorio').eq('estado','asignado');
+  const msg=document.getElementById('labVirtualMsg');
+  if(error){ if(msg) msg.innerHTML=`<div class="msg err">${error.message}</div>`; return; }
+  const hoy=new Date(); hoy.setHours(0,0,0,0);
+  const limite=new Date(hoy); limite.setDate(hoy.getDate()+DIAS_POR_VENCER_LAB);
+  const porVencer=[], asignados=[];
+  (data||[]).forEach(b=>{
+    const fin=b.academia_inscripciones?.fecha_fin_laboratorio;
+    const finDate=fin?new Date(fin+'T00:00:00'):null;
+    (finDate && finDate<=limite) ? porVencer.push({...b,_fin:finDate}) : asignados.push(b);
+  });
+  porVencer.sort((a,b)=>a._fin-b._fin);
+  const fila=(b,resaltarVencido)=>{
+    const m=b.circulo_membresias||{};
+    const gen=b.academia_inscripciones?.academia_generaciones;
+    const curso=gen?.academia_cursos?.nombre||'—';
+    const fin=b.academia_inscripciones?.fecha_fin_laboratorio;
+    const vencido=resaltarVencido && fin && new Date(fin+'T00:00:00')<hoy;
+    return `<div class="solicitud-row">
+      <div class="info">${m.nombre||'—'}${m.numero_miembro?` <small>(#${m.numero_miembro})</small>`:''}
+        <div style="font-size:12px;color:var(--text2);margin-top:3px">${curso} · ${gen?.clave||''}</div>
+        <small>${m.email||''} · vence ${fin||'—'}${vencido?' · <span style="color:#c0392b;font-weight:700">YA VENCIÓ</span>':''}</small>
+      </div>
+    </div>`;
+  };
+  document.getElementById('listaLabPorVencer').innerHTML = porVencer.map(b=>fila(b,true)).join('') || '<div class="sub">Nada por vencer en los próximos '+DIAS_POR_VENCER_LAB+' días.</div>';
+  document.getElementById('listaLabAsignados').innerHTML = asignados.map(b=>fila(b,false)).join('') || '<div class="sub">Sin laboratorios asignados vigentes.</div>';
+}
+
 function renderFilasSolicitudes(solicitudes, vacioTexto){
   return solicitudes.map(s=>{
     const m=s.circulo_membresias||{};
@@ -815,7 +915,7 @@ function renderFilasSolicitudes(solicitudes, vacioTexto){
     const email=m.email||'';
     let acciones='';
     if(s.tipo==='laboratorio' && s.estado==='solicitado'){
-      acciones=`<button class="btn small" onclick="abrirAsignarLaboratorio('${s.id}','${nombre}','${email}')">Asignar en Academia</button>
+      acciones=`<button class="btn small" onclick="abrirAsignarLaboratorio('${s.id}','${nombre}','${email}','${m.academia_participante_id||''}','${m.especialidad||''}')">Asignar en Academia</button>
                  <button class="btn secondary small" onclick="abrirRechazarSolicitud('${s.id}','${s.estado}','laboratorio')">Rechazar</button>`;
     } else if(s.tipo==='sesion_academica'){
       if(s.estado==='solicitado'){
@@ -877,6 +977,7 @@ async function aplicarCambioBeneficio(id, estadoActual, updates, nota){
   if(error){ document.getElementById('solicitudesMsg').innerHTML=`<div class="msg err">${error.message}</div>`; return false; }
   await registrarHistorialBeneficio(id, estadoActual, updates.estado, nota);
   cargarSolicitudes();
+  cargarLaboratorioVirtualAsignados();
   return true;
 }
 
@@ -953,20 +1054,66 @@ async function confirmarRechazarSolicitud(id, estadoActual){
 // En vez de "Confirmar" sin más, el admin busca al participante en Academia
 // y vincula el beneficio a su inscripción real — de ahí salen las fechas de
 // vigencia del laboratorio que ve el socio en su portal.
-function abrirAsignarLaboratorio(beneficioId, nombreSocio, emailSocio){
+// Jp, 2026-10-20: desde que toda membresía nueva del Círculo crea su propio
+// "alumno" en Academia (ver crearMembresia()), este modal ya no depende de
+// buscar a ciegas por nombre/correo — si la membresía trae
+// academia_participante_id, se cargan DIRECTO sus inscripciones reales. El
+// buscador manual se deja como respaldo (socios dados de alta antes de este
+// cambio, o casos raros donde el vínculo automático falló).
+function abrirAsignarLaboratorio(beneficioId, nombreSocio, emailSocio, academiaParticipanteId, especialidadSocio){
   labBeneficioId=beneficioId;
   document.getElementById('modalWrap').innerHTML=`
     <div class="overlay" onclick="if(event.target===this) cerrarModal()">
       <div class="modal">
         <div class="modal-head"><h2 style="margin-bottom:0">Asignar Laboratorio Virtual — ${nombreSocio}</h2><button onclick="cerrarModal()">✕</button></div>
-        <div class="sub">Busca la inscripción real en Academia (por correo o nombre) para vincular este beneficio a sus fechas reales de laboratorio.</div>
-        <div class="field"><label>Buscar en Academia</label><input id="labBuscar" autocomplete="off" oninput="buscarInscripcionLab()" placeholder="Nombre o correo del participante" value="${emailSocio||''}"></div>
-        <div id="labResultados" style="margin-top:10px"></div>
+        <div class="sub">Vincula este beneficio a su inscripción real en Academia — de ahí salen sus fechas de laboratorio.</div>
+        <div id="labDirecto" style="margin-top:6px"></div>
+        <details style="margin-top:12px"><summary style="cursor:pointer;font-size:12px;color:var(--text3)">Buscar manualmente en Academia (otro nombre/correo)</summary>
+          <div class="field" style="margin-top:8px"><label>Buscar en Academia</label><input id="labBuscar" autocomplete="off" oninput="buscarInscripcionLab()" placeholder="Nombre o correo del participante" value="${emailSocio||''}"></div>
+          <div id="labResultados" style="margin-top:10px"></div>
+        </details>
         <div id="modalMsg"></div>
       </div>
     </div>
   `;
-  buscarInscripcionLab();
+  cargarInscripcionesDirecto(academiaParticipanteId||'', especialidadSocio||'');
+}
+// Carga directa: inscripciones del participante ya ligado a esta membresía.
+// Si no tiene ninguna todavía, muestra qué generaciones de esa especialidad
+// ya están "Disponibles para Círculo" (ver checkbox en Editar generación de
+// Academia) — para que Capacitación sepa exactamente en cuál inscribirlo
+// (Academia → Generaciones → esa clave → Agregar asistente) antes de volver
+// aquí a asignarle el laboratorio.
+async function cargarInscripcionesDirecto(participanteId, especialidadSocio){
+  const wrap=document.getElementById('labDirecto');
+  if(!participanteId){
+    wrap.innerHTML='<div class="sub">Este socio no tiene un alumno vinculado en Academia todavía (membresía anterior a este cambio) — usa el buscador manual de abajo.</div>';
+    return;
+  }
+  const {data:inscripciones,error}=await sb.from('academia_inscripciones')
+    .select('id,nivel_acceso,fecha_inicio_laboratorio,fecha_fin_laboratorio,academia_generaciones(clave,academia_cursos(nombre,sistema:sistema_id(clave)))')
+    .eq('participante_id',participanteId)
+    .order('created_at',{ascending:false});
+  if(error){ wrap.innerHTML=`<div class="msg err">${error.message}</div>`; return; }
+  if(!inscripciones||!inscripciones.length){
+    const {data:disponibles}=await sb.from('academia_generaciones')
+      .select('clave,academia_cursos(nombre,sistema:sistema_id(clave))')
+      .eq('circulo_disponible',true);
+    const match=(disponibles||[]).filter(g=>!especialidadSocio||g.academia_cursos?.sistema?.clave===especialidadSocio);
+    wrap.innerHTML=`<div class="sub">El alumno existe en Academia pero todavía no tiene ninguna inscripción.</div>
+      ${match.length
+        ?`<div style="font-size:12px;color:var(--text2);margin-top:8px">Generaciones disponibles para Círculo de su especialidad (${especialidadSocio||'—'}) — inscríbelo primero ahí (Academia → Generaciones → la clave → Agregar asistente):<br>${match.map(g=>`<strong>${g.clave}</strong> (${g.academia_cursos?.nombre||''})`).join('<br>')}</div>`
+        :`<div style="font-size:12px;color:var(--text2);margin-top:8px">No hay ninguna generación marcada "Disponible para Círculo" de la especialidad ${especialidadSocio||'—'} todavía — actívala primero en Academia (Editar generación).</div>`}`;
+    return;
+  }
+  wrap.innerHTML=inscripciones.map(i=>{
+    const curso=i.academia_generaciones?.academia_cursos?.nombre||'Curso';
+    const gen=i.academia_generaciones?.clave||'';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:#f8f9fa;border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;font-size:12.5px">
+      <span>${curso} · ${gen} · nivel ${i.nivel_acceso||'—'}<br>Laboratorio: ${i.fecha_inicio_laboratorio||'sin fecha'} → ${i.fecha_fin_laboratorio||'sin fecha'}</span>
+      <button type="button" class="btn small" onclick="asignarLaboratorio('${i.id}')">Asignar</button>
+    </div>`;
+  }).join('');
 }
 let labBuscarTimeout=null;
 async function buscarInscripcionLab(){
