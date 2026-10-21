@@ -10366,19 +10366,24 @@ async function renderDirectorSuscripcionesModulo(){
   const mc=document.getElementById('mainContent');
   mc.classList.remove('full-width');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando suscripciones...</div>';
-  const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas}]=await Promise.all([
+  const puedeCargarExcel=userProfile.rol==='director'||userProfile.rol==='administracion';
+  const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas},{data:revisionManual}]=await Promise.all([
     carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)'),
     sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
     sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'),
-    sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden')
+    sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden'),
+    // Jp, 2026-10-21: cola persistente de "Verificar catálogo Aspel"/"Cargar
+    // comisiones pagadas" — solo Dirección/Administración la necesita.
+    puedeCargarExcel?sb.from('suscripciones_revision_manual').select('*').eq('resuelto',false).order('creado_at',{ascending:false}):Promise.resolve({data:[]})
   ]);
   window._cartClientes=clientes||[];
   window._cartSuscripciones=suscripciones||[];
   window._carteraVendedores=vendedores||[];
   window._suscSistemas=sistemas||[];
+  window._suscRevisionManual=revisionManual||[];
   (clientes||[]).forEach(cl=>{cl._suscripciones=(suscripciones||[]).filter(s=>s.cliente_id===cl.id);});
   const totalPendientesVincular=(suscripciones||[]).filter(s=>!s.cliente_id).length;
-  const puedeCargarExcel=userProfile.rol==='director'||userProfile.rol==='administracion';
+  const totalRevisionManual=(revisionManual||[]).length;
 
   mc.innerHTML=`
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px;">
@@ -10389,8 +10394,11 @@ async function renderDirectorSuscripcionesModulo(){
     <div style="display:flex;gap:6px;flex-wrap:wrap;">
       <button onclick="swSuscModulo('suscripciones')" id="suscModuloTab_suscripciones" class="cartera-subtab active">📋 Suscripciones</button>
       <button onclick="swSuscModulo('pendientes')" id="suscModuloTab_pendientes" class="cartera-subtab">🔗 Pendientes de vincular${totalPendientesVincular?` (${totalPendientesVincular})`:''}</button>
+      ${puedeCargarExcel?`<button onclick="swSuscModulo('revision')" id="suscModuloTab_revision" class="cartera-subtab">📝 Revisión manual${totalRevisionManual?` (${totalRevisionManual})`:''}</button>`:''}
       ${puedeCargarExcel?`<button onclick="swSuscModulo('comision')" id="suscModuloTab_comision" class="cartera-subtab">💰 Comisión Aspel</button>`:''}
       ${puedeCargarExcel?`<button onclick="abrirCargaExcelSuscripciones()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📎 Cargar Excel de renovaciones</button>`:''}
+      ${puedeCargarExcel?`<button onclick="abrirVerificarCatalogoAspel()" style="background:#C0392B;color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔍 Verificar catálogo Aspel</button>`:''}
+      ${puedeCargarExcel?`<button onclick="abrirCargarComisionesPagadas()" style="background:#2980B9;color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💳 Cargar comisiones pagadas</button>`:''}
     </div>
   </div>
   <div id="dirCarteraContenidoMain"></div>`;
@@ -10440,13 +10448,14 @@ async function renderVendedorSuscripcionesModulo(){
 let _suscModuloScope='director';
 function swSuscModulo(sub){
   _suscModuloSub=sub;
-  ['suscripciones','todas','pendientes','comision'].forEach(s=>{
+  ['suscripciones','todas','pendientes','comision','revision'].forEach(s=>{
     const btn=document.getElementById('suscModuloTab_'+s);
     if(btn) btn.classList.toggle('active',s===sub);
   });
   if(sub==='pendientes') renderPendientesVincular(_suscModuloScope);
   else if(sub==='todas') renderTodasSuscripciones('director'); // "Ver todas" reutiliza el scope sin filtro de vendedor
   else if(sub==='comision') renderComisionAspel();
+  else if(sub==='revision') renderRevisionManual();
   else renderTodasSuscripciones(_suscModuloScope);
 }
 
@@ -10491,6 +10500,10 @@ async function renderTodasSuscripciones(scope){
   // propio módulo (Dirección y vendedor), siempre sobre #dirCarteraContenidoMain.
   const cont=document.getElementById('dirCarteraContenidoMain');
   if(!cont) return;
+  // Jp, 2026-10-21: solo Dirección/Administración puede descartar una alerta
+  // de "posible pérdida" (no cualquier vendedor que entre por "Ver todas", que
+  // también llega con scope='director') — se checa el rol real, no el scope.
+  const puedeDescartarAlerta=userProfile.rol==='director'||userProfile.rol==='administracion';
   const clientes=window._cartClientes||[];
   const clientesPorId={};
   clientes.forEach(cl=>{clientesPorId[cl.id]=cl;});
@@ -10510,6 +10523,12 @@ async function renderTodasSuscripciones(scope){
     // pasó el mes en que debieron renovar y siguen sin renovar) — antes no existía
     // esta distinción, todo caía junto en "vencen este mes" o se perdía de vista.
     suscs=suscs.filter(s=>s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada');
+  } else if(suscListFiltroEstado==='alerta_perdida'){
+    // Jp, 2026-10-21: "posible pérdida a otro distribuidor" — la suscripción
+    // ya no aparece en el catálogo vivo de Aspel que sube Jp (ver
+    // abrirVerificarCatalogoAspel). Es un campo booleano aparte, no un
+    // "estado" más, por eso va en su propia rama antes de la genérica.
+    suscs=suscs.filter(s=>s.alerta_posible_perdida);
   } else if(suscListFiltroEstado){
     suscs=suscs.filter(s=>s.estado===suscListFiltroEstado);
   }
@@ -10529,6 +10548,7 @@ async function renderTodasSuscripciones(scope){
   const propiaSusc=s=>{if(scope!=='director'){const cl=s.cliente_id?clientesPorId[s.cliente_id]:null;if(!cl||cl.vendedor_asignado!==currentUser.id)return false;}return true;};
   const totalVencenMes=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=inicioMes&&s.fecha_proxima_renovacion<=finMes).length;
   const totalVencidasAntes=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada').length;
+  const totalAlertaPerdida=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.alerta_posible_perdida).length;
   const tarjeta=(label,valor,color,key)=>`
     <button onclick="suscListSwEstado('${scope}','${key}')" style="text-align:left;cursor:pointer;background:${suscListFiltroEstado===key?color+'18':'var(--surface-2,#f8f9fa)'};border:1px solid ${color};border-radius:var(--radsm);padding:10px 12px;font-family:'Inter',sans-serif;">
       <div style="font-size:10px;color:var(--text3);">${label}</div>
@@ -10568,6 +10588,7 @@ async function renderTodasSuscripciones(scope){
       ${tarjeta('Reclamadas',suscs.filter(s=>['reclamada','en_revision'].includes(s.estado)).length,'#2980B9','reclamada')}
       ${tarjeta('Renovadas',suscs.filter(s=>s.estado==='renovada').length,'#27AE60','renovada')}
       ${tarjeta('No renovadas',suscs.filter(s=>s.estado==='no_renovada').length,'#E84040','no_renovada')}
+      ${tarjeta('🚨 Posible pérdida',totalAlertaPerdida,'#8B0000','alerta_perdida')}
     </div>
     ${scope==='director'&&(totalSinVendedor>0||totalSinCta>0)?`<div style="font-size:11px;color:#B8740A;background:rgba(245,166,35,0.1);border:1px solid rgba(245,166,35,0.3);border-radius:var(--radsm);padding:6px 10px;margin-bottom:10px;">⚠ ${totalSinCta>0?`${totalSinCta} sin cuenta ligada (usa "🔗 Vincular"). `:''}${totalSinVendedor>0?`${totalSinVendedor} de cuentas SIN vendedor asignado — nadie las ve en su cartera hoy.`:''}</div>`:''}
     <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${suscs.length} suscripción${suscs.length===1?'':'es'}${suscListFiltroEstado||suscListFiltroSistema||q?' (filtradas)':''}</div>
@@ -10584,20 +10605,28 @@ async function renderTodasSuscripciones(scope){
         // suscripción cuya fecha de renovación ya pasó y que no está renovada,
         // sea cual sea su estado actual.
         const esVencida=s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada';
-        const esAlarmaVisual=esAlarma||esVencida;
-        return `<div class="card" style="padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;${esAlarmaVisual?'border:1px solid #E84040;background:rgba(232,64,64,0.04);':''}">
+        // Jp, 2026-10-21: "alerta muy grave" — ya no aparece en el catálogo vivo
+        // de Aspel (perdida a otro distribuidor), debe verse MÁS alarmante que
+        // una simple vencida-sin-renovar. Ver abrirVerificarCatalogoAspel().
+        const esAlertaPerdida=!!s.alerta_posible_perdida;
+        const esAlarmaVisual=esAlarma||esVencida||esAlertaPerdida;
+        return `<div class="card" style="padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;${esAlertaPerdida?'border:2px solid #8B0000;background:rgba(139,0,0,0.06);':esAlarmaVisual?'border:1px solid #E84040;background:rgba(232,64,64,0.04);':''}">
           <div style="flex:1;min-width:240px;">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <span class="pipe-badge" style="background:${info.color}22;color:${info.color};font-size:10px;">${info.nombre}</span>
               <span style="font-size:13px;font-weight:600;color:var(--text);">${cl?cl.razon_social:(s.razon_social_reportada||'Sin razón social')}</span>
               <span class="pipe-badge" style="font-size:10px;${esAlarma?`background:${estadoInfo[1]};color:#fff;`:`background:${estadoInfo[1]}18;color:${estadoInfo[1]};`}">${esAlarma?'⚠ ':''}${estadoInfo[0]}</span>
+              ${esAlertaPerdida?`<span class="pipe-badge" style="font-size:10px;background:#8B0000;color:#fff;">🚨 Posible pérdida con Innovaci</span>`:''}
               ${esVencida&&!esAlarma?`<span class="pipe-badge" style="font-size:10px;background:#E84040;color:#fff;">⚠ Vencida sin renovar</span>`:''}
               ${!cl?'<span class="pipe-badge" style="font-size:10px;background:rgba(232,64,64,0.1);color:#E84040;">Sin cuenta</span>':!cl.vendedor_asignado&&scope==='director'?'<span class="pipe-badge" style="font-size:10px;background:rgba(245,166,35,0.12);color:#B8740A;">Sin vendedor</span>':''}
             </div>
-            <div style="font-size:11px;color:var(--text3);margin-top:3px;font-family:'JetBrains Mono',monospace;">RFC ${(cl?cl.rfc:s.rfc_reportado)||'—'} · serie ${s.numserie||'—'}${s.monto?' · '+fmt(s.monto):''}${s.fecha_proxima_renovacion?' · vence '+fmtFecha(s.fecha_proxima_renovacion):''}${scope==='director'&&vend?' · '+vend.nombre:''}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:3px;font-family:'JetBrains Mono',monospace;">RFC ${(cl?cl.rfc:s.rfc_reportado)||'—'} · serie ${s.numserie||'—'}${s.monto?' · '+fmt(s.monto):''}${s.fecha_proxima_renovacion?' · vence '+fmtFecha(s.fecha_proxima_renovacion):''}${scope==='director'&&vend?' · '+vend.nombre:''}${esAlertaPerdida&&s.alerta_posible_perdida_fecha?' · detectada ausente el '+fmtFecha(s.alerta_posible_perdida_fecha):''}</div>
           </div>
-          ${cl?`<button onclick="abrirFichaClienteModal('${cl.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Ver ficha</button>`
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${esAlertaPerdida&&puedeDescartarAlerta?`<button onclick="descartarAlertaPerdida('${s.id}','${scope}')" style="background:#fff;color:#8B0000;border:1px solid #8B0000;border-radius:var(--radsm);padding:7px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Descartar alerta</button>`:''}
+            ${cl?`<button onclick="abrirFichaClienteModal('${cl.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Ver ficha</button>`
               :`<button onclick="abrirVincularSuscripcion('${s.id}','${scope}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Vincular</button>`}
+          </div>
         </div>`;
       }).join(''):'<div style="text-align:center;padding:40px 20px;color:var(--text3);font-size:13px;">Sin resultados.</div>'}
     </div>`;
@@ -10710,6 +10739,24 @@ async function ejecutarVinculacion(suscId,cuentaId){
   document.getElementById('modalVincularSusc')?.remove();
   const scope=userProfile.rol==='director'||userProfile.rol==='administracion'?'director':'vendedor';
   if(scope==='director') renderDirectorCartera(); else renderCarteraVendedor();
+}
+
+// Jp, 2026-10-21: "descartar" manual de una alerta de posible pérdida — antes
+// solo se quitaba sola si la serie reaparecía en una carga futura de
+// "Verificar catálogo Aspel". Si Dirección investiga y confirma que no fue una
+// pérdida real (ej. el cliente canceló por su cuenta, o fue un error de carga),
+// necesita poder apagarla sin esperar a que el dato cambie solo.
+async function descartarAlertaPerdida(suscId,scope){
+  if(!confirm('¿Descartar esta alerta de posible pérdida? Úsalo solo si ya confirmaste que no se perdió con otro distribuidor.')) return;
+  const {error}=await sb.from('suscripciones_cartera').update({
+    alerta_posible_perdida:false,
+    alerta_posible_perdida_fecha:null,
+    alerta_posible_perdida_origen:null
+  }).eq('id',suscId);
+  if(error){alert('Error al descartar la alerta: '+error.message);return;}
+  const s=(window._cartSuscripciones||[]).find(x=>x.id===suscId);
+  if(s){s.alerta_posible_perdida=false;s.alerta_posible_perdida_fecha=null;s.alerta_posible_perdida_origen=null;}
+  renderTodasSuscripciones(scope);
 }
 
 // Jp, 2026-10-13: "no existe uno de agregar suscripción, habría que ver por
@@ -10918,6 +10965,490 @@ async function guardarCargaExcelSuscripciones(){
   document.getElementById('modalCargaSuscripciones')?.remove();
   alert(`✅ ${registros.length} suscripciones guardadas.`);
   renderDirectorCartera();
+}
+
+// ── "Verificar catálogo Aspel" (Jp, 2026-10-21): Jp exporta periódicamente
+// del portal de Aspel un Excel con TODOS los clientes que en algún momento le
+// compraron algo y siguen ligados a Innovaci ("Mis Clientes Aspel.xlsx") —
+// columnas: Servicio, RFC, Contacto, Empresa, Teléfono, Email, Dirección,
+// Tipo Servicio, Información del servicio, Contrato, Vigencia. El número de
+// serie viene como la primera palabra de "Información del servicio", no en
+// columna propia. Solo las filas con Tipo Servicio SUSCRIPCIÓN o LICENCIAMIENTO
+// traen número de serie real (las de "Aspel Sellado CFDI" son timbres, sin
+// serie de sistema).
+//
+// Esto es DISTINTO del "📎 Cargar Excel de renovaciones" de arriba (ese es el
+// pronóstico mensual que manda Guillermo Blancas Escalante, otras columnas,
+// otra fuente) — ver claude/suscripciones-verificacion-aspel-y-comisiones-pagadas-211026.md.
+//
+// Qué hace esta carga:
+//  1. Si una suscripción Aspel/Siigo-NOI que YA tenemos en el catálogo ya NO
+//     aparece en este archivo fresco → "alerta muy grave" (alerta_posible_perdida),
+//     posible pérdida a otro distribuidor. Si ya estaba marcada y REAPARECE, se
+//     limpia la alerta.
+//  2. Si aparece un número de serie que no teníamos registrado → se da de alta
+//     como suscripción nueva (ligada por RFC si hay cuenta en Cartera, si no,
+//     a la cola de "Pendientes de vincular" — igual que el otro import).
+//  3. Para las que SÍ coinciden, la columna "Vigencia" trae la fecha real de
+//     vencimiento del contrato con Aspel — se usa para refrescar
+//     fecha_proxima_renovacion, y si esa fecha se movió hacia adelante (y la
+//     suscripción no estaba ya "renovada") se asume que sí se pagó/renovó.
+// No toca productos Siigo Fiscal/ADM/Siigo Fact/Siigo Nube (vienen de otro
+// archivo/distribuidor — Mis Clientes Aspel.xlsx jamás los va a traer).
+//
+// ⚠ Jp, 2026-10-21: el export de Aspel (y el de "Suscripciones 2026.xlsx")
+// trae el "dimension ref" del XML interno roto — dice que la hoja llega solo
+// hasta la fila 1 aunque traiga cientos de filas reales. La librería XLSX del
+// navegador confía en ese dato y por defecto regresa 0 filas si no se corrige
+// antes de leer. xlsxCorregirRango() lo arregla recalculando el rango real a
+// partir de las celdas que sí existen — se llama ANTES de sheet_to_json en
+// cualquier import nuevo que use estos dos archivos.
+function xlsxCorregirRango(ws){
+  let maxR=0,maxC=0,huboCeldas=false;
+  Object.keys(ws).forEach(k=>{
+    if(k[0]==='!') return;
+    huboCeldas=true;
+    const cell=XLSX.utils.decode_cell(k);
+    if(cell.r>maxR) maxR=cell.r;
+    if(cell.c>maxC) maxC=cell.c;
+  });
+  if(huboCeldas) ws['!ref']=XLSX.utils.encode_range({s:{r:0,c:0},e:{r:maxR,c:maxC}});
+}
+
+// Convierte un valor "Vigencia"/"Contrato" leído por sheet_to_json a fecha
+// YYYY-MM-DD. Esas columnas vienen como número de serie de Excel (días desde
+// 1899-12-30) para fechas reales, o como texto ("Permanente") para licencias
+// perpetuas — ahí no hay nada que convertir.
+function parseFechaExcelSerial(value){
+  if(typeof value!=='number') return null;
+  const ms=Math.round((value-25569)*86400*1000);
+  const d=new Date(ms);
+  if(isNaN(d.getTime())) return null;
+  return d.toISOString().split('T')[0];
+}
+
+const SUSC_PATRONES_NO_ASPEL=[/^siigo\s*fiscal/i,/^adm/i,/^siigo\s*fact/i,/^siigo\s*nube/i];
+function suscEsAspelSiigoNoi(s){
+  return !SUSC_PATRONES_NO_ASPEL.some(re=>re.test((s.producto||'').trim()));
+}
+
+function abrirVerificarCatalogoAspel(){
+  const html=`
+    <div style="margin-bottom:14px;padding:12px 16px;background:rgba(192,57,43,0.07);border:1px dashed #C0392B;border-radius:8px;">
+      <div style="font-size:12px;font-weight:600;color:#C0392B;margin-bottom:8px;">Sube el Excel "Mis Clientes Aspel" (el que exportas del portal con TODOS los clientes ligados a Innovaci).</div>
+      <input type="file" id="verifAspelExcel" accept=".xlsx,.xls" onchange="procesarVerificarCatalogoAspel()" style="font-size:12px;width:100%;">
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;">Cualquier suscripción Aspel/Siigo-NOI que tengamos registrada y que NO aparezca en este archivo se marca como posible pérdida a otro distribuidor. Las que reaparecen se desmarcan. Las que coinciden refrescan su fecha de renovación. Los números de serie nuevos se dan de alta.</div>
+    </div>
+    <div id="verifAspelResumen"></div>
+    <div id="verifAspelDetalle" style="max-height:360px;overflow-y:auto;"></div>`;
+  mkModal('modalVerifAspel','🔍 Verificar catálogo Aspel',html,null,'Cerrar',true);
+}
+
+async function procesarVerificarCatalogoAspel(){
+  const file=document.getElementById('verifAspelExcel')?.files?.[0];
+  if(!file) return;
+  const resumen=document.getElementById('verifAspelResumen');
+  const detalle=document.getElementById('verifAspelDetalle');
+  resumen.innerHTML='<div style="text-align:center;padding:16px;color:var(--text3);">Procesando archivo...</div>';
+
+  const buf=await file.arrayBuffer();
+  const wb=XLSX.read(buf,{type:'array'});
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  xlsxCorregirRango(ws);
+  const filas=XLSX.utils.sheet_to_json(ws,{defval:null});
+
+  if(!filas.length){
+    resumen.innerHTML=`<div style="color:var(--red);padding:12px;">No se pudo leer ninguna fila del archivo. Revisa que sea un Excel válido.</div>`;
+    detalle.innerHTML='';
+    return;
+  }
+  if(!('Tipo Servicio' in filas[0])||!('Información del servicio' in filas[0])){
+    resumen.innerHTML=`<div style="color:var(--red);padding:12px;">⚠ Este archivo no tiene las columnas esperadas (Tipo Servicio, Información del servicio...). ¿Seguro que es "Mis Clientes Aspel"?</div>`;
+    detalle.innerHTML='';
+    return;
+  }
+
+  // Jp, 2026-10-21: antes de comparar, refresca clientes/suscripciones desde
+  // la BD por si alguien más cambió algo mientras la pantalla estaba abierta.
+  const [{data:clientesFrescos},{data:suscripcionesFrescas}]=await Promise.all([
+    carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)').then(d=>({data:d})),
+    sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion')
+  ]);
+  window._cartClientes=clientesFrescos||window._cartClientes||[];
+  window._cartSuscripciones=suscripcionesFrescas||window._cartSuscripciones||[];
+
+  const clientes=window._cartClientes||[];
+  const buscarClientePorRfc=rfc=>{
+    if(!rfc) return null;
+    const r=String(rfc).trim().toUpperCase();
+    return clientes.find(c=>(c.rfc||'').trim().toUpperCase()===r)||null;
+  };
+
+  // Filas válidas: solo SUSCRIPCIÓN/LICENCIAMIENTO traen número de serie real.
+  const filasValidas=[];
+  filas.forEach(f=>{
+    const tipo=(f['Tipo Servicio']||'').toString().trim().toUpperCase();
+    if(tipo!=='SUSCRIPCIÓN'&&tipo!=='LICENCIAMIENTO') return;
+    const infoServ=f['Información del servicio'];
+    const numserie=infoServ?String(infoServ).trim().split(/\s+/)[0]:null;
+    if(!numserie) return;
+    filasValidas.push({
+      numserie:numserie.toUpperCase(),
+      tipo,
+      producto:f['Servicio']?String(f['Servicio']).trim():null,
+      rfc:f['RFC']?String(f['RFC']).trim().toUpperCase():null,
+      empresa:f['Empresa']?String(f['Empresa']).trim():null,
+      vigenciaFecha:parseFechaExcelSerial(f['Vigencia']), // null si es "Permanente" u otro texto
+    });
+  });
+  const filasPorSerie=new Map(filasValidas.map(f=>[f.numserie,f]));
+
+  const existentes=window._cartSuscripciones||[];
+  const numseriesExistentes=new Set(existentes.map(s=>(s.numserie||'').trim().toUpperCase()).filter(Boolean));
+  const hoy=new Date().toISOString().split('T')[0];
+
+  // Un solo recorrido: decide para cada suscripción existente si se marca
+  // "posible pérdida", se desmarca (reapareció), y/o se refresca su fecha de
+  // renovación — se acumula todo en un solo payload de update por id.
+  const acciones={}; // id -> payload parcial
+  const marcar=(id,patch)=>{acciones[id]={...(acciones[id]||{}),...patch};};
+  const listas={faltantes:[],reaparecidas:[],fechaActualizada:[]};
+
+  existentes.forEach(s=>{
+    if(!s.numserie) return;
+    const key=s.numserie.trim().toUpperCase();
+    const fila=filasPorSerie.get(key);
+    if(!fila){
+      if(suscEsAspelSiigoNoi(s)){
+        marcar(s.id,{alerta_posible_perdida:true,alerta_posible_perdida_fecha:hoy,alerta_posible_perdida_origen:file.name});
+        listas.faltantes.push(s);
+      }
+      return;
+    }
+    if(s.alerta_posible_perdida){
+      marcar(s.id,{alerta_posible_perdida:false,alerta_posible_perdida_fecha:null,alerta_posible_perdida_origen:null});
+      listas.reaparecidas.push(s);
+    }
+    if(fila.vigenciaFecha&&fila.vigenciaFecha!==s.fecha_proxima_renovacion){
+      const patch={fecha_proxima_renovacion:fila.vigenciaFecha};
+      // Si la nueva vigencia quedó más adelante que la que teníamos y no
+      // estaba ya "renovada", es evidencia de que sí se pagó/renovó — Aspel
+      // no mueve la vigencia de un contrato que no se cobró.
+      if((!s.fecha_proxima_renovacion||fila.vigenciaFecha>s.fecha_proxima_renovacion)&&s.estado!=='renovada'){
+        patch.estado='renovada';
+      }
+      marcar(s.id,patch);
+      listas.fechaActualizada.push({...s,fechaNueva:fila.vigenciaFecha});
+    }
+  });
+
+  // Nuevas: número de serie en el archivo que no teníamos en absoluto.
+  const nuevas=filasValidas.filter(f=>!numseriesExistentes.has(f.numserie)).map(f=>{
+    const cuenta=buscarClientePorRfc(f.rfc);
+    return {
+      numserie:f.numserie,
+      producto:f.producto,
+      tipo_producto:f.tipo,
+      rfc_reportado:f.rfc,
+      razon_social_reportada:f.empresa,
+      cliente_id:cuenta?cuenta.id:null,
+      fecha_proxima_renovacion:f.vigenciaFecha||null,
+      estado:'sin_reclamar',
+      origen:'verificacion_aspel',
+      archivo_origen:file.name,
+    };
+  });
+
+  window._verifAspelAcciones=acciones;
+  window._verifAspelListas=listas;
+  window._verifAspelNuevas=nuevas;
+
+  const totalCambios=Object.keys(acciones).length+nuevas.length;
+  resumen.innerHTML=`
+    <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+      <button onclick="guardarVerificarCatalogoAspel()" style="background:#C0392B;color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">✅ Aplicar cambios</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px;">
+      <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Series leídas</div><div style="font-size:20px;font-weight:700;color:var(--text);">${filasValidas.length}</div></div>
+      <div class="card" style="padding:14px;border:1px solid #8B0000;"><div style="font-size:11px;color:#8B0000;">🚨 Posible pérdida</div><div style="font-size:20px;font-weight:700;color:#8B0000;">${listas.faltantes.length}</div></div>
+      <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Reaparecidas</div><div style="font-size:20px;font-weight:700;color:#27AE60;">${listas.reaparecidas.length}</div></div>
+      <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Fechas refrescadas</div><div style="font-size:20px;font-weight:700;color:#8B5E00;">${listas.fechaActualizada.length}</div></div>
+      <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Nuevas (se dan de alta)</div><div style="font-size:20px;font-weight:700;color:#2980B9;">${nuevas.length}</div></div>
+    </div>`;
+
+  detalle.innerHTML=`
+    ${listas.faltantes.length?`<div style="font-size:12px;font-weight:700;color:#8B0000;margin:10px 0 6px;">🚨 Posible pérdida a otro distribuidor</div>
+    <div style="display:grid;gap:4px;margin-bottom:14px;">${listas.faltantes.map(s=>{
+      const cl=(window._cartClientes||[]).find(c=>c.id===s.cliente_id);
+      return `<div style="font-size:11px;padding:5px 8px;border-bottom:1px solid var(--border);">${cl?cl.razon_social:(s.razon_social_reportada||'Sin razón social')} <span style="color:var(--text3);">(serie ${s.numserie||'—'} · ${s.producto||'—'})</span></div>`;
+    }).join('')}</div>`:''}
+    ${listas.fechaActualizada.length?`<div style="font-size:12px;font-weight:700;color:#8B5E00;margin:10px 0 6px;">📅 Renovación refrescada desde Vigencia</div>
+    <div style="display:grid;gap:4px;margin-bottom:14px;">${listas.fechaActualizada.map(s=>{
+      const cl=(window._cartClientes||[]).find(c=>c.id===s.cliente_id);
+      return `<div style="font-size:11px;padding:5px 8px;border-bottom:1px solid var(--border);">${cl?cl.razon_social:(s.razon_social_reportada||'Sin razón social')} <span style="color:var(--text3);">(serie ${s.numserie||'—'} · ahora vence ${fmtFecha(s.fechaNueva)})</span></div>`;
+    }).join('')}</div>`:''}
+    ${nuevas.length?`<div style="font-size:12px;font-weight:700;color:#2980B9;margin:10px 0 6px;">🆕 Nuevas (se darán de alta)</div>
+    <div style="display:grid;gap:4px;">${nuevas.map(r=>`
+      <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;padding:5px 8px;border-bottom:1px solid var(--border);">
+        <span>${r.razon_social_reportada||'—'} <span style="color:var(--text3);">(serie ${r.numserie} · ${r.producto||'—'})</span></span>
+        <span style="color:${r.cliente_id?'#27AE60':'var(--gold)'};font-weight:600;">${r.cliente_id?'✓ vinculada por RFC':'pendiente de vincular'}</span>
+      </div>`).join('')}</div>`:''}
+    ${!totalCambios?'<div style="text-align:center;padding:30px 20px;color:var(--text3);font-size:13px;">Sin cambios: todo coincide con lo que ya teníamos. 🎉</div>':''}`;
+}
+
+async function guardarVerificarCatalogoAspel(){
+  const acciones=window._verifAspelAcciones||{};
+  const listas=window._verifAspelListas||{faltantes:[],reaparecidas:[],fechaActualizada:[]};
+  const nuevas=window._verifAspelNuevas||[];
+  const ids=Object.keys(acciones);
+  if(!ids.length&&!nuevas.length){alert('No hay cambios que aplicar.');return;}
+
+  for(const id of ids){
+    const {error}=await sb.from('suscripciones_cartera').update(acciones[id]).eq('id',id);
+    if(error){alert('Error al actualizar una suscripción: '+error.message);return;}
+  }
+  if(nuevas.length){
+    const {error}=await sb.from('suscripciones_cartera').upsert(nuevas,{onConflict:'numserie'});
+    if(error){alert('Error al dar de alta nuevas: '+error.message);return;}
+  }
+  document.getElementById('modalVerifAspel')?.remove();
+  alert(`✅ Catálogo verificado: ${listas.faltantes.length} posible(s) pérdida, ${listas.reaparecidas.length} reaparecida(s), ${listas.fechaActualizada.length} fecha(s) refrescada(s), ${nuevas.length} nueva(s).`);
+  renderDirectorSuscripcionesModulo();
+}
+
+// ── "Cargar comisiones pagadas" (Jp, 2026-10-21): el reporte "Suscripciones
+// 2026.xlsx" que exporta Jp trae los últimos meses de comisiones que Aspel ya
+// nos pagó — columnas: F. Pago, Doc., Cliente, Monto, Tipo, Estatus, Fact.
+// Solo las filas con Estatus "Pagado" son confirmación real de que la
+// suscripción se renovó y se cobró. Sirve para que Dirección/vendedores no
+// tengan que marcar "renovada" a mano cuando Aspel ya confirmó el pago.
+//
+// Por seguridad, solo se auto-aplica cuando el nombre del cliente del archivo
+// coincide EXACTO (ignorando mayúsculas/acentos/puntuación) con una única
+// cuenta de Cartera (por razón social O por alguno de sus alias_nombres) que
+// además tiene EXACTAMENTE una suscripción registrada — cualquier caso
+// ambiguo (sin match, match aproximado, o varias suscripciones en la cuenta)
+// se deja en la cola persistente suscripciones_revision_manual, no se toca
+// solo ni se pierde al cerrar el modal.
+
+function parseFechaDDMMYYYY(str){
+  if(!str) return null;
+  const s=String(str).trim();
+  const m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(!m) return null;
+  const [,d,mo,y]=m;
+  return `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
+}
+function parseMontoStr(str){
+  if(str===null||str===undefined) return null;
+  const n=parseFloat(String(str).replace(/[$,]/g,''));
+  return isNaN(n)?null:n;
+}
+// Normaliza nombres de cliente para comparar (quita acentos/puntuación/espacios
+// de más) SIN tocar sufijos de razón social (SA DE CV, etc.) — eso sería
+// arriesgado (podría mezclar cuentas distintas que casualmente comparten
+// prefijo). Solo corrige diferencias "tontas" de formato entre Aspel y Cartera.
+function normalizarNombreCliente(str){
+  if(!str) return '';
+  return str.toString().normalize('NFD').replace(/[̀-ͯ]/g,'')
+    .toUpperCase().replace(/[.,]/g,'').replace(/\s+/g,' ').trim();
+}
+
+function abrirCargarComisionesPagadas(){
+  const html=`
+    <div style="margin-bottom:14px;padding:12px 16px;background:rgba(41,128,185,0.07);border:1px dashed #2980B9;border-radius:8px;">
+      <div style="font-size:12px;font-weight:600;color:#2980B9;margin-bottom:8px;">Sube el Excel "Suscripciones 2026" (reporte de comisiones que ya pagó Aspel) — columnas F. Pago, Doc., Cliente, Monto, Tipo, Estatus, Fact.</div>
+      <input type="file" id="comisPagadasExcel" accept=".xlsx,.xls" onchange="procesarComisionesPagadas()" style="font-size:12px;width:100%;">
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;">Solo se actualiza automático cuando el nombre del cliente coincide (razón social o algún alias) con una sola cuenta que tiene una sola suscripción registrada. Lo demás queda en la cola de "📝 Revisión manual".</div>
+    </div>
+    <div id="comisPagadasResumen"></div>
+    <div id="comisPagadasDetalle" style="max-height:400px;overflow-y:auto;"></div>`;
+  mkModal('modalComisPagadas','💳 Cargar comisiones pagadas',html,null,'Cerrar',true);
+}
+
+async function procesarComisionesPagadas(){
+  const file=document.getElementById('comisPagadasExcel')?.files?.[0];
+  if(!file) return;
+  const resumen=document.getElementById('comisPagadasResumen');
+  const detalle=document.getElementById('comisPagadasDetalle');
+  resumen.innerHTML='<div style="text-align:center;padding:16px;color:var(--text3);">Procesando archivo...</div>';
+
+  const buf=await file.arrayBuffer();
+  const wb=XLSX.read(buf,{type:'array'});
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  xlsxCorregirRango(ws); // mismo bug de "dimension ref" roto que Mis Clientes Aspel.xlsx
+  const filas=XLSX.utils.sheet_to_json(ws,{defval:null});
+
+  if(!filas.length){
+    resumen.innerHTML=`<div style="color:var(--red);padding:12px;">No se pudo leer ninguna fila del archivo. Revisa que sea un Excel válido.</div>`;
+    detalle.innerHTML='';
+    return;
+  }
+  if(!('Cliente' in filas[0])||!('Estatus' in filas[0])){
+    resumen.innerHTML=`<div style="color:var(--red);padding:12px;">⚠ Este archivo no tiene las columnas esperadas (Cliente, Estatus...). ¿Seguro que es "Suscripciones 2026"?</div>`;
+    detalle.innerHTML='';
+    return;
+  }
+
+  // Jp, 2026-10-21: refresca clientes/suscripciones desde la BD antes de
+  // comparar, por si cambió algo mientras la pantalla estaba abierta.
+  const [{data:clientesFrescos},{data:suscripcionesFrescas}]=await Promise.all([
+    carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)').then(d=>({data:d})),
+    sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion')
+  ]);
+  window._cartClientes=clientesFrescos||window._cartClientes||[];
+  window._cartSuscripciones=suscripcionesFrescas||window._cartSuscripciones||[];
+
+  // Agrupar por cliente (solo filas "Pagado" cuentan como confirmación).
+  const porCliente={};
+  filas.forEach(f=>{
+    const nombre=(f['Cliente']||'').toString().trim();
+    if(!nombre) return;
+    const estatus=(f['Estatus']||'').toString().trim();
+    const fecha=parseFechaDDMMYYYY(f['F. Pago']);
+    const monto=parseMontoStr(f['Monto']);
+    const key=normalizarNombreCliente(nombre);
+    if(!porCliente[key]) porCliente[key]={nombre,filas:[]};
+    porCliente[key].filas.push({fecha,monto,estatus,doc:f['Doc.'],tipo:f['Tipo']});
+  });
+
+  const clientes=window._cartClientes||[];
+  const suscripciones=window._cartSuscripciones||[];
+  // Índice por nombre normalizado — razón social Y alias_nombres, sin
+  // duplicar al mismo cliente dentro de una misma llave (si su razón social
+  // normalizada coincidiera con uno de sus propios alias).
+  const clientesPorNombre={};
+  const agregarCandidato=(key,cliente)=>{
+    if(!key) return;
+    const arr=clientesPorNombre[key]=clientesPorNombre[key]||[];
+    if(!arr.some(c=>c.id===cliente.id)) arr.push(cliente);
+  };
+  clientes.forEach(c=>{
+    agregarCandidato(normalizarNombreCliente(c.razon_social),c);
+    (c.alias_nombres||[]).forEach(a=>agregarCandidato(normalizarNombreCliente(a),c));
+  });
+
+  const autoAplicables=[];
+  const revisionManual=[];
+
+  Object.values(porCliente).forEach(grupo=>{
+    const pagados=grupo.filas.filter(f=>f.estatus==='Pagado'&&f.fecha);
+    if(!pagados.length){ revisionManual.push({...grupo,motivo:'Sin filas "Pagado" con fecha'}); return; }
+    const fechaMasReciente=pagados.map(f=>f.fecha).sort().slice(-1)[0];
+    const key=normalizarNombreCliente(grupo.nombre);
+    const candidatos=clientesPorNombre[key];
+    if(!candidatos||candidatos.length!==1){ revisionManual.push({...grupo,motivo:candidatos&&candidatos.length>1?'Nombre coincide con más de una cuenta':'No coincide con ninguna cuenta de Cartera (ni razón social ni alias)'}); return; }
+    const cuenta=candidatos[0];
+    const suscCuenta=suscripciones.filter(s=>s.cliente_id===cuenta.id);
+    if(suscCuenta.length!==1){ revisionManual.push({...grupo,motivo:suscCuenta.length===0?'La cuenta no tiene suscripción registrada':'La cuenta tiene varias suscripciones — no se puede saber cuál renovó'}); return; }
+    const susc=suscCuenta[0];
+    let fechaProxima=null;
+    if(susc.periodicidad){
+      const [y,m,d]=fechaMasReciente.split('-').map(Number);
+      const meses=susc.periodicidad==='anual'?12:susc.periodicidad==='semestral'?6:1;
+      const prox=new Date(y,m-1+meses,d);
+      fechaProxima=prox.toISOString().split('T')[0];
+    }
+    autoAplicables.push({suscId:susc.id,cliente:cuenta.razon_social,fechaUltimaRenovacion:fechaMasReciente,fechaProximaRenovacion:fechaProxima,montoTotal:pagados.reduce((a,f)=>a+(f.monto||0),0)});
+  });
+
+  window._comisPagadasAuto=autoAplicables;
+  window._comisPagadasManual=revisionManual;
+  window._comisPagadasArchivoNombre=file.name;
+
+  resumen.innerHTML=`
+    <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+      <button onclick="guardarComisionesPagadas()" style="background:#2980B9;color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">✅ Aplicar ${autoAplicables.length} renovaciones</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px;">
+      <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--text3);">Clientes en archivo</div><div style="font-size:20px;font-weight:700;color:var(--text);">${Object.keys(porCliente).length}</div></div>
+      <div class="card" style="padding:14px;"><div style="font-size:11px;color:#27AE60;">Auto-actualizables</div><div style="font-size:20px;font-weight:700;color:#27AE60;">${autoAplicables.length}</div></div>
+      <div class="card" style="padding:14px;"><div style="font-size:11px;color:var(--gold);">A cola de revisión manual</div><div style="font-size:20px;font-weight:700;color:var(--gold);">${revisionManual.length}</div></div>
+    </div>`;
+
+  detalle.innerHTML=`
+    ${autoAplicables.length?`<div style="font-size:12px;font-weight:700;color:#27AE60;margin:10px 0 6px;">✓ Se marcarán como renovadas</div>
+    <div style="display:grid;gap:4px;margin-bottom:14px;">${autoAplicables.map(r=>`
+      <div style="font-size:11px;padding:5px 8px;border-bottom:1px solid var(--border);">${r.cliente} <span style="color:var(--text3);">(pagado ${fmtFecha(r.fechaUltimaRenovacion)}${r.montoTotal?' · '+fmt(r.montoTotal):''})</span></div>`).join('')}</div>`:''}
+    ${revisionManual.length?`<div style="font-size:12px;font-weight:700;color:var(--gold);margin:10px 0 6px;">⚠ Van a la cola de revisión manual</div>
+    <div style="display:grid;gap:4px;">${revisionManual.map(r=>`
+      <div style="font-size:11px;padding:5px 8px;border-bottom:1px solid var(--border);">${r.nombre} <span style="color:var(--text3);">— ${r.motivo}</span></div>`).join('')}</div>`:''}`;
+}
+
+async function guardarComisionesPagadas(){
+  const autoAplicables=window._comisPagadasAuto||[];
+  const revisionManual=window._comisPagadasManual||[];
+  if(!autoAplicables.length&&!revisionManual.length){alert('No hay nada que guardar.');return;}
+  for(const r of autoAplicables){
+    const {error}=await sb.from('suscripciones_cartera').update({
+      estado:'renovada',
+      fecha_ultima_renovacion:r.fechaUltimaRenovacion,
+      ...(r.fechaProximaRenovacion?{fecha_proxima_renovacion:r.fechaProximaRenovacion}:{})
+    }).eq('id',r.suscId);
+    if(error){alert(`Error al actualizar ${r.cliente}: ${error.message}`);return;}
+  }
+  // Jp, 2026-10-21: antes estos casos se perdían al cerrar el modal — ahora
+  // quedan en una cola persistente (tab "📝 Revisión manual") hasta que
+  // alguien los resuelva a mano.
+  if(revisionManual.length){
+    const archivo=window._comisPagadasArchivoNombre||'Suscripciones 2026.xlsx';
+    const filasCola=revisionManual.map(r=>({
+      tipo:'comision_pagada',
+      cliente_nombre:r.nombre,
+      motivo:r.motivo,
+      detalle:{filas:r.filas},
+      archivo_origen:archivo,
+    }));
+    const {error}=await sb.from('suscripciones_revision_manual').insert(filasCola);
+    if(error){alert('Las renovaciones se aplicaron, pero no se pudo guardar la cola de revisión manual: '+error.message);}
+  }
+  document.getElementById('modalComisPagadas')?.remove();
+  alert(`✅ ${autoAplicables.length} suscripciones marcadas como renovadas. ${revisionManual.length} caso(s) enviado(s) a Revisión manual.`);
+  renderDirectorSuscripcionesModulo();
+}
+
+// ── "📝 Revisión manual" (Jp, 2026-10-21): cola persistente de lo que las dos
+// cargas de arriba no pudieron resolver solas. Antes de esto, esos casos
+// (nombres sin match exacto, cuentas ambiguas, varias suscripciones) se
+// perdían en cuanto se cerraba el modal de la carga.
+async function renderRevisionManual(){
+  const cont=document.getElementById('dirCarteraContenidoMain');
+  if(!cont) return;
+  const pendientes=window._suscRevisionManual||[];
+  if(!pendientes.length){
+    cont.innerHTML=`<div style="text-align:center;padding:50px 20px;color:var(--text3);font-size:13px;">No hay casos pendientes de revisión manual. 🎉</div>`;
+    return;
+  }
+  const TIPO_LABEL={comision_pagada:'💳 Comisión pagada sin auto-aplicar',aspel_catalogo:'🔍 Catálogo Aspel'};
+  cont.innerHTML=`
+    <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">
+      Casos que "💳 Cargar comisiones pagadas" y "🔍 Verificar catálogo Aspel" no pudieron resolver solos (nombre sin match exacto, cuenta ambigua, o varias suscripciones en la misma cuenta). Revísalos a mano y márcalos como resueltos.
+    </div>
+    <div style="display:grid;gap:8px;">
+      ${pendientes.map(r=>{
+        const filasDetalle=(r.detalle&&r.detalle.filas)||[];
+        const montoTotal=filasDetalle.reduce((a,f)=>a+(f.monto||0),0);
+        return `<div class="card" style="padding:12px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:220px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span class="pipe-badge" style="font-size:10px;background:var(--gold)22;color:var(--gold);">${TIPO_LABEL[r.tipo]||r.tipo}</span>
+              <span style="font-size:13px;font-weight:600;color:var(--text);">${r.cliente_nombre||r.rfc||r.numserie||'—'}</span>
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-top:3px;">${r.motivo||'—'}${montoTotal?' · '+fmt(montoTotal):''}${r.archivo_origen?' · '+r.archivo_origen:''}</div>
+          </div>
+          <button onclick="resolverRevisionManual('${r.id}')" style="background:#27AE60;color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">✅ Marcar resuelto</button>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+async function resolverRevisionManual(id){
+  const {error}=await sb.from('suscripciones_revision_manual').update({
+    resuelto:true,resuelto_por:currentUser.id,resuelto_at:new Date().toISOString()
+  }).eq('id',id);
+  if(error){alert('Error al marcar como resuelto: '+error.message);return;}
+  window._suscRevisionManual=(window._suscRevisionManual||[]).filter(r=>r.id!==id);
+  renderRevisionManual();
 }
 
 // ── Módulo "Comisión Aspel" (Jp, 2026-10-20): los Anexos PDF semanales que
