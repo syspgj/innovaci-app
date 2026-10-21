@@ -12046,14 +12046,15 @@ async function guardarDatosCampana(campanaId){
 async function gestionarCampanaCartera(campanaId){
   const mc=document.getElementById('dirCarteraContenidoMain');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
-  const [{data:camp},{data:cuentasEnCamp},{data:todasCuentasRaw},{data:vendedoresCC}]=await Promise.all([
+  const [{data:camp},{data:cuentasEnCamp},{data:todasCuentasRaw},{data:vendedoresCC},{data:preguntasCampCart}]=await Promise.all([
     sb.from('campanas_cartera').select('*').eq('id',campanaId).maybeSingle(),
     sb.from('campana_cartera_clientes').select('cliente_id').eq('campana_id',campanaId),
     sb.from('clientes_cartera').select('id,num_cliente,razon_social,rfc,sistemas_aspel,telefono,tipo_cliente,vendedor_asignado,no_contactar').order('razon_social'),
     // Jp, 2026-10-16: "activarle una campaña a Carolina para que llame a los
     // clientes que no tienen vendedor asignado" — hacía falta ver/filtrar por
     // vendedor asignado aquí (antes la lista no traía ese dato en absoluto).
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre')
+    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'),
+    sb.from('campana_cartera_preguntas').select('*').eq('campana_id',campanaId).order('orden',{ascending:true})
   ]);
   if(!camp){mc.innerHTML='<div style="padding:20px;color:var(--red);">Campaña no encontrada</div>';return;}
   const vistos=new Set();
@@ -12109,6 +12110,9 @@ async function gestionarCampanaCartera(campanaId){
       <button onclick="seleccionarTodosCampCartera(false)" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:5px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✗ Quitar todos</button>
       <button onclick="guardarSeleccionCampCartera('${campanaId}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;margin-left:auto;">💾 Guardar selección</button>
     </div>
+  </div>
+  <div class="card" style="padding:16px;margin-bottom:16px;" id="preguntasCampanaCartCard">
+    ${renderPreguntasCampanaHtml(preguntasCampCart||[],'cartera',campanaId)}
   </div>
   <div class="card" style="padding:0;max-height:520px;overflow-y:auto;">
     <div id="listaCampCartera">
@@ -14064,11 +14068,15 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
   // un prospecto, pero visto desde la cuenta: eventos de los prospectos que
   // ya se cruzaron con esta cuenta (prospectos.cliente_cartera_id) y las
   // campañas de cartera en las que ha estado esta cuenta.
-  const [{data:histRaw},{data:prospectosLigados},{data:campRel}]=await Promise.all([
+  const [{data:histRaw},{data:prospectosLigados},{data:campRel},{data:preguntasCC}]=await Promise.all([
     sb.from('llamadas_cartera').select('*').eq('cliente_id',clienteId).eq('campana_id',campanaId).order('created_at',{ascending:false}),
     sb.from('prospectos').select('id').eq('cliente_cartera_id',clienteId),
-    sb.from('campana_cartera_clientes').select('campana_id,fecha_agregado').eq('cliente_id',clienteId).order('fecha_agregado',{ascending:false})
+    sb.from('campana_cartera_clientes').select('campana_id,fecha_agregado').eq('cliente_id',clienteId).order('fecha_agregado',{ascending:false}),
+    // Jp, 2026-10-21: preguntas configurables de ESTA campaña puntual (aquí,
+    // a diferencia de prospectos, siempre sabemos la campaña exacta).
+    campanaId?sb.from('campana_cartera_preguntas').select('*').eq('campana_id',campanaId).eq('activa',true).order('orden',{ascending:true}):Promise.resolve({data:[]})
   ]);
+  window._preguntasLlamadaActual=preguntasCC||[];
   const hist=histRaw||[];
   const idsProspectosLigados=(prospectosLigados||[]).map(p=>p.id);
   let eventos=[];
@@ -14183,6 +14191,7 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
           <input type="date" id="fechaSeguimientoCuenta" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
           <div style="font-size:10px;color:var(--text3);margin-top:3px;">Te va a aparecer en "Pendientes de hoy" ese día.</div>
         </div>
+        ${renderPreguntasLlamadaHtml(preguntasCC||[])}
         <textarea id="notasCuentaLlamada" placeholder="Nota de la llamada..." rows="2"
           style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;resize:vertical;box-sizing:border-box;margin-bottom:8px;"></textarea>
         <div style="background:#fff;border:1px solid var(--border);border-radius:var(--radsm);padding:10px;margin-bottom:8px;">
@@ -14293,11 +14302,13 @@ async function registrarLlamadaCuentaTele(clienteId, campanaId){
     nota=(nota?nota+'\n':'')+'[Interés adicional] '+interesTexto+' — Vendedor notificado.';
   }
   const ahora=new Date();
-  const {error}=await sb.from('llamadas_cartera').insert({
+  const respuestasPreguntasCC=leerRespuestasPreguntas(window._preguntasLlamadaActual||[]);
+  const {data:llamadaCCIns,error}=await sb.from('llamadas_cartera').insert({
     cliente_id:clienteId, campana_id:campanaId, usuario_id:currentUser.id,
     resultado, notas:nota, created_at:ahora.toISOString()
-  });
+  }).select().single();
   if(error){alert('Error: '+error.message);return;}
+  await guardarRespuestasLlamada('cartera',llamadaCCIns.id,clienteId,respuestasPreguntasCC);
   // Mismo mecanismo de seguimientos que prospectos (ver registrarLlamada):
   // cierra cualquier pendiente anterior de esta cuenta y, si hoy el
   // resultado fue otra vez "Volver a llamar", programa uno nuevo.
@@ -15717,27 +15728,38 @@ async function abrirDetalle(id){
   const p=ps[idx];
 
   // Fetch historial en paralelo
-  const [evRes, llRes, vendRes, campRelRes, allUsersRes]=await Promise.all([
+  const [evRes, llRes, vendRes, campRelRes, allUsersRes, sisRes]=await Promise.all([
     sb.from('prospecto_eventos').select('*').eq('prospecto_id',id).order('fecha_registro',{ascending:true}),
     sb.from('prospecto_llamadas').select('*').eq('prospecto_id',id).order('created_at',{ascending:false}),
     sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre'),
     sb.from('campana_prospectos').select('campana_id,fecha_agregado').eq('prospecto_id',id).order('fecha_agregado',{ascending:false}),
-    sb.from('usuarios').select('id,nombre')
+    sb.from('usuarios').select('id,nombre'),
+    sb.from('prospecto_sistemas').select('*').eq('prospecto_id',id)
   ]);
+  const sistemasProspecto=sisRes.data||[];
   const eventos=evRes.data||[];
   const todosUsuarios=allUsersRes.data||[];
   const llamadas=(llRes.data||[]).map(l=>({...l,usuarios:{nombre:todosUsuarios.find(u=>u.id===l.usuario_id)?.nombre||'—'}}));
   const vendedoresB2B=vendRes.data||[];
   const campanaRelaciones=campRelRes.data||[];
   let historialCampanas=[];
+  let preguntasLlamadaProspecto=[];
   if(campanaRelaciones.length){
     const idsCamp=campanaRelaciones.map(r=>r.campana_id);
-    const {data:campanasInfo}=await sb.from('campanas').select('id,nombre').in('id',idsCamp);
+    const {data:campanasInfo}=await sb.from('campanas').select('id,nombre,activa').in('id',idsCamp);
+    // Jp, 2026-10-21: preguntas configurables por campaña — solo de campañas
+    // activas a las que pertenece este prospecto (puede estar en más de una).
+    const idsCampActivas=(campanasInfo||[]).filter(c=>c.activa).map(c=>c.id);
+    if(idsCampActivas.length){
+      const {data:pregs}=await sb.from('campana_preguntas').select('*').in('campana_id',idsCampActivas).eq('activa',true).order('orden',{ascending:true});
+      preguntasLlamadaProspecto=pregs||[];
+    }
     historialCampanas=campanaRelaciones.map(r=>({
       nombre:(campanasInfo||[]).find(c=>c.id===r.campana_id)?.nombre||'Campaña eliminada',
       fecha:r.fecha_agregado
     }));
   }
+  window._preguntasLlamadaActual=preguntasLlamadaProspecto;
 
   // Nav arrows
   const hasPrev=idx>0, hasNext=idx<ps.length-1;
@@ -15860,11 +15882,13 @@ async function abrirDetalle(id){
           🧩 Sistemas que tiene
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;" id="sistemasProspectoChecks">
-          ${SISTEMAS_ASPEL_LIST.map(s=>`
-            <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;background:#fff;border:1px solid var(--border);border-radius:14px;padding:3px 10px 3px 8px;">
-              <input type="checkbox" value="${s.v}" ${(p.sistemas_aspel||[]).includes(s.v)?'checked':''} style="accent-color:var(--teal);">${s.l}
-            </label>`).join('')}
+          ${SISTEMAS_ASPEL_LIST.map(s=>{
+            const sisData=sistemasProspecto.find(x=>x.sistema===s.v);
+            return `<label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;background:#fff;border:1px solid var(--border);border-radius:14px;padding:3px 10px 3px 8px;">
+              <input type="checkbox" value="${s.v}" ${(p.sistemas_aspel||[]).includes(s.v)?'checked':''} style="accent-color:var(--teal);">${s.l}${sisData?.version_licencia?` <span style="color:var(--teal);font-weight:600;">· ${sisData.version_licencia}</span>`:''}
+            </label>`;}).join('')}
         </div>
+        ${sistemasProspecto.length?'':'<div style="font-size:10px;color:var(--text3);margin-bottom:8px;">Aún no se ha capturado versión/licencia — se pregunta durante la llamada si la campaña activa trae esa pregunta configurada.</div>'}
         <button onclick="guardarSistemasProspecto('${p.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💾 Guardar sistemas</button>
         <span id="sistemasMsg" style="font-size:11px;margin-left:8px;"></span>
         ${(eventos.some(ev=>ev.sistema_relacionado)&&!(p.sistemas_aspel||[]).length)?`<div style="font-size:10px;color:var(--text3);margin-top:6px;">Al subirlo quedó registrado "${[...new Set(eventos.map(ev=>ev.sistema_relacionado).filter(Boolean))].join(', ')}" en su historial de eventos — confírmalo con el cliente y márcalo arriba.</div>`:''}
@@ -15936,6 +15960,7 @@ async function abrirDetalle(id){
           <input type="date" id="fechaSeguimientoProspecto" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
           <div style="font-size:10px;color:var(--text3);margin-top:3px;">Te va a aparecer en "Pendientes de hoy" ese día.</div>
         </div>
+        ${renderPreguntasLlamadaHtml(preguntasLlamadaProspecto)}
         <textarea id="notasLlamada" placeholder="Notas de la llamada (opcional)..." rows="2"
           style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;resize:vertical;box-sizing:border-box;"></textarea>
         <button onclick="registrarLlamada('${p.id}')"
@@ -16132,11 +16157,16 @@ async function registrarLlamada(prospecto_id){
   }
   const ahora=new Date();
   const hoy=ahora.toISOString().split('T')[0];
-  const {error}=await sb.from('prospecto_llamadas').insert({
+  // Jp, 2026-10-21: preguntas configurables por campaña (ver
+  // renderPreguntasLlamadaHtml/leerRespuestasPreguntas) — se leen del DOM
+  // antes de insertar para no perderlas si algo falla después.
+  const respuestasPreguntas=leerRespuestasPreguntas(window._preguntasLlamadaActual||[]);
+  const {data:llamadaIns,error}=await sb.from('prospecto_llamadas').insert({
     prospecto_id, usuario_id:currentUser.id,
     fecha:hoy, resultado, notas, created_at:ahora.toISOString()
-  });
+  }).select().single();
   if(error){alert('Error al guardar: '+error.message);return;}
+  await guardarRespuestasLlamada('prospecto',llamadaIns.id,prospecto_id,respuestasPreguntas);
   // Jp, 2026-10-16: "poderme habilitar programar una actividad... que le
   // aparezca en el dashboard tus actividades del lunes" — primero se cierra
   // cualquier seguimiento pendiente de antes (p.ej. "volver a llamar el
@@ -16772,6 +16802,7 @@ async function abrirCampana(campanaId){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando campaña...</div>';
   const {data:campana}=await sb.from('campanas').select('*').eq('id',campanaId).single();
+  const {data:preguntasCamp}=await sb.from('campana_preguntas').select('*').eq('campana_id',campanaId).order('orden',{ascending:true});
   const {data:teleUsersCamp}=await sb.from('usuarios').select('id,nombre').eq('rol','telemarketing').order('nombre');
   const {data:relaciones}=await sb.from('campana_prospectos').select('prospecto_id').eq('campana_id',campanaId);
   const idsEnCampana=new Set((relaciones||[]).map(r=>r.prospecto_id));
@@ -16854,6 +16885,10 @@ async function abrirCampana(campanaId){
     <div style="font-size:11px;color:var(--text3);margin-top:6px;">Junta a todos los prospectos cuyo historial de eventos tenga ese sistema marcado (ej. todos los de NOI, de cualquier evento), excluyendo "No contactar".</div>
   </div>
 
+  <div class="card" style="padding:16px;margin-bottom:16px;" id="preguntasCampanaCard">
+    ${renderPreguntasCampanaHtml(preguntasCamp||[],'prospecto',campanaId)}
+  </div>
+
   <div class="card">
     <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;">
       <span style="font-size:12px;font-weight:600;color:var(--text);">Selección manual de prospectos</span>
@@ -16863,6 +16898,174 @@ async function abrirCampana(campanaId){
       ${renderListaProspectosCampana(ps,idsEnCampana,campanaId)}
     </div>
   </div>`;
+}
+
+// Jp, 2026-10-21: preguntas configurables por campaña (ej. "¿cuenta con
+// reloj checador?" para la demo de NOI Asistente) — cada campaña (de
+// prospectos o de cartera, mismo patrón, tablas paralelas) puede traer 0 o
+// varias; se contestan al registrar la llamada (ver registrarLlamada /
+// registrarLlamadaCuentaTele). Tipo "sistema_version" es especial: en vez de
+// guardar la respuesta suelta, alimenta directo la tabla real de
+// sistemas/licencias (prospecto_sistemas / clientes_cartera_sistemas) para
+// que ese dato quede estructurado y reutilizable (igual que ya pasa en
+// Cartera), no enterrado como una respuesta de texto libre.
+function tablaPreguntasCampana(tipoCampana){ return tipoCampana==='cartera'?'campana_cartera_preguntas':'campana_preguntas'; }
+
+// Render de las preguntas de campaña dentro del formulario de "Registrar
+// llamada" (prospectos y cartera, mismo HTML). "sistema_version" reutiliza
+// campoVersionLicenciaHtml (ya usado en la ficha de Cartera) para no
+// duplicar el catálogo de versiones por sistema.
+function renderPreguntasLlamadaHtml(preguntas){
+  if(!preguntas||!preguntas.length) return '';
+  return `<div style="background:#fff;border:1px solid var(--border);border-radius:var(--radsm);padding:10px;margin-bottom:8px;">
+    <div style="font-size:10.5px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Preguntas de esta campaña</div>
+    ${preguntas.map(q=>{
+      if(q.tipo==='si_no'){
+        return `<div style="margin-bottom:8px;"><label style="font-size:12px;color:var(--text2);display:block;margin-bottom:3px;">${q.etiqueta}</label>
+          <div style="display:flex;gap:12px;">
+            <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="radio" name="preg_${q.id}" value="Sí" style="accent-color:var(--teal);"> Sí</label>
+            <label style="font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="radio" name="preg_${q.id}" value="No" style="accent-color:var(--teal);"> No</label>
+          </div></div>`;
+      }
+      if(q.tipo==='seleccion'){
+        return `<div style="margin-bottom:8px;"><label style="font-size:12px;color:var(--text2);display:block;margin-bottom:3px;">${q.etiqueta}</label>
+          <select data-pregunta-id="${q.id}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+            <option value="">-- Selecciona --</option>
+            ${(q.opciones||[]).map(o=>`<option value="${(o||'').replace(/"/g,'&quot;')}">${o}</option>`).join('')}
+          </select></div>`;
+      }
+      if(q.tipo==='sistema_version'){
+        return `<div style="margin-bottom:8px;" data-pregunta-sistema="${q.id}"><label style="font-size:12px;color:var(--text2);display:block;margin-bottom:3px;">${q.etiqueta}</label>${campoVersionLicenciaHtml(q.sistema_clave,'')}</div>`;
+      }
+      return `<div style="margin-bottom:8px;"><label style="font-size:12px;color:var(--text2);display:block;margin-bottom:3px;">${q.etiqueta}</label>
+        <input type="text" data-pregunta-id="${q.id}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+// Lee del DOM las respuestas ya contestadas. Separa las de tipo
+// "sistema_version" (van a prospecto_sistemas/clientes_cartera_sistemas,
+// dato estructurado y reutilizable) de las demás (van a la tabla de
+// respuestas sueltas, ligadas a la llamada puntual).
+function leerRespuestasPreguntas(preguntas){
+  const generic=[], sistemas=[];
+  (preguntas||[]).forEach(q=>{
+    if(q.tipo==='sistema_version'){
+      const cont=document.querySelector(`[data-pregunta-sistema="${q.id}"]`);
+      if(!cont) return;
+      let version=cont.querySelector('[data-sis-field="version_licencia"]')?.value.trim()||'';
+      if(version==='__otro__') version=cont.querySelector('[data-sis-field="version_licencia_otro"]')?.value.trim()||'';
+      if(version) sistemas.push({sistema:q.sistema_clave,version_licencia:version});
+    }else if(q.tipo==='si_no'){
+      const val=document.querySelector(`input[name="preg_${q.id}"]:checked`)?.value||'';
+      if(val) generic.push({pregunta_id:q.id,respuesta:val});
+    }else{
+      const val=document.querySelector(`[data-pregunta-id="${q.id}"]`)?.value?.trim()||'';
+      if(val) generic.push({pregunta_id:q.id,respuesta:val});
+    }
+  });
+  return {generic,sistemas};
+}
+
+// Guarda lo leído por leerRespuestasPreguntas: respuestas sueltas ligadas a
+// la llamada ya insertada, y sistemas/versión en la tabla estructurada
+// correspondiente (prospecto_sistemas para prospectos, clientes_cartera_sistemas
+// para cartera — mismo onConflict que ya usa Cartera).
+async function guardarRespuestasLlamada(tipoCampana,llamadaId,entidadId,respuestas){
+  if(respuestas.generic.length){
+    const tablaResp=tipoCampana==='cartera'?'llamada_cartera_respuestas':'prospecto_llamada_respuestas';
+    const filas=respuestas.generic.map(r=>({llamada_id:llamadaId,pregunta_id:r.pregunta_id,respuesta:r.respuesta}));
+    const {error}=await sb.from(tablaResp).upsert(filas,{onConflict:'llamada_id,pregunta_id'});
+    if(error) console.error('Error guardando respuestas de preguntas:',error);
+  }
+  if(respuestas.sistemas.length){
+    if(tipoCampana==='cartera'){
+      const filas=respuestas.sistemas.map(s=>({cliente_cartera_id:entidadId,sistema:s.sistema,version_licencia:s.version_licencia,updated_at:new Date().toISOString()}));
+      const {error}=await sb.from('clientes_cartera_sistemas').upsert(filas,{onConflict:'cliente_cartera_id,sistema'});
+      if(error) console.error('Error guardando sistema/versión (cartera):',error);
+    }else{
+      const filas=respuestas.sistemas.map(s=>({prospecto_id:entidadId,sistema:s.sistema,version_licencia:s.version_licencia,updated_at:new Date().toISOString()}));
+      const {error}=await sb.from('prospecto_sistemas').upsert(filas,{onConflict:'prospecto_id,sistema'});
+      if(error) console.error('Error guardando sistema/versión (prospecto):',error);
+    }
+  }
+}
+
+function renderPreguntasCampanaHtml(preguntas,tipoCampana,campanaId){
+  const TIPO_LABEL={si_no:'Sí / No',texto:'Texto libre',seleccion:'Selección (opciones)',sistema_version:'Sistema y versión (Aspel/Siigo)'};
+  return `
+    <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:10px;">Preguntas de esta campaña</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Aparecen al registrar la llamada de cualquier prospecto/cuenta de esta campaña. Puedes no tener ninguna.</div>
+    <div id="listaPreguntasCampana_${campanaId}" style="margin-bottom:12px;">
+      ${!preguntas.length?'<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin preguntas configuradas.</div>':preguntas.map(q=>`
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);margin-bottom:6px;font-size:12px;${q.activa?'':'opacity:0.5;'}">
+          <div><strong>${q.etiqueta}</strong> <span style="color:var(--text3);font-size:10.5px;">(${TIPO_LABEL[q.tipo]||q.tipo}${q.tipo==='sistema_version'&&q.sistema_clave?' · '+q.sistema_clave:''})</span></div>
+          <div style="display:flex;gap:6px;">
+            <button onclick="togglePreguntaCampanaActiva('${tipoCampana}','${campanaId}','${q.id}',${!q.activa})" style="background:none;border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;">${q.activa?'Desactivar':'Activar'}</button>
+            <button onclick="eliminarPreguntaCampana('${tipoCampana}','${campanaId}','${q.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;">Eliminar</button>
+          </div>
+        </div>`).join('')}
+    </div>
+    <div style="border-top:1px dashed var(--border);padding-top:10px;">
+      <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px;">
+        <input type="text" id="nuevaPreguntaEtiqueta_${campanaId}" placeholder="Ej. ¿Cuenta con reloj checador?" style="padding:7px 9px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+        <select id="nuevaPreguntaTipo_${campanaId}" onchange="actualizarFormPreguntaCampana('${campanaId}')" style="padding:7px 9px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+          <option value="si_no">Sí / No</option>
+          <option value="texto">Texto libre</option>
+          <option value="seleccion">Selección (opciones)</option>
+          <option value="sistema_version">Sistema y versión</option>
+        </select>
+        <button onclick="guardarPreguntaCampana('${tipoCampana}','${campanaId}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 12px;font-size:12px;font-weight:600;cursor:pointer;">+ Agregar pregunta</button>
+      </div>
+      <div id="nuevaPreguntaExtra_${campanaId}"></div>
+    </div>`;
+}
+
+function actualizarFormPreguntaCampana(campanaId){
+  const tipo=document.getElementById('nuevaPreguntaTipo_'+campanaId)?.value;
+  const wrap=document.getElementById('nuevaPreguntaExtra_'+campanaId);
+  if(!wrap) return;
+  if(tipo==='seleccion'){
+    wrap.innerHTML=`<input type="text" id="nuevaPreguntaOpciones_${campanaId}" placeholder="Opciones separadas por coma (ej. NOI 9,NOI 10,NOI 11)" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-top:4px;">`;
+  }else if(tipo==='sistema_version'){
+    wrap.innerHTML=`<select id="nuevaPreguntaSistema_${campanaId}" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;margin-top:4px;">
+      ${SISTEMAS_ASPEL_LIST.map(s=>`<option value="${s.v}">${s.l}</option>`).join('')}
+    </select>`;
+  }else{
+    wrap.innerHTML='';
+  }
+}
+
+async function guardarPreguntaCampana(tipoCampana,campanaId){
+  const etiqueta=document.getElementById('nuevaPreguntaEtiqueta_'+campanaId)?.value.trim();
+  const tipo=document.getElementById('nuevaPreguntaTipo_'+campanaId)?.value;
+  if(!etiqueta){alert('Escribe la pregunta/etiqueta.');return;}
+  let opciones=null, sistemaClave=null;
+  if(tipo==='seleccion'){
+    const raw=document.getElementById('nuevaPreguntaOpciones_'+campanaId)?.value.trim();
+    if(!raw){alert('Escribe al menos una opción.');return;}
+    opciones=raw.split(',').map(o=>o.trim()).filter(Boolean);
+  }else if(tipo==='sistema_version'){
+    sistemaClave=document.getElementById('nuevaPreguntaSistema_'+campanaId)?.value;
+  }
+  const tabla=tablaPreguntasCampana(tipoCampana);
+  const {error}=await sb.from(tabla).insert({campana_id:campanaId,etiqueta,tipo,opciones,sistema_clave:sistemaClave});
+  if(error){alert('Error al guardar la pregunta: '+error.message);return;}
+  if(tipoCampana==='cartera') await gestionarCampanaCartera(campanaId); else await abrirCampana(campanaId);
+}
+
+async function togglePreguntaCampanaActiva(tipoCampana,campanaId,preguntaId,nuevoValor){
+  const tabla=tablaPreguntasCampana(tipoCampana);
+  await sb.from(tabla).update({activa:nuevoValor}).eq('id',preguntaId);
+  if(tipoCampana==='cartera') await gestionarCampanaCartera(campanaId); else await abrirCampana(campanaId);
+}
+
+async function eliminarPreguntaCampana(tipoCampana,campanaId,preguntaId){
+  if(!confirm('¿Eliminar esta pregunta? No se borran las respuestas ya guardadas de llamadas anteriores.')) return;
+  const tabla=tablaPreguntasCampana(tipoCampana);
+  await sb.from(tabla).delete().eq('id',preguntaId);
+  if(tipoCampana==='cartera') await gestionarCampanaCartera(campanaId); else await abrirCampana(campanaId);
 }
 
 function renderListaProspectosCampana(ps,idsEnCampana,campanaId){
