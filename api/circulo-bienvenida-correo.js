@@ -7,16 +7,22 @@
 //
 // Reutiliza el mismo mecanismo de correo que ya existe en el proyecto
 // (Resend vía API REST directa, igual que api/reporte-semanal-vendedores.js
-// y api/cron/proyeccion-alertas-seguimiento.js) — mismas variables de
-// entorno, ya configuradas en Vercel: RESEND_API_KEY, opcional
-// REPORTE_FROM_EMAIL. También reutiliza SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY
-// para leer el dato fresco de la membresía en vez de confiar en lo que mande
-// el navegador.
+// y api/cron/proyeccion-alertas-seguimiento.js) — misma SUPABASE_URL/
+// SUPABASE_SERVICE_ROLE_KEY/RESEND_API_KEY ya configuradas en Vercel, para
+// leer el dato fresco de la membresía en vez de confiar en lo que mande el
+// navegador.
+//
+// Remitente (211026): tiene variable propia, CIRCULO_FROM_EMAIL, para no
+// compartir el FROM del reporte de vendedores — Jp confirmó que debe salir
+// como "Círculo Innovaci <circulo@os.innovaci.com.mx>" (ya es el valor fijo
+// por default si la variable no está en Vercel). BCC a joss@innovaci.com.mx
+// y a capacitacion@innovaci.com.mx en cada correo.
 //
 // Cómo se usa:
 //   1. Coloca este archivo en api/circulo-bienvenida-correo.js dentro del
 //      repo (ya tiene esa ruta).
-//   2. No requiere variables de entorno nuevas.
+//   2. No requiere variables de entorno nuevas (CIRCULO_FROM_EMAIL es
+//      opcional — sin ella usa el valor fijo de arriba).
 //   3. Sube los archivos a tu repo como siempre y Vercel despliega solo.
 //
 // Body esperado: { membresia_id }.
@@ -24,10 +30,16 @@
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const RESEND_KEY = process.env.RESEND_API_KEY;
-const FROM_EMAIL = process.env.REPORTE_FROM_EMAIL || 'Círculo Innovaci <reportes@innovaci.com.mx>';
+// Jp, 2026-10-21: remitente propio del Círculo (antes compartía el de
+// "reportes" por accidente, mismo FROM que el reporte semanal de
+// vendedores). Variable de entorno propia para no volver a cruzarse —
+// si no está configurada en Vercel, cae al valor fijo que Jp confirmó.
+const FROM_EMAIL = process.env.CIRCULO_FROM_EMAIL || 'Círculo Innovaci <circulo@os.innovaci.com.mx>';
 // Jp, 2026-10-14: mismo patrón que el resto de correos automáticos del
 // proyecto — copia oculta a Jp de todo lo que se manda.
-const JP_BCC_EMAIL = 'joss@innovaci.com.mx';
+// Jp, 2026-10-21: agregar también copia oculta a Capacitación (ellos dan
+// seguimiento a las altas de socios nuevos).
+const BCC_EMAILS = ['joss@innovaci.com.mx', 'capacitacion@innovaci.com.mx'];
 
 const PORTAL_URL = 'https://os.innovaci.com.mx/circulo-portal.html';
 const LOGO_URL = 'https://os.innovaci.com.mx/circulo-isotipo.png';
@@ -47,7 +59,7 @@ async function enviarCorreo({ to, subject, html }) {
   const r = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: FROM_EMAIL, to: [to], bcc: [JP_BCC_EMAIL], subject, html }),
+    body: JSON.stringify({ from: FROM_EMAIL, to: [to], bcc: BCC_EMAILS, subject, html }),
   });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`Resend -> ${r.status}: ${JSON.stringify(body)}`);
