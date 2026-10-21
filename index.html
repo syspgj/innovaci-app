@@ -15879,19 +15879,18 @@ async function abrirDetalle(id){
       <!-- SISTEMAS -->
       <div style="background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);padding:12px;">
         <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">
-          🧩 Sistemas que tiene
+          🧩 Sistemas y licencias
         </div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;" id="sistemasProspectoChecks">
-          ${SISTEMAS_ASPEL_LIST.map(s=>{
-            const sisData=sistemasProspecto.find(x=>x.sistema===s.v);
-            return `<label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;background:#fff;border:1px solid var(--border);border-radius:14px;padding:3px 10px 3px 8px;">
-              <input type="checkbox" value="${s.v}" ${(p.sistemas_aspel||[]).includes(s.v)?'checked':''} style="accent-color:var(--teal);">${s.l}${sisData?.version_licencia?` <span style="color:var(--teal);font-weight:600;">· ${sisData.version_licencia}</span>`:''}
-            </label>`;}).join('')}
+        <div id="pfSistemasCont_${p.id}">
+          ${renderFilasSistemasProspecto(p.id,sistemasProspecto)}
         </div>
-        ${sistemasProspecto.length?'':'<div style="font-size:10px;color:var(--text3);margin-bottom:8px;">Aún no se ha capturado versión/licencia — se pregunta durante la llamada si la campaña activa trae esa pregunta configurada.</div>'}
-        <button onclick="guardarSistemasProspecto('${p.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💾 Guardar sistemas</button>
-        <span id="sistemasMsg" style="font-size:11px;margin-left:8px;"></span>
-        ${(eventos.some(ev=>ev.sistema_relacionado)&&!(p.sistemas_aspel||[]).length)?`<div style="font-size:10px;color:var(--text3);margin-top:6px;">Al subirlo quedó registrado "${[...new Set(eventos.map(ev=>ev.sistema_relacionado).filter(Boolean))].join(', ')}" en su historial de eventos — confírmalo con el cliente y márcalo arriba.</div>`:''}
+        <button type="button" onclick="agregarFilaSistemaProspecto('${p.id}')" style="margin-top:4px;background:none;border:1px dashed var(--border);border-radius:var(--radsm);padding:6px 12px;font-size:11px;cursor:pointer;color:var(--text2);font-family:'Inter',sans-serif;">+ Agregar sistema</button>
+        <select id="pfSistemaNuevo_${p.id}" style="display:none;"></select>
+        <div style="margin-top:8px;">
+          <button onclick="guardarSistemasProspecto('${p.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💾 Guardar sistemas</button>
+          <span id="sistemasMsg" style="font-size:11px;margin-left:8px;"></span>
+        </div>
+        ${(eventos.some(ev=>ev.sistema_relacionado)&&!sistemasProspecto.length)?`<div style="font-size:10px;color:var(--text3);margin-top:6px;">Al subirlo quedó registrado "${[...new Set(eventos.map(ev=>ev.sistema_relacionado).filter(Boolean))].join(', ')}" en su historial de eventos — confírmalo con el cliente y agrégalo arriba.</div>`:''}
       </div>
 
       <!-- EVENTOS -->
@@ -16030,6 +16029,9 @@ async function abrirDetalle(id){
   document.getElementById('modalDetalle')?.remove();
   document.body.appendChild(modal);
   modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
+  // Catálogo pendiente para "+ Agregar sistema" (igual patrón que la ficha de Cartera)
+  const pfSelNuevo=document.getElementById('pfSistemaNuevo_'+p.id);
+  if(pfSelNuevo) pfSelNuevo.innerHTML='<option value="">-- Elegir sistema --</option>'+SISTEMAS_CATALOGO.map(d=>`<option value="${d.key}">${d.label}</option>`).join('');
 }
 
 // ─── SEGUIMIENTOS ("volver a llamar el día X") ──────────────────────────────
@@ -16251,9 +16253,76 @@ async function guardarDatosProspecto(id){
   if(row&&p) row.outerHTML=filaProspecto(p);
 }
 
+// Jp, 2026-10-21: "lo necesito como está en cartera de cuentas" — la ficha de
+// prospecto ahora usa el mismo editor de "Sistemas y licencias" que Cartera
+// (versión/usuarios/plan/próximo pago por sistema, "+ Agregar sistema",
+// "✕ quitar"), sobre la tabla prospecto_sistemas — mismo patrón que
+// clientes_cartera_sistemas (ver filaSistema/agregarFilaSistema arriba).
+function filaSistemaProspecto(def,s){
+  return `<div data-sistema-row="${def.key}" style="border:1px solid var(--border);border-radius:var(--radsm);padding:10px 12px;margin-bottom:6px;background:#fff;">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+      <span style="font-size:12px;font-weight:700;color:var(--navy);min-width:90px;">${def.label}</span>
+      <span style="margin-left:auto;font-size:10px;color:var(--text3);cursor:pointer;" onclick="this.closest('[data-sistema-row]').remove()">✕ quitar</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1.3fr 1fr 0.8fr 1fr;gap:6px;align-items:start;">
+      ${campoVersionLicenciaHtml(def.key,s?.version_licencia||'')}
+      <input data-sis-field="usuarios" type="text" value="${(s?.usuarios||'').replace(/"/g,'&quot;')}" placeholder="Usuarios" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;">
+      <select data-sis-field="plan" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;">
+        <option value="">Plan</option>
+        ${['Mensual','Semestral','Anual'].map(p=>`<option value="${p}" ${s?.plan===p?'selected':''}>${p}</option>`).join('')}
+      </select>
+      <input data-sis-field="proximo_pago" type="date" value="${s?.proximo_pago||''}" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:11px;box-sizing:border-box;">
+    </div>
+  </div>`;
+}
+function renderFilasSistemasProspecto(prospectoId,sistemasProspecto){
+  const html=SISTEMAS_CATALOGO.filter(def=>sistemasProspecto.some(s=>s.sistema===def.key))
+    .map(def=>filaSistemaProspecto(def,sistemasProspecto.find(s=>s.sistema===def.key))).join('');
+  return html||`<div id="pfSisVacio_${prospectoId}" style="font-size:12px;color:var(--text3);font-style:italic;margin-bottom:8px;">Sin sistemas capturados.</div>`;
+}
+function agregarFilaSistemaProspecto(prospectoId){
+  const sel=document.getElementById('pfSistemaNuevo_'+prospectoId);
+  if(!sel) return;
+  sel.style.display='inline-block';
+  sel.onchange=()=>{
+    const key=sel.value;
+    if(!key) return;
+    const cont=document.getElementById('pfSistemasCont_'+prospectoId);
+    if(cont.querySelector(`[data-sistema-row="${key}"]`)){sel.value='';return;}
+    document.getElementById('pfSisVacio_'+prospectoId)?.remove();
+    const def=SISTEMAS_CATALOGO.find(d=>d.key===key);
+    const div=document.createElement('div');
+    div.innerHTML=filaSistemaProspecto(def,null);
+    cont.appendChild(div.firstElementChild);
+    sel.value='';sel.style.display='none';
+  };
+  sel.focus();
+}
 async function guardarSistemasProspecto(id){
-  const checks=[...document.querySelectorAll('#sistemasProspectoChecks input:checked')].map(c=>c.value);
   const msg=document.getElementById('sistemasMsg');
+  const filas=[...document.querySelectorAll(`#pfSistemasCont_${id} [data-sistema-row]`)];
+  const checks=filas.map(f=>f.dataset.sistemaRow);
+  const aGuardar=filas.map(f=>{
+    const campo=field=>f.querySelector(`[data-sis-field="${field}"]`)?.value.trim()||null;
+    let versionLicencia=campo('version_licencia');
+    if(versionLicencia==='__otro__') versionLicencia=campo('version_licencia_otro');
+    return {
+      prospecto_id:id, sistema:f.dataset.sistemaRow, version_licencia:versionLicencia,
+      usuarios:campo('usuarios'), plan:campo('plan'), proximo_pago:campo('proximo_pago'),
+      updated_at:new Date().toISOString()
+    };
+  });
+  const {data:actuales}=await sb.from('prospecto_sistemas').select('id,sistema').eq('prospecto_id',id);
+  const aBorrar=(actuales||[]).filter(s=>!checks.includes(s.sistema)).map(s=>s.id);
+  if(aBorrar.length){
+    const {error:errDel}=await sb.from('prospecto_sistemas').delete().in('id',aBorrar);
+    if(errDel){if(msg){msg.style.color='var(--red)';msg.textContent='Error quitando sistema: '+errDel.message;}return;}
+  }
+  if(aGuardar.length){
+    const {error:errSis}=await sb.from('prospecto_sistemas').upsert(aGuardar,{onConflict:'prospecto_id,sistema'});
+    if(errSis){if(msg){msg.style.color='var(--red)';msg.textContent='Error guardando sistemas: '+errSis.message;}return;}
+  }
+  // sistemas_aspel se mantiene en paralelo (badges/filtros rápidos y sync a CRM)
   const {error}=await sb.from('prospectos').update({sistemas_aspel:checks,updated_at:new Date().toISOString()}).eq('id',id);
   if(error){if(msg){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}return;}
   const p=window._prospectos?.find(p=>p.id===id);
