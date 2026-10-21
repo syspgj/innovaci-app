@@ -8812,6 +8812,19 @@ async function irACuentaDesdeProyecto(clienteId){
   abrirFichaClienteModal(clienteId);
 }
 
+// Jp, 2026-10-21: "debería aparecer a qué cuenta pertenece" — desde la lista
+// de Prospectos (Dirección), clic en el distintivo "🏢 CUENTA" abre la ficha
+// completa de esa Cuenta en Cartera. Se reutiliza el mismo patrón que
+// irACuentaDesdeProyecto: hay que pasar primero por renderCarteraVendedor()
+// para que window._cartClientes quede con la forma COMPLETA que necesita
+// abrirFichaClienteModal (cl._sistemas, cl._suscripciones, etc.) — un fetch
+// parcial (como el que usa esta misma pantalla de Prospectos) no alcanza.
+async function irACuentaDesdeProspecto(clienteId){
+  if(!clienteId) return;
+  await renderCarteraVendedor();
+  abrirFichaClienteModal(clienteId);
+}
+
 // Sistemas/licencias (Jp, 2026-10-06: tabla clientes_cartera_sistemas, llega del sync con el CRM — antes invisible en la app)
 // — movido a nivel de módulo (antes vivía duplicado dentro de abrirFichaClienteModal
 // y de nuevo, ligeramente distinto, dentro de agregarFilaSistema) para que ambos
@@ -9249,6 +9262,10 @@ async function abrirFichaClienteModal(clienteId){
         campo2(campo('fcDirColonia','Colonia',cl.direccion_colonia),campo('fcDirCp','C.P.',cl.direccion_cp))+
         campo2(campo('fcDirMunicipio','Municipio / Alcaldía',cl.direccion_municipio),campo('fcDirEstado','Estado',cl.direccion_estado))
       )}
+      ${seccion('🎓 Asistió a eventos / Masterclass (Prospectos)',
+        `<div id="fcEventosMasterBox" style="font-size:12px;color:var(--text3);">Cargando eventos...</div>`,
+        'fcSeccionEventosMaster'
+      )}
       ${seccion('Sistemas y licencias','<div id="fcSistemasCont">'+sistemasHtml+'</div>'+
         `<button type="button" onclick="agregarFilaSistema()" style="margin-top:4px;background:none;border:1px dashed var(--border);border-radius:var(--radsm);padding:6px 12px;font-size:11px;cursor:pointer;color:var(--text2);font-family:'Inter',sans-serif;">+ Agregar sistema</button>
         <select id="fcSistemaNuevo" style="display:none;"></select>`
@@ -9360,6 +9377,45 @@ async function abrirFichaClienteModal(clienteId){
   fcCargarComentariosCrm(clienteId,cl.num_cliente);
   cargarDocumentosAdjuntos('cuenta',clienteId,'docListCuenta_'+clienteId);
   fcCargarActividades(clienteId,cl.num_cliente);
+  fcCargarEventosMasterclass(clienteId);
+}
+
+// Jp, 2026-10-21: "debería... que en cuenta se registre que asistió a la
+// Master" — esta cuenta puede tener uno o varios prospectos ligados
+// (prospectos.cliente_cartera_id) que asistieron a eventos/masterclasses
+// ANTES de convertirse en cliente. Ya se registraba esto como comentario
+// en el CRM (comentarEventosPendientes, api/crm-crear-prospecto.js), pero
+// no aparecía visiblemente dentro de la app en la ficha de la Cuenta — solo
+// en el modal ligero de llamada de telemarketing (abrirDetalleCuentaTele).
+// Esta sección lo trae a la ficha completa.
+async function fcCargarEventosMasterclass(clienteId){
+  const box=document.getElementById('fcEventosMasterBox');
+  if(!box) return;
+  const {data:prospectosLigados,error}=await sb.from('prospectos')
+    .select('id,nombre,apellidos').eq('cliente_cartera_id',clienteId);
+  if(error){ box.innerHTML=`<div style="font-size:12px;color:var(--red);">No se pudieron cargar (${error.message}).</div>`; return; }
+  if(!prospectosLigados||!prospectosLigados.length){
+    box.innerHTML=`<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin prospectos ligados a esta cuenta todavía.</div>`;
+    return;
+  }
+  const idsProsp=prospectosLigados.map(p=>p.id);
+  const {data:eventos}=await sb.from('prospecto_eventos')
+    .select('*').in('prospecto_id',idsProsp).order('fecha_evento',{ascending:false});
+  const nombrePorProsp={};
+  prospectosLigados.forEach(p=>{ nombrePorProsp[p.id]=`${p.nombre||''}${p.apellidos?' '+p.apellidos:''}`.trim()||'Sin nombre'; });
+  if(!eventos||!eventos.length){
+    box.innerHTML=`<div style="font-size:12px;color:var(--text3);font-style:italic;">${prospectosLigados.length} prospecto(s) ligado(s) a esta cuenta, sin eventos registrados.</div>`;
+    return;
+  }
+  box.innerHTML=`<div style="display:grid;gap:6px;">${eventos.map(ev=>`
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:6px 10px;background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);font-size:12px;">
+      <div>
+        <div style="font-weight:500;color:var(--text);">${ev.evento}${ev.sistema_relacionado?` <span class="pipe-badge" style="font-size:9px;">${ev.sistema_relacionado}</span>`:''}</div>
+        <div style="font-size:10.5px;color:var(--text3);margin-top:2px;">👤 ${nombrePorProsp[ev.prospecto_id]||'—'}</div>
+        ${ev.promocion?`<div style="font-size:10.5px;color:var(--text3);margin-top:2px;">🏷️ ${ev.promocion}</div>`:''}
+      </div>
+      <div style="color:var(--text3);white-space:nowrap;margin-left:8px;">${ev.fecha_evento||ev.fecha_registro||'—'}</div>
+    </div>`).join('')}</div>`;
 }
 
 // Jp, 2026-10-13: "necesito ver al menos las ventas que ha tenido este
@@ -15527,7 +15583,7 @@ function filaProspectoVendedor(p){
     <td style="font-weight:500;">
       <span onclick="abrirDetalle('${p.id}')" style="cursor:pointer;color:var(--navy);border-bottom:1px solid rgba(13,34,64,0.2);" title="Ver detalle">${p.nombre}${p.apellidos?' '+p.apellidos:''}</span>
       ${p.empresa?`<div style="font-size:10px;color:var(--text3);">${p.empresa}</div>`:''}
-      ${cliente?`<div style="margin-top:2px;"><span onclick="abrirFichaClienteModal('${cliente.id}')" style="cursor:pointer;font-size:10px;font-weight:600;color:var(--gold);background:var(--gold-bg);border-radius:4px;padding:1px 6px;">⚠ Ya es cliente</span></div>`:''}
+      ${cliente?`<div style="margin-top:2px;"><span onclick="irACuentaDesdeProspecto('${cliente.id}')" style="cursor:pointer;font-size:10px;font-weight:600;color:var(--gold);background:var(--gold-bg);border-radius:4px;padding:1px 6px;">⚠ Ya es cliente</span></div>`:''}
     </td>
     <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
     <td style="font-size:11px;color:var(--text3);">${p.evento||'—'}</td>
@@ -15789,7 +15845,7 @@ async function abrirDetalle(id){
             <span style="color:${ESTATUS_COLORS[p.estatus]||'#888'};font-weight:600;">${p.estatus}</span>
             ${p.vendedor_asignado?` &nbsp;·&nbsp; <span style="color:var(--text3);">Vendedor: <b>${vendedoresB2B.find(v=>v.id===p.vendedor_asignado)?.nombre||'—'}</b></span>`:''}
           </div>
-          ${(p._cliente||p.cliente_cartera_id)?`<div style="margin-top:4px;"><span onclick="abrirFichaClienteModal('${(p._cliente?.id)||p.cliente_cartera_id}')" style="cursor:pointer;font-size:10px;font-weight:600;color:var(--gold);background:var(--gold-bg);border-radius:4px;padding:2px 8px;">⚠ Ya es cliente — ver ficha</span></div>`:''}
+          ${(p._cliente||p.cliente_cartera_id)?`<div style="margin-top:4px;"><span onclick="irACuentaDesdeProspecto('${(p._cliente?.id)||p.cliente_cartera_id}')" style="cursor:pointer;font-size:10px;font-weight:600;color:var(--gold);background:var(--gold-bg);border-radius:4px;padding:2px 8px;">⚠ Ya es cliente — ver ficha</span></div>`:''}
         </div>
         <div style="display:flex;gap:6px;align-items:center;">
           ${navBtn('prev',!hasPrev)}
@@ -16452,15 +16508,27 @@ async function renderDirectorCRM(){
   // primera fila que encontremos por prospecto_id.
   const ultimoPorProspecto={};
   (eventosRaw||[]).forEach(ev=>{ if(!ultimoPorProspecto[ev.prospecto_id]) ultimoPorProspecto[ev.prospecto_id]=ev; });
+  // Jp, 2026-10-21: "debería... aparecer a qué cuenta pertenece" — para los
+  // prospectos ya marcados como Cuenta (cliente_cartera_id), traemos la razón
+  // social para mostrarla en el distintivo "🏢 CUENTA" (antes era un texto
+  // fijo sin decir cuál cuenta).
+  const idsCuentas=[...new Set((prospectosRaw||[]).map(p=>p.cliente_cartera_id).filter(Boolean))];
+  let cuentasPorId={};
+  if(idsCuentas.length){
+    const {data:cuentasData}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente').in('id',idsCuentas);
+    (cuentasData||[]).forEach(c=>{ cuentasPorId[c.id]=c; });
+  }
   const ps=(prospectosRaw||[]).map(p=>{
     const ult=ultimoPorProspecto[p.id];
     return {...p,
       usuarios:{nombre:(todosUsuarios||[]).find(u=>u.id===p.asignado_a)?.nombre||'—'},
       _ultimoEvento:(ult&&ult.evento)||p.evento||'',
-      _sistemaInteres:(ult&&ult.sistema_relacionado)||''
+      _sistemaInteres:(ult&&ult.sistema_relacionado)||'',
+      _cuenta:p.cliente_cartera_id?(cuentasPorId[p.cliente_cartera_id]||null):null
     };
   });
   const total=ps.length;
+  const yaCuentas=ps.filter(p=>p.cliente_cartera_id).length;
   const canalizados=ps.filter(p=>p.estatus==='Canalizado a ventas').length;
   const nuevos=ps.filter(p=>p.estatus==='Nuevo').length;
   const interesados=ps.filter(p=>p.estatus==='Interesado').length;
@@ -16552,21 +16620,24 @@ async function renderDirectorCRM(){
         style="padding:7px 32px 7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;width:180px;box-sizing:border-box;">
       <button onclick="document.getElementById('dirBuscar').value='';dirFiltrar()" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:15px;">✕</button>
     </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer;padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);">
+      <input type="checkbox" id="dirVerCuentas" onchange="dirFiltrar()">
+      Mostrar ${yaCuentas} ya marcado(s) como Cuenta
+    </label>
   </div>
 
   <!-- TABLA -->
   <div class="card">
     <table class="daily" style="font-size:12px;">
       <thead id="dirHeadProspectos"></thead>
-      <tbody id="dirBodyProspectos">
-        ${ps.map(p=>filaProspectoDir(p)).join('')}
-      </tbody>
+      <tbody id="dirBodyProspectos"></tbody>
     </table>
   </div>`;
   window._dirProspectos=ps;
   window._prospectos=ps; // también en _prospectos para que abrirDetalle funcione
   window._dirUsers=users||[];
   dirRenderHead();
+  dirFiltrar();
 }
 
 // Jp, 2026-10-16: columnas ordenables con clic (como pidió) — estado global
@@ -16606,7 +16677,7 @@ function filaProspectoDir(p){
     <td style="font-size:10px;color:var(--text3);font-family:'JetBrains Mono',monospace;">${p.numero_prospecto||'—'}</td>
     <td style="font-weight:500;">
       <span onclick="abrirDetalleDir('${p.id}')" style="cursor:pointer;color:var(--navy);border-bottom:1px solid rgba(13,34,64,0.2);" title="Ver detalle">${p.nombre}${p.apellidos?' '+p.apellidos:''}</span>
-      ${p.cliente_cartera_id?'<span title="Ya es cliente — se registra en su Cuenta del CRM, no se crea Lead" style="font-size:9px;font-weight:700;color:#8E44AD;border:1px solid #8E44AD;border-radius:4px;padding:1px 4px;margin-left:5px;">🏢 CUENTA</span>':p.prospecto_crm_id?'<span title="Ya tiene Lead en el CRM" style="font-size:9px;font-weight:700;color:#00A99D;border:1px solid #00A99D;border-radius:4px;padding:1px 4px;margin-left:5px;">🔗 LEAD</span>':''}
+      ${p.cliente_cartera_id?`<span onclick="event.stopPropagation();irACuentaDesdeProspecto('${p.cliente_cartera_id}')" title="Ya es cliente — clic para ver su ficha de Cuenta${p._cuenta?.razon_social?' ('+p._cuenta.razon_social+')':''}" style="cursor:pointer;font-size:9px;font-weight:700;color:#8E44AD;border:1px solid #8E44AD;border-radius:4px;padding:1px 4px;margin-left:5px;">🏢 ${p._cuenta?.razon_social?p._cuenta.razon_social:'CUENTA'}</span>`:p.prospecto_crm_id?'<span title="Ya tiene Lead en el CRM" style="font-size:9px;font-weight:700;color:#00A99D;border:1px solid #00A99D;border-radius:4px;padding:1px 4px;margin-left:5px;">🔗 LEAD</span>':''}
       ${p.empresa?`<div style="font-size:10px;color:var(--text3);">${p.empresa}</div>`:''}
     </td>
     <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
@@ -16625,6 +16696,11 @@ function dirFiltrar(){
   const evt=document.getElementById('dirFiltroEvento')?.value||'';
   const sis=document.getElementById('dirFiltroSistema')?.value||'';
   const bus=document.getElementById('dirBuscar')?.value.toLowerCase()||'';
+  // Jp, 2026-10-21: "los prospectos que la App marca como Cuentas deberían
+  // desaparecer de prospectos" — por default se ocultan los ya marcados
+  // (cliente_cartera_id), con un checkbox para volver a mostrarlos cuando
+  // haga falta revisarlos.
+  const verCuentas=document.getElementById('dirVerCuentas')?.checked||false;
   const ps=window._dirProspectos||[];
   let f=ps.filter(p=>{
     const mA=!asig||p.asignado_a===asig;
@@ -16632,7 +16708,8 @@ function dirFiltrar(){
     const mEvt=!evt||p._ultimoEvento===evt;
     const mSis=!sis||p._sistemaInteres===sis;
     const mB=!bus||(p.nombre||'').toLowerCase().includes(bus)||(p.telefono||'').includes(bus);
-    return mA&&mE&&mEvt&&mSis&&mB;
+    const mCuenta=verCuentas||!p.cliente_cartera_id;
+    return mA&&mE&&mEvt&&mSis&&mB&&mCuenta;
   });
   if(dirSortCol){
     const valor=p=>{
@@ -17699,8 +17776,20 @@ async function subirProspectos(){
               if(j.accion==='creado_lead_nuevo') creadosCrm++;
               else if(j.accion==='vinculado_lead_existente') vinculadosCrm++;
               else if(j.accion==='marcado_como_cuenta') marcadosCuentaCrm++;
-            } else { fallidosCrm++; console.error('CRM crear prospecto failed',j); }
-          }catch(e){ fallidosCrm++; console.error('CRM crear prospecto error',e); }
+            } else {
+              fallidosCrm++;
+              const msg=j?.error||`HTTP ${res.status}`;
+              if(!window._erroresCrmSubida) window._erroresCrmSubida=[];
+              if(window._erroresCrmSubida.length<5 && !window._erroresCrmSubida.includes(msg)) window._erroresCrmSubida.push(msg);
+              console.error('CRM crear prospecto failed',j);
+            }
+          }catch(e){
+            fallidosCrm++;
+            const msg=e?.message||String(e);
+            if(!window._erroresCrmSubida) window._erroresCrmSubida=[];
+            if(window._erroresCrmSubida.length<5 && !window._erroresCrmSubida.includes(msg)) window._erroresCrmSubida.push(msg);
+            console.error('CRM crear prospecto error',e);
+          }
         }
       }
     }
@@ -17763,7 +17852,8 @@ async function subirProspectos(){
         eventosAgregados=eventosNuevosRows.length;
       }
     }
-    alert(`✅ Listo.\n${insertados} prospectos nuevos creados (sin vendedor, listos para "Tomar").\n${eventosAgregados} ya existían y se les agregó este evento a su historial.${eventosActualizados?`\n${eventosActualizados} ya tenían este mismo evento y se les completó un dato que les faltaba (Sistema relacionado, Interés, etc. — nunca se pisa lo que ya tenían).`:''}${insertados?`\n\nEn el CRM: ${creadosCrm} Lead(s) nuevo(s) creados, ${vinculadosCrm} vinculado(s) a un Lead que ya existía (sin duplicar), ${marcadosCuentaCrm} resultaron ser clientes ya existentes (se marcaron como Cuenta, no como Lead)${fallidosCrm?`, ${fallidosCrm} fallaron (revisa la consola; se puede reintentar luego)`:''}.`:''}`);
+    alert(`✅ Listo.\n${insertados} prospectos nuevos creados (sin vendedor, listos para "Tomar").\n${eventosAgregados} ya existían y se les agregó este evento a su historial.${eventosActualizados?`\n${eventosActualizados} ya tenían este mismo evento y se les completó un dato que les faltaba (Sistema relacionado, Interés, etc. — nunca se pisa lo que ya tenían).`:''}${insertados?`\n\nEn el CRM: ${creadosCrm} Lead(s) nuevo(s) creados, ${vinculadosCrm} vinculado(s) a un Lead que ya existía (sin duplicar), ${marcadosCuentaCrm} resultaron ser clientes ya existentes (se marcaron como Cuenta, no como Lead)${fallidosCrm?`, ${fallidosCrm} fallaron.${(window._erroresCrmSubida&&window._erroresCrmSubida.length)?`\n\nMotivo(s) reportado(s):\n- ${window._erroresCrmSubida.join('\n- ')}`:' revisa la consola.'}\n(se puede reintentar luego con "Sincronizar pendientes con CRM")`:''}.`:''}`);
+    window._erroresCrmSubida=[];
     swD('crm');
     renderDirectorCRM();
   }catch(error){
@@ -17792,6 +17882,9 @@ async function sincronizarProspectosPendientesCrm(){
   const {data:sess}=await sb.auth.getSession();
   const token=sess?.session?.access_token;
   let creados=0, vinculados=0, marcadosCuenta=0, fallidos=0;
+  const erroresMuestra=[]; // Jp, 2026-10-21: guardamos el mensaje real de los
+  // primeros fallos para mostrarlo en el alert — antes solo se veía el conteo
+  // y había que abrir la consola del navegador para saber la causa.
   for(let i=0;i<pendientes.length;i++){
     if(btn) btn.textContent=`Sincronizando... (${i+1}/${total})`;
     try{
@@ -17805,11 +17898,21 @@ async function sincronizarProspectosPendientesCrm(){
         if(j.accion==='creado_lead_nuevo') creados++;
         else if(j.accion==='vinculado_lead_existente') vinculados++;
         else if(j.accion==='marcado_como_cuenta') marcadosCuenta++;
-      } else { fallidos++; console.error('Sync prospecto pendiente failed',pendientes[i].id,j); }
-    }catch(e){ fallidos++; console.error('Sync prospecto pendiente error',pendientes[i].id,e); }
+      } else {
+        fallidos++;
+        const msg=j?.error||`HTTP ${res.status}`;
+        if(erroresMuestra.length<5 && !erroresMuestra.includes(msg)) erroresMuestra.push(msg);
+        console.error('Sync prospecto pendiente failed',pendientes[i].id,j);
+      }
+    }catch(e){
+      fallidos++;
+      const msg=e?.message||String(e);
+      if(erroresMuestra.length<5 && !erroresMuestra.includes(msg)) erroresMuestra.push(msg);
+      console.error('Sync prospecto pendiente error',pendientes[i].id,e);
+    }
   }
   if(btn){btn.disabled=false;btn.textContent='🔄 Sincronizar pendientes con CRM';}
-  alert(`✅ Lote terminado.\n${creados} Lead(s) nuevo(s) creados.\n${vinculados} ya tenían un Lead en el CRM — se ligaron (sin duplicar).\n${marcadosCuenta} resultaron ser clientes ya existentes — se marcaron como Cuenta y se registraron sus eventos como comentarios en esa Cuenta.${fallidos?`\n⚠️ ${fallidos} fallaron — revisa la consola; puedes volver a correr esta sincronización, los ya resueltos se saltan solos.`:''}`);
+  alert(`✅ Lote terminado.\n${creados} Lead(s) nuevo(s) creados.\n${vinculados} ya tenían un Lead en el CRM — se ligaron (sin duplicar).\n${marcadosCuenta} resultaron ser clientes ya existentes — se marcaron como Cuenta y se registraron sus eventos como comentarios en esa Cuenta.${fallidos?`\n⚠️ ${fallidos} fallaron.${erroresMuestra.length?`\n\nMotivo(s) reportado(s):\n- ${erroresMuestra.join('\n- ')}`:' revisa la consola.'}\n\nPuedes volver a correr esta sincronización, los ya resueltos se saltan solos.`:''}`);
   renderDirectorCRM();
 }
 
