@@ -5976,7 +5976,7 @@ async function renderVendorMiMes(){
     <div style="display:flex;align-items:center;gap:10px;">
       <span style="font-size:20px;">🔔</span>
       <div>
-        <div style="font-size:13px;font-weight:700;color:#B8740A;">${countSuscPendientes} suscripción${countSuscPendientes===1?'':'es'} por validar este mes</div>
+        <div style="font-size:13px;font-weight:700;color:#B8740A;">${countSuscPendientes} ${countSuscPendientes===1?'suscripción':'suscripciones'} por validar este mes</div>
         <div style="font-size:11px;color:var(--text2);">Tienes clientes con Aspel/Siigo por vencer este mes sin marcar — dales seguimiento en Cartera</div>
       </div>
     </div>
@@ -6019,7 +6019,7 @@ async function renderVendorMiMes(){
           ${ajusteResult.tieneAjuste?`<div class="rate-chip" style="background:rgba(245,166,35,0.12);border-color:rgba(245,166,35,0.3);color:#B8740A;">
             ⭐ Ajuste especial · ${ajusteRow.tipo_ajuste==='porcentaje'?(ajusteRow.valor>0?'+':'')+ajusteRow.valor+'% adicional':'Comisión fija '+fmt(ajusteRow.valor)}
           </div>`:`<div class="rate-chip" style="background:${commission>0?'var(--teal-bg)':'var(--red-bg)'};border-color:${commission>0?'var(--teal-b)':'rgba(232,64,64,0.2)'};color:${commission>0?'var(--teal)':'var(--red)'};">
-            ${commission>0?'Tasa '+(rateConBono*100).toFixed(2)+'% · '+pctFmt+'% de meta':!deptoAlcanzado?'⛔ Área: '+Math.round(totalDeptoSvc/metaDepto*100)+'% de $'+Math.round(metaDepto/1000)+'K':'⛔ Meta individual: '+pctFmt+'%'}
+            ${commission>0?'Tasa '+(rateConBono*100).toFixed(2)+'% · '+pctFmt+'% de meta':!deptoAlcanzado?'⛔ Área: '+Math.round(totalDeptoSvc/metaDepto*100)+'% de '+fmt(metaDepto):'⛔ Meta individual: '+pctFmt+'%'}
           </div>`}
           ${rate>0&&!ajusteResult.tieneAjuste?`<div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
             <span style="font-size:10px;background:rgba(0,0,0,0.06);padding:3px 8px;border-radius:20px;color:var(--text2);">Tasa base: ${(rate*100).toFixed(1)}%</span>
@@ -6283,10 +6283,10 @@ async function renderVendorMiMes(){
   const totMap=buildTotMap(tot);
   document.getElementById('mainKpis').innerHTML=mainK.map(k=>{
     const v=k.kpi_key==='meta_depto'?totalDeptoSvc:(totMap[k.kpi_key]||0),m=metas[k.kpi_key]?.m||1,p=Math.min(v/m,1),c=pcol(p),pp=Math.round(p*100);
-    const vf=k.tipo==='$'?fmt(v):v,mf=k.tipo==='$'?fmtK(m):m;
+    const vf=k.tipo==='$'?fmt(v):v,mf=k.tipo==='$'?fmt(m):m;
     return `<div class="kc"><div class="kc-acc" style="background:${c};"></div>
       <div class="kc-name">${k.kpi_nombre}</div>
-      <div class="kc-nums"><span class="kc-cur" style="color:${c};">${k.tipo==='$'?fmtK(v):v}</span><span class="kc-sep">/</span><span class="kc-meta">${mf}</span></div>
+      <div class="kc-nums"><span class="kc-cur" style="color:${c};">${k.tipo==='$'?fmt(v):v}</span><span class="kc-sep">/</span><span class="kc-meta">${mf}</span></div>
       <div class="kc-bar"><div class="kc-barf" style="width:${pp}%;background:${c};"></div></div>
       <div class="kc-foot">${pbadge(p)}<span style="font-weight:600;font-size:11px;color:${c};">${pp}%</span></div>
     </div>`;
@@ -6297,7 +6297,7 @@ async function renderVendorMiMes(){
   document.getElementById('secKpis').innerHTML=secK.map(k=>{
     const v=totMap[k.kpi_key]||0,m=metas[k.kpi_key]?.m||1,p=v/m,c=pcol(Math.min(p,1));
     const cls=v>=m?'bg':v===0?'br':'bo';
-    return `<div class="sc"><div class="sc-icon">${icons[k.kpi_key]||'📌'}</div><div class="sc-val" style="color:${c};">${k.tipo==='$'?fmtK(v):v}</div><div class="sc-name">${k.kpi_nombre}</div><div class="sc-sub"><span class="badge ${cls}">${Math.round(Math.min(p,1)*100)}%</span></div></div>`;
+    return `<div class="sc"><div class="sc-icon">${icons[k.kpi_key]||'📌'}</div><div class="sc-val" style="color:${c};">${k.tipo==='$'?fmt(v):v}</div><div class="sc-name">${k.kpi_nombre}</div><div class="sc-sub"><span class="badge ${cls}">${Math.round(Math.min(p,1)*100)}%</span></div></div>`;
   }).join('');
   // Daily table
   const today=todayLocal();
@@ -6330,7 +6330,7 @@ function updSim(v,meta){
   const el=document.getElementById('simVal');
   const rc=document.getElementById('simComm');
   const rr=document.getElementById('simRate');
-  if(el)el.textContent=fmtK(v);
+  if(el)el.textContent=fmt(v);
   if(rc)rc.textContent=fmt(c);
   if(rr)rr.textContent='tasa '+(r*100).toFixed(1)+'%';
 }
@@ -6539,6 +6539,17 @@ async function saveRegistro(fecha,existingId){
     neg_prospectos_monto:Math.round(parseFloat(document.getElementById('fNegProsMonto').value)||0),
     updated_at:new Date().toISOString(),
   };
+  // ── VALIDACIÓN DE CORDURA: # Cotizaciones se ha confundido antes con los
+  // campos de monto (Servicios o Monto cotizaciones), metiendo cifras como
+  // 24,663 "cotizaciones" en un solo día. Si pinta sospechoso, confirmar.
+  const cotizSospechosas = payload.cotizaciones>50
+    || (payload.cotizaciones>0 && payload.cotizaciones===payload.svc)
+    || (payload.cotizaciones>0 && payload.cotizaciones===payload.monto_cotizaciones);
+  if(cotizSospechosas){
+    btn.disabled=false;btn.textContent='💾 Guardar registro';
+    if(!confirm(`⚠️ Pusiste ${payload.cotizaciones} en "# Cotizaciones" — parece un monto en pesos, no un conteo de cotizaciones del día.\n\n¿Seguro que es correcto? Si no, corrige el campo "# Cotizaciones" antes de guardar.`)) return;
+    btn.disabled=true;btn.textContent='Guardando...';
+  }
   if(notasLog) payload.notas=notasLog;
   const {error}=await sb.from('registros_diarios').upsert(payload,{onConflict:'usuario_id,fecha'});
   if(!error){
@@ -6862,6 +6873,7 @@ function renderProyeccionTabla(){
     ${pipeTarjetaDashboard('porCerrar','🎯 Por cerrar',resumen.porCerrar.length,'Cierran en los próximos 15 días','#F5A623')}
     ${pipeTarjetaDashboard('enfriando','🧊 Enfriando',resumen.enfriando.length,'7+ días sin actividad ni cambios','#1D5FA8')}
     ${pipeTarjetaDashboard('sinSeguimiento','🙈 Sin seguimiento',resumen.sinSeguimiento.length,'10+ días sin ninguna actividad','#888')}
+    ${pipeTarjetaDashboard('fechaVencida','⚠️ Fecha vencida',resumen.fechaVencida.length,'Fecha prevista de cierre ya pasó','#E84040')}
   </div>
   <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
     <div style="position:relative;flex:1;min-width:160px;">
@@ -6942,6 +6954,13 @@ function filaPipe(r){
   const hoyStr=todayLocal();
   const vencido=r.fecha_siguiente_paso&&r.fecha_siguiente_paso<hoyStr;
   const sigPaso=r.siguiente_paso?`<div style="font-weight:600;${vencido?'color:var(--red);':''}">${r.siguiente_paso}</div>${r.fecha_siguiente_paso?`<div style="font-size:10px;color:${vencido?'var(--red)':'var(--text3)'};">${vencido?'⚠️ ':''}${r.fecha_siguiente_paso}</div>`:''}`:'<span style="color:var(--text3);">—</span>';
+  // Fecha prevista vencida: la oportunidad sigue abierta pero su fecha de
+  // cierre esperada ya pasó (típico de negociaciones traspasadas de meses
+  // anteriores sin actualizar) — se marca en rojo para que no se cuenten
+  // como "frescas" dentro del pipeline abierto. Jp, 2026-10-22, auditoría vendedor.
+  const estaCerrada=['Cerrada-Ganada','Cerrada-Perdida'].includes(r.estatus);
+  const fechaPrevVencida=!estaCerrada&&r.fecha_prevista&&r.fecha_prevista<hoyStr;
+  const fechaPrevCelda=r.fecha_prevista?(fechaPrevVencida?`<span style="color:var(--red);font-weight:700;" title="Fecha prevista ya pasó">⚠️ ${r.fecha_prevista}</span>`:r.fecha_prevista):'—';
   return `<tr id="pr_${r.id}" style="border-bottom:1px solid var(--border);">
     <td style="padding:7px 10px;">${r.tipo_servicio||'—'}</td>
     <td style="padding:7px 10px;font-weight:500;">${r.producto||'—'}</td>
@@ -6949,7 +6968,7 @@ function filaPipe(r){
     <td style="padding:7px 10px;text-align:right;font-weight:600;color:var(--navy);">${fmt(r.monto_total||0)}</td>
     <td style="padding:7px 10px;text-align:right;color:var(--teal);">${fmt(r.subtotal||0)}</td>
     <td style="padding:7px 10px;text-align:center;"><span class="pipe-badge" style="color:${probColor};background:${probColor}14;">${r.probabilidad||0}%</span></td>
-    <td style="padding:7px 10px;text-align:center;color:var(--text3);">${r.fecha_prevista||'—'}</td>
+    <td style="padding:7px 10px;text-align:center;color:var(--text3);">${fechaPrevCelda}</td>
     <td style="padding:7px 10px;text-align:center;"><span class="pipe-badge" style="color:${estColor};background:${estColor}14;white-space:nowrap;">${r.estatus||'—'}</span></td>
     <td style="padding:7px 10px;color:var(--text3);font-size:11px;max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.objecion||''}</td>
     <td style="padding:7px 10px;text-align:center;color:var(--text3);font-size:11px;white-space:nowrap;">${creada}</td>
@@ -7541,7 +7560,13 @@ function pipeCalcularResumenDashboard(){
   });
   const recientes30=(window._pipeRows||[]).filter(r=>r.fecha_creada_real&&new Date(r.fecha_creada_real).getTime()>=haceTreinta);
 
-  return {hoyActs,porCerrar,enfriando,sinSeguimiento,esteMes,recientes30};
+  // Fecha prevista ya vencida: la negociación sigue abierta pero la fecha de
+  // cierre esperada ya pasó — suele pasar con negociaciones traspasadas de
+  // meses anteriores sin actualizar. Se muestra aparte para no confundirlas
+  // con el pipeline "fresco" del mes. Jp, 2026-10-22, auditoría vendedor.
+  const fechaVencida=rows.filter(r=>r.fecha_prevista&&r.fecha_prevista<hoy);
+
+  return {hoyActs,porCerrar,enfriando,sinSeguimiento,esteMes,recientes30,fechaVencida};
 }
 
 async function pipeCargarProximasActividades(ids){
@@ -8821,6 +8846,13 @@ async function irACuentaDesdeProyecto(clienteId){
 // parcial (como el que usa esta misma pantalla de Prospectos) no alcanza.
 async function irACuentaDesdeProspecto(clienteId){
   if(!clienteId) return;
+  // Jp, 2026-10-22, auditoría vendedor: faltaba sincronizar el tab activo
+  // (igual que irACuentaDesdeProyecto) — sin esto, el tab de navegación se
+  // quedaba marcado en "Prospectos" aunque el contenido ya era Cartera.
+  currentVendTab='cartera';
+  const bottom=window._vendTabsBottom||[];
+  document.querySelectorAll('#tabsBar .tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('#tabsBar2 .tab').forEach((t,i)=>t.classList.toggle('active',bottom[i]==='cartera'));
   await renderCarteraVendedor();
   abrirFichaClienteModal(clienteId);
 }
@@ -10579,6 +10611,10 @@ async function renderTodasSuscripciones(scope){
     // pasó el mes en que debieron renovar y siguen sin renovar) — antes no existía
     // esta distinción, todo caía junto en "vencen este mes" o se perdía de vista.
     suscs=suscs.filter(s=>s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada');
+    // Jp, 2026-10-22, auditoría vendedor: con 50+ vencidas mezcladas, las
+    // críticas (vencidas desde hace más de un año) se perdían entre las
+    // recientes. Se ordenan explícitamente más antigua primero.
+    suscs=[...suscs].sort((a,b)=>(a.fecha_proxima_renovacion||'').localeCompare(b.fecha_proxima_renovacion||''));
   } else if(suscListFiltroEstado==='alerta_perdida'){
     // Jp, 2026-10-21: "posible pérdida a otro distribuidor" — la suscripción
     // ya no aparece en el catálogo vivo de Aspel que sube Jp (ver
@@ -10647,7 +10683,7 @@ async function renderTodasSuscripciones(scope){
       ${tarjeta('🚨 Posible pérdida',totalAlertaPerdida,'#8B0000','alerta_perdida')}
     </div>
     ${scope==='director'&&(totalSinVendedor>0||totalSinCta>0)?`<div style="font-size:11px;color:#B8740A;background:rgba(245,166,35,0.1);border:1px solid rgba(245,166,35,0.3);border-radius:var(--radsm);padding:6px 10px;margin-bottom:10px;">⚠ ${totalSinCta>0?`${totalSinCta} sin cuenta ligada (usa "🔗 Vincular"). `:''}${totalSinVendedor>0?`${totalSinVendedor} de cuentas SIN vendedor asignado — nadie las ve en su cartera hoy.`:''}</div>`:''}
-    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${suscs.length} suscripción${suscs.length===1?'':'es'}${suscListFiltroEstado||suscListFiltroSistema||q?' (filtradas)':''}</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${suscs.length} ${suscs.length===1?'suscripción':'suscripciones'}${suscListFiltroEstado||suscListFiltroSistema||q?' (filtradas)':''}</div>
     <div style="display:grid;gap:6px;">
       ${suscs.length?suscs.map(s=>{
         const info=suscSistemaInfo(s);
@@ -10661,6 +10697,11 @@ async function renderTodasSuscripciones(scope){
         // suscripción cuya fecha de renovación ya pasó y que no está renovada,
         // sea cual sea su estado actual.
         const esVencida=s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada';
+        // Jp, 2026-10-22, auditoría vendedor: días de antigüedad del vencimiento,
+        // para distinguir a simple vista una vencida de la semana pasada de una
+        // de hace más de un año (antes se veían con el mismo badge rojo).
+        const diasVencida=esVencida?Math.floor((Date.now()-new Date(s.fecha_proxima_renovacion).getTime())/86400000):0;
+        const vencidaCritica=esVencida&&diasVencida>365;
         // Jp, 2026-10-21: "alerta muy grave" — ya no aparece en el catálogo vivo
         // de Aspel (perdida a otro distribuidor), debe verse MÁS alarmante que
         // una simple vencida-sin-renovar. Ver abrirVerificarCatalogoAspel().
@@ -10673,7 +10714,7 @@ async function renderTodasSuscripciones(scope){
               <span style="font-size:13px;font-weight:600;color:var(--text);">${cl?cl.razon_social:(s.razon_social_reportada||'Sin razón social')}</span>
               <span class="pipe-badge" style="font-size:10px;${esAlarma?`background:${estadoInfo[1]};color:#fff;`:`background:${estadoInfo[1]}18;color:${estadoInfo[1]};`}">${esAlarma?'⚠ ':''}${estadoInfo[0]}</span>
               ${esAlertaPerdida?`<span class="pipe-badge" style="font-size:10px;background:#8B0000;color:#fff;">🚨 Posible pérdida con Innovaci</span>`:''}
-              ${esVencida&&!esAlarma?`<span class="pipe-badge" style="font-size:10px;background:#E84040;color:#fff;">⚠ Vencida sin renovar</span>`:''}
+              ${esVencida&&!esAlarma?`<span class="pipe-badge" style="font-size:10px;background:${vencidaCritica?'#8B0000':'#E84040'};color:#fff;">⚠ Vencida sin renovar${vencidaCritica?` · +${Math.floor(diasVencida/365)} año(s)`:''}</span>`:''}
               ${!cl?'<span class="pipe-badge" style="font-size:10px;background:rgba(232,64,64,0.1);color:#E84040;">Sin cuenta</span>':!cl.vendedor_asignado&&scope==='director'?'<span class="pipe-badge" style="font-size:10px;background:rgba(245,166,35,0.12);color:#B8740A;">Sin vendedor</span>':''}
             </div>
             <div style="font-size:11px;color:var(--text3);margin-top:3px;font-family:'JetBrains Mono',monospace;">RFC ${(cl?cl.rfc:s.rfc_reportado)||'—'} · serie ${s.numserie||'—'}${s.monto?' · '+fmt(s.monto):''}${s.fecha_proxima_renovacion?' · vence '+fmtFecha(s.fecha_proxima_renovacion):''}${scope==='director'&&vend?' · '+vend.nombre:''}${esAlertaPerdida&&s.alerta_posible_perdida_fecha?' · detectada ausente el '+fmtFecha(s.alerta_posible_perdida_fecha):''}</div>
@@ -13799,13 +13840,13 @@ async function renderDirectorAnual(){
   '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:20px;">'
   +'<div class="thc" style="background:var(--navy);border-color:transparent;">'
   +'<div class="th-lbl" style="color:rgba(255,255,255,0.4);">Servicios '+currentYear+'</div>'
-  +'<div class="th-val" style="color:#fff;">'+fmtK(totalSvcAnio)+'</div>'
+  +'<div class="th-val" style="color:#fff;">'+fmt(totalSvcAnio)+'</div>'
   +'<div class="th-sub" style="color:rgba(255,255,255,0.4);">'+mesesConData+' meses con actividad</div></div>'
   +'<div class="thc"><div class="th-lbl">Comisiones pagadas</div>'
-  +'<div class="th-val" style="color:#00A99D;">'+fmtK(totalCommAnio)+'</div>'
+  +'<div class="th-val" style="color:#00A99D;">'+fmt(totalCommAnio)+'</div>'
   +'<div class="th-sub">equipo, año completo</div></div>'
   +'<div class="thc"><div class="th-lbl">Aspel+IT+Suscripciones</div>'
-  +'<div class="th-val">'+fmtK(totalComplementarioAnio)+'</div>'
+  +'<div class="th-val">'+fmt(totalComplementarioAnio)+'</div>'
   +'<div class="th-sub">acumulado del año</div></div>'
   +'<div class="thc"><div class="th-lbl">Meta depto. cumplida</div>'
   +'<div class="th-val" style="color:'+(mesesMetaOk>=10?'#27AE60':mesesMetaOk>=6?'#F5A623':'#E84040')+';">'+mesesMetaOk+'/12</div>'
@@ -18068,8 +18109,8 @@ async function renderDirectorProyeccion(){
       cards.innerHTML=Object.values(byVend).map(v=>`
         <div class="thc">
           <div class="th-lbl">${v.nombre}</div>
-          <div class="th-val" style="color:var(--teal);">${fmtK(v.sub)}</div>
-          <div class="th-sub">${v.n} neg. · total ${fmtK(v.monto)}</div>
+          <div class="th-val" style="color:var(--teal);">${fmt(v.sub)}</div>
+          <div class="th-sub">${v.n} neg. · total ${fmt(v.monto)}</div>
         </div>`).join('');
     }
   }
@@ -25519,7 +25560,7 @@ async function renderVendorAnual(){
   '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">'
   +'<div class="thc" style="background:var(--navy);border-color:transparent;">'
   +'<div class="th-lbl" style="color:rgba(255,255,255,0.4);">Servicios '+currentYear+'</div>'
-  +'<div class="th-val" style="color:#fff;">'+fmtK(totalSvc)+'</div>'
+  +'<div class="th-val" style="color:#fff;">'+fmt(totalSvc)+'</div>'
   +'<div class="th-sub" style="color:rgba(255,255,255,0.4);">'+mesesConData+' meses con actividad</div></div>'
   +'<div class="thc"><div class="th-lbl">Meses al 100%</div>'
   +'<div class="th-val" style="color:'+(mesesCumplidos>=10?'#27AE60':mesesCumplidos>=7?'#F5A623':'#E84040')+';">'+mesesCumplidos+'/12</div>'
@@ -25528,7 +25569,7 @@ async function renderVendorAnual(){
   +'<div class="th-val" style="color:'+(totalBonoTrim>0?'#00A99D':'var(--text3)')+';">'+fmt(totalBonoTrim)+'</div>'
   +'<div class="th-sub">'+bonosTrim.filter(function(t){return t.todosCumplen;}).length+' trimestre(s) completados</div></div>'
   +'<div class="thc"><div class="th-lbl">Aspel + IT acum.</div>'
-  +'<div class="th-val">'+fmtK(totalAspel)+'</div>'
+  +'<div class="th-val">'+fmt(totalAspel)+'</div>'
   +'<div class="th-sub">ventas complementarias</div></div></div>'
   // ── MÉTRICAS DE RENDIMIENTO ──────────────────────────────────────────────
   +'<div class="shead">Métricas de rendimiento</div>'
