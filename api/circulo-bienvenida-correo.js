@@ -42,7 +42,9 @@ const FROM_EMAIL = process.env.CIRCULO_FROM_EMAIL || 'Círculo Innovaci <circulo
 const BCC_EMAILS = ['joss@innovaci.com.mx', 'capacitacion@innovaci.com.mx'];
 
 const PORTAL_URL = 'https://os.innovaci.com.mx/circulo-portal.html';
-const LOGO_URL = 'https://os.innovaci.com.mx/circulo-isotipo.png';
+// Jp, 2026-10-22: usar la insignia completa (con el texto "CÍRCULO ·
+// EXCLUSIVO MIEMBROS"), no el isotipo suelto.
+const LOGO_URL = 'https://os.innovaci.com.mx/circulo-insignia.png';
 
 const ESPECIALIDAD_LABEL = { NOI: 'Aspel NOI (Nóminas)', COI: 'Aspel COI (Contabilidad)', SAE: 'Aspel SAE (Ventas y Facturación)' };
 const PLAN_LABEL = { socio: 'Socio', socio_pro: 'Socio Pro' };
@@ -78,9 +80,9 @@ function construirHtml(m) {
   const especialidadTxt = ESPECIALIDAD_LABEL[m.especialidad] || m.especialidad || '';
   const planTxt = PLAN_LABEL[m.plan] || m.plan || '';
   const vigenciaTxt = fmtFecha(m.fecha_vencimiento);
-  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;background:#f4f6f8;padding:24px 0;">
+  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:900px;margin:0 auto;background:#f4f6f8;padding:24px 0;">
     <div style="background:#0D2240;background-image:radial-gradient(circle at 15% 15%,rgba(0,169,157,0.35) 0%,transparent 45%);border-radius:14px 14px 0 0;padding:32px 28px;text-align:center;">
-      <img src="${LOGO_URL}" alt="Círculo Innovaci" style="width:64px;height:64px;object-fit:contain;margin-bottom:14px;">
+      <img src="${LOGO_URL}" alt="Círculo Innovaci" style="width:120px;height:120px;object-fit:contain;margin-bottom:14px;">
       <div style="font-size:22px;font-weight:800;color:#fff;letter-spacing:-0.02em;">¡Bienvenido${primerNombre ? ', ' + primerNombre : ''}!</div>
       <div style="font-size:13px;font-weight:600;color:rgba(255,255,255,0.72);margin-top:4px;letter-spacing:.02em;">Ya eres parte del Círculo Innovaci</div>
     </div>

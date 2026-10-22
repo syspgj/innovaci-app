@@ -233,7 +233,7 @@ function construirHtml({ nombre, mesNombre, anio, hoyTexto, ventaActual, svcMeta
     : `<div style="font-size:12px;color:#888;padding:8px 0;">Sin actividades agendadas para hoy en Proyección.</div>`;
 
   return `
-  <div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#1A2332;">
+  <div style="font-family:Arial,Helvetica,sans-serif;max-width:900px;margin:0 auto;color:#1A2332;">
     <div style="background:#1A2332;color:#fff;padding:18px 24px;border-radius:10px 10px 0 0;">
       <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;opacity:0.7;">Innovaci OS · Reporte diario</div>
       <div style="font-size:18px;font-weight:700;margin-top:4px;">Hola, ${nombre.split(' ')[0]} 👋</div>
