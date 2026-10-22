@@ -10270,9 +10270,10 @@ function abrirAltaCuenta(){
     <div style="font-size:15px;font-weight:700;color:var(--text);margin-bottom:16px;">Dar de alta cuenta nueva</div>
     <div style="display:grid;gap:10px;">
       <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Razón social</label>
-        <input type="text" id="altaRazonSocial" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+        <input type="text" id="altaRazonSocial" oninput="altaBuscarDuplicados()" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+      <div id="altaDuplicadosBox"></div>
       <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">RFC</label>
-        <input type="text" id="altaRfc" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
+        <input type="text" id="altaRfc" oninput="altaBuscarDuplicados()" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
       <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Número de serie</label>
         <input type="text" id="altaNumserie" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
       <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Producto</label>
@@ -10297,10 +10298,59 @@ function abrirAltaCuenta(){
   document.body.appendChild(modal);
 }
 
+// Jp, 2026-10-22, auditoría vendedor: "Nuevo cliente" insertaba directo sin
+// buscar si la cuenta ya existía (a diferencia de "Agregar suscripción", que
+// sí obliga a buscar primero) — riesgo real de duplicar una cuenta por typo
+// o por no revisar Cartera antes. Se busca en vivo mientras se captura
+// razón social/RFC, y se bloquea/advierte antes de guardar.
+window._altaDuplicadosTimeout=null;
+function altaBuscarDuplicados(){
+  clearTimeout(window._altaDuplicadosTimeout);
+  window._altaDuplicadosTimeout=setTimeout(async()=>{
+    const razon=(document.getElementById('altaRazonSocial')?.value||'').trim();
+    const rfc=(document.getElementById('altaRfc')?.value||'').trim();
+    const box=document.getElementById('altaDuplicadosBox');
+    if(!box) return;
+    if(razon.length<3&&!rfc){box.innerHTML='';return;}
+    let data=[];
+    if(rfc){
+      const {data:porRfc}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente,rfc').ilike('rfc',rfc).limit(5);
+      data=porRfc||[];
+    }
+    if(!data.length&&razon.length>=3){
+      const {data:porRazon}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente,rfc').ilike('razon_social',`%${razon}%`).limit(5);
+      data=porRazon||[];
+    }
+    if(!data||!data.length){box.innerHTML='';return;}
+    box.innerHTML=`<div style="background:rgba(245,166,35,0.1);border:1px solid rgba(245,166,35,0.35);border-radius:var(--radsm);padding:8px 10px;font-size:11px;">
+      <div style="font-weight:700;color:#B8740A;margin-bottom:4px;">⚠ Ya existe${data.length>1?'n':''} ${data.length} cuenta${data.length>1?'s':''} parecida${data.length>1?'s':''} — revisa antes de dar de alta otra:</div>
+      ${data.map(c=>`<div style="color:var(--text2);">• ${c.razon_social} (${c.num_cliente||'—'})${c.rfc?' · '+c.rfc:''}</div>`).join('')}
+    </div>`;
+  },300);
+}
+
 async function guardarAltaCuenta(){
   const razon=document.getElementById('altaRazonSocial').value.trim();
   const msg=document.getElementById('altaMsg');
   if(!razon){msg.textContent='La razón social es obligatoria';return;}
+  const rfcCapturado=document.getElementById('altaRfc').value.trim();
+  // Bloqueo duro: RFC idéntico ya existente — no tiene caso dar de alta otra
+  // cuenta, se dirige a la existente (usar "Agregar suscripción" o su ficha).
+  if(rfcCapturado){
+    const {data:rfcExacto}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente').ilike('rfc',rfcCapturado).limit(1);
+    if(rfcExacto&&rfcExacto.length){
+      msg.textContent=`⛔ Ya existe una cuenta con ese RFC: ${rfcExacto[0].razon_social} (${rfcExacto[0].num_cliente||'—'}). Usa "➕ Agregar suscripción" o abre su ficha en Cartera en vez de crear una nueva.`;
+      return;
+    }
+  }
+  // Advertencia suave: razón social parecida con RFC distinto (o sin RFC) —
+  // puede ser la misma empresa con otro RFC capturado, o realmente otra
+  // cuenta — se confirma en vez de bloquear.
+  const {data:parecidas}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente').ilike('razon_social',`%${razon}%`).limit(5);
+  if(parecidas&&parecidas.length){
+    const lista=parecidas.map(c=>`• ${c.razon_social} (${c.num_cliente||'—'})`).join('\n');
+    if(!confirm(`Ya existen ${parecidas.length} cuenta(s) con un nombre parecido:\n\n${lista}\n\n¿Seguro que quieres dar de alta una cuenta NUEVA (no es ninguna de estas)?`)) return;
+  }
   const fechaUltima=document.getElementById('altaFechaUltima').value||null;
   const periodicidad=document.getElementById('altaPeriodicidad').value;
   // Calcular fecha próxima renovación según periodicidad, si se dio fecha última
@@ -25690,6 +25740,36 @@ async function generarReportePDF(desde,hasta,tituloRango){
   const esVendedorB2B=userProfile.rol==='vendedor';
   const esTele=userProfile.rol==='telemarketing';
 
+  // Jp, 2026-10-22, auditoría vendedor: "Suscripciones"/"Renovaciones" del
+  // reporte venían de registros_diarios.suscripciones/.renovaciones — campos
+  // que YA NO se capturan (el módulo Suscripciones vive aparte desde hace
+  // rato) y están vacíos en el 99.5% de los registros históricos. Se
+  // reemplazan por el dato real: renovaciones confirmadas en suscripciones_
+  // cartera, filtradas por vendedor asignado de la cuenta y fecha_marcado
+  // dentro del rango. "Suscripciones" pasa a ser el $ renovado ese día.
+  if(esVendedorB2B){
+    const {data:renovsReal}=await sb.from('suscripciones_cartera')
+      .select('monto,fecha_marcado,clientes_cartera!inner(vendedor_asignado)')
+      .eq('estado','renovada')
+      .eq('clientes_cartera.vendedor_asignado',currentUser.id)
+      .gte('fecha_marcado',desde).lte('fecha_marcado',hasta);
+    const renovMap={};
+    (renovsReal||[]).forEach(s=>{
+      if(!s.fecha_marcado) return;
+      if(!renovMap[s.fecha_marcado]) renovMap[s.fecha_marcado]={count:0,monto:0};
+      renovMap[s.fecha_marcado].count++;
+      renovMap[s.fecha_marcado].monto+=(s.monto||0);
+    });
+    const porFecha={};
+    rs.forEach(r=>{porFecha[r.fecha]=r;});
+    Object.keys(renovMap).forEach(f=>{
+      if(!porFecha[f]){ const nuevo={fecha:f}; rs.push(nuevo); porFecha[f]=nuevo; }
+      porFecha[f].renovaciones=renovMap[f].count;
+      porFecha[f].suscripciones=renovMap[f].monto; // reutilizado como "$ renovado" — ver nota arriba
+    });
+    rs.sort((a,b)=>a.fecha<b.fecha?-1:a.fecha>b.fecha?1:0);
+  }
+
   const { jsPDF }=window.jspdf;
   const doc=new jsPDF();
   const pageWidth=doc.internal.pageSize.getWidth();
@@ -25716,7 +25796,7 @@ async function generarReportePDF(desde,hasta,tituloRango){
 
   // Totales del periodo
   const cols=esVendedorB2B
-    ? [{k:'svc',l:'Servicios',fmt:'$'},{k:'aspel',l:'Aspel',fmt:'$'},{k:'it',l:'IT',fmt:'$'},{k:'suscripciones',l:'Suscripciones',fmt:'#'},{k:'renovaciones',l:'Renovaciones',fmt:'#'}]
+    ? [{k:'svc',l:'Servicios',fmt:'$'},{k:'aspel',l:'Aspel',fmt:'$'},{k:'it',l:'IT',fmt:'$'},{k:'renovaciones',l:'Renovaciones',fmt:'#'},{k:'suscripciones',l:'$ renovado',fmt:'$'}]
     : esTele
     ? [{k:'llamadas_efectivas',l:'Llamadas efectivas',fmt:'#'},{k:'prospectos_canalizados',l:'Prospectos canalizados',fmt:'#'},{k:'confirmaciones_evento',l:'Confirmaciones evento',fmt:'#'},{k:'venta_cursos_tele',l:'Venta cursos 24/7',fmt:'$'},{k:'seguimientos_post',l:'Seguimientos',fmt:'#'}]
     : [];
