@@ -180,7 +180,7 @@ function mensajeMotivacional(pctAvance) {
 // ─── Plantilla del correo ───────────────────────────────────────────────────
 function construirHtml({ nombre, mesNombre, anio, hoyTexto, ventaActual, svcMeta, faltante, pctAvance, diasRest, ritmoNecesario,
   alcanceBono, pctExtra, montoAspel, bonoAspel, monto247, bono247, deptoAlcanzado, vendedorCumplioMeta, suscripciones,
-  negociacionesAbiertas, montoAbiertoTotal, actividadesHoy }) {
+  negociacionesAbiertas, montoAbiertoTotal, actividadesHoy, alertasPerdida }) {
   const color = pctAvance >= 1 ? '#27AE60' : pctAvance >= 0.8 ? '#F5A623' : '#E84040';
   const barra = (pct, col) => `<div style="background:#eee;border-radius:6px;height:10px;overflow:hidden;margin:6px 0;"><div style="background:${col};height:100%;width:${Math.min(pct * 100, 100)}%;"></div></div>`;
   const motivo = mensajeMotivacional(pctAvance);
@@ -240,6 +240,15 @@ function construirHtml({ nombre, mesNombre, anio, hoyTexto, ventaActual, svcMeta
       <div style="font-size:12px;opacity:0.85;">${hoyTexto} — lo que llevas y lo que tienes hoy</div>
     </div>
     <div style="border:1px solid #eee;border-top:none;padding:20px 24px;border-radius:0 0 10px 10px;">
+
+      ${alertasPerdida && alertasPerdida.length ? `
+      <div style="background:#8B000014;border:1px solid #8B0000;border-radius:6px;padding:12px 14px;margin-bottom:18px;">
+        <div style="font-size:13px;font-weight:700;color:#8B0000;">🚨 ${alertasPerdida.length} cuenta${alertasPerdida.length !== 1 ? 's' : ''} con posible pérdida a otro distribuidor</div>
+        <div style="font-size:11px;color:#8B0000;margin-top:2px;">Ya no aparecen en el catálogo vivo de Aspel. Atención prioritaria.</div>
+        <div style="margin-top:8px;">${alertasPerdida.slice(0, 8).map(s => `
+          <div style="padding:4px 0;font-size:12px;color:#1A2332;">${s.cliente || s.razon_social_reportada || 'Sin razón social'} <span style="color:#8B0000;">(serie ${s.numserie || '—'})</span></div>`).join('')}
+          ${alertasPerdida.length > 8 ? `<div style="font-size:11px;color:#8B0000;">+ ${alertasPerdida.length - 8} más.</div>` : ''}</div>
+      </div>` : ''}
 
       <div style="background:${motivo.color}14;border-left:3px solid ${motivo.color};border-radius:6px;padding:10px 14px;margin-bottom:18px;font-size:13px;color:#1A2332;font-weight:600;">
         ${motivo.texto}
@@ -376,9 +385,16 @@ export default async function handler(req, res) {
       const clientesPorId = {}; clientes.forEach(c => { clientesPorId[c.id] = c.razon_social; });
       const idsClientes = clientes.map(c => c.id);
       let suscripciones = [];
+      let alertasPerdida = [];
       if (idsClientes.length) {
         const raw = await sb(`suscripciones_cartera?select=numserie,producto,estado,razon_social_reportada,fecha_proxima_renovacion,cliente_id&cliente_id=in.(${idsClientes.join(',')})&fecha_proxima_renovacion=gte.${desde}&fecha_proxima_renovacion=lte.${hasta}`, SKEY);
         suscripciones = raw.map(s => ({ ...s, cliente: clientesPorId[s.cliente_id] }));
+        // Jp, 2026-10-21: "atención prioritaria" para las cuentas de este
+        // vendedor que "Verificar catálogo Aspel" marcó como posible pérdida a
+        // otro distribuidor — independiente del mes de vencimiento, por eso es
+        // una consulta aparte (sin filtro de fecha_proxima_renovacion).
+        const rawAlertas = await sb(`suscripciones_cartera?select=numserie,producto,razon_social_reportada,cliente_id&cliente_id=in.(${idsClientes.join(',')})&alerta_posible_perdida=eq.true`, SKEY);
+        alertasPerdida = rawAlertas.map(s => ({ ...s, cliente: clientesPorId[s.cliente_id] }));
       }
 
       // Negociaciones de Proyección de este vendedor (todas, para poder
@@ -418,9 +434,9 @@ export default async function handler(req, res) {
         ventaActual, svcMeta, faltante, pctAvance, diasRest, ritmoNecesario,
         alcanceBono, pctExtra, montoAspel, bonoAspel, monto247, bono247,
         deptoAlcanzado, vendedorCumplioMeta, suscripciones,
-        negociacionesAbiertas, montoAbiertoTotal, actividadesHoy,
+        negociacionesAbiertas, montoAbiertoTotal, actividadesHoy, alertasPerdida,
       });
-      const subject = `📊 Tu resumen diario — ${hoyTexto} (${Math.round(pctAvance * 100)}% de tu meta)`;
+      const subject = `${alertasPerdida.length ? '🚨 ' : ''}📊 Tu resumen diario — ${hoyTexto} (${Math.round(pctAvance * 100)}% de tu meta)`;
 
       if (!dryRun) {
         await enviarCorreo({ to: u.email, subject, html }, RESEND_KEY, FROM_EMAIL);
@@ -429,7 +445,8 @@ export default async function handler(req, res) {
         email: u.email, nombre: u.nombre, ventaActual, svcMeta, pctAvance, diasRest, ritmoNecesario,
         montoAspel, monto247, bonoAspelAplica: bonoAspel.aplica, bono247Aplica: bono247.aplica,
         suscripcionesVencenMes: suscripciones.length, negociacionesAbiertas: negociacionesAbiertas.length,
-        montoAbiertoTotal, actividadesHoy: actividadesHoy.length, dryRun: !!dryRun, ...(dryRun ? { html } : {}),
+        montoAbiertoTotal, actividadesHoy: actividadesHoy.length, alertasPerdida: alertasPerdida.length,
+        dryRun: !!dryRun, ...(dryRun ? { html } : {}),
       });
     }
 
