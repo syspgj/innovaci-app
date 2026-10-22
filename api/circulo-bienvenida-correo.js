@@ -46,7 +46,11 @@ const PORTAL_URL = 'https://os.innovaci.com.mx/circulo-portal.html';
 // EXCLUSIVO MIEMBROS"), no el isotipo suelto.
 const LOGO_URL = 'https://os.innovaci.com.mx/circulo-insignia.png';
 
-const ESPECIALIDAD_LABEL = { NOI: 'Aspel NOI (Nóminas)', COI: 'Aspel COI (Contabilidad)', SAE: 'Aspel SAE (Ventas y Facturación)' };
+// Jp, 2026-10-22: Siigo retiró oficialmente la marca "Aspel" (anunciado en
+// la Convención Nacional de Distribuidores) — de aquí en adelante no se usa
+// "Aspel" en texto nuevo. Mientras se identifica bien el cambio, se usa el
+// nombre del sistema solo (NOI/COI/SAE), sin prefijo de marca.
+const ESPECIALIDAD_LABEL = { NOI: 'NOI (Nóminas)', COI: 'COI (Contabilidad)', SAE: 'SAE (Ventas y Facturación)' };
 const PLAN_LABEL = { socio: 'Socio', socio_pro: 'Socio Pro' };
 
 async function supabaseGet(path) {
@@ -80,33 +84,45 @@ function construirHtml(m) {
   const especialidadTxt = ESPECIALIDAD_LABEL[m.especialidad] || m.especialidad || '';
   const planTxt = PLAN_LABEL[m.plan] || m.plan || '';
   const vigenciaTxt = fmtFecha(m.fecha_vencimiento);
-  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:900px;margin:0 auto;background:#f4f6f8;padding:24px 0;">
-    <div style="background:#0D2240;background-image:radial-gradient(circle at 15% 15%,rgba(0,169,157,0.35) 0%,transparent 45%);border-radius:14px 14px 0 0;padding:32px 28px;text-align:center;">
-      <img src="${LOGO_URL}" alt="Círculo Innovaci" style="width:120px;height:120px;object-fit:contain;margin-bottom:14px;">
-      <div style="font-size:22px;font-weight:800;color:#fff;letter-spacing:-0.02em;">¡Bienvenido${primerNombre ? ', ' + primerNombre : ''}!</div>
-      <div style="font-size:13px;font-weight:600;color:rgba(255,255,255,0.72);margin-top:4px;letter-spacing:.02em;">Ya eres parte del Círculo Innovaci</div>
-    </div>
-    <div style="background:#fff;padding:28px;">
-      <div style="font-size:14px;color:#1A2332;line-height:1.6;margin-bottom:20px;">
+  // Jp, 2026-10-22: el wrapper anterior era un <div style="max-width:900px;
+  // margin:0 auto"> — varios webmails (Gmail web entre otros) ignoran
+  // max-width/margin:auto en un <div> suelto y lo estiran a todo el ancho
+  // del panel de lectura. Layout basado en <table> (align="center" en el
+  // <td>, width="900" + style max-width como respaldo) es el patrón
+  // estándar de correo HTML que sí se respeta de forma consistente,
+  // incluyendo Outlook de escritorio. También se agrandaron tipografía y
+  // botón, pedido explícito de Jp.
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f8;">
+  <tr><td align="center" style="padding:24px 12px;">
+  <table role="presentation" width="900" cellpadding="0" cellspacing="0" style="width:900px;max-width:900px;font-family:Arial,Helvetica,sans-serif;">
+    <tr><td style="background:#0D2240;background-image:radial-gradient(circle at 15% 15%,rgba(0,169,157,0.35) 0%,transparent 45%);border-radius:14px 14px 0 0;padding:40px 28px;text-align:center;">
+      <img src="${LOGO_URL}" alt="Círculo Innovaci" style="width:140px;height:140px;object-fit:contain;margin-bottom:16px;">
+      <div style="font-size:30px;font-weight:800;color:#fff;letter-spacing:-0.02em;">¡Bienvenido${primerNombre ? ', ' + primerNombre : ''}!</div>
+      <div style="font-size:16px;font-weight:600;color:rgba(255,255,255,0.78);margin-top:6px;letter-spacing:.02em;">Ya eres parte del Círculo Innovaci</div>
+    </td></tr>
+    <tr><td style="background:#fff;padding:36px;">
+      <div style="font-size:16px;color:#1A2332;line-height:1.6;margin-bottom:24px;">
         Gracias por unirte al Círculo Innovaci como <strong>${planTxt}</strong>${especialidadTxt ? ` de la especialidad <strong>${especialidadTxt}</strong>` : ''}. Aquí tienes tus datos de acceso al portal de socios:
       </div>
-      <div style="background:#eefaf9;border:1px dashed #00A99D;border-radius:10px;padding:18px 20px;margin-bottom:20px;">
-        <div style="font-size:11px;font-weight:700;color:#00A99D;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px;">Tu código de acceso</div>
-        <div style="font-family:'Courier New',monospace;font-size:26px;font-weight:700;color:#0D2240;letter-spacing:.08em;">${m.codigo_acceso}</div>
-        <div style="font-size:12px;color:#5b6b7a;margin-top:8px;">Correo registrado: <strong>${m.email}</strong></div>
+      <div style="background:#eefaf9;border:1px dashed #00A99D;border-radius:10px;padding:22px 24px;margin-bottom:24px;">
+        <div style="font-size:12px;font-weight:700;color:#00A99D;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">Tu código de acceso</div>
+        <div style="font-family:'Courier New',monospace;font-size:32px;font-weight:700;color:#0D2240;letter-spacing:.08em;">${m.codigo_acceso}</div>
+        <div style="font-size:13px;color:#5b6b7a;margin-top:10px;">Correo registrado: <strong>${m.email}</strong></div>
       </div>
-      <div style="text-align:center;margin-bottom:22px;">
-        <a href="${PORTAL_URL}" style="display:inline-block;background:#00A99D;color:#fff;text-decoration:none;font-weight:700;font-size:14px;padding:12px 28px;border-radius:8px;">Entrar al portal de socios</a>
+      <div style="text-align:center;margin-bottom:26px;">
+        <a href="${PORTAL_URL}" style="display:inline-block;background:#00A99D;color:#fff;text-decoration:none;font-weight:700;font-size:17px;padding:16px 40px;border-radius:9px;">Entrar al portal de socios</a>
       </div>
-      <div style="font-size:12.5px;color:#5b6b7a;line-height:1.6;margin-bottom:${vigenciaTxt ? '14px' : '0'};">
+      <div style="font-size:13.5px;color:#5b6b7a;line-height:1.6;margin-bottom:${vigenciaTxt ? '14px' : '0'};">
         Entra con tu correo y el código de arriba. Desde el portal podrás ver tus beneficios disponibles, agendar tu sesión académica privada y más.
       </div>
-      ${vigenciaTxt ? `<div style="font-size:12px;color:#8BA0B8;">Tu membresía tiene vigencia hasta el <strong>${vigenciaTxt}</strong>.</div>` : ''}
-    </div>
-    <div style="text-align:center;padding:16px 20px;">
-      <div style="font-size:11px;color:#8BA0B8;">Grupo Innovaci · Distribuidor autorizado Aspel/Siigo (D18944)</div>
-    </div>
-  </div>`;
+      ${vigenciaTxt ? `<div style="font-size:13px;color:#8BA0B8;">Tu membresía tiene vigencia hasta el <strong>${vigenciaTxt}</strong>.</div>` : ''}
+    </td></tr>
+    <tr><td style="text-align:center;padding:18px 20px;">
+      <div style="font-size:12px;color:#8BA0B8;">Grupo Innovaci · Distribuidor autorizado Aspel/Siigo (D18944)</div>
+    </td></tr>
+  </table>
+  </td></tr>
+  </table>`;
 }
 
 export default async function handler(req, res) {
