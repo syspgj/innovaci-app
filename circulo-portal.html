@@ -88,7 +88,7 @@ h1{font-size:23px;font-weight:800;margin-bottom:7px;text-align:center;}
 .pill.confirmado{background:var(--greenbg);color:var(--green);}
 .pill.rechazado{background:var(--redbg);color:var(--red);}
 .pill.programada,.pill.realizada,.pill.en_revision_karen,.pill.propuesta{background:var(--amberbg);color:var(--amber);}
-.pill.asignado,.pill.compra_confirmada,.pill.concluida{background:var(--greenbg);color:var(--green);}
+.pill.asignado,.pill.compra_confirmada,.pill.concluida,.pill.registrado{background:var(--greenbg);color:var(--green);}
 .pill.no_asistio{background:#eef1f3;color:var(--text3);}
 .benefcard .desc{font-size:12px;color:var(--text2);margin-bottom:10px;}
 .sfield{margin-bottom:8px;}
@@ -292,6 +292,7 @@ function pill(estado){
     concluida:'Concluida',
     no_asistio:'No asistió',
     compra_confirmada:'Compra confirmada',
+    registrado:'Registrado',
   }[estado]||estado;
   return `<span class="pill ${estado}">${txt}</span>`;
 }
@@ -307,6 +308,7 @@ const BENEFICIO_INFO={
   // su propio render a dos columnas) — se deja solo el título, para el
   // historial de beneficios de abajo.
   credito_referido:{icon:'',titulo:'Crédito Innovaci'},
+  evento_en_vivo:{icon:'',titulo:'Evento en vivo'},
 };
 // Motivo de rechazo — igual para los 4 tipos de beneficio, pedido por Jp
 // (191026): el socio debe ver por qué se rechazó, no solo el pill rojo.
@@ -409,7 +411,10 @@ function bloqueLaboratorio(beneficios){
   // catalogoLaboratorioActual, cargado en mostrarResultado()). Si todavía no
   // hay ninguna activa para su especialidad, se avisa en vez de dejar
   // solicitar "al aire".
-  const catalogo=catalogoLaboratorioActual||[];
+  // Jp, 2026-10-22: el catálogo real ahora trae también cursos EN VIVO (ver
+  // bloqueEventosEnVivo) — Laboratorio Virtual solo pide los 24/7, los en
+  // vivo se solicitan como "Próximo evento en vivo" (sección aparte).
+  const catalogo=(catalogoLaboratorioActual||[]).filter(c=>c.curso_modalidad==='24_7');
   const opciones=catalogo.map(c=>`<option value="${c.generacion_id}" data-modalidad="${c.curso_modalidad||''}">${c.curso_nombre}</option>`).join('');
   const formularioHtml=catalogo.length
     ? `<div class="sfield"><label>Curso</label><select id="labCurso" onchange="actualizarModalidadLab()">${opciones}</select></div>
@@ -453,6 +458,77 @@ function solicitarLaboratorio(btn){
   const modalidadTxt=MODALIDAD_LAB_LABEL[opt.dataset.modalidad]||opt.dataset.modalidad||'';
   const detalle=`${opt.textContent} — ${modalidadTxt}${item?` (${item.generacion_clave})`:''}`;
   enviarSolicitud('laboratorio',detalle,btn);
+}
+
+// Jp, 2026-10-22: "Próximos eventos en vivo" — cursos/talleres/diplomados EN
+// VIVO (no 24/7) que ya están dados de alta como generación en Academia y
+// que Capacitación marcó "Disponible para Círculo" (mismo checkbox que
+// Laboratorio Virtual). El socio da "Quiero registrarme" y la solicitud le
+// llega a Capacitación para validar (puede ser por WhatsApp) — no es lo
+// mismo que pedir Laboratorio Virtual, por eso es un tipo de beneficio
+// aparte ('evento_en_vivo'). Disponible para TODOS los socios (no solo
+// Pro) — un Socio Pro, además, puede pedir que ese registro también le
+// habilite Laboratorio Virtual para ese curso.
+function historialEventos(items){
+  if(!items || !items.length) return '';
+  return `<div style="margin:0 0 12px">${items.map(b=>{
+    let extra='';
+    if(b.estado==='registrado'){
+      extra=`<div style="font-size:11.5px;color:var(--text3);margin-top:4px">Ya quedaste registrado en Academia.${b.quiere_laboratorio?' Tu Laboratorio Virtual para este curso también quedó habilitado.':''}</div>`;
+    } else if(b.estado==='solicitado' && b.quiere_laboratorio){
+      extra=`<div style="font-size:11.5px;color:var(--text3);margin-top:4px">Pediste también acceso a Laboratorio Virtual para este curso.</div>`;
+    }
+    return `<div class="list-item" style="padding:6px 0;font-size:12px">${b.detalle||''} ${pill(b.estado)}${b.fecha?`<small>${fmtFecha(b.fecha)}</small>`:''}${extra}${motivoRechazo(b)}</div>`;
+  }).join('')}</div>`;
+}
+function fmtRangoFechas(ini,fin){
+  if(!ini && !fin) return 'Fecha por confirmar';
+  if(ini && fin && ini!==fin) return `${fmtFecha(ini)} al ${fmtFecha(fin)}`;
+  return fmtFecha(ini||fin);
+}
+function bloqueEventosEnVivo(beneficios,esPro){
+  const previas=(beneficios||[]).filter(b=>b.tipo==='evento_en_vivo');
+  const catalogo=(catalogoLaboratorioActual||[]).filter(c=>c.curso_modalidad==='en_vivo');
+  const yaRegistradoIds=new Set(previas.filter(b=>b.estado!=='rechazado').map(b=>b.detalle));
+  const formularioHtml=catalogo.length
+    ? `<div class="sfield"><label>Evento</label><select id="evtCurso">${catalogo.map(c=>`<option value="${c.generacion_id}">${c.curso_nombre} — ${fmtRangoFechas(c.fecha_inicio,c.fecha_fin)}</option>`).join('')}</select></div>
+       ${esPro?`<label style="display:flex;gap:7px;align-items:flex-start;font-size:11.5px;color:var(--text2);margin:8px 0;line-height:1.4">
+         <input type="checkbox" id="evtQuiereLab" style="margin-top:2px">
+         <span>También quiero acceso a Laboratorio Virtual para este curso</span>
+       </label>`:''}
+       <button class="btn chico" style="background:var(--brand-blue)" onclick="solicitarEventoEnVivo(this)">Quiero registrarme</button>`
+    : `<div style="font-size:12.5px;color:var(--text3);line-height:1.6">Por ahora no hay ningún evento en vivo disponible para tu especialidad. En cuanto Capacitación active uno, aparecerá aquí.</div>`;
+  return `<div class="benefcard">
+    <div class="benefcard-titulo" style="margin-bottom:14px">Próximos eventos en vivo</div>
+    <div class="benefcard-2col">
+      <div>
+        <div style="font-size:13.5px;color:var(--navy);line-height:1.65;font-weight:600">Diplomados, cursos y talleres en vivo incluidos en tu membresía — te unes en el horario que confirme Capacitación.</div>
+        <div style="font-size:11.5px;color:var(--text3);line-height:1.6;margin-top:12px">Tu solicitud de registro la valida Capacitación (puede contactarte por WhatsApp para confirmar tu lugar).${esPro?' Si eres Socio Pro, puedes pedir en el mismo registro que también se te habilite Laboratorio Virtual para ese curso.':''}</div>
+        ${historialEventos(previas)}
+      </div>
+      <div>
+        <div style="font-size:12.5px;font-weight:800;color:var(--navy);margin-bottom:10px">Regístrate</div>
+        ${formularioHtml}
+      </div>
+    </div>
+  </div>`;
+}
+async function solicitarEventoEnVivo(btn){
+  const sel=document.getElementById('evtCurso');
+  const opt=sel?.selectedOptions[0];
+  if(!opt){ return; }
+  const item=(catalogoLaboratorioActual||[]).find(c=>c.generacion_id===opt.value);
+  if(!item) return;
+  const detalle=`${item.curso_nombre} — En vivo (${fmtRangoFechas(item.fecha_inicio,item.fecha_fin)}) (${item.generacion_clave})`;
+  const quiereLab=document.getElementById('evtQuiereLab')?.checked||false;
+  btn.disabled=true; btn.textContent='Enviando…';
+  const {error}=await sb.from('circulo_beneficios_uso').insert({
+    membresia_id: membresiaActual.membresia_id,
+    tipo:'evento_en_vivo', detalle, estado:'solicitado', quiere_laboratorio:quiereLab,
+  });
+  if(error){ btn.disabled=false; btn.textContent='Reintentar'; alert('No se pudo enviar tu registro. Intenta de nuevo o escríbenos por WhatsApp.'); return; }
+  const {data}=await sb.from('circulo_portal_publico').select('*').eq('membresia_id',membresiaActual.membresia_id).maybeSingle();
+  if(data) mostrarResultado(data);
 }
 
 function bloqueSesion(beneficios){
@@ -743,6 +819,7 @@ async function mostrarResultado(m){
         <div class="quicklinks">
           ${esPro ? `<a class="qlink" href="#laboratorio"><span class="qlink-icon">🧪</span>Solicitar laboratorio</a>
           <a class="qlink" href="#sesion-academica"><span class="qlink-icon">🎓</span>Solicitar sesión académica</a>` : ''}
+          <a class="qlink" href="#eventos-vivo"><span class="qlink-icon">📅</span>Próximos eventos en vivo</a>
           <a class="qlink" href="#constancias"><span class="qlink-icon">📄</span>Ver constancias</a>
           <a class="qlink" href="#cursos-incluidos" onclick="abrirCursos(event)"><span class="qlink-icon">📚</span>Cursos incluidos</a>
           <a class="qlink" href="#soporte"><span class="qlink-icon">🎧</span>Solicitar soporte</a>
@@ -767,15 +844,12 @@ async function mostrarResultado(m){
               <div style="font-size:12.5px;color:var(--text3);margin-top:2px;font-style:italic">Tema por confirmar</div>
               <a class="cta" href="https://chat.whatsapp.com/JSDbwZEFHq70b2d5ghooCd" target="_blank" rel="noopener" style="margin-top:12px;display:inline-block">Unirme al grupo de WhatsApp →</a>
             </div>
-            <div style="text-align:center">
-              <img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=https%3A%2F%2Fchat.whatsapp.com%2FJSDbwZEFHq70b2d5ghooCd" alt="QR del grupo de WhatsApp Socios NOI Pro" width="120" height="120" style="border-radius:8px;border:1px solid var(--border)">
-              <div style="font-size:10.5px;color:var(--text3);margin-top:4px">Escanéalo para unirte</div>
-            </div>
           </div>
         </div>
       </div>` : ''}
 
       ${esPro ? `<div id="laboratorio">${bloqueLaboratorio(beneficios)}</div>` : ''}
+      <div id="eventos-vivo">${bloqueEventosEnVivo(beneficios,esPro)}</div>
       ${esPro ? `<div id="sesion-academica">${bloqueSesion(beneficios)}</div>` : ''}
       ${esPro ? `<div id="acompanante">${bloqueAcompanante(beneficios)}</div>` : ''}
       ${esPro ? `<div id="credito">${bloqueCredito(beneficios)}</div>` : ''}

@@ -139,6 +139,12 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
   </div>
 
   <div class="card">
+    <h2>📅 Eventos en vivo</h2>
+    <div class="sub" style="margin-bottom:14px">Diplomados, cursos y talleres EN VIVO marcados "Disponible para Círculo" en Academia. Los socios piden "Quiero registrarme" desde su portal; tú validas (puedes contactarlo por WhatsApp) y, cuando ya lo inscribiste en Academia, vinculas el registro a esa inscripción real.</div>
+    <div id="listaEventos"></div>
+  </div>
+
+  <div class="card">
     <h2>Solicitudes de socios</h2>
     <div class="sub" style="margin-bottom:14px">Sesiones privadas, acompañantes y crédito por referido que los socios piden desde su portal. Tú las confirmas o rechazas aquí.</div>
     <div id="solicitudesMsg"></div>
@@ -837,13 +843,14 @@ async function guardarEdicion(id){
 //   credito_referido:    solicitado -> compra_confirmada (referencia de
 //                        pedido + producto comprado, obligatorios) | rechazado
 
-const TIPO_BENEFICIO_LABEL={laboratorio:'Laboratorio Virtual',sesion_academica:'Sesión académica',acompanante:'Acompañante',credito_referido:'Crédito Innovaci'};
+const TIPO_BENEFICIO_LABEL={laboratorio:'Laboratorio Virtual',sesion_academica:'Sesión académica',acompanante:'Acompañante',credito_referido:'Crédito Innovaci',evento_en_vivo:'Evento en vivo'};
 const ESTADO_BENEFICIO_LABEL={
   solicitado:'Pendiente de revisión', rechazado:'Rechazado',
   asignado:'Asignado',
   en_revision_karen:'Enviada a Karen (Telegram)', propuesta:'Fecha propuesta — falta confirmar con el socio',
   programada:'Confirmada', realizada:'Realizada — pendiente de concluir',
   concluida:'Concluida', no_asistio:'No asistió', compra_confirmada:'Compra confirmada',
+  registrado:'Registrado en Academia',
 };
 
 async function cargarSolicitudes(){
@@ -863,10 +870,12 @@ async function cargarSolicitudes(){
     laboratorio: solicitudes.filter(s=>s.tipo==='laboratorio'),
     sesion_academica: solicitudes.filter(s=>s.tipo==='sesion_academica'),
     beneficios: solicitudes.filter(s=>s.tipo==='acompanante'||s.tipo==='credito_referido'),
+    eventos: solicitudes.filter(s=>s.tipo==='evento_en_vivo'),
   };
   document.getElementById('listaLaboratorio').innerHTML = renderFilasSolicitudes(porTipo.laboratorio,'Sin solicitudes de laboratorio pendientes.');
   document.getElementById('listaSesiones').innerHTML = renderFilasSolicitudes(porTipo.sesion_academica,'Sin solicitudes de sesiones académicas pendientes.');
   document.getElementById('listaBeneficios').innerHTML = renderFilasSolicitudes(porTipo.beneficios,'Sin solicitudes de acompañante o crédito pendientes.');
+  document.getElementById('listaEventos').innerHTML = renderFilasSolicitudes(porTipo.eventos,'Sin solicitudes de eventos en vivo pendientes.');
 }
 
 // Jp, 2026-10-20: "Laboratorio Virtual" como sección propia — antes, en
@@ -941,10 +950,21 @@ function renderFilasSolicitudes(solicitudes, vacioTexto){
     } else if((s.tipo==='acompanante' || s.tipo==='credito_referido') && s.estado==='solicitado'){
       acciones=`<button class="btn small" onclick="abrirConfirmarCompra('${s.id}','${s.estado}','${nombre}','${TIPO_BENEFICIO_LABEL[s.tipo]}')">Confirmar compra</button>
                  <button class="btn secondary small" onclick="abrirRechazarSolicitud('${s.id}','${s.estado}','${s.tipo}')">Rechazar</button>`;
+    } else if(s.tipo==='evento_en_vivo' && s.estado==='solicitado'){
+      // Jp, 2026-10-22: "llegue una solicitud a los de Capacitación para que
+      // ellos validen, que puede ser por WhatsApp" — mismo patrón wa.me ya
+      // usado para sesión académica, con un mensaje genérico de confirmación
+      // de lugar en el evento.
+      const waDigits=(m.telefono||'').replace(/\D/g,'');
+      const waMsg=encodeURIComponent(`Hola ${nombre.replace(/\\'/g,"'")}, ¿qué tal? Vimos tu registro a "${s.detalle||'el evento en vivo'}" en el Círculo Innovaci. Te confirmamos tu lugar en cuanto quede inscrito en el sistema.`);
+      acciones=`${waDigits?`<a class="btn secondary small" href="https://wa.me/${waDigits}?text=${waMsg}" target="_blank" rel="noopener">Validar por WhatsApp</a>`:''}
+                 <button class="btn small" onclick="abrirRegistrarEvento('${s.id}','${s.membresia_id}','${nombre}','${email}','${m.academia_participante_id||''}','${m.especialidad||''}',${s.quiere_laboratorio?'true':'false'})">Registrar en Academia</button>
+                 <button class="btn secondary small" onclick="abrirRechazarSolicitud('${s.id}','${s.estado}','evento_en_vivo')">Rechazar</button>`;
     }
     return `<div class="solicitud-row">
       <div class="info">${nombre}${m.numero_miembro?` <small>(#${m.numero_miembro})</small>`:''} — ${TIPO_BENEFICIO_LABEL[s.tipo]||s.tipo}
         ${s.detalle?`<div style="font-size:12px;color:var(--text2);margin-top:3px;max-width:420px;white-space:pre-wrap">${s.detalle}</div>`:''}
+        ${s.tipo==='evento_en_vivo' && s.quiere_laboratorio?`<div style="font-size:11px;color:var(--navy);font-weight:700;margin-top:2px">🧪 También pidió Laboratorio Virtual</div>`:''}
         <small>${email} · ${ESTADO_BENEFICIO_LABEL[s.estado]||s.estado} · solicitado ${new Date(s.created_at).toLocaleDateString('es-MX')}${s.fecha_programada?` · ${s.estado==='propuesta'?'Propuesta':'Fecha'}: ${fmtFechaHoraAdmin(s.fecha_programada)}`:''}</small>
         <small><a href="#" onclick="verHistorialBeneficio(event,'${s.id}')">Ver historial</a></small>
         <div id="hist-${s.id}" class="hidden" style="margin-top:6px"></div>
@@ -1015,6 +1035,10 @@ const MOTIVOS_RECHAZO={
   credito_referido:[
     'No se encontró la compra referida con este crédito',
     'La referencia de pedido no corresponde a este beneficio',
+  ],
+  evento_en_vivo:[
+    'Ya se cerró el cupo de este evento',
+    'No se pudo confirmar el lugar con el socio',
   ],
 };
 function abrirRechazarSolicitud(id, estadoActual, tipo){
@@ -1149,6 +1173,106 @@ async function buscarInscripcionLab(){
 async function asignarLaboratorio(inscripcionId){
   const ok=await aplicarCambioBeneficio(labBeneficioId,'solicitado',{estado:'asignado',academia_inscripcion_id:inscripcionId},'Asignado a inscripción real de Academia');
   if(ok) cerrarModal();
+}
+
+// --- Evento en vivo: registrar al socio en su inscripción real de Academia
+// --- (mismo patrón que Laboratorio Virtual arriba) — Jp, 2026-10-22.
+let eventoBeneficioId=null, eventoMembresiaId=null, eventoQuiereLabActual=false;
+function abrirRegistrarEvento(beneficioId, membresiaId, nombreSocio, emailSocio, academiaParticipanteId, especialidadSocio, quiereLab){
+  eventoBeneficioId=beneficioId; eventoMembresiaId=membresiaId; eventoQuiereLabActual=!!quiereLab;
+  document.getElementById('modalWrap').innerHTML=`
+    <div class="overlay" onclick="if(event.target===this) cerrarModal()">
+      <div class="modal">
+        <div class="modal-head"><h2 style="margin-bottom:0">Registrar en el evento — ${nombreSocio}</h2><button onclick="cerrarModal()">✕</button></div>
+        <div class="sub">Primero inscríbelo en Academia (Generaciones → la clave → Agregar asistente) si no lo has hecho, y luego vincula aquí esa inscripción real.${quiereLab?' También pidió Laboratorio Virtual para este curso — se habilitará junto con el registro.':''}</div>
+        <div id="evtDirecto" style="margin-top:6px"></div>
+        <details style="margin-top:12px"><summary style="cursor:pointer;font-size:12px;color:var(--text3)">Buscar manualmente en Academia (otro nombre/correo)</summary>
+          <div class="field" style="margin-top:8px"><label>Buscar en Academia</label><input id="evtBuscar" autocomplete="off" oninput="buscarInscripcionEvento()" placeholder="Nombre o correo del participante" value="${emailSocio||''}"></div>
+          <div id="evtResultados" style="margin-top:10px"></div>
+        </details>
+        <div id="modalMsg"></div>
+      </div>
+    </div>
+  `;
+  cargarInscripcionesDirectoEvento(academiaParticipanteId||'', especialidadSocio||'');
+}
+async function cargarInscripcionesDirectoEvento(participanteId, especialidadSocio){
+  const wrap=document.getElementById('evtDirecto');
+  if(!participanteId){
+    wrap.innerHTML='<div class="sub">Este socio no tiene un alumno vinculado en Academia todavía — usa el buscador manual de abajo.</div>';
+    return;
+  }
+  const {data:inscripciones,error}=await sb.from('academia_inscripciones')
+    .select('id,nivel_acceso,academia_generaciones(clave,academia_cursos(nombre,sistema:sistema_id(clave)))')
+    .eq('participante_id',participanteId)
+    .order('created_at',{ascending:false});
+  if(error){ wrap.innerHTML=`<div class="msg err">${error.message}</div>`; return; }
+  if(!inscripciones||!inscripciones.length){
+    const {data:disponibles}=await sb.from('academia_generaciones')
+      .select('clave,academia_cursos(nombre,sistema:sistema_id(clave))')
+      .eq('circulo_disponible',true);
+    const match=(disponibles||[]).filter(g=>!especialidadSocio||g.academia_cursos?.sistema?.clave===especialidadSocio);
+    wrap.innerHTML=`<div class="sub">El alumno existe en Academia pero todavía no tiene ninguna inscripción.</div>
+      ${match.length
+        ?`<div style="font-size:12px;color:var(--text2);margin-top:8px">Generaciones disponibles para Círculo de su especialidad (${especialidadSocio||'—'}) — inscríbelo primero ahí:<br>${match.map(g=>`<strong>${g.clave}</strong> (${g.academia_cursos?.nombre||''})`).join('<br>')}</div>`
+        :`<div style="font-size:12px;color:var(--text2);margin-top:8px">No hay ninguna generación marcada "Disponible para Círculo" de la especialidad ${especialidadSocio||'—'} todavía.</div>`}`;
+    return;
+  }
+  wrap.innerHTML=inscripciones.map(i=>{
+    const curso=i.academia_generaciones?.academia_cursos?.nombre||'Curso';
+    const gen=i.academia_generaciones?.clave||'';
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:#f8f9fa;border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;font-size:12.5px">
+      <span>${curso} · ${gen} · nivel ${i.nivel_acceso||'—'}</span>
+      <button type="button" class="btn small" onclick="registrarEnEvento('${i.id}')">Registrar</button>
+    </div>`;
+  }).join('');
+}
+let evtBuscarTimeout=null;
+async function buscarInscripcionEvento(){
+  const q=document.getElementById('evtBuscar').value.trim();
+  const wrap=document.getElementById('evtResultados');
+  clearTimeout(evtBuscarTimeout);
+  if(q.length<3){ wrap.innerHTML=''; return; }
+  evtBuscarTimeout=setTimeout(async ()=>{
+    const {data:participantes,error:e1}=await sb.from('academia_participantes')
+      .select('id,nombre,mail')
+      .or(`nombre.ilike.%${q}%,mail.ilike.%${q}%`)
+      .limit(10);
+    if(e1 || !participantes || !participantes.length){ wrap.innerHTML='<div class="sub">Sin resultados en Academia.</div>'; return; }
+    const ids=participantes.map(p=>p.id);
+    const {data:inscripciones,error:e2}=await sb.from('academia_inscripciones')
+      .select('id,nivel_acceso,participante_id,academia_generaciones(clave,academia_cursos(nombre))')
+      .in('participante_id',ids)
+      .order('created_at',{ascending:false})
+      .limit(20);
+    if(e2 || !inscripciones || !inscripciones.length){ wrap.innerHTML='<div class="sub">El participante existe en Academia pero no tiene inscripciones todavía.</div>'; return; }
+    const porParticipante=Object.fromEntries(participantes.map(p=>[p.id,p]));
+    wrap.innerHTML=inscripciones.map(i=>{
+      const p=porParticipante[i.participante_id]||{};
+      const curso=i.academia_generaciones?.academia_cursos?.nombre||'Curso';
+      const gen=i.academia_generaciones?.clave||'';
+      return `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:#f8f9fa;border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:8px;font-size:12.5px">
+        <span><strong>${p.nombre||'—'}</strong> (${p.mail||'—'})<br>${curso} · ${gen} · nivel ${i.nivel_acceso||'—'}</span>
+        <button type="button" class="btn small" onclick="registrarEnEvento('${i.id}')">Registrar</button>
+      </div>`;
+    }).join('');
+  },300);
+}
+async function registrarEnEvento(inscripcionId){
+  const ok=await aplicarCambioBeneficio(eventoBeneficioId,'solicitado',{estado:'registrado',academia_inscripcion_id:inscripcionId},'Registrado a inscripción real de Academia');
+  if(!ok) return;
+  if(eventoQuiereLabActual && eventoMembresiaId){
+    // Se crea de una vez el beneficio de Laboratorio Virtual, ya asignado a
+    // esa misma inscripción — el socio no tiene que volver a pedirlo aparte.
+    const {error}=await sb.from('circulo_beneficios_uso').insert({
+      membresia_id: eventoMembresiaId, tipo:'laboratorio', estado:'asignado',
+      academia_inscripcion_id: inscripcionId,
+      detalle:'Habilitado junto con tu registro al evento en vivo',
+      registrado_por: usuarioActualId,
+    });
+    if(error) console.error('No se pudo crear el laboratorio automático del evento', error);
+  }
+  cerrarModal();
 }
 
 // --- Sesión académica: Karen (Telegram) -> propuesta -> WhatsApp socio ->
