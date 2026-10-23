@@ -50,7 +50,7 @@ const LOGO_URL = 'https://os.innovaci.com.mx/circulo-insignia.png';
 // la Convención Nacional de Distribuidores) — de aquí en adelante no se usa
 // "Aspel" en texto nuevo. Mientras se identifica bien el cambio, se usa el
 // nombre del sistema solo (NOI/COI/SAE), sin prefijo de marca.
-const ESPECIALIDAD_LABEL = { NOI: 'NOI (Nóminas)', COI: 'COI (Contabilidad)', SAE: 'SAE (Ventas y Facturación)' };
+const ESPECIALIDAD_LABEL = { NOI: 'NOI', COI: 'COI', SAE: 'SAE' };
 const PLAN_LABEL = { socio: 'Socio', socio_pro: 'Socio Pro' };
 
 async function supabaseGet(path) {
