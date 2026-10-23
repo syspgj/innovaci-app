@@ -17478,13 +17478,70 @@ async function eliminarPreguntaCampana(tipoCampana,campanaId,preguntaId){
 
 // Jp, 2026-10-23: tabla-reporte de respuestas de campaña — una fila por
 // prospecto que ya contestó algo, una columna por pregunta configurada
-// (activa o no: si se desactivó una pregunta no se pierden las respuestas
-// ya dadas, ver eliminarPreguntaCampana). Mismo patrón visual de tabla ya
-// usado en el resto de la app (ver dashboard de Academia, arriba).
+// (excepto "sistema_version", que no vive en esta tabla de respuestas
+// sueltas — ver guardarRespuestasLlamada). Trae filtros por pregunta (para
+// "los que dijeron que no tienen reloj checador" o "más de 100
+// colaboradores") y un botón para crear de un clic una campaña nueva con
+// los prospectos que cumplen — así Jp no tiene que copiar nombres a mano
+// para armar su siguiente tanda de llamadas.
 function renderTablaRespuestasCampana(preguntas,idsProspectos,respuestasPorProspecto,todosProspectos){
-  if(!idsProspectos.length) return '';
+  const preguntasFiltrables=(preguntas||[]).filter(q=>q.tipo!=='sistema_version');
+  if(!idsProspectos.length||!preguntasFiltrables.length) return '';
   const nombrePorId={};
   (todosProspectos||[]).forEach(p=>{nombrePorId[p.id]=p;});
+  window._campRespTodosIds=idsProspectos;
+  window._campRespPorProspecto=respuestasPorProspecto;
+  window._campRespPreguntas=preguntasFiltrables;
+  window._campRespNombrePorId=nombrePorId;
+  window._campRespFiltradosIds=idsProspectos;
+
+  const filtroCtrl=(q)=>{
+    if(q.tipo==='si_no'){
+      return `<select id="campRespFiltro_${q.id}" data-tipo="si_no" onchange="filtrarTablaRespuestasCampana()" style="padding:5px 7px;border:1px solid var(--border);border-radius:6px;font-size:11px;">
+        <option value="">${q.etiqueta}: todas</option>
+        <option value="Sí">${q.etiqueta}: Sí</option>
+        <option value="No">${q.etiqueta}: No</option>
+      </select>`;
+    }
+    if(q.tipo==='seleccion'){
+      return `<select id="campRespFiltro_${q.id}" data-tipo="seleccion" onchange="filtrarTablaRespuestasCampana()" style="padding:5px 7px;border:1px solid var(--border);border-radius:6px;font-size:11px;">
+        <option value="">${q.etiqueta}: todas</option>
+        ${(q.opciones||[]).map(o=>`<option value="${(o||'').replace(/"/g,'&quot;')}">${q.etiqueta}: ${o}</option>`).join('')}
+      </select>`;
+    }
+    // texto libre (ej. "¿Cuántos colaboradores tienen?") — puede ser número
+    // o texto, así que se da operador: contiene, =, >, <, >=, <=.
+    return `<span style="display:inline-flex;gap:3px;align-items:center;background:var(--surface-2,#f8f9fa);border-radius:6px;padding:3px 6px;">
+      <span style="font-size:10.5px;color:var(--text3);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${q.etiqueta}">${q.etiqueta}</span>
+      <select id="campRespOp_${q.id}" onchange="filtrarTablaRespuestasCampana()" style="padding:4px 5px;border:1px solid var(--border);border-radius:5px;font-size:11px;">
+        <option value="contiene">contiene</option>
+        <option value="=">=</option>
+        <option value=">">&gt;</option>
+        <option value="<">&lt;</option>
+        <option value=">=">&ge;</option>
+        <option value="<=">&le;</option>
+      </select>
+      <input type="text" id="campRespFiltro_${q.id}" data-tipo="texto" oninput="filtrarTablaRespuestasCampana()" placeholder="valor" style="width:70px;padding:4px 6px;border:1px solid var(--border);border-radius:5px;font-size:11px;">
+    </span>`;
+  };
+
+  return `
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">
+      ${preguntasFiltrables.map(filtroCtrl).join('')}
+      <button type="button" onclick="limpiarFiltrosTablaRespuestasCampana()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:11px;cursor:pointer;color:var(--text2);">Limpiar filtros</button>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <span id="campRespContador" style="font-size:11px;color:var(--text3);">${idsProspectos.length} de ${idsProspectos.length} prospecto(s)</span>
+      <button type="button" onclick="crearCampanaDesdeFiltro()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;">+ Crear campaña con estos</button>
+    </div>
+    <div id="campRespTablaCont">${renderFilasTablaRespuestasCampana(idsProspectos)}</div>`;
+}
+
+function renderFilasTablaRespuestasCampana(idsProspectos){
+  const preguntas=window._campRespPreguntas||[];
+  const respuestasPorProspecto=window._campRespPorProspecto||{};
+  const nombrePorId=window._campRespNombrePorId||{};
+  if(!idsProspectos.length) return `<div style="font-size:12px;color:var(--text3);font-style:italic;padding:10px 0;">Ningún prospecto cumple los filtros actuales.</div>`;
   return `<table style="width:100%;border-collapse:collapse;font-size:12px;">
     <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;">
       <th style="padding:8px 12px;">Prospecto</th>
@@ -17503,6 +17560,78 @@ function renderTablaRespuestasCampana(preguntas,idsProspectos,respuestasPorProsp
       }).join('')}
     </tbody>
   </table>`;
+}
+
+// Compara una respuesta guardada (siempre texto) contra un valor de filtro
+// con el operador elegido. Si ambos lados se pueden leer como número,
+// compara numérico (para "> 100 colaboradores"); si no, cae a comparación
+// de texto (para "contiene" y "=").
+function cumpleFiltroRespuesta(respuesta,operador,valor){
+  if(respuesta===undefined||respuesta===null||respuesta==='') return false;
+  const rNum=parseFloat(String(respuesta).replace(/,/g,''));
+  const vNum=parseFloat(String(valor).replace(/,/g,''));
+  const ambosNumericos=!isNaN(rNum)&&!isNaN(vNum)&&/^-?[\d.,]+$/.test(String(valor).trim());
+  switch(operador){
+    case 'contiene': return String(respuesta).toLowerCase().includes(String(valor).toLowerCase());
+    case '=': return ambosNumericos?rNum===vNum:String(respuesta).toLowerCase()===String(valor).toLowerCase();
+    case '>': return ambosNumericos&&rNum>vNum;
+    case '<': return ambosNumericos&&rNum<vNum;
+    case '>=': return ambosNumericos&&rNum>=vNum;
+    case '<=': return ambosNumericos&&rNum<=vNum;
+    default: return true;
+  }
+}
+
+function filtrarTablaRespuestasCampana(){
+  const todosIds=window._campRespTodosIds||[];
+  const respuestasPorProspecto=window._campRespPorProspecto||{};
+  const preguntas=window._campRespPreguntas||[];
+  const filtrosActivos=preguntas.map(q=>{
+    const el=document.getElementById('campRespFiltro_'+q.id);
+    const valor=el?el.value.trim():'';
+    if(!valor) return null;
+    const operador=q.tipo==='texto'?(document.getElementById('campRespOp_'+q.id)?.value||'contiene'):'=';
+    return {preguntaId:q.id,operador,valor};
+  }).filter(Boolean);
+
+  const filtrados=!filtrosActivos.length?todosIds:todosIds.filter(id=>{
+    const respuestas=respuestasPorProspecto[id]||{};
+    return filtrosActivos.every(f=>cumpleFiltroRespuesta(respuestas[f.preguntaId],f.operador,f.valor));
+  });
+
+  window._campRespFiltradosIds=filtrados;
+  const cont=document.getElementById('campRespTablaCont');
+  if(cont) cont.innerHTML=renderFilasTablaRespuestasCampana(filtrados);
+  const contador=document.getElementById('campRespContador');
+  if(contador) contador.textContent=`${filtrados.length} de ${todosIds.length} prospecto(s)`;
+}
+
+function limpiarFiltrosTablaRespuestasCampana(){
+  (window._campRespPreguntas||[]).forEach(q=>{
+    const el=document.getElementById('campRespFiltro_'+q.id);
+    if(el) el.value='';
+    const op=document.getElementById('campRespOp_'+q.id);
+    if(op) op.value='contiene';
+  });
+  filtrarTablaRespuestasCampana();
+}
+
+// Crea una campaña nueva con los prospectos que cumplen el filtro actual de
+// la tabla de respuestas — pedido por Jp (231026) para no tener que copiar
+// nombres a mano al armar la siguiente tanda de llamadas a partir de estas
+// respuestas (ej. "llamarle a los que no tienen reloj checador").
+async function crearCampanaDesdeFiltro(){
+  const ids=window._campRespFiltradosIds||[];
+  if(!ids.length){alert('No hay prospectos que cumplan los filtros actuales.');return;}
+  const nombre=(prompt(`Nombre de la nueva campaña (se le agregarán los ${ids.length} prospecto(s) que cumplen el filtro actual):`)||'').trim();
+  if(!nombre) return;
+  const {data:nuevaCamp,error}=await sb.from('campanas').insert({nombre,activa:false,creado_por:currentUser?.id||null}).select().single();
+  if(error){alert('Error al crear la campaña: '+error.message);return;}
+  const filas=ids.map(id=>({campana_id:nuevaCamp.id,prospecto_id:id}));
+  const {error:errRel}=await sb.from('campana_prospectos').upsert(filas,{onConflict:'campana_id,prospecto_id',ignoreDuplicates:true});
+  if(errRel){alert('La campaña "'+nombre+'" se creó, pero hubo un error agregando los prospectos: '+errRel.message);return;}
+  alert(`✓ Campaña "${nombre}" creada con ${ids.length} prospecto(s).`);
+  abrirCampana(nuevaCamp.id);
 }
 
 function renderListaProspectosCampana(ps,idsEnCampana,campanaId){
