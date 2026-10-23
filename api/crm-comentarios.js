@@ -12,7 +12,8 @@
 //
 // GET  ?tipo=cuenta&num_cliente=ACC607          -> lista de comentarios de esa cuenta
 // GET  ?tipo=oportunidad&crm_potentialid=13x104370 -> lista de comentarios de esa oportunidad
-// POST { tipo, num_cliente|crm_potentialid, comentario, vendedor_usuario_id }
+// GET  ?tipo=proyecto&numero_proyecto_crm=POL2455  -> lista de comentarios del proyecto (Mesa de Control / resguardo, 2026-10-23)
+// POST { tipo, num_cliente|crm_potentialid|numero_proyecto_crm, comentario, vendedor_usuario_id }
 //      -> agrega un comentario nuevo a ese registro en el CRM
 //
 // Para "tipo=cuenta" el id real de Vtiger (ACCOUNTID, formato "11x123") no
@@ -119,6 +120,26 @@ async function resolverLeadIdCrm(prospectoId) {
   return (await espejoRes.json())?.[0]?.crm_leadid || null;
 }
 
+// Jp, 2026-10-23 — Mesa de Control / resguardo: resuelve el CRMID real del
+// Proyecto (Vtiger, módulo Project) a partir del numero_proyecto_crm guardado
+// en la póliza (clientes_polizas.numero_proyecto_crm, formato "POL####" —
+// mismo sufijo numérico que proyectos_crm.crm_project_no en formato
+// "PROJ####", ver claude/mesa-control-operaciones.md, Lote 8). Si la póliza
+// todavía no tiene su proyecto espejado del CRM, se avisa claro en vez de
+// tronar — Jp aclaró que cada póliza de resguardo debe tener su Proyecto en
+// CRM, pero el sync diario puede no haber corrido todavía para una póliza
+// nueva.
+async function resolverProjectIdCrm(numeroProyectoCrm) {
+  const numero = String(numeroProyectoCrm).replace(/^POL/i, '').replace(/^PROJ/i, '');
+  const url = `${SUPABASE_URL}/rest/v1/proyectos_crm?crm_project_no=eq.${encodeURIComponent('PROJ' + numero)}&select=crm_projectid`;
+  const res = await fetch(url, {
+    headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
+  });
+  if (!res.ok) throw new Error('No se pudo consultar proyectos_crm: ' + (await res.text()));
+  const rows = await res.json();
+  return rows?.[0]?.crm_projectid || null;
+}
+
 async function obtenerCrmId(tipo, body) {
   if (tipo === 'oportunidad') {
     if (!body.crm_potentialid) throw new Error('Falta crm_potentialid');
@@ -136,7 +157,13 @@ async function obtenerCrmId(tipo, body) {
     if (!leadId) throw new Error('Este prospecto no tiene folio de CRM todavía — no se puede ligar a comentarios.');
     return leadId;
   }
-  throw new Error('tipo debe ser "cuenta", "oportunidad" o "prospecto"');
+  if (tipo === 'proyecto') {
+    if (!body.numero_proyecto_crm) throw new Error('Falta numero_proyecto_crm');
+    const projId = await resolverProjectIdCrm(body.numero_proyecto_crm);
+    if (!projId) throw new Error(`La póliza ${body.numero_proyecto_crm} no tiene proyecto espejado del CRM todavía.`);
+    return projId;
+  }
+  throw new Error('tipo debe ser "cuenta", "oportunidad", "prospecto" o "proyecto"');
 }
 
 async function listarComentarios(crmid) {
