@@ -526,6 +526,65 @@ function calcBonoCursos247(monto247, deptoAlcanzo, vendedorCumplioMetaIndividual
   return {monto:m*TASA_CURSOS247, aplica:true, motivo:`5% sobre ${fmt(m)} facturado (rubro 24/7)`};
 }
 
+// 6) Bono Círculo Innovaci (Jp, 2026-10-23): 5% sobre lo facturado en el rubro
+// CIRCULO INNOVACI (antes "MEMBRESIA", renombrado) ese mes — mismo doble
+// candado que los otros bonos de venta cruzada (depto Y meta individual de
+// Servicios cumplidos), pero SIN monto mínimo — se libera en cuanto se
+// cumple la cuota de Servicios, sobre el total facturado desde $1.
+const TASA_CIRCULO=0.05;
+function calcBonoCirculoInnovaci(montoCirculo, deptoAlcanzo, vendedorCumplioMetaIndividual){
+  const m=montoCirculo||0;
+  if(!deptoAlcanzo) return {monto:0, aplica:false, motivo:'Depto no ha alcanzado su meta — bono retenido'};
+  if(!vendedorCumplioMetaIndividual) return {monto:0, aplica:false, motivo:'Meta individual de Servicios no cumplida — bono retenido'};
+  if(m<=0) return {monto:0, aplica:false, motivo:'Sin membresías Círculo Innovaci facturadas este mes'};
+  return {monto:m*TASA_CIRCULO, aplica:true, motivo:`5% sobre ${fmt(m)} facturado (rubro Círculo Innovaci)`};
+}
+
+// Categorías "reales" de Finanzas (Jp, 2026-10-23) — para las ventas del día
+// (antes autorreportadas en Registrar día) y la base de la comisión principal
+// de Servicios. Distinto del filtro más angosto de los bonos de venta cruzada
+// de arriba (que solo usan Sistema Aspel + Timbres): aquí Aspel usa la MISMA
+// regla (Sistema Aspel + Timbres) por decisión explícita de Jp — "Renta Aspel"
+// queda fuera de TODO lo que comisiona (genera centavos de margen).
+const FINANZAS_CATEGORIA={
+  'SISTEMA ASPEL':'aspel', 'TIMBRES':'aspel',
+  '24/7':'cursos247',
+  'CURSOS O TALLERES EN VIVO':'cursos_vivo',
+  'DIPLOMADOS EN VIVO':'dip', 'DIPLOMADO':'dip',
+  'CLOUD':'it', 'SOFTWARE':'it', 'HARDWARE':'it', 'DESARROLLO CON TERCERO':'it',
+  'POLIZA ASPEL':'svc', 'POLIZA RESGUARDO':'svc', 'RESGUARDO':'svc', 'POLIZA TOTAL O ALIADO':'svc',
+  'POLIZA':'svc', 'SERVICIO POR EVENTO':'svc', 'ASESORIA':'svc', 'SERVICIO DE ACTUALIZACIÓN':'svc',
+  'CURSO EMPRESARIAL':'svc',
+  'CIRCULO INNOVACI':'circulo',
+  // Fuera de alcance, no suman a ninguna categoría de comisión (Jp, 2026-10-23):
+  // CLIENTES GB, ANTICIPO, POR CLASIFICAR, RENTA ASPEL, EXTENSION PRACTICAS,
+  // EXTENSION DE PRACTICAS, null.
+};
+// Calcula ventas reales por categoría desde fact_ingresos para un vendedor y
+// rango de fechas — reemplaza el autorreporte de "Registrar día" para
+// Servicios/Aspel/IT/Diplomados/Cursos 24-7/Cursos en vivo/Círculo Innovaci.
+// Solo Manuel y Dulce (vendedorFactIngresosFiltro) — ver nota de alcance abajo.
+async function calcVentasRealesFinanzas(vendFiltroFact, anio, mes){
+  const out={svc:0, aspel:0, it:0, dip:0, cursos247:0, cursos_vivo:0, circulo:0};
+  if(!vendFiltroFact) return out;
+  const {data}=await sb.from('fact_ingresos').select('rubro,total,subtotal_original,descuento,vendedor,cobrado')
+    .eq('anio',anio).eq('mes',mes).eq('cobrado',true)
+    .ilike('vendedor','%'+vendFiltroFact+'%');
+  (data||[]).forEach(r=>{
+    const cat=FINANZAS_CATEGORIA[(r.rubro||'').toUpperCase()];
+    if(!cat) return;
+    const base=(r.subtotal_original||0)-(r.descuento||0);
+    out[cat]+=base;
+  });
+  return out;
+}
+// Corte de octubre 2026 (Jp, 2026-10-23): a partir de este mes, la comisión
+// principal de Manuel y Dulce usa el dato real de Finanzas en vez del
+// autorreporte de Registrar día. Meses anteriores NO se recalculan.
+function usaFinanzasRealDesde(anio, mes){
+  return anio>2026 || (anio===2026 && mes>=10);
+}
+
 // Vendedores activos para estas 2 comisiones nuevas (confirmado por Jp, 2026-09-24):
 // hoy solo Manuel Peña y Dulce Solano. Guillermo Blancas está dado de alta como
 // "vendedor" en fact_ingresos únicamente por temas de facturación (es agente
@@ -5836,6 +5895,22 @@ async function renderVendorMiMes(){
   // Calcular totales
   const tot={svc:0,aspel:0,it:0,cursos:0,sf:0,demos:0,val:0,cn:0,dip:0,sus:susAuto,ren:renovAuto,cur_vivo:0};
   for(const r of registros){tot.svc+=r.svc||0;tot.aspel+=r.aspel||0;tot.it+=r.it||0;tot.cursos+=r.cursos||0;tot.sf+=r.siigo_fiscal||0;tot.demos+=r.demos||0;tot.val+=r.valoraciones||0;tot.cn+=r.clientes_nuevos||0;tot.dip+=r.diplomados||0;tot.cur_vivo+=r.talleres_vivo||0;}
+  const totCapturado={...tot}; // copia de lo autorreportado — nunca se sobreescribe en BD, solo se muestra como comparación
+  // Jp, 2026-10-23: para Manuel y Dulce, desde octubre 2026 la base de la
+  // comisión principal (Servicios) y las ventas de Aspel/IT/Diplomados/Cursos
+  // en vivo dejan de ser autorreportadas y se jalan de Finanzas real. El
+  // registro capturado sigue viviendo en registros_diarios tal cual (no se
+  // borra ni se sobreescribe), solo deja de ser la fuente para comisión.
+  const vendFiltroFactPrevio=vendedorFactIngresosFiltro(userProfile);
+  const usaFinanzasReal=usaFinanzasRealDesde(currentYear,currentMonth)&&!!vendFiltroFactPrevio;
+  let ventasRealesMes=null;
+  if(vendFiltroFactPrevio){
+    ventasRealesMes=await calcVentasRealesFinanzas(vendFiltroFactPrevio,currentYear,currentMonth);
+    if(usaFinanzasReal){
+      tot.svc=ventasRealesMes.svc; tot.aspel=ventasRealesMes.aspel; tot.it=ventasRealesMes.it;
+      tot.dip=ventasRealesMes.dip; tot.cur_vivo=ventasRealesMes.cursos_vivo;
+    }
+  }
   // Metas del vendedor — Mireya usa meta_dulce (ahí vive su meta histórica: svc_m=2000,
   // aspel_m=5000, cur_m=20000, confirmado en kpi_config), no meta_manuel por descarte.
   const metaKey=isMireya(userProfile)||userProfile.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
@@ -5884,33 +5959,22 @@ async function renderVendorMiMes(){
     metaPorMesTrim[mTrim]=svcMeta; // asume misma meta mensual; ajustable si cambia por mes
   }
   const bonoTrim=calcBonoTrimestral(svcPorMesTrim, metaPorMesTrim);
-  // 4) y 5) Ventas cruzadas Aspel / Cursos 24/7 — desde Finanzas (fact_ingresos),
-  // no autorreportadas. Solo aplica a vendedores activos con estos bonos (ver
-  // vendedorFactIngresosFiltro). cobrado=true para consistencia con el resto de
-  // los reportes de Finanzas (flujo de caja, etc. solo cuentan lo ya cobrado).
-  const vendFiltroFact=vendedorFactIngresosFiltro(userProfile);
-  let montoAspelCruzada=0, monto247=0;
-  if(vendFiltroFact){
-    const {data:factMes}=await sb.from('fact_ingresos').select('rubro,total,subtotal_original,descuento,vendedor,cobrado')
-      .eq('anio',currentYear).eq('mes',currentMonth).eq('cobrado',true)
-      .ilike('vendedor','%'+vendFiltroFact+'%');
-    (factMes||[]).forEach(r=>{
-      const rub=(r.rubro||'').toUpperCase();
-      // Base = Subtotal - Descuento (sin IVA), confirmado con Jp 2026-09-28 —
-      // antes se sumaba r.total (con IVA), lo que inflaba el bono.
-      const base=(r.subtotal_original||0)-(r.descuento||0);
-      // Rubros de venta cruzada Aspel = SISTEMA ASPEL + TIMBRES (Jp, 2026-09-28).
-      // "RENTA ASPEL" y "POLIZA ASPEL" quedan fuera explícitamente — antes se
-      // buscaba 'RENTA ASPEL', que casi no se usa, y por eso se perdían las
-      // facturas reales de SISTEMA ASPEL.
-      if(rub==='SISTEMA ASPEL'||rub==='TIMBRES') montoAspelCruzada+=base;
-      else if(rub==='24/7') monto247+=base;
-    });
-  }
+  // 4), 5) y 6) Ventas cruzadas Aspel / Cursos 24/7 / Círculo Innovaci — desde
+  // Finanzas (fact_ingresos), no autorreportadas. Solo aplica a vendedores
+  // activos con estos bonos (ver vendedorFactIngresosFiltro). cobrado=true
+  // para consistencia con el resto de los reportes de Finanzas. Reusa
+  // ventasRealesMes calculado arriba (misma categorización: SISTEMA ASPEL +
+  // TIMBRES para Aspel, confirmado idéntico al bono de venta cruzada — Jp,
+  // 2026-10-23 — Renta Aspel queda fuera de ambos).
+  const vendFiltroFact=vendFiltroFactPrevio;
+  const montoAspelCruzada=ventasRealesMes?.aspel||0;
+  const monto247=ventasRealesMes?.cursos247||0;
+  const montoCirculo=ventasRealesMes?.circulo||0;
   const vendedorCumplioMetaSvc=tot.svc>=svcMeta;
   const bonoAspelCruzada=calcBonoAspelCruzada(montoAspelCruzada, deptoAlcanzado, vendedorCumplioMetaSvc);
   const bonoCursos247=calcBonoCursos247(monto247, deptoAlcanzado, vendedorCumplioMetaSvc);
-  const totalBonos=bonoSF.monto+bonoMediocridad.monto+bonoTrim.monto+bonoAspelCruzada.monto+bonoCursos247.monto;
+  const bonoCirculo=calcBonoCirculoInnovaci(montoCirculo, deptoAlcanzado, vendedorCumplioMetaSvc);
+  const totalBonos=bonoSF.monto+bonoMediocridad.monto+bonoTrim.monto+bonoAspelCruzada.monto+bonoCursos247.monto+bonoCirculo.monto;
   // Métricas del mes anterior para mostrar en Mi mes
   // Mes anterior al mes SELECCIONADO
   const mesAntNum=currentMonth===1?12:currentMonth-1;
@@ -6041,9 +6105,10 @@ async function renderVendorMiMes(){
        en vez de barras apiladas una debajo de otra (Jp, 2026-10-13). -->
   <div class="prog-cards-row">
     <div class="prog-card">
-      <div class="prog-card-lbl">Servicios</div>
+      <div class="prog-card-lbl">Servicios${usaFinanzasReal?' (real, Finanzas)':''}</div>
       <div class="prog-outer"><div class="prog-fill" id="progFill" style="width:${Math.min(svcPct*100,100)}%;background:${ringColor};"></div></div>
       <div class="prog-card-meta"><strong>${pctFmt}%</strong>${fmt(tot.svc)} de ${fmt(svcMeta)}</div>
+      ${ventasRealesMes&&totCapturado.svc!==tot.svc?`<div style="font-size:10.5px;color:var(--text3);margin-top:4px;">Lo que capturaste en Registrar día: ${fmt(totCapturado.svc)} (no se usa para comisión desde octubre)</div>`:''}
     </div>
     ${vendFiltroFact?`
     <div class="prog-card">
@@ -6088,6 +6153,11 @@ async function renderVendorMiMes(){
       <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">🎓 Bono Cursos 24/7 (5%)</div>
       <div style="font-size:22px;font-weight:800;color:${bonoCursos247.aplica?'#27AE60':'var(--text3)'};">${fmt(bonoCursos247.monto)}</div>
       <div style="font-size:11px;color:var(--text2);margin-top:4px;">${bonoCursos247.motivo}</div>
+    </div>
+    <div class="card" style="padding:16px;${bonoCirculo.aplica?'border:1px solid rgba(39,174,96,0.3);':''}">
+      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">🤝 Bono Círculo Innovaci (5%)</div>
+      <div style="font-size:22px;font-weight:800;color:${bonoCirculo.aplica?'#27AE60':'var(--text3)'};">${fmt(bonoCirculo.monto)}</div>
+      <div style="font-size:11px;color:var(--text2);margin-top:4px;">${bonoCirculo.motivo}</div>
     </div>`:''}
     <div class="card" style="padding:16px;${bonoSF.aplica?'border:1px solid rgba(39,174,96,0.3);':''}">
       <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">🧾 Bono Siigo Fiscal</div>
@@ -25479,6 +25549,19 @@ async function renderVendorAnual(){
     mesesData[m].dip+=r.diplomados||0;
     mesesData[m].cotizaciones+=r.monto_cotizaciones||0;
     mesesData[m].dias++;
+  }
+  // Jp, 2026-10-23: para Manuel y Dulce, los meses desde octubre 2026 usan el
+  // dato real de Finanzas en vez del autorreporte — mismo corte que Mi Mes.
+  // Los meses capturados siguen intactos en registros_diarios, solo se
+  // sustituye lo que alimenta la comisión de este año en adelante.
+  const vendFiltroFactAnio=vendedorFactIngresosFiltro(userProfile);
+  const mesesDataCapturado={}; Object.keys(mesesData).forEach(m=>mesesDataCapturado[m]={...mesesData[m]});
+  if(vendFiltroFactAnio){
+    for(let m=1;m<=12;m++){
+      if(!usaFinanzasRealDesde(currentYear,m)) continue;
+      const real=await calcVentasRealesFinanzas(vendFiltroFactAnio,currentYear,m);
+      mesesData[m].svc=real.svc; mesesData[m].aspel=real.aspel; mesesData[m].it=real.it; mesesData[m].dip=real.dip;
+    }
   }
 
   // Comisión real por mes — reutiliza getRate/aplicarAjusteComision igual que el dashboard del director,
