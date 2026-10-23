@@ -15964,6 +15964,42 @@ async function abrirDetalle(id){
   const llamadas=(llRes.data||[]).map(l=>({...l,usuarios:{nombre:todosUsuarios.find(u=>u.id===l.usuario_id)?.nombre||'—'}}));
   const vendedoresB2B=vendRes.data||[];
   const campanaRelaciones=campRelRes.data||[];
+
+  // Jp, 2026-10-23: las respuestas de "preguntas configurables por campaña"
+  // (ej. "¿Cuenta con reloj checador?") se guardaban desde siempre pero no se
+  // mostraban en ningún lado (ver guardarRespuestasLlamada/
+  // prospecto_llamada_respuestas) — Jp las necesita visibles aquí porque
+  // luego arma campañas de llamadas con esos datos. Se arma un mapa por
+  // llamada (para mostrarlas junto a cada llamada en el historial) y una
+  // versión consolidada (última respuesta por pregunta, ya que `llamadas`
+  // viene ordenado por created_at descendente) para un resumen rápido arriba.
+  let respuestasPorLlamada={};
+  let respuestasConsolidadas=[];
+  if(llamadas.length){
+    const idsLlamadas=llamadas.map(l=>l.id);
+    const {data:respData}=await sb.from('prospecto_llamada_respuestas').select('llamada_id,pregunta_id,respuesta').in('llamada_id',idsLlamadas);
+    if(respData&&respData.length){
+      const idsPreg=[...new Set(respData.map(r=>r.pregunta_id))];
+      const {data:pregData}=await sb.from('campana_preguntas').select('id,etiqueta').in('id',idsPreg);
+      const etiquetaPorId={};
+      (pregData||[]).forEach(q=>{etiquetaPorId[q.id]=q.etiqueta;});
+      respData.forEach(r=>{
+        const fila={pregunta_id:r.pregunta_id,etiqueta:etiquetaPorId[r.pregunta_id]||'Pregunta',respuesta:r.respuesta};
+        (respuestasPorLlamada[r.llamada_id]=respuestasPorLlamada[r.llamada_id]||[]).push(fila);
+      });
+      // llamadas ya viene ordenado descendente por fecha — la primera vez que
+      // aparece cada pregunta_id es su respuesta más reciente.
+      const vistos=new Set();
+      llamadas.forEach(l=>{
+        (respuestasPorLlamada[l.id]||[]).forEach(r=>{
+          if(vistos.has(r.pregunta_id)) return;
+          vistos.add(r.pregunta_id);
+          respuestasConsolidadas.push(r);
+        });
+      });
+    }
+  }
+
   let historialCampanas=[];
   let preguntasLlamadaProspecto=[];
   if(campanaRelaciones.length){
@@ -16146,6 +16182,20 @@ async function abrirDetalle(id){
             </div>`).join('')}
       </div>
 
+      ${respuestasConsolidadas.length?`
+      <!-- RESPUESTAS DE CAMPAÑA -->
+      <div style="background:var(--teal-bg);border-radius:var(--radsm);padding:12px;">
+        <div style="font-size:11px;font-weight:700;color:var(--teal);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">
+          📋 Respuestas de campaña (${respuestasConsolidadas.length})
+        </div>
+        ${respuestasConsolidadas.map(r=>`
+          <div style="display:flex;justify-content:space-between;gap:10px;padding:5px 2px;font-size:12px;border-bottom:1px solid rgba(0,169,157,0.15);">
+            <div style="color:var(--text2);">${r.etiqueta}</div>
+            <div style="font-weight:600;color:var(--text);text-align:right;white-space:nowrap;">${r.respuesta}</div>
+          </div>`).join('')}
+        <div style="font-size:10px;color:var(--text3);margin-top:6px;">Última respuesta dada por pregunta, de cualquiera de sus llamadas.</div>
+      </div>`:''}
+
     </div>
     <div style="display:flex;flex-direction:column;gap:18px;min-width:0;">
 
@@ -16196,7 +16246,7 @@ async function abrirDetalle(id){
           🗂 Historial de llamadas (${llamadas.length})
         </div>
         <div id="histLlamadas">
-          ${renderLlamadasHtml(llamadas)}
+          ${renderLlamadasHtml(llamadas,respuestasPorLlamada)}
         </div>
       </div>
 
@@ -16326,9 +16376,10 @@ function onResultadoLlamadaChange(){
   if(campoFecha) campoFecha.style.display=valor==='Volver a llamar'?'block':'none';
 }
 
-function renderLlamadasHtml(llamadas){
+function renderLlamadasHtml(llamadas,respuestasPorLlamada){
   if(!llamadas||!llamadas.length)
     return `<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin llamadas registradas</div>`;
+  respuestasPorLlamada=respuestasPorLlamada||{};
   return llamadas.map(l=>{
     const res=l.resultado||'';
     const col=res==='Interesado'?'#27AE60':res==='No le interesa'?'#E74C3C':res==='Buzón'?'#E74C3C':res==='Volver a llamar'?'#F5A623':res==='Canalizado a ventas'?'var(--teal)':res==='Compró el taller 24/7'?'var(--teal)':'#888';
@@ -16350,6 +16401,9 @@ function renderLlamadasHtml(llamadas){
         <span style="color:var(--text3);font-size:10px;text-align:right;">${fechaHora}${asesor&&asesor!=='—'?`<br><span style="color:var(--text3);">${asesor}</span>`:''}</span>
       </div>
       ${l.notas?`<div style="color:var(--text);font-size:11px;">${l.notas}</div>`:''}
+      ${(respuestasPorLlamada[l.id]||[]).length?`<div style="margin-top:4px;padding-top:4px;border-top:1px dashed var(--border);">
+        ${respuestasPorLlamada[l.id].map(r=>`<div style="font-size:10.5px;color:var(--text3);">${r.etiqueta}: <b style="color:var(--text2);">${r.respuesta}</b></div>`).join('')}
+      </div>`:''}
     </div>`;
   }).join('');
 }
@@ -17135,6 +17189,41 @@ async function abrirCampana(campanaId){
   window._idsEnCampanaActual=idsEnCampana;
   window._campanaIdActual=campanaId;
 
+  // Jp, 2026-10-23: reporte de respuestas de la campaña — las respuestas a
+  // las "preguntas configurables" (prospecto_llamada_respuestas) ya se
+  // guardaban pero no había dónde revisarlas juntas; Jp las necesita para
+  // armar la siguiente campaña de llamadas a partir de ellas. Se arma la
+  // última respuesta por prospecto+pregunta (prospecto_llamadas viene desc
+  // por fecha, así que la primera vez que aparece cada combinación ya es la
+  // más reciente).
+  let tablaRespuestasHtml='';
+  let totalConRespuesta=0;
+  if((preguntasCamp||[]).length && idsEnCampana.size){
+    const idsPros=[...idsEnCampana];
+    const {data:llamadasCamp}=await sb.from('prospecto_llamadas').select('id,prospecto_id').in('prospecto_id',idsPros).order('created_at',{ascending:false});
+    const idsLlamadasCamp=(llamadasCamp||[]).map(l=>l.id);
+    let respCamp=[];
+    if(idsLlamadasCamp.length){
+      const {data:respData}=await sb.from('prospecto_llamada_respuestas').select('llamada_id,pregunta_id,respuesta').in('llamada_id',idsLlamadasCamp);
+      respCamp=respData||[];
+    }
+    const llamadaAProspecto={};
+    (llamadasCamp||[]).forEach(l=>{llamadaAProspecto[l.id]=l.prospecto_id;});
+    const ordenLlamada={};
+    (llamadasCamp||[]).forEach((l,i)=>{ordenLlamada[l.id]=i;});
+    respCamp.sort((a,b)=>(ordenLlamada[a.llamada_id]??999999)-(ordenLlamada[b.llamada_id]??999999));
+    const respuestasPorProspecto={};
+    respCamp.forEach(r=>{
+      const prospId=llamadaAProspecto[r.llamada_id];
+      if(!prospId) return;
+      respuestasPorProspecto[prospId]=respuestasPorProspecto[prospId]||{};
+      if(respuestasPorProspecto[prospId][r.pregunta_id]===undefined) respuestasPorProspecto[prospId][r.pregunta_id]=r.respuesta;
+    });
+    const prospectosConRespuesta=idsPros.filter(id=>respuestasPorProspecto[id]);
+    totalConRespuesta=prospectosConRespuesta.length;
+    tablaRespuestasHtml=renderTablaRespuestasCampana(preguntasCamp,prospectosConRespuesta,respuestasPorProspecto,ps);
+  }
+
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
     <button onclick="swD('campanas')" style="background:none;border:none;color:var(--text3);font-size:12px;cursor:pointer;font-family:'Inter',sans-serif;margin-bottom:8px;">← Volver a campañas</button>
@@ -17200,6 +17289,13 @@ async function abrirCampana(campanaId){
   <div class="card" style="padding:16px;margin-bottom:16px;" id="preguntasCampanaCard">
     ${renderPreguntasCampanaHtml(preguntasCamp||[],'prospecto',campanaId)}
   </div>
+
+  ${(preguntasCamp||[]).length?`
+  <div class="card" style="padding:16px;margin-bottom:16px;overflow-x:auto;">
+    <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px;">📋 Respuestas de la campaña (${totalConRespuesta})</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Última respuesta dada por cada prospecto a cada pregunta, de cualquiera de sus llamadas — úsalo para armar tu próxima campaña de llamadas.</div>
+    ${tablaRespuestasHtml||'<div style="font-size:12px;color:var(--text3);font-style:italic;">Aún no hay respuestas registradas en llamadas de esta campaña.</div>'}
+  </div>`:''}
 
   <div class="card">
     <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;">
@@ -17378,6 +17474,35 @@ async function eliminarPreguntaCampana(tipoCampana,campanaId,preguntaId){
   const tabla=tablaPreguntasCampana(tipoCampana);
   await sb.from(tabla).delete().eq('id',preguntaId);
   if(tipoCampana==='cartera') await gestionarCampanaCartera(campanaId); else await abrirCampana(campanaId);
+}
+
+// Jp, 2026-10-23: tabla-reporte de respuestas de campaña — una fila por
+// prospecto que ya contestó algo, una columna por pregunta configurada
+// (activa o no: si se desactivó una pregunta no se pierden las respuestas
+// ya dadas, ver eliminarPreguntaCampana). Mismo patrón visual de tabla ya
+// usado en el resto de la app (ver dashboard de Academia, arriba).
+function renderTablaRespuestasCampana(preguntas,idsProspectos,respuestasPorProspecto,todosProspectos){
+  if(!idsProspectos.length) return '';
+  const nombrePorId={};
+  (todosProspectos||[]).forEach(p=>{nombrePorId[p.id]=p;});
+  return `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;">
+      <th style="padding:8px 12px;">Prospecto</th>
+      <th style="padding:8px 12px;">Teléfono</th>
+      ${preguntas.map(q=>`<th style="padding:8px 12px;">${q.etiqueta}</th>`).join('')}
+    </tr></thead>
+    <tbody>
+      ${idsProspectos.map(id=>{
+        const p=nombrePorId[id]||{};
+        const respuestas=respuestasPorProspecto[id]||{};
+        return `<tr style="border-top:1px solid var(--border);">
+          <td style="padding:8px 12px;font-weight:500;">${p.nombre||'—'}</td>
+          <td style="padding:8px 12px;color:var(--text3);">${p.telefono||'—'}</td>
+          ${preguntas.map(q=>`<td style="padding:8px 12px;">${respuestas[q.id]!==undefined?respuestas[q.id]:'<span style="color:var(--text3);">—</span>'}</td>`).join('')}
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table>`;
 }
 
 function renderListaProspectosCampana(ps,idsEnCampana,campanaId){
