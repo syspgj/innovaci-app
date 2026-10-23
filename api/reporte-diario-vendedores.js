@@ -74,6 +74,48 @@ function calcBonoCursos247(monto247, deptoAlcanzo, vendedorCumplioMeta) {
   if (m < META_CURSOS247) return { monto: 0, aplica: false, faltante: META_CURSOS247 - m };
   return { monto: m * TASA_CURSOS247, aplica: true };
 }
+// Bono Círculo Innovaci (Jp, 2026-10-23) — 5% sobre lo facturado en el rubro
+// CIRCULO INNOVACI (antes "MEMBRESIA"), mismo doble candado que los otros
+// bonos de venta cruzada, sin monto mínimo (ver index.html, misma función).
+const TASA_CIRCULO = 0.05;
+function calcBonoCirculoInnovaci(montoCirculo, deptoAlcanzo, vendedorCumplioMeta) {
+  const m = montoCirculo || 0;
+  if (!deptoAlcanzo || !vendedorCumplioMeta) return { monto: 0, aplica: false };
+  if (m <= 0) return { monto: 0, aplica: false };
+  return { monto: m * TASA_CIRCULO, aplica: true };
+}
+// Categorías reales de Finanzas (Jp, 2026-10-23) — idéntico a index.html.
+// Desde octubre 2026, Servicios/Aspel/IT/Diplomados dejan de ser
+// autorreportados en Registrar día y se calculan de aquí para Manuel y
+// Dulce. "Renta Aspel" queda fuera de TODO lo que comisiona.
+const FINANZAS_CATEGORIA = {
+  'SISTEMA ASPEL': 'aspel', 'TIMBRES': 'aspel',
+  '24/7': 'cursos247',
+  'CURSOS O TALLERES EN VIVO': 'cursos_vivo',
+  'DIPLOMADOS EN VIVO': 'dip', 'DIPLOMADO': 'dip',
+  'CLOUD': 'it', 'SOFTWARE': 'it', 'HARDWARE': 'it', 'DESARROLLO CON TERCERO': 'it',
+  'POLIZA ASPEL': 'svc', 'POLIZA RESGUARDO': 'svc', 'RESGUARDO': 'svc', 'POLIZA TOTAL O ALIADO': 'svc',
+  'POLIZA': 'svc', 'SERVICIO POR EVENTO': 'svc', 'ASESORIA': 'svc', 'SERVICIO DE ACTUALIZACIÓN': 'svc',
+  'CURSO EMPRESARIAL': 'svc',
+  'CIRCULO INNOVACI': 'circulo',
+};
+function usaFinanzasRealDesde(anio, mes) {
+  return anio > 2026 || (anio === 2026 && mes >= 10);
+}
+// Mismo cálculo que calcVentasRealesFinanzas() de index.html, adaptado al
+// helper sb(path, SKEY) de este archivo.
+async function calcVentasRealesFinanzas(filtroFact, anio, mes) {
+  const out = { svc: 0, aspel: 0, it: 0, dip: 0, cursos247: 0, cursos_vivo: 0, circulo: 0 };
+  if (!filtroFact) return out;
+  const fact = await sb(`fact_ingresos?select=rubro,total,subtotal_original,descuento,vendedor,cobrado&anio=eq.${anio}&mes=eq.${mes}&cobrado=eq.true&vendedor=ilike.*${filtroFact}*`, SKEY);
+  for (const r of fact) {
+    const cat = FINANZAS_CATEGORIA[(r.rubro || '').toUpperCase()];
+    if (!cat) continue;
+    const base = (r.subtotal_original || 0) - (r.descuento || 0);
+    out[cat] += base;
+  }
+  return out;
+}
 
 // ─── Días hábiles (copiado de index.html) ───────────────────────────────────
 function getDiasHabiles(y, m) {
@@ -179,7 +221,8 @@ function mensajeMotivacional(pctAvance) {
 
 // ─── Plantilla del correo ───────────────────────────────────────────────────
 function construirHtml({ nombre, mesNombre, anio, hoyTexto, ventaActual, svcMeta, faltante, pctAvance, diasRest, ritmoNecesario,
-  alcanceBono, pctExtra, montoAspel, bonoAspel, monto247, bono247, deptoAlcanzado, vendedorCumplioMeta, suscripciones,
+  alcanceBono, pctExtra, montoAspel, bonoAspel, monto247, bono247, montoCirculo, bonoCirculo, usaReal, ventaCapturada,
+  deptoAlcanzado, vendedorCumplioMeta, suscripciones,
   negociacionesAbiertas, montoAbiertoTotal, actividadesHoy, alertasPerdida }) {
   const color = pctAvance >= 1 ? '#27AE60' : pctAvance >= 0.8 ? '#F5A623' : '#E84040';
   const barra = (pct, col) => `<div style="background:#eee;border-radius:6px;height:10px;overflow:hidden;margin:6px 0;"><div style="background:${col};height:100%;width:${Math.min(pct * 100, 100)}%;"></div></div>`;
@@ -191,6 +234,16 @@ function construirHtml({ nombre, mesNombre, anio, hoyTexto, ventaActual, svcMeta
       ${barra(Math.min(monto / meta, 1), monto >= meta ? '#27AE60' : '#F5A623')}
       <div style="font-size:12px;color:#555;">${fmt(monto)} de ${fmt(meta)} ${monto >= meta ? '✓ meta alcanzada' : `— falta ${fmt(Math.max(meta - monto, 0))}`}</div>
       <div style="font-size:11px;color:${aplica ? '#27AE60' : '#999'};margin-top:2px;">${aplica ? `✓ Comisión activa (${(tasa * 100).toFixed(0)}% sobre el total)` : (deptoAlcanzado && vendedorCumplioMeta ? 'Aún no alcanza la meta del bono' : 'Retenido — falta cumplir la meta principal de Servicios (depto y/o individual)')}</div>
+    </div>`;
+
+  // Bono Círculo Innovaci (Jp, 2026-10-23) — mismo patrón que filaBono pero
+  // sin monto mínimo, así que no tiene sentido una barra de progreso contra
+  // una meta; se muestra solo el monto facturado y si la comisión aplica.
+  const filaBonoCirculo = (monto, aplica, tasa) => `
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid #eee;">
+      <div style="font-size:13px;font-weight:600;color:#1A2332;">🌐 Bono Círculo Innovaci (${(tasa * 100).toFixed(0)}%)</div>
+      <div style="font-size:12px;color:#555;">${fmt(monto)} facturado${monto > 0 ? ` este mes en membresías` : ''}</div>
+      <div style="font-size:11px;color:${aplica ? '#27AE60' : '#999'};margin-top:2px;">${aplica ? `✓ Comisión activa (${(tasa * 100).toFixed(0)}% sobre el total)` : (deptoAlcanzado && vendedorCumplioMeta ? 'Sin membresías facturadas este mes' : 'Retenido — falta cumplir la meta principal de Servicios (depto y/o individual)')}</div>
     </div>`;
 
   // Nota: los colores aquí deben ser hex de 6 dígitos (no shorthand de 3) porque
@@ -232,14 +285,20 @@ function construirHtml({ nombre, mesNombre, anio, hoyTexto, ventaActual, svcMeta
       }).join('')
     : `<div style="font-size:12px;color:#888;padding:8px 0;">Sin actividades agendadas para hoy en Proyección.</div>`;
 
+  // Jp, 2026-10-22: wrapper basado en <table> (en vez de <div style="max-
+  // width:900px;margin:0 auto">) — varios webmails ignoran max-width/
+  // margin:auto en un <div> suelto y lo estiran a todo el ancho del panel;
+  // table + td align="center" sí se respeta de forma consistente.
   return `
-  <div style="font-family:Arial,Helvetica,sans-serif;max-width:900px;margin:0 auto;color:#1A2332;">
-    <div style="background:#1A2332;color:#fff;padding:18px 24px;border-radius:10px 10px 0 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f8;">
+  <tr><td align="center" style="padding:20px 12px;">
+  <table role="presentation" width="900" cellpadding="0" cellspacing="0" style="width:900px;max-width:900px;font-family:Arial,Helvetica,sans-serif;color:#1A2332;">
+    <tr><td style="background:#1A2332;color:#fff;padding:18px 24px;border-radius:10px 10px 0 0;">
       <div style="font-size:11px;letter-spacing:1px;text-transform:uppercase;opacity:0.7;">Innovaci OS · Reporte diario</div>
       <div style="font-size:18px;font-weight:700;margin-top:4px;">Hola, ${nombre.split(' ')[0]} 👋</div>
       <div style="font-size:12px;opacity:0.85;">${hoyTexto} — lo que llevas y lo que tienes hoy</div>
-    </div>
-    <div style="border:1px solid #eee;border-top:none;padding:20px 24px;border-radius:0 0 10px 10px;">
+    </td></tr>
+    <tr><td style="border:1px solid #eee;border-top:none;padding:20px 24px;border-radius:0 0 10px 10px;">
 
       ${alertasPerdida && alertasPerdida.length ? `
       <div style="background:#8B000014;border:1px solid #8B0000;border-radius:6px;padding:12px 14px;margin-bottom:18px;">
@@ -254,12 +313,14 @@ function construirHtml({ nombre, mesNombre, anio, hoyTexto, ventaActual, svcMeta
         ${motivo.texto}
       </div>
 
-      <div style="font-size:14px;font-weight:700;color:#1A2332;">🎯 Meta principal — Servicios</div>
+      <div style="font-size:14px;font-weight:700;color:#1A2332;">🎯 Meta principal — Servicios${usaReal ? ' (dato real, Finanzas)' : ''}</div>
       ${barra(pctAvance, color)}
       <div style="font-size:13px;color:#333;">${fmt(ventaActual)} de ${fmt(svcMeta)} <strong style="color:${color};">(${Math.round(pctAvance * 100)}%)</strong></div>
       ${faltante > 0
         ? `<div style="font-size:12px;color:#555;margin-top:4px;">Faltan ${fmt(faltante)}. ${diasRest > 0 ? `Con ${diasRest} días hábiles restantes en el mes, necesitas vender <strong>${fmt(ritmoNecesario)}/día</strong> para llegar a la meta.` : 'Ya no quedan días hábiles este mes.'}</div>`
         : `<div style="font-size:12px;color:#27AE60;margin-top:4px;">✓ Meta cumplida este mes.</div>`}
+      ${usaReal && ventaCapturada != null && ventaCapturada !== ventaActual
+        ? `<div style="font-size:10.5px;color:#999;margin-top:4px;">Lo que capturaste en Registrar día: ${fmt(ventaCapturada)} (no se usa para comisión desde octubre).</div>` : ''}
 
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid #eee;">
         <div style="font-size:13px;font-weight:600;color:#1A2332;">⭐ Bono de alcance (KPIs secundarios)</div>
@@ -268,6 +329,7 @@ function construirHtml({ nombre, mesNombre, anio, hoyTexto, ventaActual, svcMeta
 
       ${filaBono('🖥 Bono Aspel — venta cruzada (3%)', montoAspel, META_ASPEL_CRUZADA, bonoAspel.aplica, TASA_ASPEL_CRUZADA)}
       ${filaBono('🎓 Bono Cursos 24/7 (5%)', monto247, META_CURSOS247, bono247.aplica, TASA_CURSOS247)}
+      ${filaBonoCirculo(montoCirculo, bonoCirculo.aplica, TASA_CIRCULO)}
 
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid #eee;">
         <div style="font-size:13px;font-weight:600;color:#1A2332;">📅 Agendado para hoy</div>
@@ -287,8 +349,10 @@ function construirHtml({ nombre, mesNombre, anio, hoyTexto, ventaActual, svcMeta
       <div style="margin-top:20px;padding-top:14px;border-top:1px solid #eee;font-size:11px;color:#999;text-align:center;">
         Este correo se genera automáticamente todos los días desde Innovaci OS.
       </div>
-    </div>
-  </div>`;
+    </td></tr>
+  </table>
+  </td></tr>
+  </table>`;
 }
 
 const MESES = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
@@ -353,6 +417,22 @@ export default async function handler(req, res) {
         tot.sf += r.siigo_fiscal || 0; tot.demos += r.demos || 0; tot.val += r.valoraciones || 0;
         tot.cn += r.clientes_nuevos || 0; tot.dip += r.diplomados || 0; tot.cur_vivo += r.talleres_vivo || 0;
       }
+      // Copia de lo autorreportado en Registrar día — nunca se sobreescribe
+      // en BD, solo se usa para mostrar la comparación "capturado vs real"
+      // en el correo (Jp, 2026-10-23).
+      const totCapturado = { ...tot };
+
+      const filtroFact = filtroFactIngresos(u.email);
+      const usaReal = usaFinanzasRealDesde(anio, mes) && !!filtroFact;
+      let ventasReales = null;
+      if (filtroFact) {
+        ventasReales = await calcVentasRealesFinanzas(filtroFact, anio, mes);
+        if (usaReal) {
+          tot.svc = ventasReales.svc; tot.aspel = ventasReales.aspel; tot.it = ventasReales.it;
+          tot.dip = ventasReales.dip; tot.cur_vivo = ventasReales.cursos_vivo;
+        }
+      }
+
       const svcMetaRow = kpiConfig.find(k => k.kpi_key === 'svc');
       const svcMeta = (svcMetaRow ? svcMetaRow[metaKey] : 0) || 80000;
       const ventaActual = tot.svc;
@@ -364,21 +444,15 @@ export default async function handler(req, res) {
       const alcanceBono = calcAlcanceBono(kpiConfig, tot, metaKey);
       const pctExtra = getBonoKpiExtra(alcanceBono);
 
-      const filtroFact = filtroFactIngresos(u.email);
-      let montoAspel = 0, monto247 = 0;
-      if (filtroFact) {
-        const fact = await sb(`fact_ingresos?select=rubro,total,subtotal_original,descuento,vendedor,cobrado&anio=eq.${anio}&mes=eq.${mes}&cobrado=eq.true&vendedor=ilike.*${filtroFact}*`, SKEY);
-        for (const r of fact) {
-          const rub = (r.rubro || '').toUpperCase();
-          // Base = Subtotal - Descuento (sin IVA), igual que en index.html
-          // (confirmado con Jp 2026-09-28).
-          const base = (r.subtotal_original || 0) - (r.descuento || 0);
-          if (rub === 'SISTEMA ASPEL' || rub === 'TIMBRES') montoAspel += base;
-          else if (rub === '24/7') monto247 += base;
-        }
-      }
+      // Montos de venta cruzada (Aspel/Cursos 24/7/Círculo Innovaci) — ya
+      // vienen de la misma consulta a Finanzas de arriba, sin importar si
+      // Servicios usa dato real o capturado (venta cruzada siempre fue real).
+      const montoAspel = ventasReales ? ventasReales.aspel : 0;
+      const monto247 = ventasReales ? ventasReales.cursos247 : 0;
+      const montoCirculo = ventasReales ? ventasReales.circulo : 0;
       const bonoAspel = calcBonoAspelCruzada(montoAspel, deptoAlcanzado, vendedorCumplioMeta);
       const bono247 = calcBonoCursos247(monto247, deptoAlcanzado, vendedorCumplioMeta);
+      const bonoCirculo = calcBonoCirculoInnovaci(montoCirculo, deptoAlcanzado, vendedorCumplioMeta);
 
       // Suscripciones que vencen este mes, de cuentas asignadas a este vendedor
       const clientes = await sb(`clientes_cartera?select=id,razon_social&vendedor_asignado=eq.${u.id}`, SKEY);
@@ -433,6 +507,7 @@ export default async function handler(req, res) {
         nombre: u.nombre || u.email, mesNombre: MESES[mes - 1], anio, hoyTexto,
         ventaActual, svcMeta, faltante, pctAvance, diasRest, ritmoNecesario,
         alcanceBono, pctExtra, montoAspel, bonoAspel, monto247, bono247,
+        montoCirculo, bonoCirculo, usaReal, ventaCapturada: totCapturado.svc,
         deptoAlcanzado, vendedorCumplioMeta, suscripciones,
         negociacionesAbiertas, montoAbiertoTotal, actividadesHoy, alertasPerdida,
       });
@@ -443,7 +518,8 @@ export default async function handler(req, res) {
       }
       enviados.push({
         email: u.email, nombre: u.nombre, ventaActual, svcMeta, pctAvance, diasRest, ritmoNecesario,
-        montoAspel, monto247, bonoAspelAplica: bonoAspel.aplica, bono247Aplica: bono247.aplica,
+        montoAspel, monto247, montoCirculo, bonoAspelAplica: bonoAspel.aplica, bono247Aplica: bono247.aplica,
+        bonoCirculoAplica: bonoCirculo.aplica, usaReal, ventaCapturada: totCapturado.svc,
         suscripcionesVencenMes: suscripciones.length, negociacionesAbiertas: negociacionesAbiertas.length,
         montoAbiertoTotal, actividadesHoy: actividadesHoy.length, alertasPerdida: alertasPerdida.length,
         dryRun: !!dryRun, ...(dryRun ? { html } : {}),
