@@ -3790,11 +3790,10 @@ async function academiaVerFicha(inscripcionId){
         </div>
         <textarea id="academiaPracObs_${inscripcionId}" rows="2" placeholder="Observación general de las prácticas..." style="width:100%;margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:inherit;resize:vertical;">${insc.practicas_observaciones||''}</textarea>
         <button class="cartera-subtab" style="margin-top:6px;" onclick="academiaGuardarObservacionPracticas('${inscripcionId}')">Guardar observación de prácticas</button>
-        <div style="margin-top:8px;">
-          <label style="font-size:11px;display:flex;align-items:center;gap:6px;cursor:pointer;">
-            <input type="checkbox" ${insc.practicas_extension?'checked':''} onchange="academiaGuardarExtension('${inscripcionId}',this.checked)">
-            Adquirió extensión de prácticas
-          </label>
+        <div style="margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:11px;">Extensiones de prácticas compradas: <strong>${insc.practicas_extensiones_compradas||0}</strong></span>
+          <button class="cartera-subtab" style="padding:3px 10px;" ${(insc.practicas_extensiones_compradas||0)<=0?'disabled':''} onclick="academiaAjustarExtensionPracticas('${inscripcionId}',-1)" title="Quitar una extensión (revierte los días)">− Quitar</button>
+          <button class="cartera-subtab" style="padding:3px 10px;" onclick="academiaAjustarExtensionPracticas('${inscripcionId}',1)" title="Registrar otra extensión comprada (suma otro bloque de días)">+ Agregar extensión</button>
         </div>
         <div style="font-size:11px;color:var(--text3);margin-top:6px;">Vigencia del período de prácticas: ${academiaVigenciaBadge(vig)}</div>
         <div style="font-size:11px;color:var(--text3);margin-top:2px;">${elegibleAcreditacion?'✅ Cumple 80% en prácticas (Acreditación)':'❌ No alcanza 80% de prácticas'}</div>
@@ -4306,34 +4305,40 @@ async function academiaEliminarLigaInscripcion(ligaId,inscripcionId){
 // módulo de accesos" también). Aquí se le aplica el mismo delta de días,
 // solo si esa asignación ya tenía fecha_fin capturada (si estaba abierta/sin
 // fecha, se deja abierta).
-async function academiaGuardarExtension(inscripcionId,checked){
+// Jp, 2026-10-23: el modelo anterior (checkbox sí/no) solo soportaba UNA
+// extensión de prácticas por inscripción. Caso real: dos participantes ya
+// habían comprado una primera extensión y compraron una SEGUNDA, que el
+// checkbox no podía reflejar (desmarcar+marcar siempre vuelve al mismo
+// número de días, nunca se acumula). Ahora es un contador
+// (practicas_extensiones_compradas) — cada vez que se compra otra, se suma
+// OTRO bloque completo de días (academiaDiasExtensionPorCurso) sobre la
+// vigencia actual, sin tope de cuántas veces. practicas_extension sigue
+// existiendo (true si compradas>0) y practicas_extension_dias_aplicados
+// sigue siendo el total de días ya aplicados — por compatibilidad con el
+// resto de la app (ordenar/filtrar por "tiene extensión").
+async function academiaAjustarExtensionPracticas(inscripcionId,delta){
   const {data:insc,error:errFetch}=await sb.from('academia_inscripciones')
-    .select('fecha_fin_laboratorio,practicas_extension_dias_aplicados,generacion:generacion_id(curso:curso_id(tipo,modalidad))')
+    .select('fecha_fin_laboratorio,practicas_extensiones_compradas,generacion:generacion_id(curso:curso_id(tipo,modalidad))')
     .eq('id',inscripcionId).single();
   if(errFetch||!insc){alert('No se pudo cargar la inscripción: '+(errFetch?.message||''));return;}
-  const payload={practicas_extension:checked};
-  let detalle=`Extensión de prácticas ${checked?'otorgada':'retirada'}`;
-  let deltaDias=0;
-  if(insc.fecha_fin_laboratorio){
-    if(checked){
-      const dias=academiaDiasExtensionPorCurso(insc.generacion?.curso);
-      payload.fecha_fin_laboratorio=academiaSumarDias(insc.fecha_fin_laboratorio,dias);
-      payload.practicas_extension_dias_aplicados=dias;
-      deltaDias=dias;
-      detalle+=` (+${dias} días, nueva vigencia: ${payload.fecha_fin_laboratorio})`;
-    } else {
-      const diasAplicados=insc.practicas_extension_dias_aplicados||0;
-      if(diasAplicados){
-        payload.fecha_fin_laboratorio=academiaSumarDias(insc.fecha_fin_laboratorio,-diasAplicados);
-        deltaDias=-diasAplicados;
-        detalle+=` (-${diasAplicados} días, nueva vigencia: ${payload.fecha_fin_laboratorio})`;
-      }
-      payload.practicas_extension_dias_aplicados=null;
-    }
+  const actuales=insc.practicas_extensiones_compradas||0;
+  const nuevas=Math.max(0,actuales+delta);
+  if(nuevas===actuales) return;
+  const dias=academiaDiasExtensionPorCurso(insc.generacion?.curso);
+  const deltaDias=(nuevas-actuales)*dias;
+  const payload={
+    practicas_extensiones_compradas:nuevas,
+    practicas_extension:nuevas>0,
+    practicas_extension_dias_aplicados:nuevas*dias||null,
+  };
+  let detalle=`Extensión de prácticas: ${actuales}→${nuevas} compradas`;
+  if(insc.fecha_fin_laboratorio && deltaDias){
+    payload.fecha_fin_laboratorio=academiaSumarDias(insc.fecha_fin_laboratorio,deltaDias);
+    detalle+=` (${deltaDias>0?'+':''}${deltaDias} días, nueva vigencia: ${payload.fecha_fin_laboratorio})`;
   }
   const {error}=await sb.from('academia_inscripciones').update(payload).eq('id',inscripcionId);
   if(error){alert('Error guardando la extensión: '+error.message);return;}
-  if(deltaDias){
+  if(insc.fecha_fin_laboratorio && deltaDias){
     const {data:asigVinc}=await sb.from('academia_empresas_asignaciones').select('id,fecha_fin').eq('inscripcion_id',inscripcionId).order('created_at',{ascending:false}).limit(1).maybeSingle();
     if(asigVinc?.fecha_fin){
       await sb.from('academia_empresas_asignaciones').update({fecha_fin:academiaSumarDias(asigVinc.fecha_fin,deltaDias)}).eq('id',asigVinc.id);

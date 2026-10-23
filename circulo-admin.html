@@ -124,6 +124,10 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
     <div id="labVirtualMsg"></div>
     <div class="solicitudes-grid">
       <div class="col">
+        <h2>🚨 Ya vencidos</h2>
+        <div id="listaLabVencidos"></div>
+      </div>
+      <div class="col">
         <h2>🔔 Por vencer (15 días)</h2>
         <div id="listaLabPorVencer"></div>
       </div>
@@ -893,28 +897,36 @@ async function cargarLaboratorioVirtualAsignados(){
   if(error){ if(msg) msg.innerHTML=`<div class="msg err">${error.message}</div>`; return; }
   const hoy=new Date(); hoy.setHours(0,0,0,0);
   const limite=new Date(hoy); limite.setDate(hoy.getDate()+DIAS_POR_VENCER_LAB);
-  const porVencer=[], asignados=[];
+  // Jp, 2026-10-23: antes "vencido" y "por vencer" se mezclaban en la misma
+  // columna (un YA VENCIÓ en rojo perdido entre los por-vencer normales) —
+  // ahora van en su propia columna, mismo criterio que ya usa Evaluaciones
+  // en Academia (lo vencido necesita más urgencia que lo que solo se acerca).
+  const vencidos=[], porVencer=[], asignados=[];
   (data||[]).forEach(b=>{
     const fin=b.academia_inscripciones?.fecha_fin_laboratorio;
     const finDate=fin?new Date(fin+'T00:00:00'):null;
-    (finDate && finDate<=limite) ? porVencer.push({...b,_fin:finDate}) : asignados.push(b);
+    if(!finDate){ asignados.push(b); return; }
+    if(finDate<hoy) vencidos.push({...b,_fin:finDate});
+    else if(finDate<=limite) porVencer.push({...b,_fin:finDate});
+    else asignados.push(b);
   });
+  vencidos.sort((a,b)=>a._fin-b._fin);
   porVencer.sort((a,b)=>a._fin-b._fin);
-  const fila=(b,resaltarVencido)=>{
+  const fila=(b)=>{
     const m=b.circulo_membresias||{};
     const gen=b.academia_inscripciones?.academia_generaciones;
     const curso=gen?.academia_cursos?.nombre||'—';
     const fin=b.academia_inscripciones?.fecha_fin_laboratorio;
-    const vencido=resaltarVencido && fin && new Date(fin+'T00:00:00')<hoy;
     return `<div class="solicitud-row">
       <div class="info">${m.nombre||'—'}${m.numero_miembro?` <small>(#${m.numero_miembro})</small>`:''}
         <div style="font-size:12px;color:var(--text2);margin-top:3px">${curso} · ${gen?.clave||''}</div>
-        <small>${m.email||''} · vence ${fin||'—'}${vencido?' · <span style="color:#c0392b;font-weight:700">YA VENCIÓ</span>':''}</small>
+        <small>${m.email||''} · vence ${fin||'—'}</small>
       </div>
     </div>`;
   };
-  document.getElementById('listaLabPorVencer').innerHTML = porVencer.map(b=>fila(b,true)).join('') || '<div class="sub">Nada por vencer en los próximos '+DIAS_POR_VENCER_LAB+' días.</div>';
-  document.getElementById('listaLabAsignados').innerHTML = asignados.map(b=>fila(b,false)).join('') || '<div class="sub">Sin laboratorios asignados vigentes.</div>';
+  document.getElementById('listaLabVencidos').innerHTML = vencidos.map(fila).join('') || '<div class="sub">Sin laboratorios vencidos.</div>';
+  document.getElementById('listaLabPorVencer').innerHTML = porVencer.map(fila).join('') || '<div class="sub">Nada por vencer en los próximos '+DIAS_POR_VENCER_LAB+' días.</div>';
+  document.getElementById('listaLabAsignados').innerHTML = asignados.map(fila).join('') || '<div class="sub">Sin laboratorios asignados vigentes.</div>';
 }
 
 function renderFilasSolicitudes(solicitudes, vacioTexto){
@@ -961,8 +973,16 @@ function renderFilasSolicitudes(solicitudes, vacioTexto){
                  <button class="btn small" onclick="abrirRegistrarEvento('${s.id}','${s.membresia_id}','${nombre}','${email}','${m.academia_participante_id||''}','${m.especialidad||''}',${s.quiere_laboratorio?'true':'false'})">Registrar en Academia</button>
                  <button class="btn secondary small" onclick="abrirRechazarSolicitud('${s.id}','${s.estado}','evento_en_vivo')">Rechazar</button>`;
     }
+    // Jp, 2026-10-23: antes ninguna solicitud mostraba antigüedad — una de
+    // hace una semana se veía igual que una de hace 5 minutos. Mismo umbral
+    // (48h) que usa el aviso de Telegram (api/cron/circulo-avisos-check.js).
+    const horasEspera=Math.floor((Date.now()-new Date(s.created_at).getTime())/(60*60*1000));
+    const atrasada=horasEspera>=48;
+    const badgeAntiguedad=atrasada
+      ?`<span style="background:var(--redbg);color:var(--red);padding:1px 8px;border-radius:5px;font-size:11px;font-weight:700;margin-left:6px;">🚨 ${horasEspera>=48*2?Math.floor(horasEspera/24)+'d':horasEspera+'h'} sin atender</span>`
+      :'';
     return `<div class="solicitud-row">
-      <div class="info">${nombre}${m.numero_miembro?` <small>(#${m.numero_miembro})</small>`:''} — ${TIPO_BENEFICIO_LABEL[s.tipo]||s.tipo}
+      <div class="info">${nombre}${m.numero_miembro?` <small>(#${m.numero_miembro})</small>`:''} — ${TIPO_BENEFICIO_LABEL[s.tipo]||s.tipo}${badgeAntiguedad}
         ${s.detalle?`<div style="font-size:12px;color:var(--text2);margin-top:3px;max-width:420px;white-space:pre-wrap">${s.detalle}</div>`:''}
         ${s.tipo==='evento_en_vivo' && s.quiere_laboratorio?`<div style="font-size:11px;color:var(--navy);font-weight:700;margin-top:2px">🧪 También pidió Laboratorio Virtual</div>`:''}
         <small>${email} · ${ESTADO_BENEFICIO_LABEL[s.estado]||s.estado} · solicitado ${new Date(s.created_at).toLocaleDateString('es-MX')}${s.fecha_programada?` · ${s.estado==='propuesta'?'Propuesta':'Fecha'}: ${fmtFechaHoraAdmin(s.fecha_programada)}`:''}</small>
