@@ -5507,7 +5507,7 @@ function buildVendorUI(){
   // Fila 2 (consulta/referencia): Cartera, Proyección, Histórico, Promociones, Reglas de comisión
   const _tabsBottom=[];
   if(esVendedor)_tabsBottom.push({l:'💼 Cartera',v:'cartera'},{l:'🧲 Prospectos',v:'prospectosV'},{l:'📁 Proyectos',v:'proyectos'},{l:'📋 Suscripciones',v:'suscripciones'});
-  _tabsBottom.push({l:'Proyección',v:'proyeccion'},{l:'Histórico',v:'historico'},{l:'🏷 Promociones',v:'promos'},{l:'📜 Reglas de comisión',v:'reglas'},{l:'🖥 Servidores',v:'servidores'},{l:'🔑 Licencias TS Plus',v:'tsplus'});
+  _tabsBottom.push({l:'Proyección',v:'proyeccion'},{l:'🧮 Cotizador',v:'cotizador'},{l:'Histórico',v:'historico'},{l:'🏷 Promociones',v:'promos'},{l:'📜 Reglas de comisión',v:'reglas'},{l:'🖥 Servidores',v:'servidores'},{l:'🔑 Licencias TS Plus',v:'tsplus'});
   if(_tabsBottom.length){
     _t2.style.display='flex';
     _t2.innerHTML='';
@@ -5542,6 +5542,7 @@ function swV(id){
   else if(id==='suscripciones')renderVendedorSuscripcionesModulo();
   else if(id==='registro')renderRegistroForm();
   else if(id==='proyeccion')renderProyeccion();
+  else if(id==='cotizador')renderCotizador();
   else if(id==='promos')renderVistaPromociones();
   else if(id==='reglas')renderReglasComision();
   else if(id==='servidores')renderCatalogoServidores();
@@ -5558,6 +5559,7 @@ async function renderVendor(){
   else if(currentVendTab==='suscripciones')renderVendedorSuscripcionesModulo();
   else if(currentVendTab==='registro')renderRegistroForm();
   else if(currentVendTab==='proyeccion')renderProyeccion();
+  else if(currentVendTab==='cotizador')renderCotizador();
   else if(currentVendTab==='historico')renderHistorico();
   else if(currentVendTab==='promos')renderVistaPromociones();
   else if(currentVendTab==='servidores')renderCatalogoServidores();
@@ -5857,6 +5859,280 @@ function tsPlusEditarPrecio(id){
     if(error){alert('Error: '+error.message);return;}
     renderCatalogoTSPlus();
   });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// COTIZADOR — Jp, 2026-10-26: cotizador reutilizable (primer producto Siigo
+// Fiscal) para Vendedor y Telemarketing. Precios base de lista (sin el
+// descuento que Siigo publica en su página, eso solo queda de referencia) +
+// descuento de distribuidor con vigencia por fecha (cotizador_descuentos_
+// distribuidor), configurable por Jp sin tocar código. Ver
+// claude/cotizador-sibo-fiscal-diseno.md para el diseño completo.
+// ══════════════════════════════════════════════════════════════════════════════
+let cotizEmpresas=1, cotizPeriodo='anual', cotizConIva=false, cotizProductoSlug='siigo-fiscal';
+async function renderCotizador(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando catálogo...</div>';
+  const necesitaCuentas=!window._cartClientes||!window._cartClientes.length;
+  const necesitaProspectos=!window._prospectos||!window._prospectos.length;
+  const [{data:productos,error:errP},{data:planes,error:errPl},{data:precios,error:errPr},{data:descuentos,error:errD},cuentasExtra,prospectosExtra]=await Promise.all([
+    sb.from('cotizador_productos').select('*').eq('activo',true).order('nombre'),
+    sb.from('cotizador_planes').select('*').eq('activo',true).order('orden'),
+    sb.from('cotizador_precios').select('*'),
+    sb.from('cotizador_descuentos_distribuidor').select('*').order('fecha_inicio',{ascending:false}),
+    necesitaCuentas?carteraFetchTodosClientes('id,razon_social,rfc,num_cliente'):Promise.resolve(null),
+    necesitaProspectos?sb.from('prospectos').select('id,nombre').limit(2000):Promise.resolve({data:null}),
+  ]);
+  if(errP||errPl||errPr||errD){mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error cargando el cotizador: ${(errP||errPl||errPr||errD).message}</div>`;return;}
+  window._cotizProductos=productos||[];
+  window._cotizPlanes=planes||[];
+  window._cotizPrecios=precios||[];
+  window._cotizDescuentos=descuentos||[];
+  if(necesitaCuentas&&cuentasExtra) window._cartClientes=cuentasExtra;
+  if(necesitaProspectos&&prospectosExtra?.data) window._prospectos=prospectosExtra.data;
+  cotizadorPintar();
+}
+function cotizadorDescuentoVigente(productoId,periodicidad){
+  const hoy=todayLocal();
+  const d=(window._cotizDescuentos||[]).filter(x=>x.producto_id===productoId&&x.periodicidad===periodicidad&&x.fecha_inicio<=hoy&&(!x.fecha_fin||x.fecha_fin>=hoy));
+  if(!d.length) return 0;
+  // Si hay más de una vigente (no debería), se usa la más reciente por fecha_inicio.
+  d.sort((a,b)=>b.fecha_inicio.localeCompare(a.fecha_inicio));
+  return parseFloat(d[0].porcentaje)||0;
+}
+function cotizadorCalcularPlan(plan,productoId,periodicidad,conIva){
+  const precioRow=(window._cotizPrecios||[]).find(p=>p.plan_id===plan.id&&p.periodicidad===periodicidad);
+  if(!precioRow) return null;
+  const meses=precioRow.meses;
+  const precioListaMensual=parseFloat(precioRow.precio_lista_mensual);
+  const descPct=cotizadorDescuentoVigente(productoId,periodicidad);
+  const precioMensualFinal=precioListaMensual*(1-descPct/100);
+  const totalPeriodo=precioMensualFinal*meses;
+  // Precio mensual SIN descuento de la periodicidad Mensual (referencia fija para el ahorro,
+  // no el "precio lista" de Semestral/Anual que ya trae su propia lista distinta).
+  const precioMensualRef=parseFloat((window._cotizPrecios||[]).find(p=>p.plan_id===plan.id&&p.periodicidad==='mensual')?.precio_lista_mensual||precioListaMensual);
+  const totalSiFueraMensual=precioMensualRef*meses;
+  const ahorro=Math.max(0,totalSiFueraMensual-totalPeriodo);
+  const iva=conIva?1.16:1;
+  return {
+    meses, descPct,
+    precioMensualFinal:precioMensualFinal*iva,
+    totalPeriodo:totalPeriodo*iva,
+    ahorro:ahorro*iva,
+    totalSiFueraMensual:totalSiFueraMensual*iva,
+  };
+}
+function cotizadorPintar(){
+  const mc=document.getElementById('mainContent');
+  const esDirector=userProfile?.rol==='director'||userProfile?.rol==='administracion';
+  const producto=(window._cotizProductos||[]).find(p=>p.slug===cotizProductoSlug);
+  if(!producto){mc.innerHTML='<div style="padding:20px;color:var(--text3);">Todavía no hay productos configurados en el cotizador.</div>';return;}
+  const planesProducto=(window._cotizPlanes||[]).filter(p=>p.producto_id===producto.id);
+  const n=parseInt(cotizEmpresas)||1;
+  // Planes que cubren o exceden el número de empresas/RFCs solicitado — se
+  // muestran desde el primero que alcanza hacia los superiores (Jp, 2026-10-26:
+  // "si necesita 3, se le muestra Empresarial, pero también se le puede
+  // mostrar Corporativo" — para comparar, no solo el exacto).
+  const planesAplican=planesProducto.filter(p=>p.rfcs_cubiertos==null||p.rfcs_cubiertos>=n);
+  mc.innerHTML=`
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+    <div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);">🧮 Cotizador</div>
+      <div style="font-size:12px;color:var(--text3);">Cotizador de Ciclo Fiscal — ${producto.nombre}</div>
+    </div>
+    ${esDirector?`<button class="cartera-subtab" onclick="cotizadorAbrirDescuentos()">⚙️ Descuentos de distribuidor</button>`:''}
+  </div>
+
+  <div class="card" style="padding:16px 18px;margin-bottom:16px;">
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;">
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">¿Cuántas empresas (RFCs) necesita el cliente?</div>
+        <input type="number" min="1" id="cotizInputEmpresas" value="${n}" style="width:100px;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;" oninput="cotizEmpresas=this.value;cotizadorPintar();">
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Periodicidad</div>
+        <div style="display:flex;gap:6px;">
+          ${['mensual','semestral','anual'].map(p=>`<button class="cartera-subtab ${cotizPeriodo===p?'active':''}" style="${cotizPeriodo===p?'background:var(--navy);color:#fff;':''}" onclick="cotizPeriodo='${p}';cotizadorPintar();">${p[0].toUpperCase()+p.slice(1)}</button>`).join('')}
+        </div>
+      </div>
+      <div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
+          <input type="checkbox" ${cotizConIva?'checked':''} onchange="cotizConIva=this.checked;cotizadorPintar();"> Mostrar con IVA (16%)
+        </label>
+      </div>
+    </div>
+  </div>
+
+  ${!planesAplican.length?`<div style="padding:20px;color:var(--text3);">Ningún plan cubre ${n} empresas/RFCs — revisa el número capturado.</div>`:`
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-bottom:18px;">
+    ${planesAplican.map(p=>cotizadorTarjetaPlan(p,producto)).join('')}
+  </div>`}
+
+  <div class="card" style="padding:16px 18px;">
+    <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:10px;">📎 Ligar esta cotización (opcional)</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+      <div style="flex:1;min-width:220px;position:relative;">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Cuenta real (Cartera) o prospecto</div>
+        <input type="text" id="cotizBuscarCuenta" placeholder="Escribe para buscar..." autocomplete="off" oninput="cotizadorFiltrarCuentas()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;">
+        <div id="cotizSugerencias" style="position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid var(--border);border-radius:var(--radsm);box-shadow:var(--shadow-md);z-index:50;max-height:220px;overflow-y:auto;display:none;"></div>
+      </div>
+      <div id="cotizLigadoA" style="font-size:12px;color:var(--text3);"></div>
+    </div>
+    <textarea id="cotizNotas" placeholder="Nota (opcional)" style="width:100%;margin-top:10px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;min-height:50px;"></textarea>
+    <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+      <button class="cartera-subtab" style="background:var(--navy);color:#fff;" onclick="cotizadorGuardar(false)">💾 Guardar cotización</button>
+      <button class="cartera-subtab" onclick="cotizadorGuardar(true)">🎯 Guardar y crear oportunidad en Proyección</button>
+    </div>
+    <div style="font-size:10px;color:var(--text3);margin-top:6px;">Si no ligas a nadie, queda como cotización de consulta.</div>
+  </div>`;
+}
+function cotizadorTarjetaPlan(plan,producto){
+  const c=cotizadorCalcularPlan(plan,producto.id,cotizPeriodo,cotizConIva);
+  if(!c) return '';
+  const benef=(plan.beneficios||[]);
+  return `<div class="card" style="padding:16px;${plan.recomendado?'border:2px solid var(--teal);box-shadow:var(--shadow-md);':''}">
+    ${plan.recomendado?'<div style="background:var(--teal);color:#fff;font-size:10px;font-weight:700;text-align:center;padding:3px 0;border-radius:4px;margin:-16px -16px 10px -16px;">RECOMENDADO</div>':''}
+    <div style="font-weight:700;font-size:14px;color:var(--text);margin-bottom:2px;">${plan.nombre}</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">${plan.rfcs_cubiertos==null?'RFCs ilimitados':plan.rfcs_cubiertos+' RFC'+(plan.rfcs_cubiertos>1?'s':'')} · ${plan.usuarios} usuario${plan.usuarios>1?'s':''}</div>
+    <div style="font-size:22px;font-weight:800;color:var(--navy);">${fmt(c.precioMensualFinal)}<span style="font-size:11px;font-weight:600;color:var(--text3);">/mes</span></div>
+    ${cotizPeriodo!=='mensual'?`<div style="font-size:12px;color:var(--text2);margin-top:2px;">Total ${cotizPeriodo==='semestral'?'6 meses':'12 meses'}: <b>${fmt(c.totalPeriodo)}</b></div>`:''}
+    ${c.descPct>0?`<div style="font-size:11px;color:var(--teal);font-weight:700;margin-top:4px;">-${c.descPct}% distribuidor activo</div>`:''}
+    ${c.ahorro>0?`<div style="margin-top:8px;padding:6px 8px;background:rgba(0,169,157,0.08);border-radius:6px;font-size:11px;color:var(--teal);font-weight:700;">💰 Ahorra ${fmt(c.ahorro)} vs. pagar Mensual</div>`:''}
+    <div style="font-size:11px;color:var(--text3);margin-top:4px;">${cotizConIva?'Precio con IVA':'Precio sin IVA'}</div>
+    <ul style="margin:10px 0 0;padding-left:18px;font-size:11px;color:var(--text2);">
+      ${benef.map(b=>`<li>${b}</li>`).join('')}
+    </ul>
+  </div>`;
+}
+function cotizadorFiltrarCuentas(){
+  const q=(document.getElementById('cotizBuscarCuenta').value||'').toLowerCase().trim();
+  const box=document.getElementById('cotizSugerencias');
+  if(!q){box.style.display='none';box.innerHTML='';return;}
+  const cuentas=(window._cartClientes||[]).filter(c=>(c.razon_social||'').toLowerCase().includes(q)).slice(0,8);
+  const prospectos=(window._prospectos||[]).filter(p=>(p.nombre||'').toLowerCase().includes(q)).slice(0,8);
+  if(!cuentas.length&&!prospectos.length){box.style.display='none';box.innerHTML='';return;}
+  box.innerHTML=[
+    ...cuentas.map(c=>`<div onclick="cotizadorLigarCuenta('${c.id}','${(c.razon_social||'').replace(/'/g,"\\'")}')" style="padding:8px 10px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--border);">💼 ${c.razon_social}</div>`),
+    ...prospectos.map(p=>`<div onclick="cotizadorLigarProspecto('${p.id}','${(p.nombre||'').replace(/'/g,"\\'")}')" style="padding:8px 10px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--border);">🧲 ${p.nombre}</div>`),
+  ].join('');
+  box.style.display='block';
+}
+function cotizadorLigarCuenta(id,nombre){
+  window._cotizCuentaId=id; window._cotizProspectoId=null;
+  document.getElementById('cotizBuscarCuenta').value=nombre;
+  document.getElementById('cotizSugerencias').style.display='none';
+  document.getElementById('cotizLigadoA').innerHTML=`💼 Cuenta real: <b>${nombre}</b>`;
+}
+function cotizadorLigarProspecto(id,nombre){
+  window._cotizProspectoId=id; window._cotizCuentaId=null;
+  document.getElementById('cotizBuscarCuenta').value=nombre;
+  document.getElementById('cotizSugerencias').style.display='none';
+  document.getElementById('cotizLigadoA').innerHTML=`🧲 Prospecto: <b>${nombre}</b>`;
+}
+async function cotizadorGuardar(crearOportunidad){
+  const producto=(window._cotizProductos||[]).find(p=>p.slug===cotizProductoSlug);
+  const n=parseInt(cotizEmpresas)||1;
+  const planesProducto=(window._cotizPlanes||[]).filter(p=>p.producto_id===producto.id);
+  const planesAplican=planesProducto.filter(p=>p.rfcs_cubiertos==null||p.rfcs_cubiertos>=n);
+  // Se guarda el primer plan que aplica (el más chico que cubre lo pedido) como
+  // el "principal" de la cotización — los demás mostrados son para comparar.
+  const planPrincipal=planesAplican[0];
+  if(!planPrincipal){alert('Ningún plan cubre ese número de empresas.');return;}
+  const c=cotizadorCalcularPlan(planPrincipal,producto.id,cotizPeriodo,cotizConIva);
+  const notas=document.getElementById('cotizNotas')?.value||null;
+  const payload={
+    producto_id:producto.id, plan_id:planPrincipal.id, periodicidad:cotizPeriodo,
+    num_empresas_solicitadas:n, incluye_iva:cotizConIva,
+    precio_mensual_base:parseFloat((window._cotizPrecios||[]).find(p=>p.plan_id===planPrincipal.id&&p.periodicidad===cotizPeriodo)?.precio_lista_mensual||0),
+    descuento_pct_aplicado:c.descPct, precio_mensual_final:c.precioMensualFinal, precio_total_periodo:c.totalPeriodo,
+    ahorro_total:c.ahorro, cliente_cartera_id:window._cotizCuentaId||null, prospecto_app_id:window._cotizProspectoId||null,
+    usuario_id:currentUser?.id||null, notas,
+  };
+  const {data,error}=await sb.from('cotizador_cotizaciones').insert(payload).select().single();
+  if(error){alert('Error guardando la cotización: '+error.message);return;}
+  if(!crearOportunidad){
+    alert('✅ Cotización guardada.');
+    return;
+  }
+  if(!window._cotizCuentaId&&!window._cotizProspectoId){
+    alert('✅ Cotización guardada. Para crear la oportunidad primero liga la cotización a una cuenta o un prospecto.');
+    return;
+  }
+  if(userProfile?.rol!=='vendedor'){
+    alert('✅ Cotización guardada. Crear la oportunidad en Proyección está disponible por ahora solo para el perfil de Vendedor — para Telemarketing está pendiente de construirse su propio módulo de Proyección.');
+    return;
+  }
+  await agregarFilaPipe();
+  const nombreCliente=document.getElementById('cotizBuscarCuenta')?.value||'';
+  const periodoLabel=cotizPeriodo[0].toUpperCase()+cotizPeriodo.slice(1);
+  const inProducto=document.getElementById('pProducto'), inMonto=document.getElementById('pMonto');
+  if(inProducto) inProducto.value=`${producto.nombre} — ${planPrincipal.nombre} (${periodoLabel})`;
+  if(inMonto) inMonto.value=c.totalPeriodo.toFixed(2);
+  if(window._cotizCuentaId){
+    await pipeMostrarCuentaLigada(window._cotizCuentaId,nombreCliente);
+  } else if(window._cotizProspectoId){
+    const inNombre=document.getElementById('pCliente');
+    if(inNombre) inNombre.value=nombreCliente;
+    const hidden=document.createElement('input');
+    hidden.type='hidden'; hidden.id='pipeProspectoAppId'; hidden.value=window._cotizProspectoId;
+    document.getElementById('modalPipe')?.appendChild(hidden);
+  }
+}
+function cotizadorAbrirDescuentos(){
+  const modal=document.createElement('div');
+  modal.id='modalCotizDescuentos';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  const producto=(window._cotizProductos||[]).find(p=>p.slug===cotizProductoSlug);
+  const descuentos=(window._cotizDescuentos||[]).filter(d=>d.producto_id===producto.id);
+  const hoy=todayLocal();
+  modal.innerHTML=`<div class="card" style="width:100%;max-width:640px;max-height:85vh;overflow-y:auto;padding:20px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <div style="font-size:15px;font-weight:700;">⚙️ Descuentos de distribuidor — ${producto.nombre}</div>
+      <span onclick="document.getElementById('modalCotizDescuentos').remove()" style="cursor:pointer;font-size:18px;color:var(--text3);">✕</span>
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px;">Este % es el que de verdad se aplica en el cotizador (no el que publica Siigo en su página, ese queda solo de referencia). Puedes cargar la siguiente ventana de vigencia con anticipación.</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:16px;">
+      <thead><tr style="background:var(--bg2,#f5f6f8);"><th style="text-align:left;padding:6px 8px;">Periodicidad</th><th style="text-align:right;padding:6px 8px;">%</th><th style="text-align:left;padding:6px 8px;">Vigencia</th><th></th></tr></thead>
+      <tbody>${descuentos.map(d=>{
+        const vigente=d.fecha_inicio<=hoy&&(!d.fecha_fin||d.fecha_fin>=hoy);
+        return `<tr style="border-top:1px solid var(--border);${vigente?'background:rgba(0,169,157,0.08);':''}">
+          <td style="padding:6px 8px;">${d.periodicidad}</td>
+          <td style="padding:6px 8px;text-align:right;font-weight:700;">${d.porcentaje}%</td>
+          <td style="padding:6px 8px;">${d.fecha_inicio} → ${d.fecha_fin||'sin fin'} ${vigente?'<b style="color:var(--teal);">· vigente hoy</b>':''}</td>
+          <td style="padding:6px 8px;"><span onclick="cotizadorBorrarDescuento('${d.id}')" style="cursor:pointer;color:var(--red);">🗑</span></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>
+    <div style="font-size:12px;font-weight:700;margin-bottom:8px;">+ Nueva vigencia</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+      <div><div style="font-size:10px;color:var(--text3);">Periodicidad</div>
+        <select id="cotizDescPeriodo" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;"><option value="mensual">Mensual</option><option value="semestral">Semestral</option><option value="anual" selected>Anual</option></select></div>
+      <div><div style="font-size:10px;color:var(--text3);">%</div><input type="number" id="cotizDescPct" step="0.01" min="0" max="100" style="width:80px;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;"></div>
+      <div><div style="font-size:10px;color:var(--text3);">Desde</div><input type="date" id="cotizDescInicio" value="${hoy}" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;"></div>
+      <div><div style="font-size:10px;color:var(--text3);">Hasta (opcional)</div><input type="date" id="cotizDescFin" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;"></div>
+      <button class="cartera-subtab" style="background:var(--navy);color:#fff;" onclick="cotizadorGuardarDescuento('${producto.id}')">+ Agregar</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
+}
+async function cotizadorGuardarDescuento(productoId){
+  const periodicidad=document.getElementById('cotizDescPeriodo').value;
+  const porcentaje=parseFloat(document.getElementById('cotizDescPct').value);
+  const fecha_inicio=document.getElementById('cotizDescInicio').value;
+  const fecha_fin=document.getElementById('cotizDescFin').value||null;
+  if(isNaN(porcentaje)||!fecha_inicio){alert('Captura el % y la fecha de inicio.');return;}
+  const {error}=await sb.from('cotizador_descuentos_distribuidor').insert({producto_id:productoId,periodicidad,porcentaje,fecha_inicio,fecha_fin,creado_por:currentUser?.id||null});
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalCotizDescuentos')?.remove();
+  await renderCotizador();
+}
+async function cotizadorBorrarDescuento(id){
+  if(!confirm('¿Borrar esta vigencia de descuento?'))return;
+  const {error}=await sb.from('cotizador_descuentos_distribuidor').delete().eq('id',id);
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalCotizDescuentos')?.remove();
+  await renderCotizador();
 }
 
 async function renderVendorMiMes(){
@@ -14086,6 +14362,7 @@ function buildTeleUI(){
     <div class="tab" onclick="swT('prospectos')">Mis prospectos</div>
     <div class="tab" onclick="swT('clientes')">📋 Clientes</div>
     <div class="tab" onclick="swT('registro')">Registrar día</div>
+    <div class="tab" onclick="swT('cotizador')">🧮 Cotizador</div>
     <div class="tab" onclick="swT('historico')">Histórico</div>
     <div class="tab" onclick="swT('promos')">🏷 Promociones</div>`;
   mostrarBotonesReporte();
@@ -14096,11 +14373,12 @@ function swT(id){
   const mc=document.getElementById('mainContent');
   if(id==='historico'||id==='miMes') mc.classList.add('full-width');
   else mc.classList.remove('full-width');
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['miMes','prospectos','clientes','registro','historico','promos'][i]===id));
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['miMes','prospectos','clientes','registro','cotizador','historico','promos'][i]===id));
   if(id==='miMes')renderTele();
   else if(id==='prospectos')renderProspectos();
   else if(id==='clientes')renderTeleClientes();
   else if(id==='registro')renderTeleRegistro();
+  else if(id==='cotizador')renderCotizador();
   else if(id==='promos')renderVistaPromociones();
   else renderTeleHistorico();
 }
@@ -14109,6 +14387,7 @@ async function renderTeleActual(){
   else if(currentTeleTab==='prospectos')renderProspectos();
   else if(currentTeleTab==='clientes')renderTeleClientes();
   else if(currentTeleTab==='registro')renderTeleRegistro();
+  else if(currentTeleTab==='cotizador')renderCotizador();
   else if(currentTeleTab==='historico')renderTeleHistorico();
   else if(currentTeleTab==='promos')renderVistaPromociones();
   else renderTele();
