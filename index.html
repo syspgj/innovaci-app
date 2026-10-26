@@ -19598,6 +19598,7 @@ function calcularProximoVencimientoResguardo(fechaInicioStr,periodicidadDias,ult
 async function guardarEvidenciaResguardo(id){
   const fileInput=document.getElementById('resguardoArchivo_'+id);
   const notaInput=document.getElementById('resguardoNota_'+id);
+  const fechaInput=document.getElementById('resguardoFecha_'+id);
   const file=fileInput?.files?.[0];
   if(!file){alert('Selecciona un archivo o captura de evidencia.');return;}
   const nota=notaInput?.value?.trim()||null;
@@ -19616,10 +19617,18 @@ async function guardarEvidenciaResguardo(id){
       }
     }catch(e){console.error('No se pudo comentar en el proyecto CRM',e);}
     const docId=await subirDocumentoAdjuntoActividad('resguardo',id,file,crmComentarioId);
-    const {data:polRow2}=await sb.from('clientes_polizas').select('fecha_inicio,resguardo_periodicidad_dias_override,polizas_catalogo(resguardo_periodicidad_dias)').eq('id',id).single();
-    const periodicidad=polRow2?.resguardo_periodicidad_dias_override||polRow2?.polizas_catalogo?.resguardo_periodicidad_dias||1;
-    const periodoFecha=calcularPeriodoActualResguardo(polRow2?.fecha_inicio||new Date().toISOString().slice(0,10),periodicidad);
-    const {error:evErr}=await sb.from('resguardo_evidencias').upsert({cliente_poliza_id:id,periodo_fecha:periodoFecha,subido_por:currentUser.id,crm_documento_id:docId,crm_comentario_id:crmComentarioId,nota},{onConflict:'cliente_poliza_id,periodo_fecha'});
+    // Jp, 2026-10-26 — "debe de haber un campo de fecha... ¿de qué fecha es
+    // el último respaldo?": antes se calculaba sola (periodo vigente de la
+    // póliza); ahora el input ya viene precargado con esa misma fecha
+    // calculada, pero Mesa de Control puede corregirla si el respaldo real
+    // es de otra fecha.
+    let periodoFecha=fechaInput?.value||null;
+    if(!periodoFecha){
+      const {data:polRow2}=await sb.from('clientes_polizas').select('fecha_inicio,resguardo_periodicidad_dias_override,polizas_catalogo(resguardo_periodicidad_dias)').eq('id',id).single();
+      const periodicidad=polRow2?.resguardo_periodicidad_dias_override||polRow2?.polizas_catalogo?.resguardo_periodicidad_dias||1;
+      periodoFecha=calcularPeriodoActualResguardo(polRow2?.fecha_inicio||new Date().toISOString().slice(0,10),periodicidad);
+    }
+    const {error:evErr}=await sb.from('resguardo_evidencias').upsert({cliente_poliza_id:id,periodo_fecha:periodoFecha,fecha_subida:new Date().toISOString(),origen:'manual',subido_por:currentUser.id,crm_documento_id:docId,crm_comentario_id:crmComentarioId,nota},{onConflict:'cliente_poliza_id,periodo_fecha'});
     if(evErr) throw evErr;
     alert('Evidencia de resguardo guardada.');
     document.getElementById('modalDetallePoliza')?.remove();
@@ -19627,6 +19636,43 @@ async function guardarEvidenciaResguardo(id){
   }catch(e){
     console.error('guardarEvidenciaResguardo error',e);
     alert('No se pudo guardar la evidencia: '+(e.message||e));
+  }
+}
+// Jp, 2026-10-26 — "yo aquí en la póliza de resguardo debo de especificar...
+// cada cuánto tengo que tener respaldos... porque en el caso de ellos no
+// está en el CRM, pero sí está en la factura": permite fijar a mano, sin
+// pasar por SQL, el servidor cloud contratado (para que la periodicidad se
+// derive de su ficha de producto), la carpeta de Dropbox (para activar la
+// validación automática) y/o un override directo de periodicidad en días.
+async function guardarConfigResguardo(id){
+  const servidorSel=document.getElementById('resguardoServidorProducto_'+id);
+  const folderInput=document.getElementById('resguardoDropboxFolder_'+id);
+  const overrideInput=document.getElementById('resguardoOverrideDias_'+id);
+  const productoServidorId=servidorSel?.value||null;
+  const dropboxFolder=folderInput?.value?.trim()||null;
+  const overrideDias=overrideInput?.value?parseInt(overrideInput.value,10):null;
+  try{
+    const {data:pol,error:polErr}=await sb.from('clientes_polizas').select('id,servidor_cloud_id,cliente_cartera_id').eq('id',id).single();
+    if(polErr) throw polErr;
+    let servidorCloudId=pol.servidor_cloud_id;
+    if(productoServidorId){
+      if(servidorCloudId){
+        const {error:updErr}=await sb.from('clientes_servidores_cloud').update({producto_servidor_id:productoServidorId}).eq('id',servidorCloudId);
+        if(updErr) throw updErr;
+      }else{
+        const {data:nuevoServidor,error:insErr}=await sb.from('clientes_servidores_cloud').insert({cliente_cartera_id:pol.cliente_cartera_id,producto_servidor_id:productoServidorId}).select('id').single();
+        if(insErr) throw insErr;
+        servidorCloudId=nuevoServidor.id;
+      }
+    }
+    const {error:polUpdErr}=await sb.from('clientes_polizas').update({servidor_cloud_id:servidorCloudId,resguardo_dropbox_folder:dropboxFolder,resguardo_periodicidad_dias_override:overrideDias}).eq('id',id);
+    if(polUpdErr) throw polUpdErr;
+    alert('Configuración de resguardo guardada.');
+    document.getElementById('modalDetallePoliza')?.remove();
+    abrirDetallePoliza(id);
+  }catch(e){
+    console.error('guardarConfigResguardo error',e);
+    alert('No se pudo guardar la configuración: '+(e.message||e));
   }
 }
 
@@ -19746,29 +19792,83 @@ async function abrirDetallePoliza(id){
         if(derivado) periodicidadDias=derivado;
       }
     }
-    const [{data:evidencias},{data:incidenciasAbiertas}]=await Promise.all([
+    const [{data:evidencias},{data:incidenciasAbiertas},{data:serversCat}]=await Promise.all([
       sb.from('resguardo_evidencias').select('*').eq('cliente_poliza_id',id).order('periodo_fecha',{ascending:false}).limit(24),
       sb.from('servicios_ejecutados').select('id,folio_ticket,estatus').eq('cliente_poliza_id',id).eq('tipo_servicio','INCIDENCIA_RESGUARDO').in('estatus',['PENDIENTE','ASIGNADO','EN_CURSO']).order('created_at',{ascending:false}).limit(1),
+      sb.from('productos_servidores').select('id,nombre').order('nombre'),
     ]);
+    // producto_servidor_id actual del servidor ya ligado (si existe), para
+    // preseleccionar el combo de abajo — Jp, 2026-10-26: "en el caso de
+    // ellos [ARES] no está en el CRM, pero sí está en la factura es un
+    // Cloud y no XL6", necesita poder corregirlo a mano sin depender del
+    // sync del CRM.
+    let productoServidorIdActual=null;
+    if(c.servidor_cloud_id){
+      const {data:scFull}=await sb.from('clientes_servidores_cloud').select('producto_servidor_id').eq('id',c.servidor_cloud_id).single();
+      productoServidorIdActual=scFull?.producto_servidor_id||null;
+    }
     const ultimaEvidenciaFecha=(evidencias||[])[0]?.periodo_fecha||null;
     const proximoVencimiento=(periodicidadDias&&c.fecha_inicio)?calcularProximoVencimientoResguardo(c.fecha_inicio,periodicidadDias,ultimaEvidenciaFecha):null;
+    const periodoActualParaInput=(periodicidadDias&&c.fecha_inicio)?calcularPeriodoActualResguardo(c.fecha_inicio,periodicidadDias):new Date().toISOString().slice(0,10);
     const hoy=new Date().toISOString().slice(0,10);
     const vencido=!!(proximoVencimiento&&proximoVencimiento<hoy);
     const incidencia=(incidenciasAbiertas||[])[0];
-    resguardoBloque=`<div style="margin-bottom:12px;padding:12px;border:1px solid ${vencido?'var(--red)':'var(--border)'};border-radius:8px;${vencido?'background:rgba(232,64,64,0.05);':''}">
+
+    // Jp, 2026-10-26 — "necesito algo evidente que me diga si está el
+    // resguardo, dónde está el resguardo, necesita revisión": estado de la
+    // validación automática contra Dropbox, visible antes que nada más.
+    const ultimaEvidenciaDropbox=(evidencias||[]).find(e=>e.origen==='dropbox')||null;
+    const dropboxCubrePeriodoActual=!!(ultimaEvidenciaDropbox&&periodicidadDias&&ultimaEvidenciaDropbox.periodo_fecha===periodoActualParaInput);
+    let dropboxEstadoHtml;
+    if(!c.resguardo_dropbox_folder) dropboxEstadoHtml=`<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#94a3b822;color:#64748b;white-space:nowrap;">— Sin Dropbox configurado</span>`;
+    else if(dropboxCubrePeriodoActual) dropboxEstadoHtml=`<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#27AE6022;color:#27AE60;white-space:nowrap;">✅ Detectado en Dropbox</span>`;
+    else dropboxEstadoHtml=`<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#F5A62322;color:#c47f0a;white-space:nowrap;">⚠ Pendiente de revisión</span>`;
+    const dropboxDetalleHtml=c.resguardo_dropbox_folder
+      ?`<div style="font-size:11px;margin-top:6px;">📂 Carpeta: <span style="font-family:'JetBrains Mono',monospace;">${c.resguardo_dropbox_folder}</span>${ultimaEvidenciaDropbox?`<br>Último detectado: <b>${ultimaEvidenciaDropbox.periodo_fecha}</b> (subido ${(ultimaEvidenciaDropbox.fecha_subida||'').slice(0,10)}) — <span style="color:var(--text3);">${ultimaEvidenciaDropbox.dropbox_path||''}</span>`:`<br>Aún no se detecta ningún archivo del periodo vigente ahí — la revisión automática corre una vez al día; si el archivo ya está en Dropbox y mañana sigue sin verse aquí, repórtalo.`}</div>`
+      :`<div style="font-size:11px;margin-top:6px;color:var(--text3);">Sin carpeta de Dropbox capturada todavía — captúrala en "⚙ Configuración de resguardo" para activar la validación automática. Mientras tanto, sigue subiendo la evidencia manualmente.</div>`;
+
+    resguardoBloque=`<div style="margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:8px;">
+        <div style="font-size:11px;font-weight:700;color:var(--navy);">📂 Validación en Dropbox</div>
+        ${dropboxEstadoHtml}
+      </div>
+      ${dropboxDetalleHtml}
+    </div>
+    <div style="margin-bottom:12px;padding:12px;border:1px solid ${vencido?'var(--red)':'var(--border)'};border-radius:8px;${vencido?'background:rgba(232,64,64,0.05);':''}">
       <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:8px;">🗓 Evidencia de resguardo</div>
-      ${periodicidadDias?`<div style="font-size:12px;margin-bottom:6px;">Periodicidad: <b>cada ${periodicidadDias} día${periodicidadDias===1?'':'s'}</b>${servidorInfo?` (derivado del servidor ${servidorInfo.productos_servidores?.nombre||servidorInfo.nombre_servidor||''})`:''}${c.resguardo_periodicidad_dias_override?' (ajuste manual de esta póliza)':''}</div>`:`<div style="font-size:12px;color:var(--text3);margin-bottom:6px;">Sin periodicidad definida todavía${(!c.servidor_cloud_id&&c.polizas_catalogo?.nombre==='Resguardo Nube (con Servidor)')?' — liga esta póliza a un servidor del catálogo en Mesa de Control › Servidores Cloud para calcularla automáticamente.':'.'}</div>`}
+      ${periodicidadDias?`<div style="font-size:12px;margin-bottom:6px;">Periodicidad: <b>cada ${periodicidadDias} día${periodicidadDias===1?'':'s'}</b>${servidorInfo?` (derivado del servidor ${servidorInfo.productos_servidores?.nombre||servidorInfo.nombre_servidor||''})`:''}${c.resguardo_periodicidad_dias_override?' (ajuste manual de esta póliza)':''}</div>`:`<div style="font-size:12px;color:var(--text3);margin-bottom:6px;">Sin periodicidad definida todavía — configúrala abajo en "⚙ Configuración de resguardo".</div>`}
       ${proximoVencimiento?`<div style="font-size:12px;margin-bottom:8px;${vencido?'color:var(--red);font-weight:700;':''}">${vencido?'⚠ Evidencia vencida desde el':'Próxima evidencia debida:'} ${proximoVencimiento}</div>`:''}
       ${incidencia?`<div style="margin-bottom:8px;font-size:11px;padding:6px 10px;background:rgba(232,64,64,0.08);border-radius:6px;">🎫 Incidencia abierta por falta de evidencia: <a href="#" onclick="event.preventDefault();document.getElementById('modalDetallePoliza')?.remove();abrirDetalleTicket('${incidencia.id}')" style="color:var(--navy);font-weight:600;">${incidencia.folio_ticket}</a> (${incidencia.estatus})</div>`:''}
-      <div style="margin-bottom:8px;">
+      <div style="font-size:10px;color:var(--text3);margin-bottom:3px;">¿De qué fecha es el respaldo que estás subiendo?</div>
+      <div style="margin-bottom:8px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+        <input type="date" id="resguardoFecha_${id}" value="${periodoActualParaInput}" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;">
         <input type="file" id="resguardoArchivo_${id}" style="font-size:11px;">
-        <input type="text" id="resguardoNota_${id}" placeholder="Nota (opcional)" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;width:160px;margin-left:6px;">
-        <button onclick="guardarEvidenciaResguardo('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;margin-left:6px;">📤 Subir evidencia</button>
+        <input type="text" id="resguardoNota_${id}" placeholder="Nota (opcional)" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;width:140px;">
+        <button onclick="guardarEvidenciaResguardo('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">📤 Subir evidencia</button>
       </div>
       <div style="font-size:11px;font-weight:600;color:var(--text3);margin-bottom:4px;">Historial (${(evidencias||[]).length})</div>
       <div style="max-height:140px;overflow-y:auto;">
-        ${!evidencias?.length?'<div style="font-size:11px;color:var(--text3);font-style:italic;">Sin evidencias subidas todavía.</div>':evidencias.map(e=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-top:1px solid var(--border);font-size:11px;"><span>${e.periodo_fecha}${e.nota?' — '+e.nota:''}</span><span style="color:var(--text3);">${(e.fecha_subida||'').slice(0,10)}</span></div>`).join('')}
+        ${!evidencias?.length?'<div style="font-size:11px;color:var(--text3);font-style:italic;">Sin evidencias subidas todavía.</div>':evidencias.map(e=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-top:1px solid var(--border);font-size:11px;"><span>${e.origen==='dropbox'?'🤖':'👤'} ${e.periodo_fecha}${e.nota?' — '+e.nota:''}</span><span style="color:var(--text3);">${(e.fecha_subida||'').slice(0,10)}</span></div>`).join('')}
       </div>
+    </div>
+    <div style="margin-bottom:12px;padding:12px;border:1px dashed var(--border);border-radius:8px;">
+      <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:8px;">⚙ Configuración de resguardo</div>
+      <div style="margin-bottom:8px;">
+        <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Servidor cloud contratado (si aplica — no depende del CRM)</div>
+        <select id="resguardoServidorProducto_${id}" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;width:100%;">
+          <option value="">— Sin servidor / no aplica —</option>
+          ${(serversCat||[]).map(p=>`<option value="${p.id}" ${p.id===productoServidorIdActual?'selected':''}>${p.nombre}</option>`).join('')}
+        </select>
+      </div>
+      <div style="margin-bottom:8px;">
+        <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Carpeta en Dropbox (nombre/ruta exacta de la carpeta del cliente)</div>
+        <input type="text" id="resguardoDropboxFolder_${id}" value="${c.resguardo_dropbox_folder||''}" placeholder="/Clientes/Nombre corto" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;width:100%;">
+      </div>
+      <div style="margin-bottom:8px;">
+        <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Ajuste manual de periodicidad en días (opcional — tiene prioridad sobre servidor y catálogo)</div>
+        <input type="number" min="1" id="resguardoOverrideDias_${id}" value="${c.resguardo_periodicidad_dias_override||''}" placeholder="p.ej. 3" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;width:100px;">
+      </div>
+      <button onclick="guardarConfigResguardo('${id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">💾 Guardar configuración</button>
     </div>`;
   }
   const html=`
@@ -19789,6 +19889,7 @@ async function abrirDetallePoliza(id){
       <span>${est.agotada?'⚠ Se acabó el banco de horas.':est.vencida?'⚠ Venció por fecha.':'⚠ Ya existe otra póliza del mismo tipo para este cliente, con fecha de inicio más reciente — es probable que esta ya esté reemplazada.'} Si ya no va a seguir usándose, puedes cerrarla — se saca de "📋 Pólizas" y queda archivada en "🗂 Histórico de pólizas".</span>
       <button onclick="cerrarPoliza('${id}')" style="background:var(--red);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">📁 Cerrar póliza</button>
     </div>`:''}
+    ${c.seccion_manual==='resguardo'?'<div style="display:grid;grid-template-columns:1.15fr 1fr;gap:16px;align-items:start;"><div>':''}
     ${cartera?`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(0,169,157,0.06);border-radius:6px;font-size:11px;">
       🔗 Vinculado a Cartera de Cuentas: <b>${cartera.razon_social}</b>${cartera.num_cliente?' · #'+cartera.num_cliente:''}${cartera.vendedor_asignado?' · vendedor: '+cartera.vendedor_asignado:''}${cartera.telefono?' · tel: '+cartera.telefono:''}
       <div style="margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;">
@@ -19846,7 +19947,7 @@ async function abrirDetallePoliza(id){
       ${c.polizas_catalogo.resguardos_incluidos?`<div style="margin-bottom:4px;">💾 ${c.polizas_catalogo.resguardos_incluidos}</div>`:''}
       ${c.polizas_catalogo.beneficios?`<div style="color:var(--text2);border-top:1px solid var(--border);padding-top:6px;margin-top:4px;line-height:1.5;">${c.polizas_catalogo.beneficios}</div>`:''}
     </div>`:`<div style="margin-bottom:12px;font-size:11px;color:var(--text3);">Sin tipo de póliza asignado — asígnalo arriba para ver prioridad, horario y beneficios.</div>`}
-    ${resguardoBloque}
+    ${c.seccion_manual==='resguardo'?'</div><div>':''}${resguardoBloque}${c.seccion_manual==='resguardo'?'</div></div>':''}
 
     <div style="margin-bottom:12px;padding:10px 12px;background:rgba(41,128,185,0.06);border-radius:6px;">
       <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:6px;">⏱ Horas — con base en los tickets reales${c.poliza_numero_legacy?` (app + historial 2019-2026 de POL${c.poliza_numero_legacy})`:' (app)'}</div>
@@ -19893,7 +19994,7 @@ async function abrirDetallePoliza(id){
         </tbody>
       </table>
     </div>`;
-  mkModal('modalDetallePoliza',`Detalle de póliza — ${c.cliente_nombre}`,html,null,'Cerrar',true);
+  mkModal('modalDetallePoliza',`Detalle de póliza — ${c.cliente_nombre}`,html,null,'Cerrar',c.seccion_manual==='resguardo'?'1000px':true);
 }
 // Autollena "Horas que incluye la póliza" al elegir el tipo de póliza en
 // el detalle (Jp, 2026-09-09): "las horas las debes de colocar en
