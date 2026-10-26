@@ -19004,17 +19004,68 @@ async function renderDirectorOperaciones(){
 async function renderOpsResumen(){
   const body=document.getElementById('opsBody');
   body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
-  const [{data:tickets,error},{data:asesores}]=await Promise.all([
+  // Jp, 2026-10-26 — "Mesa es como un controlador de vuelo, no se le puede
+  // ir nada": el Resumen (primera pantalla que ve Mesa de Control al
+  // entrar) debe mostrar de un vistazo, además de los tickets de siempre,
+  // el status de los resguardos, las pólizas de soporte por vencer, y
+  // cuántas solicitudes de Telegram siguen sin convertirse en ticket — no
+  // solo el badge que ya existía en "🎫 Servicios/tickets".
+  const [{data:tickets,error},{data:asesores},{count:telegramPendientesCount},{data:polizasResguardo},{data:polizasPorVencer}]=await Promise.all([
     sb.from('servicios_ejecutados')
       .select('*, clientes_polizas(cliente_nombre, polizas_catalogo(prioridad_codigo,prioridad_nombre,resp_horas_min,resp_horas_max))')
       .order('created_at',{ascending:false}).limit(500),
-    sb.from('usuarios').select('id,nombre').eq('rol','asesor').order('nombre')
+    sb.from('usuarios').select('id,nombre').eq('rol','asesor').order('nombre'),
+    sb.from('mesa_control_telegram_solicitudes').select('id',{count:'exact',head:true}).eq('estado','pendiente'),
+    sb.from('clientes_polizas')
+      .select('id,cliente_nombre,fecha_inicio,resguardo_periodicidad_dias_override,servidor_cloud_id,numero_proyecto_crm,polizas_catalogo!inner(nombre,categoria,resguardo_periodicidad_dias)')
+      .neq('estatus','CERRADA').eq('polizas_catalogo.categoria','RESGUARDO'),
+    sb.from('clientes_polizas')
+      .select('id,cliente_nombre,fecha_vencimiento,numero_proyecto_crm,polizas_catalogo(nombre,categoria)')
+      .neq('estatus','CERRADA').not('fecha_vencimiento','is',null)
+      .lte('fecha_vencimiento',new Date(Date.now()+30*86400000).toISOString().slice(0,10))
+      .gte('fecha_vencimiento',todayLocal())
   ]);
   if(error){body.innerHTML=`<div style="padding:20px;color:var(--red);">Error cargando el resumen: ${error.message}. ¿Ya corriste el SQL de Operaciones Fase 1?</div>`;return;}
   window._opsTickets=tickets||[];
   window._opsAsesores=asesores||[];
 
   const today=todayLocal();
+
+  // ── Status de resguardo (mismo cálculo que abrirDetallePoliza/el cron
+  // diario) — vencidas y por vencer en los próximos 3 días (Jp, 2026-10-26:
+  // mismo umbral que ya usa el aviso por correo).
+  const resguardoPolizaIds=(polizasResguardo||[]).map(p=>p.id);
+  let evidenciasPorPoliza={};
+  if(resguardoPolizaIds.length){
+    const {data:evid}=await sb.from('resguardo_evidencias').select('cliente_poliza_id,periodo_fecha').in('cliente_poliza_id',resguardoPolizaIds).order('periodo_fecha',{ascending:false});
+    (evid||[]).forEach(e=>{ if(!evidenciasPorPoliza[e.cliente_poliza_id]) evidenciasPorPoliza[e.cliente_poliza_id]=e.periodo_fecha; });
+  }
+  const servidorIdsResumen=[...new Set((polizasResguardo||[]).map(p=>p.servidor_cloud_id).filter(Boolean))];
+  let servidorMapResumen={};
+  if(servidorIdsResumen.length){
+    const {data:servs}=await sb.from('clientes_servidores_cloud').select('id,productos_servidores(specs)').in('id',servidorIdsResumen);
+    (servs||[]).forEach(s=>{servidorMapResumen[s.id]=s;});
+  }
+  const resguardoVencidas=[],resguardoPorVencer=[];
+  (polizasResguardo||[]).forEach(p=>{
+    const periodicidadDias=p.resguardo_periodicidad_dias_override||p.polizas_catalogo?.resguardo_periodicidad_dias
+      ||(p.servidor_cloud_id&&servidorMapResumen[p.servidor_cloud_id]?.productos_servidores?.specs?parsearPeriodicidadBackupSpecs(servidorMapResumen[p.servidor_cloud_id].productos_servidores.specs):null);
+    if(!periodicidadDias||!p.fecha_inicio) return;
+    const ultimaEvidencia=evidenciasPorPoliza[p.id]||null;
+    const proximoVencimiento=calcularProximoVencimientoResguardo(p.fecha_inicio,periodicidadDias,ultimaEvidencia);
+    const diasParaVencer=Math.floor((new Date(proximoVencimiento+'T00:00:00')-new Date(today+'T00:00:00'))/86400000);
+    const fila={cliente:p.cliente_nombre,detalle:`${p.polizas_catalogo?.nombre||'Resguardo'} — ${diasParaVencer<0?`vencida desde el ${proximoVencimiento}`:`debida el ${proximoVencimiento} (en ${diasParaVencer} día${diasParaVencer===1?'':'s'})`}`,id:p.id};
+    if(diasParaVencer<0) resguardoVencidas.push(fila);
+    else if(diasParaVencer<=3) resguardoPorVencer.push(fila);
+  });
+
+  // ── Pólizas de soporte por vencer en 30 días (no resguardo — ese ya
+  // tiene su propio bloque arriba) — mismo umbral que opsEstadoPoliza().
+  const polizasSoportePorVencer=(polizasPorVencer||[]).filter(p=>(p.polizas_catalogo?.categoria||'').toUpperCase()!=='RESGUARDO').map(p=>({
+    cliente:p.cliente_nombre,
+    detalle:`${p.polizas_catalogo?.nombre||'Póliza'} — vence el ${p.fecha_vencimiento}`,
+    id:p.id
+  }));
   const ahora=Date.now();
 
   function slaInfo(t){
@@ -19080,8 +19131,41 @@ async function renderOpsResumen(){
       <tbody>${rows.map(t=>filaTicket(t)).join('')}</tbody>
     </table>`;
   }
+  // Mismo formato de tarjeta {cliente,detalle} que ya usaba el correo diario
+  // de resguardo (api/cron/resguardo-evidencia-check.js) — aquí dentro de la
+  // App, clicable al detalle de la póliza cuando se conoce su id.
+  function filaSimple(f){
+    return `<div onclick="${f.id?`abrirDetallePoliza('${f.id}')`:''}" style="padding:10px 0;border-bottom:1px solid var(--border);${f.id?'cursor:pointer;':''}">
+      <div style="font-size:13px;font-weight:700;color:var(--navy);">${f.cliente}</div>
+      <div style="font-size:12px;color:var(--text2);margin-top:2px;">${f.detalle}</div>
+    </div>`;
+  }
 
   body.innerHTML=`
+    <div style="font-size:12px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:8px;">🗼 Torre de control</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:10px;">
+      <div class="thc" style="cursor:pointer;${telegramPendientesCount>0?'border:1px solid #F5A623;':''}" onclick="swOps('tickets');setTimeout(abrirTelegramPendientesModal,50);"><div class="th-lbl">📨 Telegram por asignar</div><div class="th-val" style="color:#F5A623;">${telegramPendientesCount||0}</div></div>
+      <div class="thc" style="${resguardoVencidas.length?'border:1px solid var(--red);':''}"><div class="th-lbl">💾 Resguardo vencido</div><div class="th-val" style="color:var(--red);">${resguardoVencidas.length}</div></div>
+      <div class="thc" style="${resguardoPorVencer.length?'border:1px solid #F5A623;':''}"><div class="th-lbl">💾 Resguardo por vencer (3d)</div><div class="th-val" style="color:#F5A623;">${resguardoPorVencer.length}</div></div>
+      <div class="thc" style="cursor:pointer;" onclick="swOps('contratos')"><div class="th-lbl">📋 Pólizas por vencer (30d)</div><div class="th-val" style="color:#F5A623;">${polizasSoportePorVencer.length}</div></div>
+    </div>
+
+    ${resguardoVencidas.length?`<div style="margin-bottom:22px;">
+      <div style="font-size:13px;font-weight:700;color:var(--red);margin-bottom:8px;">💾 Evidencia de resguardo vencida — sin subir (${resguardoVencidas.length})</div>
+      ${resguardoVencidas.map(filaSimple).join('')}
+    </div>`:''}
+
+    ${resguardoPorVencer.length?`<div style="margin-bottom:22px;">
+      <div style="font-size:13px;font-weight:700;color:#B8740A;margin-bottom:8px;">💾 Evidencia de resguardo por vencer en 3 días o menos (${resguardoPorVencer.length})</div>
+      ${resguardoPorVencer.map(filaSimple).join('')}
+    </div>`:''}
+
+    ${polizasSoportePorVencer.length?`<div style="margin-bottom:22px;">
+      <div style="font-size:13px;font-weight:700;color:#B8740A;margin-bottom:8px;">📋 Pólizas de soporte por vencer en los próximos 30 días (${polizasSoportePorVencer.length})</div>
+      ${polizasSoportePorVencer.map(filaSimple).join('')}
+    </div>`:''}
+
+    <div style="font-size:12px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:0.04em;margin:20px 0 8px;">🎫 Tickets y servicios</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:20px;">
       <div class="thc" style="cursor:pointer;" onclick="opsIrATickets('PENDIENTE')"><div class="th-lbl">Sin asignar</div><div class="th-val" style="color:#F5A623;">${sinAsignar.length}</div></div>
       <div class="thc" style="cursor:pointer;" onclick="opsIrATickets('encurso')"><div class="th-lbl">En curso</div><div class="th-val" style="color:#2980B9;">${enCurso.length}</div></div>
@@ -20789,16 +20873,33 @@ async function guardarDetalleTicket(){
 
 // ── HISTORIAL (Jp, 2026-09-07): el log completo de servicios que Mesa de
 // Control ha reportado desde 2019 vía el formulario "Pólizas de Asistencia
-// Aspel" (123FormBuilder) — 8,649 registros importados a `servicios_historicos`.
+// Aspel" (123FormBuilder) — 8,678 registros importados a `servicios_historicos`.
 // Objetivo confirmado con Jp: verlo en el detalle de póliza/cuenta (ver
 // abrirDetallePoliza más abajo, que ya lo combina) y tener un reporte de
 // productividad histórica por asesor. Aquí solo se traen fecha/asesor/tipo
 // (no las descripciones completas) para que el conteo agregado sea liviano;
 // el buscador trae el detalle completo solo para el cliente que se busca.
+//
+// Jp, 2026-10-24 — bug encontrado en la auditoría del rol Mesa de Control
+// (claude/auditoria-mesa-control-231026.md, hallazgo #1): esta consulta no
+// paginaba, así que Supabase/PostgREST la truncaba en silencio a 1,000 filas
+// de las 8,678 reales (11.5%), y como tampoco traía ORDER BY, cuáles 1,000
+// llegaban era arbitrario — "servicios por año"/"por asesor" no eran
+// representativos. Mismo fix de paginación ya usado en opsCargarMapasMinutos().
 async function renderOpsHistorial(){
   const body=document.getElementById('opsBody');
   body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
-  const {data:rows,error}=await sb.from('servicios_historicos').select('fecha_registro,asesor_nombre,tipo_ticket,cliente_cartera_id');
+  const rows=[];
+  let errorPag=null;
+  const pageSize=1000;
+  for(let from=0;;from+=pageSize){
+    const {data,error}=await sb.from('servicios_historicos').select('fecha_registro,asesor_nombre,tipo_ticket,cliente_cartera_id').range(from,from+pageSize-1);
+    if(error){errorPag=error;break;}
+    if(!data||!data.length) break;
+    rows.push(...data);
+    if(data.length<pageSize) break;
+  }
+  const error=errorPag;
   if(error){body.innerHTML=`<div style="color:var(--red);">Error: ${error.message}. ¿Ya corriste el import de historial (supabase/mesa_control_historial_*.sql)?</div>`;return;}
   window._opsHistorialResumen=rows||[];
   const total=(rows||[]).length;
