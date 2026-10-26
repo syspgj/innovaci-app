@@ -5869,7 +5869,7 @@ function tsPlusEditarPrecio(id){
 // distribuidor), configurable por Jp sin tocar código. Ver
 // claude/cotizador-sibo-fiscal-diseno.md para el diseño completo.
 // ══════════════════════════════════════════════════════════════════════════════
-let cotizEmpresas=1, cotizPeriodo='anual', cotizConIva=false, cotizProductoSlug='siigo-fiscal';
+let cotizEmpresas=1, cotizPeriodo='anual', cotizConIva=false, cotizProductoSlug='siigo-fiscal', cotizPlanSeleccionado=null;
 async function renderCotizador(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando catálogo...</div>';
@@ -5922,18 +5922,24 @@ function cotizadorCalcularPlan(plan,productoId,periodicidad,conIva){
   const precioMensualRef=parseFloat((window._cotizPrecios||[]).find(p=>p.plan_id===plan.id&&p.periodicidad==='mensual')?.precio_lista_mensual||precioListaMensual);
   const totalSiFueraMensualSinIva=precioMensualRef*meses;
   const ahorroVsMensualSinIva=Math.max(0,totalSiFueraMensualSinIva-subtotalSinIva);
+  // Jp, 2026-10-26 (4ta ronda): "el precio sin IVA o con IVA solo se
+  // actualiza en el precio mensual, debe actualizarse en todas las cifras"
+  // — el toggle ahora aplica parejo a TODAS las cifras del resumen (Lista,
+  // Descuento, Total, Ahorro), no solo al precio/mes. Subtotal se queda
+  // siempre sin IVA (es justo lo que indica su etiqueta) y la fila de IVA
+  // solo se suma cuando el toggle está prendido.
   const iva=conIva?(1+COTIZ_IVA_PCT/100):1;
   return {
-    meses, descPct,
+    meses, descPct, conIva,
     precioMensualFinal:precioMensualFinalSinIva*iva,
-    listaPeriodo:listaPeriodoSinIva*(1+COTIZ_IVA_PCT/100),
-    subtotalSinIva, descuentoPesos:descuentoPesosSinIva*(1+COTIZ_IVA_PCT/100), ivaMonto:ivaMontoSinRedondear, totalConIva,
+    listaPeriodo:listaPeriodoSinIva*iva,
+    subtotalSinIva,
+    descuentoPesos:descuentoPesosSinIva*iva,
+    ivaMonto:ivaMontoSinRedondear,
+    totalConIva,
     totalPeriodo:conIva?totalConIva:subtotalSinIva,
-    // El badge de ahorro y el resumen de compra siempre se muestran con IVA
-    // incluido (la base de comparación más honesta frente al cliente),
-    // independiente del toggle que solo controla el precio/mes destacado.
-    ahorro:ahorroVsMensualSinIva*(1+COTIZ_IVA_PCT/100),
-    totalSiFueraMensual:totalSiFueraMensualSinIva*(1+COTIZ_IVA_PCT/100),
+    ahorro:ahorroVsMensualSinIva*iva,
+    totalSiFueraMensual:totalSiFueraMensualSinIva*iva,
   };
 }
 function cotizadorPintar(){
@@ -5948,6 +5954,19 @@ function cotizadorPintar(){
   // "si necesita 3, se le muestra Empresarial, pero también se le puede
   // mostrar Corporativo" — para comparar, no solo el exacto).
   const planesAplican=planesProducto.filter(p=>p.rfcs_cubiertos==null||p.rfcs_cubiertos>=n);
+  // Jp, 2026-10-26 (4ta ronda): "no pude seleccionar qué paquete se iba a
+  // cotizar" — antes se guardaba el primero que aplicaba sin preguntar. Ahora
+  // hay botón "Elegir este plan" en cada tarjeta; si no hay nada elegido
+  // todavía (o lo elegido ya no aplica, ej. cambió el número de empresas) se
+  // preselecciona el primero que sí aplica, pero el usuario puede cambiarlo.
+  if(!cotizPlanSeleccionado||!planesAplican.some(p=>p.id===cotizPlanSeleccionado)){
+    cotizPlanSeleccionado=planesAplican[0]?.id||null;
+  }
+  // No perder lo ya capturado (búsqueda de cuenta/prospecto, nota) al
+  // repintar por cambios de empresas/periodicidad/IVA/selección de plan.
+  const notasPrevias=document.getElementById('cotizNotas')?.value||'';
+  const buscarPrevio=document.getElementById('cotizBuscarCuenta')?.value||'';
+  const ligadoAPrevio=document.getElementById('cotizLigadoA')?.innerHTML||'';
   mc.innerHTML=`
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
     <div>
@@ -5987,56 +6006,94 @@ function cotizadorPintar(){
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
       <div style="flex:1;min-width:220px;position:relative;">
         <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Cuenta real (Cartera) o prospecto</div>
-        <input type="text" id="cotizBuscarCuenta" placeholder="Escribe para buscar..." autocomplete="off" oninput="cotizadorFiltrarCuentas()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;">
+        <input type="text" id="cotizBuscarCuenta" placeholder="Escribe para buscar..." autocomplete="off" value="${buscarPrevio.replace(/"/g,'&quot;')}" oninput="cotizadorFiltrarCuentas()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;">
         <div id="cotizSugerencias" style="position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid var(--border);border-radius:var(--radsm);box-shadow:var(--shadow-md);z-index:50;max-height:220px;overflow-y:auto;display:none;"></div>
       </div>
-      <div id="cotizLigadoA" style="font-size:12px;color:var(--text3);"></div>
+      <div id="cotizLigadoA" style="font-size:12px;color:var(--text3);">${ligadoAPrevio}</div>
     </div>
-    <textarea id="cotizNotas" placeholder="Nota (opcional)" style="width:100%;margin-top:10px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;min-height:50px;"></textarea>
+    <textarea id="cotizNotas" placeholder="Nota (opcional)" style="width:100%;margin-top:10px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;min-height:50px;">${notasPrevias}</textarea>
     <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
       <button class="cartera-subtab" style="background:var(--navy);color:#fff;" onclick="cotizadorGuardar(false)">💾 Guardar cotización</button>
       <button class="cartera-subtab" onclick="cotizadorGuardar(true)">🎯 Guardar y crear oportunidad en Proyección</button>
     </div>
-    <div style="font-size:10px;color:var(--text3);margin-top:6px;">Si no ligas a nadie, queda como cotización de consulta.</div>
+    <div style="font-size:10px;color:var(--text3);margin-top:6px;">Plan que se guarda: <b>${(planesAplican.find(p=>p.id===cotizPlanSeleccionado)||{}).nombre||'—'}</b> · Si no ligas a nadie, queda como cotización de consulta.</div>
+  </div>
+
+  <div class="card" style="padding:16px 18px;margin-top:16px;">
+    <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:10px;">🕑 Cotizaciones recientes ${userProfile?.rol!=='director'&&userProfile?.rol!=='administracion'?'(tuyas)':'(de todos)'}</div>
+    <div id="cotizListaRecientes"><div style="font-size:12px;color:var(--text3);">Cargando...</div></div>
   </div>`;
+  cotizadorCargarRecientes();
+}
+async function cotizadorCargarRecientes(){
+  const cont=document.getElementById('cotizListaRecientes');
+  if(!cont) return;
+  const esDirector=userProfile?.rol==='director'||userProfile?.rol==='administracion';
+  let q=sb.from('cotizador_cotizaciones').select('*,cotizador_planes(nombre),clientes_cartera(razon_social),prospectos(nombre),usuarios(nombre)').order('created_at',{ascending:false}).limit(20);
+  if(!esDirector) q=q.eq('usuario_id',currentUser?.id);
+  const {data,error}=await q;
+  if(error){cont.innerHTML=`<div style="font-size:12px;color:#c0392b;">Error cargando cotizaciones: ${error.message}</div>`;return;}
+  if(!data||!data.length){cont.innerHTML='<div style="font-size:12px;color:var(--text3);">Todavía no hay cotizaciones guardadas.</div>';return;}
+  cont.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="background:var(--bg2,#f5f6f8);"><th style="text-align:left;padding:6px 8px;">Fecha</th><th style="text-align:left;padding:6px 8px;">Plan</th><th style="text-align:left;padding:6px 8px;">Periodo</th><th style="text-align:left;padding:6px 8px;">Ligada a</th>${esDirector?'<th style="text-align:left;padding:6px 8px;">Quién</th>':''}<th style="text-align:right;padding:6px 8px;">Total</th></tr></thead>
+    <tbody>${data.map(r=>`<tr style="border-top:1px solid var(--border);">
+      <td style="padding:6px 8px;">${(r.created_at||'').slice(0,10)}</td>
+      <td style="padding:6px 8px;">${r.cotizador_planes?.nombre||'—'}</td>
+      <td style="padding:6px 8px;text-transform:capitalize;">${r.periodicidad}</td>
+      <td style="padding:6px 8px;">${r.clientes_cartera?.razon_social?'💼 '+r.clientes_cartera.razon_social:(r.prospectos?.nombre?'🧲 '+r.prospectos.nombre:'<span style="color:var(--text3);">Sin ligar</span>')}</td>
+      ${esDirector?`<td style="padding:6px 8px;">${r.usuarios?.nombre||'—'}</td>`:''}
+      <td style="padding:6px 8px;text-align:right;font-weight:700;">${fmt(r.precio_total_periodo)}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
 }
 function cotizadorTarjetaPlan(plan,producto){
   const c=cotizadorCalcularPlan(plan,producto.id,cotizPeriodo,cotizConIva);
   if(!c) return '';
   const benef=(plan.beneficios||[]);
-  return `<div class="card" style="padding:16px;${plan.recomendado?'border:2px solid var(--teal);box-shadow:var(--shadow-md);':''}">
-    ${plan.recomendado?'<div style="background:var(--teal);color:#fff;font-size:10px;font-weight:700;text-align:center;padding:3px 0;border-radius:4px;margin:-16px -16px 10px -16px;">RECOMENDADO</div>':''}
+  const seleccionado=cotizPlanSeleccionado===plan.id;
+  const borde=seleccionado?'border:2px solid var(--navy);box-shadow:var(--shadow-md);':(plan.recomendado?'border:2px solid var(--teal);box-shadow:var(--shadow-md);':'');
+  return `<div class="card" style="padding:16px;position:relative;${borde}">
+    ${plan.recomendado&&!seleccionado?'<div style="background:var(--teal);color:#fff;font-size:10px;font-weight:700;text-align:center;padding:3px 0;border-radius:4px;margin:-16px -16px 10px -16px;">RECOMENDADO</div>':''}
+    ${seleccionado?'<div style="background:var(--navy);color:#fff;font-size:10px;font-weight:700;text-align:center;padding:3px 0;border-radius:4px;margin:-16px -16px 10px -16px;">✓ PLAN A COTIZAR</div>':''}
     <div style="font-weight:700;font-size:14px;color:var(--text);margin-bottom:2px;">${plan.nombre}</div>
     <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">${plan.rfcs_cubiertos==null?'RFCs ilimitados':plan.rfcs_cubiertos+' RFC'+(plan.rfcs_cubiertos>1?'s':'')} · ${plan.usuarios} usuario${plan.usuarios>1?'s':''}</div>
     <div style="font-size:22px;font-weight:800;color:var(--navy);">${fmt(c.precioMensualFinal)}<span style="font-size:11px;font-weight:600;color:var(--text3);">/mes</span></div>
     ${c.descPct>0?`<div style="font-size:11px;color:var(--teal);font-weight:700;margin-top:2px;">-${c.descPct}% distribuidor activo</div>`:''}
 
     <div style="margin-top:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:8px;">
-      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px;">Resumen — total ${c.meses===1?'1 mes':c.meses+' meses'}</div>
+      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px;">Resumen — total ${c.meses===1?'1 mes':c.meses+' meses'} ${cotizConIva?'(con IVA)':'(sin IVA)'}</div>
       <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-bottom:3px;"><span>Lista</span><span style="${c.descuentoPesos>0?'text-decoration:line-through;':''}">${fmt(c.listaPeriodo)}</span></div>
       ${c.descuentoPesos>0?`<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--teal);margin-bottom:3px;"><span>Descuento distribuidor</span><span>-${fmt(c.descuentoPesos)}</span></div>`:''}
       <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:var(--text);border-top:1px solid var(--border);padding-top:5px;margin-top:3px;"><span>Subtotal (sin IVA)</span><span>${fmt(c.subtotalSinIva)}</span></div>
-      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-top:3px;"><span>IVA (16%)</span><span>${fmt(c.ivaMonto)}</span></div>
-      <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:800;color:var(--navy);border-top:1px solid var(--border);padding-top:5px;margin-top:4px;"><span>Total a pagar</span><span>${fmt(c.totalConIva)}</span></div>
-      <div style="font-size:9px;color:var(--text3);text-align:right;margin-top:2px;">${cotizConIva?'Mostrando con IVA':'Precio destacado arriba sin IVA — este resumen siempre incluye IVA'}</div>
+      ${cotizConIva?`<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-top:3px;"><span>IVA (16%)</span><span>${fmt(c.ivaMonto)}</span></div>`:''}
+      <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:800;color:var(--navy);border-top:1px solid var(--border);padding-top:5px;margin-top:4px;"><span>Total a pagar</span><span>${fmt(c.totalPeriodo)}</span></div>
     </div>
 
     ${c.ahorro>0?`<div style="margin-top:8px;padding:6px 8px;background:rgba(0,169,157,0.08);border-radius:6px;font-size:11px;color:var(--teal);font-weight:700;">💰 Ahorra ${fmt(c.ahorro)} vs. pagar Mensual</div>`:''}
+    <button onclick="cotizPlanSeleccionado='${plan.id}';cotizadorPintar();" style="width:100%;margin-top:10px;padding:8px;border-radius:var(--radsm);font-size:12px;font-weight:700;cursor:pointer;${seleccionado?'background:var(--navy);color:#fff;border:1px solid var(--navy);':'background:#fff;color:var(--navy);border:1px solid var(--navy);'}">${seleccionado?'✓ Este es el plan a cotizar':'Elegir este plan'}</button>
     <ul style="margin:10px 0 0;padding-left:18px;font-size:11px;color:var(--text2);">
       ${benef.map(b=>`<li>${b}</li>`).join('')}
     </ul>
   </div>`;
 }
 function cotizadorFiltrarCuentas(){
-  const q=(document.getElementById('cotizBuscarCuenta').value||'').toLowerCase().trim();
+  const qRaw=(document.getElementById('cotizBuscarCuenta').value||'').trim();
+  const q=qRaw.toLowerCase();
   const box=document.getElementById('cotizSugerencias');
+  // Jp, 2026-10-26 (4ta ronda): cualquier tecleo nuevo invalida el ligado
+  // previo, para que no se guarde "ligado" a algo que ya no coincide con
+  // lo que está escrito en la caja.
+  window._cotizCuentaId=null; window._cotizProspectoId=null;
+  const ligadoA=document.getElementById('cotizLigadoA');
+  if(ligadoA) ligadoA.innerHTML='';
   if(!q){box.style.display='none';box.innerHTML='';return;}
   const cuentas=(window._cartClientes||[]).filter(c=>(c.razon_social||'').toLowerCase().includes(q)).slice(0,8);
   const prospectos=(window._prospectos||[]).filter(p=>(p.nombre||'').toLowerCase().includes(q)).slice(0,8);
-  if(!cuentas.length&&!prospectos.length){box.style.display='none';box.innerHTML='';return;}
+  const nombreEscapado=qRaw.replace(/'/g,"\\'");
   box.innerHTML=[
     ...cuentas.map(c=>`<div onclick="cotizadorLigarCuenta('${c.id}','${(c.razon_social||'').replace(/'/g,"\\'")}')" style="padding:8px 10px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--border);">💼 ${c.razon_social}</div>`),
     ...prospectos.map(p=>`<div onclick="cotizadorLigarProspecto('${p.id}','${(p.nombre||'').replace(/'/g,"\\'")}')" style="padding:8px 10px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--border);">🧲 ${p.nombre}</div>`),
+    `<div onclick="cotizadorCrearProspectoRapido('${nombreEscapado}')" style="padding:8px 10px;cursor:pointer;font-size:12px;color:var(--navy);font-weight:700;">➕ Crear prospecto nuevo: "${qRaw}"</div>`,
   ].join('');
   box.style.display='block';
 }
@@ -6052,14 +6109,23 @@ function cotizadorLigarProspecto(id,nombre){
   document.getElementById('cotizSugerencias').style.display='none';
   document.getElementById('cotizLigadoA').innerHTML=`🧲 Prospecto: <b>${nombre}</b>`;
 }
+async function cotizadorCrearProspectoRapido(nombre){
+  if(!nombre||!nombre.trim()){alert('Escribe un nombre primero.');return;}
+  const {data,error}=await sb.from('prospectos').insert({nombre:nombre.trim(),origen:'Cotizador',asignado_a:currentUser?.id||null}).select().single();
+  if(error){alert('Error creando el prospecto: '+error.message);return;}
+  window._prospectos=[data,...(window._prospectos||[])];
+  document.getElementById('cotizSugerencias').style.display='none';
+  cotizadorLigarProspecto(data.id,data.nombre);
+}
 async function cotizadorGuardar(crearOportunidad){
   const producto=(window._cotizProductos||[]).find(p=>p.slug===cotizProductoSlug);
   const n=parseInt(cotizEmpresas)||1;
   const planesProducto=(window._cotizPlanes||[]).filter(p=>p.producto_id===producto.id);
   const planesAplican=planesProducto.filter(p=>p.rfcs_cubiertos==null||p.rfcs_cubiertos>=n);
-  // Se guarda el primer plan que aplica (el más chico que cubre lo pedido) como
-  // el "principal" de la cotización — los demás mostrados son para comparar.
-  const planPrincipal=planesAplican[0];
+  // Jp, 2026-10-26 (4ta ronda): se guarda el plan que el usuario eligió con
+  // el botón "Elegir este plan" (cotizPlanSeleccionado), no automáticamente
+  // el más chico que aplica.
+  const planPrincipal=planesAplican.find(p=>p.id===cotizPlanSeleccionado)||planesAplican[0];
   if(!planPrincipal){alert('Ningún plan cubre ese número de empresas.');return;}
   const c=cotizadorCalcularPlan(planPrincipal,producto.id,cotizPeriodo,cotizConIva);
   const notas=document.getElementById('cotizNotas')?.value||null;
@@ -6073,8 +6139,9 @@ async function cotizadorGuardar(crearOportunidad){
   };
   const {data,error}=await sb.from('cotizador_cotizaciones').insert(payload).select().single();
   if(error){alert('Error guardando la cotización: '+error.message);return;}
+  await cotizadorCargarRecientes();
   if(!crearOportunidad){
-    alert('✅ Cotización guardada.');
+    alert('✅ Cotización guardada — ya aparece abajo en "Cotizaciones recientes".');
     return;
   }
   if(!window._cotizCuentaId&&!window._cotizProspectoId){
