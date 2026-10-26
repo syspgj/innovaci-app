@@ -6033,18 +6033,105 @@ async function cotizadorCargarRecientes(){
   if(!esDirector) q=q.eq('usuario_id',currentUser?.id);
   const {data,error}=await q;
   if(error){cont.innerHTML=`<div style="font-size:12px;color:#c0392b;">Error cargando cotizaciones: ${error.message}</div>`;return;}
+  // Jp, 2026-10-26 (5ta ronda): se guarda en memoria para que las acciones
+  // de la columna "Seguimiento" (ligar después / enviar a Proyección) no
+  // tengan que volver a pedir cada renglón a Supabase.
+  window._cotizRecientesData=data||[];
   if(!data||!data.length){cont.innerHTML='<div style="font-size:12px;color:var(--text3);">Todavía no hay cotizaciones guardadas.</div>';return;}
   cont.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:12px;">
-    <thead><tr style="background:var(--bg2,#f5f6f8);"><th style="text-align:left;padding:6px 8px;">Fecha</th><th style="text-align:left;padding:6px 8px;">Plan</th><th style="text-align:left;padding:6px 8px;">Periodo</th><th style="text-align:left;padding:6px 8px;">Ligada a</th>${esDirector?'<th style="text-align:left;padding:6px 8px;">Quién</th>':''}<th style="text-align:right;padding:6px 8px;">Total</th></tr></thead>
-    <tbody>${data.map(r=>`<tr style="border-top:1px solid var(--border);">
+    <thead><tr style="background:var(--bg2,#f5f6f8);"><th style="text-align:left;padding:6px 8px;">Fecha</th><th style="text-align:left;padding:6px 8px;">Plan</th><th style="text-align:left;padding:6px 8px;">Periodo</th><th style="text-align:left;padding:6px 8px;">Ligada a</th>${esDirector?'<th style="text-align:left;padding:6px 8px;">Quién</th>':''}<th style="text-align:right;padding:6px 8px;">Total</th><th style="text-align:left;padding:6px 8px;">Seguimiento</th></tr></thead>
+    <tbody>${data.map(r=>{
+      const ligada=r.cliente_cartera_id||r.prospecto_app_id;
+      const ligadaHtml=r.clientes_cartera?.razon_social?'💼 '+r.clientes_cartera.razon_social:(r.prospectos?.nombre?'🧲 '+r.prospectos.nombre:'<span style="color:var(--text3);">Sin ligar</span>');
+      let accionHtml;
+      if(r.pipeline_vendedor_id){
+        accionHtml=`<span onclick="editarFilaPipe('${r.pipeline_vendedor_id}')" style="cursor:pointer;color:var(--teal);font-weight:700;">✓ En Proyección →</span>`;
+      } else if(ligada){
+        accionHtml=`<span onclick="cotizadorRecienteCrearOportunidad('${r.id}')" style="cursor:pointer;color:var(--navy);font-weight:700;">📈 Enviar a Proyección</span>`;
+      } else {
+        accionHtml=`<span onclick="cotizadorRecienteLigarAbrir('${r.id}')" style="cursor:pointer;color:var(--navy);font-weight:700;">🔗 Ligar</span>`;
+      }
+      return `<tr style="border-top:1px solid var(--border);">
       <td style="padding:6px 8px;">${(r.created_at||'').slice(0,10)}</td>
       <td style="padding:6px 8px;">${r.cotizador_planes?.nombre||'—'}</td>
       <td style="padding:6px 8px;text-transform:capitalize;">${r.periodicidad}</td>
-      <td style="padding:6px 8px;">${r.clientes_cartera?.razon_social?'💼 '+r.clientes_cartera.razon_social:(r.prospectos?.nombre?'🧲 '+r.prospectos.nombre:'<span style="color:var(--text3);">Sin ligar</span>')}</td>
+      <td id="cotizRecLigadaA_${r.id}" style="padding:6px 8px;position:relative;">${ligadaHtml}</td>
       ${esDirector?`<td style="padding:6px 8px;">${r.usuarios?.nombre||'—'}</td>`:''}
       <td style="padding:6px 8px;text-align:right;font-weight:700;">${fmt(r.precio_total_periodo)}</td>
-    </tr>`).join('')}</tbody>
+      <td style="padding:6px 8px;">${accionHtml}</td>
+    </tr>`;
+    }).join('')}</tbody>
   </table>`;
+}
+function cotizadorRecienteLigarAbrir(cotizId){
+  const celda=document.getElementById('cotizRecLigadaA_'+cotizId);
+  if(!celda) return;
+  celda.innerHTML=`<div style="position:relative;min-width:180px;">
+    <input type="text" id="cotizRecBuscar_${cotizId}" placeholder="Buscar cuenta o prospecto..." oninput="cotizadorRecienteFiltrar('${cotizId}')" style="width:100%;padding:5px 7px;border:1px solid var(--border);border-radius:6px;font-size:11px;" autocomplete="off">
+    <div id="cotizRecSug_${cotizId}" style="display:none;position:absolute;z-index:50;background:#fff;border:1px solid var(--border);border-radius:6px;box-shadow:var(--shadow-md);max-height:160px;overflow-y:auto;min-width:220px;margin-top:2px;"></div>
+  </div>`;
+  document.getElementById('cotizRecBuscar_'+cotizId)?.focus();
+}
+function cotizadorRecienteFiltrar(cotizId){
+  const qRaw=(document.getElementById('cotizRecBuscar_'+cotizId)?.value||'').trim();
+  const q=qRaw.toLowerCase();
+  const box=document.getElementById('cotizRecSug_'+cotizId);
+  if(!box) return;
+  if(!q){box.style.display='none';box.innerHTML='';return;}
+  const cuentas=(window._cartClientes||[]).filter(c=>(c.razon_social||'').toLowerCase().includes(q)).slice(0,8);
+  const prospectos=(window._prospectos||[]).filter(p=>(p.nombre||'').toLowerCase().includes(q)).slice(0,8);
+  const nombreEscapado=qRaw.replace(/'/g,"\\'");
+  box.innerHTML=[
+    ...cuentas.map(c=>`<div onclick="cotizadorRecienteLigar('${cotizId}','cuenta','${c.id}','${(c.razon_social||'').replace(/'/g,"\\'")}')" style="padding:6px 8px;cursor:pointer;font-size:11px;border-bottom:1px solid var(--border);">💼 ${c.razon_social}</div>`),
+    ...prospectos.map(p=>`<div onclick="cotizadorRecienteLigar('${cotizId}','prospecto','${p.id}','${(p.nombre||'').replace(/'/g,"\\'")}')" style="padding:6px 8px;cursor:pointer;font-size:11px;border-bottom:1px solid var(--border);">🧲 ${p.nombre}</div>`),
+    `<div onclick="cotizadorRecienteCrearProspectoRapido('${cotizId}','${nombreEscapado}')" style="padding:6px 8px;cursor:pointer;font-size:11px;color:var(--navy);font-weight:700;">➕ Crear prospecto nuevo: "${qRaw}"</div>`,
+  ].join('');
+  box.style.display='block';
+}
+async function cotizadorRecienteLigar(cotizId,tipo,entidadId,nombre){
+  const payload=tipo==='cuenta'?{cliente_cartera_id:entidadId,prospecto_app_id:null}:{prospecto_app_id:entidadId,cliente_cartera_id:null};
+  const {error}=await sb.from('cotizador_cotizaciones').update(payload).eq('id',cotizId);
+  if(error){alert('Error ligando la cotización: '+error.message);return;}
+  await cotizadorCargarRecientes();
+}
+async function cotizadorRecienteCrearProspectoRapido(cotizId,nombre){
+  if(!nombre||!nombre.trim()){alert('Escribe un nombre primero.');return;}
+  const {data,error}=await sb.from('prospectos').insert({nombre:nombre.trim(),origen:'Cotizador',asignado_a:currentUser?.id||null}).select().single();
+  if(error){alert('Error creando el prospecto: '+error.message);return;}
+  window._prospectos=[data,...(window._prospectos||[])];
+  await cotizadorRecienteLigar(cotizId,'prospecto',data.id,data.nombre);
+}
+// Jp, 2026-10-26 (5ta ronda): "necesito saber cómo se le puede dar
+// seguimiento" — manda una cotización YA GUARDADA (ligada a cuenta o
+// prospecto) a Proyección, reusando el mismo modal de negociación que usa
+// Vendedor en cualquier otro lado (agregarFilaPipe), prellenado con los
+// datos de la cotización. Al guardar esa negociación, _guardarFilaPipeInterno
+// detecta window._cotizVinculandoId y marca pipeline_vendedor_id de vuelta
+// en la cotización, para que la lista la muestre como "✓ En Proyección".
+async function cotizadorRecienteCrearOportunidad(cotizId){
+  const r=(window._cotizRecientesData||[]).find(x=>x.id===cotizId);
+  if(!r){alert('No se encontró la cotización — recarga la pestaña e intenta otra vez.');return;}
+  if(!r.cliente_cartera_id&&!r.prospecto_app_id){alert('Primero liga esta cotización a una cuenta o un prospecto.');return;}
+  if(userProfile?.rol!=='vendedor'){
+    alert('Crear la oportunidad en Proyección está disponible por ahora solo para el perfil de Vendedor — para Telemarketing está pendiente de construirse su propio módulo de Proyección.');
+    return;
+  }
+  window._cotizVinculandoId=cotizId;
+  await agregarFilaPipe();
+  const periodoLabel=(r.periodicidad||'')[0]?.toUpperCase()+(r.periodicidad||'').slice(1);
+  const nombreProducto=(window._cotizProductos||[]).find(p=>p.id===r.producto_id)?.nombre||'Siigo Fiscal';
+  const inProducto=document.getElementById('pProducto'), inMonto=document.getElementById('pMonto');
+  if(inProducto) inProducto.value=`${nombreProducto} — ${r.cotizador_planes?.nombre||''} (${periodoLabel})`;
+  if(inMonto) inMonto.value=parseFloat(r.precio_total_periodo||0).toFixed(2);
+  if(r.cliente_cartera_id){
+    await pipeMostrarCuentaLigada(r.cliente_cartera_id,r.clientes_cartera?.razon_social||'');
+  } else if(r.prospecto_app_id){
+    const inNombre=document.getElementById('pCliente');
+    if(inNombre) inNombre.value=r.prospectos?.nombre||'';
+    const hidden=document.createElement('input');
+    hidden.type='hidden'; hidden.id='pipeProspectoAppId'; hidden.value=r.prospecto_app_id;
+    document.getElementById('modalPipe')?.appendChild(hidden);
+  }
 }
 function cotizadorTarjetaPlan(plan,producto){
   const c=cotizadorCalcularPlan(plan,producto.id,cotizPeriodo,cotizConIva);
@@ -6152,6 +6239,10 @@ async function cotizadorGuardar(crearOportunidad){
     alert('✅ Cotización guardada. Crear la oportunidad en Proyección está disponible por ahora solo para el perfil de Vendedor — para Telemarketing está pendiente de construirse su propio módulo de Proyección.');
     return;
   }
+  // Jp, 2026-10-26 (5ta ronda): se marca esta cotización recién guardada para
+  // que, al guardar la negociación que se está por abrir, quede su
+  // pipeline_vendedor_id de vuelta aquí — ver hook en _guardarFilaPipeInterno.
+  window._cotizVinculandoId=data.id;
   await agregarFilaPipe();
   const nombreCliente=document.getElementById('cotizBuscarCuenta')?.value||'';
   const periodoLabel=cotizPeriodo[0].toUpperCase()+cotizPeriodo.slice(1);
@@ -7731,6 +7822,15 @@ async function _guardarFilaPipeInterno(irASiguiente){
     // correspondiente en el CRM (nunca para texto libre, solo con cuenta).
     if(!error&&cuentaId&&nuevaFila){
       await crmCrearOportunidadDesdeNuevaFila(nuevaFila,cuentaId,payload);
+    }
+    // Jp, 2026-10-26 (5ta ronda): si esta negociación nació desde el
+    // Cotizador (cotizadorGuardar o cotizadorRecienteCrearOportunidad dejaron
+    // marcado window._cotizVinculandoId), se guarda de vuelta el id de la
+    // negociación en la cotización, para que "Cotizaciones recientes" la
+    // muestre como "✓ En Proyección" en vez de ofrecer mandarla otra vez.
+    if(!error&&nuevaFila&&window._cotizVinculandoId){
+      await sb.from('cotizador_cotizaciones').update({pipeline_vendedor_id:nuevaFila.id}).eq('id',window._cotizVinculandoId);
+      window._cotizVinculandoId=null;
     }
     // Primera actividad opcional — reemplaza los campos sueltos de
     // Objeción/Siguiente paso de antes. Queda en la bitácora y, si la
