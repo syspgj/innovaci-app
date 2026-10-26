@@ -42,12 +42,18 @@
 //      "10 14 * * *".
 //   3. Sube el archivo a tu repo como siempre y Vercel despliega solo.
 
+import crypto from 'node:crypto';
+
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const DROPBOX_APP_KEY = process.env.DROPBOX_APP_KEY;
 const DROPBOX_APP_SECRET = process.env.DROPBOX_APP_SECRET;
 const DROPBOX_REFRESH_TOKEN = process.env.DROPBOX_REFRESH_TOKEN;
+
+const VTIGER_BASE_URL = process.env.VTIGER_BASE_URL;
+const VTIGER_USER = process.env.VTIGER_USER;
+const VTIGER_ACCESS_KEY = process.env.VTIGER_ACCESS_KEY;
 
 function hoyMexico() {
   // Mismo criterio ya usado en el resto de los crons del proyecto.
@@ -95,6 +101,50 @@ function parsearPeriodicidadBackupSpecs(specs) {
   if (porDias) return parseInt(porDias[1], 10);
   if (/diari/i.test(linea)) return 1;
   return null;
+}
+
+function md5(str) {
+  return crypto.createHash('md5').update(str).digest('hex');
+}
+
+async function vtigerLogin() {
+  const challengeUrl = `${VTIGER_BASE_URL}/webservice.php?operation=getchallenge&username=${encodeURIComponent(VTIGER_USER)}`;
+  const challengeJson = await fetch(challengeUrl).then((r) => r.json());
+  if (!challengeJson.success) throw new Error('getchallenge falló: ' + JSON.stringify(challengeJson));
+  const token = challengeJson.result.token;
+  const accessKeyHash = md5(token + VTIGER_ACCESS_KEY);
+  const loginBody = new URLSearchParams({ operation: 'login', username: VTIGER_USER, accessKey: accessKeyHash });
+  const loginJson = await fetch(`${VTIGER_BASE_URL}/webservice.php`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: loginBody,
+  }).then((r) => r.json());
+  if (!loginJson.success) throw new Error('login falló: ' + JSON.stringify(loginJson));
+  return loginJson.result.sessionName;
+}
+
+// Comenta en el Proyecto CRM espejado de la póliza — Jp, 2026-10-26: "cada
+// subida de evidencia, ya sea que lo hagamos automáticamente porque
+// detectamos en el Dropbox algo, o porque subieron los de mesa de control
+// manualmente evidencia del resguardo, se debe de colocar en CRM el
+// comentario en el proyecto". Mismo patrón duplicado que
+// api/cron/resguardo-evidencia-check.js (comentarEnProyectoCrm) — este cron
+// corre server-to-server sin sesión de usuario.
+async function comentarEnProyectoCrm(numeroProyectoCrm, comentario) {
+  try {
+    const numero = String(numeroProyectoCrm).replace(/^POL/i, '').replace(/^PROJ/i, '');
+    const rows = await sbGet(`proyectos_crm?crm_project_no=eq.${encodeURIComponent('PROJ' + numero)}&select=crm_projectid`);
+    const crmid = rows?.[0]?.crm_projectid;
+    if (!crmid) return null;
+    const sessionName = await vtigerLogin();
+    const record = { commentcontent: comentario, related_to: crmid };
+    const body = new URLSearchParams({ operation: 'create', sessionName, element: JSON.stringify(record), elementType: 'ModComments' });
+    const json = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body }).then((r) => r.json());
+    return json.success ? (json.result?.id || true) : null;
+  } catch (e) {
+    console.error('comentarEnProyectoCrm falló', e);
+    return null;
+  }
 }
 
 function calcularPeriodoActual(fechaInicioStr, periodicidadDias, hoyStr) {
@@ -169,7 +219,7 @@ export default async function handler(req, res) {
 
   try {
     const polizas = await sbGet(
-      `clientes_polizas?estatus=neq.CERRADA&resguardo_dropbox_folder=not.is.null&select=id,cliente_nombre,fecha_inicio,resguardo_periodicidad_dias_override,resguardo_dropbox_folder,servidor_cloud_id,polizas_catalogo!inner(nombre,categoria,resguardo_periodicidad_dias)&polizas_catalogo.categoria=eq.RESGUARDO`
+      `clientes_polizas?estatus=neq.CERRADA&resguardo_dropbox_folder=not.is.null&select=id,cliente_nombre,fecha_inicio,resguardo_periodicidad_dias_override,resguardo_dropbox_folder,servidor_cloud_id,numero_proyecto_crm,polizas_catalogo!inner(nombre,categoria,resguardo_periodicidad_dias)&polizas_catalogo.categoria=eq.RESGUARDO`
     );
     if (!polizas.length) {
       return res.status(200).json({ ok: true, hoy, mensaje: 'Sin pólizas de resguardo con carpeta de Dropbox capturada.' });
@@ -212,12 +262,20 @@ export default async function handler(req, res) {
         const masReciente = archivos.reduce((a, b) => (a.server_modified > b.server_modified ? a : b));
         const fechaArchivo = masReciente.server_modified.slice(0, 10); // server_modified es ISO UTC
         if (fechaArchivo >= periodoActual) {
+          let crmComentarioId = null;
+          if (p.numero_proyecto_crm) {
+            crmComentarioId = await comentarEnProyectoCrm(
+              p.numero_proyecto_crm,
+              `✅ Evidencia de resguardo detectada automáticamente en Dropbox (${p.resguardo_dropbox_folder}) — archivo "${masReciente.name}" del ${fechaArchivo}.`
+            );
+          }
           await sbPost('resguardo_evidencias', {
             cliente_poliza_id: p.id,
             periodo_fecha: periodoActual,
             fecha_subida: masReciente.server_modified,
             origen: 'dropbox',
             dropbox_path: masReciente.path_display,
+            crm_comentario_id: crmComentarioId ? String(crmComentarioId) : null,
             nota: `Detectado automático en Dropbox (${p.resguardo_dropbox_folder}) — archivo "${masReciente.name}" del ${fechaArchivo}.`,
           });
           registrosCreados++;
