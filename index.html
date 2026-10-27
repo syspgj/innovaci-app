@@ -5404,22 +5404,35 @@ function buildAsesorUI(){
   renderAsesorServicios();
 }
 
+// Jp, 2026-10-27 (retomando Mesa de Control — "dashboard del asesor Hoy/
+// Próximos/Pendientes", pendiente desde el Lote 1): antes "Mis servicios"
+// solo separaba Por atender/Historial, sin distinguir qué es de hoy, qué es
+// futuro y qué ya se atrasó (fecha_asignada pasada sin reportar) — el
+// asesor tenía que leer cada tarjeta para saber qué es urgente.
 async function renderAsesorServicios(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div></div>';
   const {data:tickets,error}=await sb.from('servicios_ejecutados').select('*').eq('asesor_id',currentUser.id).order('fecha_asignada',{ascending:true});
   if(error){mc.innerHTML=`<div style="padding:20px;color:var(--red);">Error: ${error.message}</div>`;return;}
   window._miTickets=tickets||[];
-  const pendientes=(tickets||[]).filter(t=>t.estatus==='ASIGNADO'||t.estatus==='EN_CURSO');
+  const activos=(tickets||[]).filter(t=>t.estatus==='ASIGNADO'||t.estatus==='EN_CURSO');
+  const hoyStr=new Date().toISOString().split('T')[0];
+  const gPendientes=activos.filter(t=>t.fecha_asignada&&t.fecha_asignada<hoyStr).sort((a,b)=>(a.fecha_asignada||'').localeCompare(b.fecha_asignada||''));
+  const gHoy=activos.filter(t=>t.fecha_asignada===hoyStr);
+  const gProximos=activos.filter(t=>!t.fecha_asignada||t.fecha_asignada>hoyStr);
   const hechos=(tickets||[]).filter(t=>['CONCLUIDO','NO_CONCLUIDO','CANCELADO_INASISTENCIA'].includes(t.estatus)).reverse();
+  const seccion=(titulo,color,lista,vacio)=>`
+    <div style="font-size:13px;font-weight:600;margin-bottom:8px;${color?`color:${color};`:''}">${titulo} (${lista.length})</div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:24px;">
+      ${lista.length===0?`<div style="color:var(--text3);font-size:12px;">${vacio}</div>`:''}
+      ${lista.map(t=>tarjetaTicketAsesor(t)).join('')}
+    </div>`;
   mc.innerHTML=`
     <div style="padding:16px;max-width:600px;margin:0 auto;">
       <div style="font-size:16px;font-weight:700;color:var(--navy);margin-bottom:14px;">Hola, ${(userProfile.nombre||'').split(' ')[0]} 👋</div>
-      <div style="font-size:13px;font-weight:600;margin-bottom:8px;">Por atender (${pendientes.length})</div>
-      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:24px;">
-        ${pendientes.length===0?'<div style="color:var(--text3);font-size:12px;">No tienes servicios pendientes 🎉</div>':''}
-        ${pendientes.map(t=>tarjetaTicketAsesor(t)).join('')}
-      </div>
+      ${gPendientes.length?seccion('⚠ Pendientes (atrasados)','#E84040',gPendientes,''):''}
+      ${seccion('📅 Hoy',null,gHoy,'No tienes servicios programados hoy.')}
+      ${seccion('⏭ Próximos',null,gProximos,'No tienes servicios programados a futuro.')}
       <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--text3);">Historial reciente</div>
       <div style="display:flex;flex-direction:column;gap:8px;">
         ${hechos.length===0?'<div style="color:var(--text3);font-size:12px;">Todavía no tienes servicios registrados.</div>':''}
