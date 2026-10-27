@@ -11543,6 +11543,55 @@ function suscSistemaInfo(s){
   return {nombre:sis?sis.nombre:(s.producto||'Sistema no catalogado'),color:sis?sis.color_accent:'var(--text3)'};
 }
 
+// Jp, 2026-10-27: los dos importadores de Suscripciones (Cargar Excel de
+// renovaciones / Verificar catálogo Aspel) resolvían el "sistema" de cada
+// fila con un match EXACTO de texto contra suscripciones_sistemas.nombre —
+// en cuanto el archivo traía una variante de texto distinta (ej. "FACTURe"
+// vs el catálogo "FE", o un producto nuevo como "Siigo NOI Asistente" que
+// nunca se intentaba resolver en ese importador) la fila se guardaba con
+// sistema_id NULL: quedaba invisible en los chips "Por sistema" aunque sí
+// existiera en la lista completa de suscripciones. Se detectaron 28 filas
+// así — entre ellas la de Siigo Fiscal que Jp notó que faltaban, y la del
+// NOI Asistente de Maria de Jesús. Este resolvedor centraliza alias
+// conocidos para que no vuelva a pasar.
+const SUSC_SISTEMA_ALIASES={
+  'FACTURE':'FE','FACTUR E':'FE',
+  'ASPEL-SAE':'SAE SUSCRIP','SAE':'SAE SUSCRIP',
+  'ASPEL-COI':'COI SUSCRIP','COI':'COI SUSCRIP',
+  'ASPEL-NOI':'NOI SUSCRIP','NOI':'NOI SUSCRIP',
+  'SIIGO NOI ASISTENTE':'NOI ASISTENTE','NOI-ASIS SUSCRIP':'NOI ASISTENTE',
+  'ASPEL-PROD':'PROD SUSCRIP','PROD':'PROD SUSCRIP','PRODUCCIÓN':'PROD SUSCRIP',
+  'ASPEL-BANCO':'BANCO SUSCRIP','BANCO':'BANCO SUSCRIP',
+  'ASPEL-CAJA':'CAJA SUSCRIP','CAJA':'CAJA SUSCRIP',
+  'ASPEL-ADM':'ADM PREMIUM','ADM':'ADM PREMIUM','ADM BÁSICA':'ADM PREMIUM','ADM BASICA':'ADM PREMIUM',
+  'ASPEL SELLADO CFDI':'SIIGO FACT',
+  'SIIGO NUBE INI':'SIIGO NUBE',
+};
+// Jp, 2026-10-27: "compactar la lista... que exista un solo Siigo Fiscal y
+// que dentro exista una subdivisión" — los 3 catálogos (Despachos/PYME/
+// Empresarial) se quedan separados en la base (así se sigue sabiendo cuál es
+// cuál), pero en el filtro "Por sistema" se muestran como un solo chip con
+// el desglose debajo. El id del chip agrupado se arma como "GRUPO:<clave>".
+const SUSC_GRUPOS_CHIPS=[
+  {clave:'SIIGO_FISCAL',label:'Siigo Fiscal',color:'#00a99d',claves:['SIIGO_FISCAL_DESPACHOS','SIIGO_FISCAL_PYME','SIIGO_FISCAL_EMPRESARIAL']},
+];
+function suscIdsDelGrupo(grupo){
+  return (window._suscSistemas||[]).filter(s=>grupo.claves.includes(s.clave)).map(s=>s.id);
+}
+function resolverSistemaDesdeTexto(txt){
+  if(!txt) return null;
+  const limpio=String(txt).trim().toUpperCase().replace(/\s+/g,' ');
+  const sistemas=window._suscSistemas||[];
+  let s=sistemas.find(x=>x.nombre.trim().toUpperCase()===limpio);
+  if(s) return s;
+  const alias=SUSC_SISTEMA_ALIASES[limpio];
+  if(alias){
+    s=sistemas.find(x=>x.nombre.trim().toUpperCase()===alias);
+    if(s) return s;
+  }
+  return null;
+}
+
 // ── Módulo "Suscripciones" — vista suscripción-primero, separada de la vista
 // cliente-primero de Cartera (Jp, 2026-09-24): buscar por número de serie no
 // funcionaba en Cartera (esa caja solo busca campos del CLIENTE, no de la
@@ -11608,7 +11657,13 @@ async function renderTodasSuscripciones(scope){
     suscs=suscs.filter(s=>s.estado===suscListFiltroEstado);
   }
   if(suscListFiltroSistema){
-    suscs=suscs.filter(s=>s.sistema_id===suscListFiltroSistema);
+    if(suscListFiltroSistema.startsWith('GRUPO:')){
+      const grupo=SUSC_GRUPOS_CHIPS.find(g=>g.clave===suscListFiltroSistema.slice(6));
+      const ids=grupo?suscIdsDelGrupo(grupo):[];
+      suscs=suscs.filter(s=>ids.includes(s.sistema_id));
+    } else {
+      suscs=suscs.filter(s=>s.sistema_id===suscListFiltroSistema);
+    }
   }
   const q=(suscListFiltroTexto||'').trim().toLowerCase();
   if(q){
@@ -11642,19 +11697,36 @@ async function renderTodasSuscripciones(scope){
     </div>
     <div style="font-size:11px;color:var(--text3);margin-bottom:6px;">Por sistema:</div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;">
-      ${(window._suscSistemas||[]).map(sis=>{
+      ${(()=>{
+        const clavesAgrupadas=SUSC_GRUPOS_CHIPS.flatMap(g=>g.claves);
+        const sueltos=(window._suscSistemas||[]).filter(sis=>!clavesAgrupadas.includes(sis.clave));
         // Jp, 2026-10-13: mostrar cuántas suscripciones tiene cada sistema en
         // este filtro rápido (cuenta sobre el universo ya filtrado por scope/
         // estado/texto, sin aplicar el propio filtro de sistema, para que el
         // número no cambie solo por hacer clic en el botón).
-        const countSis=suscs.filter(s=>s.sistema_id===sis.id).length;
-        return `<button onclick="suscListSwSistema('${scope}','${sis.id}')" style="cursor:pointer;text-align:left;background:${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)')+'18':'var(--surface-2,#f8f9fa)'};border:2px solid ${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)'):'var(--border)'};color:${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)'):'var(--text2)'};border-radius:var(--rad);padding:14px 16px;font-family:'Inter',sans-serif;transition:transform 0.1s;" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='none'">
+        const chipsSueltos=sueltos.map(sis=>{
+          const countSis=suscs.filter(s=>s.sistema_id===sis.id).length;
+          const activo=suscListFiltroSistema===sis.id;
+          return {id:sis.id,label:sis.nombre,color:sis.color_accent,count:countSis,activo,sub:null};
+        });
+        const chipsGrupo=SUSC_GRUPOS_CHIPS.map(g=>{
+          const miembros=(window._suscSistemas||[]).filter(sis=>g.claves.includes(sis.clave));
+          const ids=miembros.map(m=>m.id);
+          const countTotal=suscs.filter(s=>ids.includes(s.sistema_id)).length;
+          const idGrupo='GRUPO:'+g.clave;
+          const activo=suscListFiltroSistema===idGrupo;
+          const sub=miembros.map(m=>`${m.nombre.replace('Siigo Fiscal ','')} ${suscs.filter(s=>s.sistema_id===m.id).length}`).join(' · ');
+          return {id:idGrupo,label:g.label,color:g.color,count:countTotal,activo,sub};
+        });
+        return [...chipsSueltos,...chipsGrupo].map(c=>`
+        <button onclick="suscListSwSistema('${scope}','${c.id}')" style="cursor:pointer;text-align:left;background:${c.activo?(c.color||'var(--teal)')+'18':'var(--surface-2,#f8f9fa)'};border:2px solid ${c.activo?(c.color||'var(--teal)'):'var(--border)'};color:${c.activo?(c.color||'var(--teal)'):'var(--text2)'};border-radius:var(--rad);padding:14px 16px;font-family:'Inter',sans-serif;transition:transform 0.1s;" onmouseover="this.style.transform='translateY(-1px)'" onmouseout="this.style.transform='none'">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
-            <span style="font-size:14px;font-weight:700;">${sis.nombre}</span>
-            <span class="pipe-badge" style="font-size:10px;background:${suscListFiltroSistema===sis.id?(sis.color_accent||'var(--teal)'):'var(--border)'};color:${suscListFiltroSistema===sis.id?'#fff':'var(--text3)'};">${countSis}</span>
+            <span style="font-size:14px;font-weight:700;">${c.label}</span>
+            <span class="pipe-badge" style="font-size:10px;background:${c.activo?(c.color||'var(--teal)'):'var(--border)'};color:${c.activo?'#fff':'var(--text3)'};">${c.count}</span>
           </div>
-        </button>`;
-      }).join('')}
+          ${c.sub?`<div style="font-size:10px;color:var(--text3);margin-top:3px;">${c.sub}</div>`:''}
+        </button>`).join('');
+      })()}
     </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:14px;">
       ${tarjeta('Vencen este mes',totalVencenMes,'#F5A623','vencen_mes')}
@@ -11790,21 +11862,62 @@ async function ejecutarVinculacion(suscId,cuentaId){
   if(!susc||!cuenta) return;
   const rfcSusc=(susc.rfc_reportado||'').trim().toUpperCase();
   const rfcCuenta=(cuenta.rfc||'').trim().toUpperCase();
-  let clienteFinalId=cuentaId;
-  // Si el RFC de la suscripción es distinto al de la cuenta elegida, se crea
-  // como subcuenta (mismo cliente, otra razón social) — Jp, confirmado 2026-09-23.
+  // Jp, 2026-10-27: antes, si el RFC de la suscripción no coincidía letra por
+  // letra con el de la cuenta elegida, se creaba una subcuenta automática y
+  // en silencio — un typo de captura (ej. "1" vs "I") terminaba creando una
+  // subcuenta de sobra sin que nadie lo decidiera ("es overkill", Jp). Ahora
+  // se pregunta: puede ser la misma empresa con un RFC mal tecleado en algún
+  // lado, o puede ser de verdad otra razón social bajo el mismo cliente.
   if(rfcSusc&&rfcCuenta&&rfcSusc!==rfcCuenta){
-    const {data:subcuenta,error:errSub}=await sb.from('clientes_cartera').insert({
-      razon_social:susc.razon_social_reportada||cuenta.razon_social,
-      rfc:susc.rfc_reportado,
-      cliente_padre_id:cuenta.id,
-      vendedor_asignado:cuenta.vendedor_asignado,
-      num_cliente:'SUB-'+Date.now(),
-      origen:'vinculacion_suscripcion'
-    }).select().single();
-    if(errSub){alert('Error al crear subcuenta: '+errSub.message);return;}
-    clienteFinalId=subcuenta.id;
+    const html=`
+      <div style="margin-bottom:14px;padding:10px 14px;background:rgba(245,166,35,0.08);border:1px dashed #F5A623;border-radius:var(--radsm);font-size:12px;">
+        El RFC de esta suscripción no coincide exactamente con el de la cuenta que elegiste:<br>
+        <div style="font-family:'JetBrains Mono',monospace;margin-top:6px;">
+          Suscripción: <b>${susc.rfc_reportado||'—'}</b><br>
+          Cuenta (${cuenta.razon_social||'—'}): <b>${cuenta.rfc||'—'}</b>
+        </div>
+      </div>
+      <div style="display:grid;gap:8px;">
+        <button onclick="ejecutarVinculacionDirecta('${suscId}','${cuentaId}')" style="text-align:left;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+          🔗 Es la misma empresa — vincular directo a esta cuenta<br>
+          <span style="font-weight:400;font-size:11px;opacity:0.9;">El RFC seguramente trae un error de captura en algún lado (no crea nada nuevo).</span>
+        </button>
+        <button onclick="ejecutarVinculacionComoSubcuenta('${suscId}','${cuentaId}')" style="text-align:left;background:var(--surface-2,#f8f9fa);color:var(--text);border:1px solid var(--border);border-radius:var(--radsm);padding:10px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+          🏢 Es otra razón social — crear como subcuenta<br>
+          <span style="font-weight:400;font-size:11px;color:var(--text3);">Para cuando de verdad es otra empresa bajo el mismo cliente (ej. otra sucursal con RFC propio).</span>
+        </button>
+      </div>`;
+    mkModal('modalConfirmarVinculoRFC','⚠ El RFC no coincide',html,null,'Cancelar',true);
+    return;
   }
+  await aplicarVinculacionSuscripcion(suscId,cuentaId);
+}
+
+async function ejecutarVinculacionDirecta(suscId,cuentaId){
+  document.getElementById('modalConfirmarVinculoRFC')?.remove();
+  await aplicarVinculacionSuscripcion(suscId,cuentaId);
+}
+
+async function ejecutarVinculacionComoSubcuenta(suscId,cuentaId){
+  document.getElementById('modalConfirmarVinculoRFC')?.remove();
+  const susc=(window._cartSuscripciones||[]).find(s=>s.id===suscId);
+  const cuenta=(window._vincCuentasCache||window._cartClientes||[]).find(c=>c.id===cuentaId);
+  if(!susc||!cuenta) return;
+  const {data:subcuenta,error:errSub}=await sb.from('clientes_cartera').insert({
+    razon_social:susc.razon_social_reportada||cuenta.razon_social,
+    rfc:susc.rfc_reportado,
+    cliente_padre_id:cuenta.id,
+    vendedor_asignado:cuenta.vendedor_asignado,
+    num_cliente:'SUB-'+Date.now(),
+    origen:'vinculacion_suscripcion'
+  }).select().single();
+  if(errSub){alert('Error al crear subcuenta: '+errSub.message);return;}
+  await aplicarVinculacionSuscripcion(suscId,subcuenta.id);
+}
+
+async function aplicarVinculacionSuscripcion(suscId,clienteFinalId){
+  const susc=(window._cartSuscripciones||[]).find(s=>s.id===suscId);
+  if(!susc) return;
   const {error}=await sb.from('suscripciones_cartera').update({
     cliente_id:clienteFinalId,
     vendedor_resuelto_por:currentUser.id,
@@ -11969,13 +12082,9 @@ async function procesarExcelSuscripciones(){
   const ws=wb.Sheets[wb.SheetNames[0]];
   const filas=XLSX.utils.sheet_to_json(ws,{defval:null});
 
-  const sistemas=window._suscSistemas||[];
   const clientes=window._cartClientes||[];
-  const buscarSistema=prod=>{
-    if(!prod) return null;
-    const p=String(prod).trim().toLowerCase();
-    return sistemas.find(s=>s.nombre.trim().toLowerCase()===p)||null;
-  };
+  // Jp, 2026-10-27: antes era un match exacto de texto — ver resolverSistemaDesdeTexto.
+  const buscarSistema=resolverSistemaDesdeTexto;
   const buscarCliente=rfc=>{
     if(!rfc) return null;
     const r=String(rfc).trim().toUpperCase();
@@ -12225,9 +12334,14 @@ async function procesarVerificarCatalogoAspel(){
   // Nuevas: número de serie en el archivo que no teníamos en absoluto.
   const nuevas=filasValidas.filter(f=>!numseriesExistentes.has(f.numserie)).map(f=>{
     const cuenta=buscarClientePorRfc(f.rfc);
+    // Jp, 2026-10-27: antes esta rama nunca resolvía sistema_id — toda
+    // suscripción nueva que entraba por "Verificar catálogo Aspel" quedaba
+    // sin catalogar, invisible en los chips "Por sistema" del módulo.
+    const sistema=resolverSistemaDesdeTexto(f.producto);
     return {
       numserie:f.numserie,
       producto:f.producto,
+      sistema_id:sistema?sistema.id:null,
       tipo_producto:f.tipo,
       rfc_reportado:f.rfc,
       razon_social_reportada:f.empresa,
@@ -13443,6 +13557,7 @@ function toggleHistDetalle(idx){
 function buildDirectorUI(){
   document.getElementById('tabsBar').innerHTML=`
     <div class="tab" onclick="swDArea('ventas')">💼 Ventas</div>
+    <div class="tab" onclick="swDArea('telemarketing')">📞 Telemarketing</div>
     <div class="tab" onclick="swDArea('operaciones')">🛠 Operaciones</div>
     <div class="tab" onclick="swDArea('finanzas')">💰 Finanzas</div>
     <div class="tab" onclick="swDArea('metaaspel')">🎯 Meta Aspel</div>
@@ -13451,16 +13566,20 @@ function buildDirectorUI(){
   swDArea('ventas');
 }
 
+// Jp, 2026-10-27: el submenú de 💼 Ventas había crecido a 16 pestañas en una
+// sola fila (ya no cabían, aparecía flecha de scroll horizontal). Se separó
+// en dos áreas del menú del Director, mismo patrón que ya existe entre
+// Ventas/Operaciones/Finanzas: "💼 Ventas" (cartera, catálogos, pipeline de
+// vendedores) y "📞 Telemarketing" (prospección, campañas de llamadas y su
+// proyección) — Jp: "tener un apartado de ventas... y en otro apartado lo
+// de telemarketing".
 const VENTAS_SUBTABS=[
   {id:'resumen',label:'Resumen'},
   {id:'vendedores',label:'Vendedores'},
   {id:'anual',label:'📅 Anual'},
   {id:'kpis',label:'KPIs'},
   {id:'liberaciones',label:'Liberaciones'},
-  {id:'crm',label:'📋 Prospectos'},
-  {id:'campanas',label:'🎯 Campañas'},
   {id:'cotizadordir',label:'🧮 Cotizador'},
-  {id:'proyecciontele',label:'📊 Proyección Telemarketing'},
   {id:'cartera',label:'💼 Cartera'},
   {id:'proyectosdir',label:'📁 Proyectos'},
   {id:'suscripciones',label:'📋 Suscripciones'},
@@ -13469,20 +13588,29 @@ const VENTAS_SUBTABS=[
   {id:'servidores',label:'🖥 Servidores'},
   {id:'tsplus',label:'🔑 Licencias TS Plus'},
 ];
+const TELEMARKETING_SUBTABS=[
+  {id:'crm',label:'📋 Prospectos'},
+  {id:'campanas',label:'🎯 Campañas'},
+  {id:'proyecciontele',label:'📊 Proyección Telemarketing'},
+];
+const SUBTABS_POR_AREA={ventas:VENTAS_SUBTABS,telemarketing:TELEMARKETING_SUBTABS};
+const DIR_AREAS_ORDEN=['ventas','telemarketing','operaciones','finanzas','metaaspel','academia','config'];
 let currentDirArea='ventas';
 let currentDirTab='resumen';
 
 function swDArea(area){
   currentDirArea=area;
-  document.querySelectorAll('#tabsBar .tab').forEach((t,i)=>t.classList.toggle('active',['ventas','operaciones','finanzas','metaaspel','academia','config'][i]===area));
+  document.querySelectorAll('#tabsBar .tab').forEach((t,i)=>t.classList.toggle('active',DIR_AREAS_ORDEN[i]===area));
   renderDirectorArea();
 }
 
 function renderDirectorArea(){
   const t2=document.getElementById('tabsBar2');
-  if(currentDirArea==='ventas'){
+  if(SUBTABS_POR_AREA[currentDirArea]){
+    const subtabs=SUBTABS_POR_AREA[currentDirArea];
+    if(!subtabs.some(s=>s.id===currentDirTab)) currentDirTab=subtabs[0].id;
     t2.style.display='flex';
-    t2.innerHTML=VENTAS_SUBTABS.map(s=>`<div class="tab${s.id===currentDirTab?' active':''}" onclick="swD('${s.id}')">${s.label}</div>`).join('');
+    t2.innerHTML=subtabs.map(s=>`<div class="tab${s.id===currentDirTab?' active':''}" onclick="swD('${s.id}')">${s.label}</div>`).join('');
     document.getElementById('mainContent').classList.remove('full-width');
     renderDirectorTab();
   } else if(currentDirArea==='academia'){
@@ -13499,12 +13627,16 @@ function renderDirectorArea(){
 }
 
 function swD(id){
-  currentDirArea='ventas';
-  document.querySelectorAll('#tabsBar .tab').forEach((t,i)=>t.classList.toggle('active',i===0));
+  // Detecta a qué área (Ventas/Telemarketing) pertenece el id — antes
+  // siempre asumía 'ventas' porque todo vivía en un solo submenú.
+  const area=TELEMARKETING_SUBTABS.some(s=>s.id===id)?'telemarketing':'ventas';
+  currentDirArea=area;
+  document.querySelectorAll('#tabsBar .tab').forEach((t,i)=>t.classList.toggle('active',DIR_AREAS_ORDEN[i]===area));
   currentDirTab=id;
   const t2=document.getElementById('tabsBar2');
+  const subtabs=SUBTABS_POR_AREA[area];
   t2.style.display='flex';
-  t2.innerHTML=VENTAS_SUBTABS.map(s=>`<div class="tab${s.id===id?' active':''}" onclick="swD('${s.id}')">${s.label}</div>`).join('');
+  t2.innerHTML=subtabs.map(s=>`<div class="tab${s.id===id?' active':''}" onclick="swD('${s.id}')">${s.label}</div>`).join('');
   document.getElementById('mainContent').classList.remove('full-width');
   renderDirectorTab();
 }
