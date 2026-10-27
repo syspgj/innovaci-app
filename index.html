@@ -6122,17 +6122,28 @@ async function cotizadorRecienteCrearOportunidad(cotizId){
   const r=(window._cotizRecientesData||[]).find(x=>x.id===cotizId);
   if(!r){alert('No se encontró la cotización — recarga la pestaña e intenta otra vez.');return;}
   if(!r.cliente_cartera_id&&!r.prospecto_app_id){alert('Primero liga esta cotización a una cuenta o un prospecto.');return;}
+  const periodoLabel=(r.periodicidad||'')[0]?.toUpperCase()+(r.periodicidad||'').slice(1);
+  const nombreProducto=(window._cotizProductos||[]).find(p=>p.id===r.producto_id)?.nombre||'';
+  const productoTxt=`${nombreProducto} — ${r.cotizador_planes?.nombre||''} (${periodoLabel})`;
+  const montoTxt=parseFloat(r.precio_total_periodo||0);
+  // Jp, 2026-10-27: Telemarketing ya tiene su propio módulo de Proyección
+  // (perfil='telemarketing' en pipeline_vendedor) — se usa el mismo patrón
+  // que para Vendedor, solo que con agregarFilaPipeTele en vez de
+  // agregarFilaPipe.
   if(userProfile?.rol!=='vendedor'){
-    alert('Crear la oportunidad en Proyección está disponible por ahora solo para el perfil de Vendedor — para Telemarketing está pendiente de construirse su propio módulo de Proyección.');
+    window._cotizVinculandoId=cotizId;
+    await agregarFilaPipeTele({
+      producto:productoTxt, monto_total:montoTxt,
+      cliente:r.cliente_cartera_id?(r.clientes_cartera?.razon_social||''):(r.prospectos?.nombre||''),
+      cliente_cartera_id:r.cliente_cartera_id||null, prospecto_app_id:r.prospecto_app_id||null,
+    });
     return;
   }
   window._cotizVinculandoId=cotizId;
   await agregarFilaPipe();
-  const periodoLabel=(r.periodicidad||'')[0]?.toUpperCase()+(r.periodicidad||'').slice(1);
-  const nombreProducto=(window._cotizProductos||[]).find(p=>p.id===r.producto_id)?.nombre||'';
   const inProducto=document.getElementById('pProducto'), inMonto=document.getElementById('pMonto');
-  if(inProducto) inProducto.value=`${nombreProducto} — ${r.cotizador_planes?.nombre||''} (${periodoLabel})`;
-  if(inMonto) inMonto.value=parseFloat(r.precio_total_periodo||0).toFixed(2);
+  if(inProducto) inProducto.value=productoTxt;
+  if(inMonto) inMonto.value=montoTxt.toFixed(2);
   if(r.cliente_cartera_id){
     await pipeMostrarCuentaLigada(r.cliente_cartera_id,r.clientes_cartera?.razon_social||'');
   } else if(r.prospecto_app_id){
@@ -6251,19 +6262,25 @@ async function cotizadorGuardar(crearOportunidad){
     alert('✅ Cotización guardada. Para crear la oportunidad primero liga la cotización a una cuenta o un prospecto.');
     return;
   }
-  if(userProfile?.rol!=='vendedor'){
-    alert('✅ Cotización guardada. Crear la oportunidad en Proyección está disponible por ahora solo para el perfil de Vendedor — para Telemarketing está pendiente de construirse su propio módulo de Proyección.');
-    return;
-  }
   // Jp, 2026-10-26 (5ta ronda): se marca esta cotización recién guardada para
   // que, al guardar la negociación que se está por abrir, quede su
-  // pipeline_vendedor_id de vuelta aquí — ver hook en _guardarFilaPipeInterno.
-  window._cotizVinculandoId=data.id;
-  await agregarFilaPipe();
+  // pipeline_vendedor_id de vuelta aquí — ver hook en _guardarFilaPipeInterno
+  // (Vendedor) / guardarFilaPipeTele (Telemarketing, 2026-10-27).
   const nombreCliente=document.getElementById('cotizBuscarCuenta')?.value||'';
   const periodoLabel=cotizPeriodo[0].toUpperCase()+cotizPeriodo.slice(1);
+  const productoTxt=`${producto.nombre} — ${planPrincipal.nombre} (${periodoLabel})`;
+  if(userProfile?.rol!=='vendedor'){
+    window._cotizVinculandoId=data.id;
+    await agregarFilaPipeTele({
+      producto:productoTxt, monto_total:c.totalPeriodo, cliente:nombreCliente,
+      cliente_cartera_id:window._cotizCuentaId||null, prospecto_app_id:window._cotizProspectoId||null,
+    });
+    return;
+  }
+  window._cotizVinculandoId=data.id;
+  await agregarFilaPipe();
   const inProducto=document.getElementById('pProducto'), inMonto=document.getElementById('pMonto');
-  if(inProducto) inProducto.value=`${producto.nombre} — ${planPrincipal.nombre} (${periodoLabel})`;
+  if(inProducto) inProducto.value=productoTxt;
   if(inMonto) inMonto.value=c.totalPeriodo.toFixed(2);
   if(window._cotizCuentaId){
     await pipeMostrarCuentaLigada(window._cotizCuentaId,nombreCliente);
@@ -6330,6 +6347,306 @@ async function cotizadorBorrarDescuento(id){
   if(error){alert('Error: '+error.message);return;}
   document.getElementById('modalCotizDescuentos')?.remove();
   await renderCotizador();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PROYECCIÓN TELEMARKETING — Jp, 2026-10-27 (fase 2 del Cotizador, confirmada
+// por Jp vía pregunta). Reutiliza pipeline_vendedor/pipeline_actividades con
+// un discriminador `perfil` ('vendedor' | 'telemarketing' — ver migración
+// proyeccion_telemarketing_schema) en vez de un módulo paralelo completo: así
+// se hereda gratis la bitácora de seguimiento (pipeCargarActividades/
+// pipeRenderActividadesBox/pipeRecalcularSiguientePaso, ya genéricas por
+// pipeline_vendedor_id). Flujo simplificado, SIN fase de venta tipo CRM ni
+// probabilidad ni sincronización directa a Vtiger: Cotizado → En seguimiento
+// → Canalizado a vendedor → Cerrado-Ganado/Cerrado-Perdido/Cerrado-Sin
+// interés. La sincronización a CRM ocurre solo cuando se "Canaliza a
+// vendedor": se crea una fila NUEVA (perfil='vendedor') en la Proyección del
+// vendedor elegido, y de ahí en adelante sigue el flujo normal ya existente
+// (si queda ligada a una cuenta real, el vendedor recibe la oferta de crear/
+// ligar la Oportunidad en el CRM la primera vez que la edite y guarde —
+// pipeOfrecerVincularOportunidad, sin cambios).
+const ESTATUS_PIPE_TELE=['Cotizado','En seguimiento','Canalizado a vendedor','Cerrado-Ganado','Cerrado-Perdido','Cerrado-Sin interés'];
+const ESTATUS_PIPE_TELE_COLOR={'Cotizado':'#8BA0B8','En seguimiento':'#F5A623','Canalizado a vendedor':'#00A99D','Cerrado-Ganado':'#27AE60','Cerrado-Perdido':'#E74C3C','Cerrado-Sin interés':'#888'};
+
+async function renderProyeccionTele(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando proyección...</div>';
+  const {data:rows}=await sb.from('pipeline_vendedor').select('*')
+    .eq('usuario_id',currentUser.id).eq('perfil','telemarketing')
+    .order('updated_at',{ascending:false});
+  window._teleRows=rows||[];
+  renderProyeccionTeleTabla();
+}
+
+function renderProyeccionTeleTabla(){
+  const mc=document.getElementById('mainContent');
+  const rows=window._teleRows||[];
+  const filtro=window._teleProyFiltro||'';
+  const f=filtro?rows.filter(r=>r.estatus===filtro):rows;
+  const porEstatus={};
+  rows.forEach(r=>{porEstatus[r.estatus]=(porEstatus[r.estatus]||0)+1;});
+  mc.innerHTML=`
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
+    <div style="font-size:18px;font-weight:600;color:var(--text);">📊 Mi Proyección</div>
+    <button onclick="agregarFilaPipeTele()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nueva negociación</button>
+  </div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
+    <div onclick="window._teleProyFiltro='';renderProyeccionTeleTabla();" style="cursor:pointer;padding:5px 12px;border-radius:14px;font-size:11px;font-weight:600;${!filtro?'background:var(--navy);color:#fff;':'background:var(--surface-2,#f0f1f3);color:var(--text2);'}">Todas (${rows.length})</div>
+    ${ESTATUS_PIPE_TELE.map(e=>`<div onclick="window._teleProyFiltro='${e}';renderProyeccionTeleTabla();" style="cursor:pointer;padding:5px 12px;border-radius:14px;font-size:11px;font-weight:600;${filtro===e?'background:var(--navy);color:#fff;':'background:var(--surface-2,#f0f1f3);color:var(--text2);'}">${e} (${porEstatus[e]||0})</div>`).join('')}
+  </div>
+  <div class="card">
+    <table class="daily" style="font-size:12px;">
+      <thead><tr><th>Cliente/Prospecto</th><th>Producto</th><th>Monto</th><th>Estatus</th><th>Siguiente paso</th><th></th></tr></thead>
+      <tbody>
+        ${f.length===0?`<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:20px;">Sin negociaciones todavía</td></tr>`:''}
+        ${f.map(r=>`
+        <tr onclick="editarFilaPipeTele('${r.id}')" style="cursor:pointer;">
+          <td style="font-weight:600;">${r.cliente||'—'}</td>
+          <td>${r.producto||'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;">${fmt(r.monto_total||0)}</td>
+          <td><span style="font-size:10px;font-weight:700;color:${ESTATUS_PIPE_TELE_COLOR[r.estatus]||'#888'};">${r.estatus}</span></td>
+          <td style="font-size:11px;color:var(--text3);">${r.siguiente_paso?`${r.siguiente_paso}${r.fecha_siguiente_paso?' · '+fechaLegible(r.fecha_siguiente_paso):''}`:'—'}</td>
+          <td style="text-align:right;">${r.cliente_cartera_id?'🏢':r.prospecto_app_id?'🧲':''}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+async function agregarFilaPipeTele(prefill){
+  window._teleEditOriginal=null;
+  if(!window._cartClientes||!window._cartClientes.length){
+    window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente');
+  }
+  if(!window._prospectos||!window._prospectos.length){
+    const {data}=await sb.from('prospectos').select('id,nombre').limit(2000);
+    window._prospectos=data||[];
+  }
+  const modal=document.createElement('div');
+  modal.id='modalPipeTele';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  modal.innerHTML=modalPipeTeleHTML(prefill||null,todayLocal());
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
+  if(prefill?.cliente_cartera_id) await teleMostrarCuentaLigada(prefill.cliente_cartera_id,prefill.cliente||'');
+  else if(prefill?.prospecto_app_id) teleMostrarProspectoLigado(prefill.prospecto_app_id,prefill.cliente||'');
+}
+
+async function editarFilaPipeTele(id){
+  const {data:r}=await sb.from('pipeline_vendedor').select('*').eq('id',id).single();
+  if(!r) return;
+  window._teleEditOriginal={estatus:r.estatus};
+  if(!window._cartClientes||!window._cartClientes.length){
+    window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente');
+  }
+  const modal=document.createElement('div');
+  modal.id='modalPipeTele';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  modal.innerHTML=modalPipeTeleHTML(r,todayLocal());
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
+  pipeCargarActividades(r.id); // bitácora genérica de Proyección Vendedores — reusada tal cual
+}
+
+function modalPipeTeleHTML(r,hoy){
+  const v=r||{};
+  const puedeCanalizar=v.id&&v.estatus!=='Canalizado a vendedor'&&!v.canalizado_a_pipeline_id&&(v.cliente_cartera_id||v.prospecto_app_id);
+  return `<div style="background:var(--surface);border-radius:var(--rad);padding:28px;max-width:680px;width:100%;max-height:90vh;overflow-y:auto;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;gap:10px;">
+      <div style="font-size:15px;font-weight:700;color:var(--text);">${r?'Editar':'Nueva'} negociación</div>
+      <button onclick="document.getElementById('modalPipeTele')?.remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);line-height:1;padding:0;">✕</button>
+    </div>
+    <input type="hidden" id="tTeleId" value="${v.id||''}">
+    <div class="form-grid fg3" style="gap:10px;">
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>Producto / servicio cotizado</label>
+        <input type="text" id="tProducto" value="${v.producto||''}" placeholder="Ej. Siigo Fiscal — Corporativo (Anual)">
+      </div>
+      <div class="form-field" style="grid-column:1/-1;">
+        <label>Cliente / prospecto</label>
+        <input type="text" id="tCliente" value="${v.cliente||''}" placeholder="Escribe para buscar cuenta o prospecto" oninput="document.getElementById('tCuentaId').value='';document.getElementById('tProspectoId').value='';teleFiltrarCuentas();" autocomplete="off">
+        <input type="hidden" id="tCuentaId" value="${v.cliente_cartera_id||''}">
+        <input type="hidden" id="tProspectoId" value="${v.prospecto_app_id||''}">
+        <div id="tCuentaResultados" style="max-height:140px;overflow-y:auto;margin-top:4px;display:grid;gap:4px;"></div>
+      </div>
+      <div class="form-field">
+        <label>Monto ($)</label>
+        <div class="prefix"><input type="number" id="tMonto" value="${v.monto_total||''}" placeholder="0.00" step="0.01" min="0"></div>
+      </div>
+      <div class="form-field" style="grid-column:span 2;">
+        <label>Estatus</label>
+        <select id="tEstatus" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;">
+          ${ESTATUS_PIPE_TELE.map(e=>`<option ${(v.estatus||'Cotizado')===e?'selected':''}>${e}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    ${r&&r.id?`<div id="pipeActividadesBox" style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
+      <div style="font-size:12px;color:var(--text3);">Cargando bitácora de seguimiento...</div>
+    </div>`:`<div style="margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
+      <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:2px;">📅 Siguiente llamada (opcional)</div>
+      <div class="form-grid fg3" style="gap:8px;">
+        <div class="form-field"><label>Fecha</label><input type="date" id="tActFecha" value="${hoy}"></div>
+        <div class="form-field" style="grid-column:span 2;"><label>Nota</label><input type="text" id="tActNota" placeholder="Ej: volver a llamar para confirmar presupuesto"></div>
+      </div>
+    </div>`}
+    <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap;">
+      <button id="teleBtnGuardar" onclick="guardarFilaPipeTele()" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
+      ${puedeCanalizar?`<button onclick="teleAbrirCanalizar('${v.id}')" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📈 Canalizar a vendedor</button>`:''}
+      ${v.canalizado_a_pipeline_id?`<div style="flex:1;text-align:center;font-size:11px;color:var(--teal);font-weight:600;align-self:center;">✓ Ya canalizada a vendedor</div>`:''}
+      <button onclick="document.getElementById('modalPipeTele')?.remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);">Cancelar</button>
+    </div>
+  </div>`;
+}
+
+function teleFiltrarCuentas(){
+  const q=(document.getElementById('tCliente')?.value||'').toLowerCase().trim();
+  const cont=document.getElementById('tCuentaResultados');
+  if(!cont) return;
+  if(q.length<2){cont.innerHTML='';return;}
+  const cuentas=(window._cartClientes||[]).filter(c=>(c.razon_social||'').toLowerCase().includes(q)||(c.rfc||'').toLowerCase().includes(q)||(c.num_cliente||'').toLowerCase().includes(q)).slice(0,8);
+  const prospectos=(window._prospectos||[]).filter(p=>(p.nombre||'').toLowerCase().includes(q)).slice(0,8);
+  if(!cuentas.length&&!prospectos.length){cont.innerHTML='<div style="font-size:11px;color:var(--text3);padding:4px;">Sin coincidencias — se guarda como texto libre.</div>';return;}
+  cont.innerHTML=[
+    ...cuentas.map(c=>`<div onclick="teleMostrarCuentaLigada('${c.id}','${(c.razon_social||'').replace(/'/g,"\\'")}')" style="cursor:pointer;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;">🏢 <b>${c.razon_social||'Sin nombre'}</b> <span style="color:var(--text3);">${c.num_cliente||''}</span></div>`),
+    ...prospectos.map(p=>`<div onclick="teleMostrarProspectoLigado('${p.id}','${(p.nombre||'').replace(/'/g,"\\'")}')" style="cursor:pointer;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;">🧲 ${p.nombre}</div>`),
+  ].join('');
+}
+async function teleMostrarCuentaLigada(cuentaId,nombre){
+  document.getElementById('tCuentaId').value=cuentaId;
+  document.getElementById('tProspectoId').value='';
+  const c=document.getElementById('tCliente'); if(c) c.value=nombre;
+  const cont=document.getElementById('tCuentaResultados');
+  if(cont) cont.innerHTML=`<div style="font-size:11px;color:var(--teal);font-weight:600;padding:4px;">✓ Ligada a cuenta: ${nombre}</div>`;
+}
+function teleMostrarProspectoLigado(prospectoId,nombre){
+  document.getElementById('tProspectoId').value=prospectoId;
+  document.getElementById('tCuentaId').value='';
+  const c=document.getElementById('tCliente'); if(c) c.value=nombre;
+  const cont=document.getElementById('tCuentaResultados');
+  if(cont) cont.innerHTML=`<div style="font-size:11px;color:var(--teal);font-weight:600;padding:4px;">✓ Ligado a prospecto: ${nombre}</div>`;
+}
+
+async function guardarFilaPipeTele(){
+  const id=document.getElementById('tTeleId').value;
+  const cuentaId=document.getElementById('tCuentaId')?.value||null;
+  const prospectoId=document.getElementById('tProspectoId')?.value||null;
+  const payload={
+    usuario_id:currentUser.id, perfil:'telemarketing',
+    producto:document.getElementById('tProducto').value.trim()||null,
+    cliente:document.getElementById('tCliente').value.trim()||null,
+    monto_total:parseFloat(document.getElementById('tMonto').value)||0,
+    estatus:document.getElementById('tEstatus').value,
+    cliente_cartera_id:cuentaId, prospecto_app_id:prospectoId,
+    updated_at:new Date().toISOString(),
+  };
+  let error,nuevaFila;
+  if(id){
+    ({error}=await sb.from('pipeline_vendedor').update(payload).eq('id',id));
+  } else {
+    ({data:nuevaFila,error}=await sb.from('pipeline_vendedor').insert(payload).select().single());
+    // Igual que cotizadorGuardar/cotizadorRecienteCrearOportunidad para Vendedor
+    // — si esta negociación nació desde el Cotizador, se marca de vuelta.
+    if(!error&&nuevaFila&&window._cotizVinculandoId){
+      await sb.from('cotizador_cotizaciones').update({pipeline_vendedor_id:nuevaFila.id}).eq('id',window._cotizVinculandoId);
+      window._cotizVinculandoId=null;
+    }
+    if(!error&&nuevaFila){
+      const actFecha=document.getElementById('tActFecha')?.value;
+      const actNota=document.getElementById('tActNota')?.value;
+      if(actFecha&&actNota){
+        await sb.from('pipeline_actividades').insert({pipeline_vendedor_id:nuevaFila.id,usuario_id:currentUser.id,tipo_actividad:'llamada',fecha_programada:actFecha,nota:actNota});
+        await pipeRecalcularSiguientePaso(nuevaFila.id);
+      }
+    }
+  }
+  if(error){alert('Error: '+error.message);return;}
+  document.getElementById('modalPipeTele')?.remove();
+  await renderProyeccionTele();
+}
+
+async function teleAbrirCanalizar(id){
+  const {data:vendedores}=await sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre');
+  const modal=document.createElement('div');
+  modal.id='modalTeleCanalizar';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:1100;display:flex;align-items:center;justify-content:center;padding:16px;';
+  modal.innerHTML=`<div class="card" style="width:100%;max-width:420px;padding:20px;">
+    <div style="font-size:14px;font-weight:700;margin-bottom:10px;">📈 Canalizar a vendedor</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">Se crea una negociación nueva en la Proyección de ese vendedor, con los datos que ya capturaste aquí.</div>
+    <select id="teleVendedorDestino" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;margin-bottom:14px;">
+      <option value="">Selecciona un vendedor...</option>
+      ${(vendedores||[]).map(v=>`<option value="${v.id}">${v.nombre}</option>`).join('')}
+    </select>
+    <div style="display:flex;gap:8px;">
+      <button onclick="teleCanalizarAVendedor('${id}')" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;">Canalizar</button>
+      <button onclick="document.getElementById('modalTeleCanalizar')?.remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);">Cancelar</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
+}
+
+async function teleCanalizarAVendedor(id){
+  const vendedorId=document.getElementById('teleVendedorDestino')?.value;
+  if(!vendedorId){alert('Selecciona un vendedor.');return;}
+  const {data:fila}=await sb.from('pipeline_vendedor').select('*').eq('id',id).single();
+  if(!fila){alert('No se encontró la negociación.');return;}
+  const hoy=todayLocal();
+  const nuevaFila={
+    usuario_id:vendedorId, perfil:'vendedor',
+    anio:currentYear, mes:currentMonth,
+    cliente:fila.cliente, producto:fila.producto,
+    monto_total:fila.monto_total, subtotal:fila.monto_total,
+    probabilidad:50, fecha_prevista:hoy,
+    estatus:'Prospectando',
+    cliente_cartera_id:fila.cliente_cartera_id, prospecto_app_id:fila.prospecto_app_id,
+  };
+  const {data:creada,error}=await sb.from('pipeline_vendedor').insert(nuevaFila).select().single();
+  if(error){alert('Error al canalizar: '+error.message);return;}
+  await sb.from('pipeline_vendedor').update({estatus:'Canalizado a vendedor',canalizado_a_pipeline_id:creada.id}).eq('id',id);
+  document.getElementById('modalTeleCanalizar')?.remove();
+  document.getElementById('modalPipeTele')?.remove();
+  alert('✅ Canalizada — ya aparece en la Proyección de ese vendedor.');
+  await renderProyeccionTele();
+}
+
+// Vista de supervisión del Director — todas las negociaciones de
+// Telemarketing (perfil='telemarketing'), de todos los agentes, de solo
+// lectura. RLS ya lo permite ("Director ve todo pipeline").
+async function renderDirectorProyeccionTele(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
+  const [{data:rows},{data:teleUsers}]=await Promise.all([
+    sb.from('pipeline_vendedor').select('*').eq('perfil','telemarketing').order('updated_at',{ascending:false}),
+    sb.from('usuarios').select('id,nombre').eq('rol','telemarketing'),
+  ]);
+  const nombrePorUsuario={}; (teleUsers||[]).forEach(u=>{nombrePorUsuario[u.id]=u.nombre;});
+  const todas=rows||[];
+  const porEstatus={}; todas.forEach(r=>{porEstatus[r.estatus]=(porEstatus[r.estatus]||0)+1;});
+  const filtro=window._dirProyTeleFiltro||'';
+  const f=filtro?todas.filter(r=>r.estatus===filtro):todas;
+  mc.innerHTML=`
+  <div style="font-size:18px;font-weight:600;color:var(--text);margin-bottom:14px;">📊 Proyección Telemarketing — todos los agentes</div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
+    <div onclick="window._dirProyTeleFiltro='';renderDirectorProyeccionTele();" style="cursor:pointer;padding:5px 12px;border-radius:14px;font-size:11px;font-weight:600;${!filtro?'background:var(--navy);color:#fff;':'background:var(--surface-2,#f0f1f3);color:var(--text2);'}">Todas (${todas.length})</div>
+    ${ESTATUS_PIPE_TELE.map(e=>`<div onclick="window._dirProyTeleFiltro='${e}';renderDirectorProyeccionTele();" style="cursor:pointer;padding:5px 12px;border-radius:14px;font-size:11px;font-weight:600;${filtro===e?'background:var(--navy);color:#fff;':'background:var(--surface-2,#f0f1f3);color:var(--text2);'}">${e} (${porEstatus[e]||0})</div>`).join('')}
+  </div>
+  <div class="card">
+    <table class="daily" style="font-size:12px;">
+      <thead><tr><th>Agente</th><th>Cliente/Prospecto</th><th>Producto</th><th>Monto</th><th>Estatus</th><th>Siguiente paso</th></tr></thead>
+      <tbody>
+        ${f.length===0?`<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:20px;">Sin negociaciones todavía</td></tr>`:''}
+        ${f.map(r=>`
+        <tr>
+          <td>${nombrePorUsuario[r.usuario_id]||'—'}</td>
+          <td style="font-weight:600;">${r.cliente||'—'}</td>
+          <td>${r.producto||'—'}</td>
+          <td style="font-family:'JetBrains Mono',monospace;">${fmt(r.monto_total||0)}</td>
+          <td><span style="font-size:10px;font-weight:700;color:${ESTATUS_PIPE_TELE_COLOR[r.estatus]||'#888'};">${r.estatus}</span></td>
+          <td style="font-size:11px;color:var(--text3);">${r.siguiente_paso?`${r.siguiente_paso}${r.fecha_siguiente_paso?' · '+fechaLegible(r.fecha_siguiente_paso):''}`:'—'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
 }
 
 async function renderVendorMiMes(){
@@ -7934,6 +8251,50 @@ async function crmCrearOportunidadDesdeNuevaFila(fila,cuentaId,payload){
   }catch(e){
     console.error('CRM create error',e);
     alert('⚠️ Se guardó en Proyección, pero hubo un error de conexión al intentar crear la Oportunidad en el CRM.');
+  }
+}
+
+// Jp, 2026-10-27: sincronización diferida — cuando una negociación (de
+// Vendedor o canalizada desde Telemarketing) solo estaba ligada a un
+// Prospecto (sin cuenta real todavía), no se manda al CRM (Vtiger exige
+// Cuenta real para toda Oportunidad — ver oportunidades-crm-diseno.md). Este
+// helper se llama desde renderProspectosVendedor() en el momento exacto en
+// que un prospecto se empareja por primera vez con una cuenta real de
+// Cartera: busca negociaciones abiertas de ese prospecto que sigan sin cuenta
+// ni Oportunidad en el CRM, las liga a la cuenta recién encontrada e intenta
+// crear la Oportunidad — mismo patrón que crmCrearOportunidadDesdeNuevaFila
+// pero sin depender del modal (#pCliente) porque corre en segundo plano, sin
+// que nadie tenga abierto el modal de esa negociación en ese momento.
+async function sincronizarPipelinesDeProspectoConvertido(prospectoId,clienteCarteraId,nombreCliente){
+  try{
+    const {data:filas}=await sb.from('pipeline_vendedor').select('*')
+      .eq('prospecto_app_id',prospectoId).is('cliente_cartera_id',null).is('oportunidad_crm_id',null)
+      .not('estatus','in','("Cerrada-Ganada","Cerrada-Perdida","Cerrado-Ganado","Cerrado-Perdido","Cerrado-Sin interés")');
+    for(const fila of filas||[]){
+      await sb.from('pipeline_vendedor').update({cliente_cartera_id:clienteCarteraId}).eq('id',fila.id);
+      const nombreOportunidad=`${nombreCliente||fila.cliente||''} | ${fila.producto||''}`.trim();
+      const {data:sess}=await sb.auth.getSession();
+      const token=sess?.session?.access_token;
+      const res=await fetch('/api/crm-crear-oportunidad',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+        body:JSON.stringify({
+          cliente_cartera_id:clienteCarteraId,
+          nombre_oportunidad:nombreOportunidad,
+          monto:fila.monto_total,
+          fase_venta:ESTATUS_PIPE.includes(fila.estatus)?fila.estatus:'Prospectando',
+          probabilidad:fila.probabilidad||50,
+          fecha_prevista:fila.fecha_prevista,
+          vendedor_usuario_id:fila.usuario_id,
+          tipo_servicio:TIPOS_SERVICIO.includes(fila.tipo_servicio)?fila.tipo_servicio:undefined,
+        }),
+      });
+      const j=await res.json().catch(()=>({}));
+      if(!res.ok||!j.ok){ console.error('sincronizarPipelinesDeProspectoConvertido: CRM create falló',j); continue; }
+      await sb.from('pipeline_vendedor').update({oportunidad_crm_id:j.oportunidad_crm_id}).eq('id',fila.id);
+    }
+  }catch(e){
+    console.error('sincronizarPipelinesDeProspectoConvertido error',e);
   }
 }
 
@@ -13099,6 +13460,7 @@ const VENTAS_SUBTABS=[
   {id:'crm',label:'📋 Prospectos'},
   {id:'campanas',label:'🎯 Campañas'},
   {id:'cotizadordir',label:'🧮 Cotizador'},
+  {id:'proyecciontele',label:'📊 Proyección Telemarketing'},
   {id:'cartera',label:'💼 Cartera'},
   {id:'proyectosdir',label:'📁 Proyectos'},
   {id:'suscripciones',label:'📋 Suscripciones'},
@@ -13157,6 +13519,7 @@ function renderDirectorTab(){
   else if(id==='crm')renderDirectorCRM();
   else if(id==='campanas')renderDirectorCampanas();
   else if(id==='cotizadordir')renderCotizador(); // Jp, 2026-10-27: el Cotizador existía para Vendedor/Telemarketing pero nunca se enlazó en el menú del Director — por eso Jp no lo veía en "su perfil". renderCotizador() ya detecta esDirector internamente (muestra ⚙️ Descuentos de distribuidor), así que basta con enlazarlo aquí.
+  else if(id==='proyecciontele')renderDirectorProyeccionTele();
   else if(id==='cartera')renderDirectorCartera();
   else if(id==='proyectosdir')renderDirectorProyectos();
   else if(id==='suscripciones')renderDirectorSuscripcionesModulo();
@@ -14580,6 +14943,7 @@ function buildTeleUI(){
     <div class="tab" onclick="swT('clientes')">📋 Clientes</div>
     <div class="tab" onclick="swT('registro')">Registrar día</div>
     <div class="tab" onclick="swT('cotizador')">🧮 Cotizador</div>
+    <div class="tab" onclick="swT('proyeccionTele')">📊 Proyección</div>
     <div class="tab" onclick="swT('historico')">Histórico</div>
     <div class="tab" onclick="swT('promos')">🏷 Promociones</div>`;
   mostrarBotonesReporte();
@@ -14590,12 +14954,13 @@ function swT(id){
   const mc=document.getElementById('mainContent');
   if(id==='historico'||id==='miMes') mc.classList.add('full-width');
   else mc.classList.remove('full-width');
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['miMes','prospectos','clientes','registro','cotizador','historico','promos'][i]===id));
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['miMes','prospectos','clientes','registro','cotizador','proyeccionTele','historico','promos'][i]===id));
   if(id==='miMes')renderTele();
   else if(id==='prospectos')renderProspectos();
   else if(id==='clientes')renderTeleClientes();
   else if(id==='registro')renderTeleRegistro();
   else if(id==='cotizador')renderCotizador();
+  else if(id==='proyeccionTele')renderProyeccionTele();
   else if(id==='promos')renderVistaPromociones();
   else renderTeleHistorico();
 }
@@ -14605,6 +14970,7 @@ async function renderTeleActual(){
   else if(currentTeleTab==='clientes')renderTeleClientes();
   else if(currentTeleTab==='registro')renderTeleRegistro();
   else if(currentTeleTab==='cotizador')renderCotizador();
+  else if(currentTeleTab==='proyeccionTele')renderProyeccionTele();
   else if(currentTeleTab==='historico')renderTeleHistorico();
   else if(currentTeleTab==='promos')renderVistaPromociones();
   else renderTele();
@@ -16170,6 +16536,14 @@ async function renderProspectosVendedor(){
   ps.filter(p=>p._cliente&&!p.cliente_cartera_id).forEach(p=>{
     sb.from('prospectos').update({cliente_cartera_id:p._cliente.id}).eq('id',p.id);
     p.cliente_cartera_id=p._cliente.id;
+    // Jp, 2026-10-27: sincronización diferida — este prospecto recién se
+    // emparejó con una cuenta real de Cartera. Si tenía negociaciones abiertas
+    // que solo estaban ligadas al prospecto (sin cuenta, por lo tanto sin
+    // Oportunidad en el CRM — ver oportunidades-crm-diseno.md), ahora que ya
+    // hay cuenta real se liga esa negociación a la cuenta y se intenta crear
+    // la Oportunidad en Vtiger, igual que cuando una negociación nueva nace
+    // ya ligada a una cuenta (crmCrearOportunidadDesdeNuevaFila, Fase 4).
+    sincronizarPipelinesDeProspectoConvertido(p.id,p._cliente.id,p.nombre);
   });
   const total=ps.length;
   const mios=ps.filter(p=>p.vendedor_asignado===currentUser.id).length;
