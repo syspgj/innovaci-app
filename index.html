@@ -15950,11 +15950,14 @@ async function renderProspectos(){
     </div>`;
     return;
   }
-  const {data:prospectos}=await sb.from('prospectos').select('*')
-    .eq('asignado_a',currentUser.id)
-    .in('id',idsCampana)
-    .order('created_at',{ascending:false});
-  const ps=prospectos||[];
+  // Jp, 2026-10-27: con campañas grandes (600-700+ prospectos) el
+  // .in('id',idsCampana) en un solo request excedía el límite de URL y
+  // Supabase respondía "Bad Request" sin que se revisara — por eso Carolina
+  // veía "0 asignados" aunque sí tenía prospectos en la campaña activa.
+  // Se consulta en lotes de 200 ids (seleccionarPorLotesIds, definida junto
+  // a aplicarAsignacionProspectosCampana) y se ordena en memoria.
+  const prospectos=await seleccionarPorLotesIds('prospectos','*',idsCampana,q=>q.eq('asignado_a',currentUser.id));
+  const ps=(prospectos||[]).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
   const porEstatus={};
   for(const p of ps) porEstatus[p.estatus]=(porEstatus[p.estatus]||0)+1;
   const canalizados=porEstatus['Canalizado a ventas']||0;
@@ -17459,7 +17462,18 @@ async function renderDirectorCampanas(){
   window._teleUsersCampanas=teleUsersDir||[];
   const teleMapDir={}; (teleUsersDir||[]).forEach(u=>{teleMapDir[u.id]=u.nombre;});
   // Contar prospectos por campaña
-  const {data:todasRelaciones}=await sb.from('campana_prospectos').select('campana_id');
+  // Jp, 2026-10-27: ya hay ~1,978 filas en campana_prospectos (sumando todas
+  // las campañas) — por encima del límite de 1,000 filas por request que
+  // aplica Supabase cuando no se pagina. Por eso la campaña nueva de 678
+  // aparecía con solo 63. Se pagina en lotes de 1000 hasta traer todo.
+  let todasRelaciones=[],desdeRel=0; const pageSizeRel=1000;
+  while(true){
+    const {data:loteRel,error:errRel}=await sb.from('campana_prospectos').select('campana_id').range(desdeRel,desdeRel+pageSizeRel-1);
+    if(errRel||!loteRel||!loteRel.length) break;
+    todasRelaciones=todasRelaciones.concat(loteRel);
+    if(loteRel.length<pageSizeRel) break;
+    desdeRel+=pageSizeRel;
+  }
   const conteoPorCampana={};
   (todasRelaciones||[]).forEach(r=>{conteoPorCampana[r.campana_id]=(conteoPorCampana[r.campana_id]||0)+1;});
 
@@ -17643,12 +17657,38 @@ async function guardarCampana(campanaId){
 // quién es responsable de la campaña, se les hereda ese mismo agente a TODOS
 // los prospectos que ya están en la campaña (los que se agreguen después
 // también lo heredan, ver agregarPorEvento/agregarPorSistema/toggleProspectoEnCampana).
+// Jp, 2026-10-27: un .in('id',ids) con una campaña grande (600-700+ ids)
+// genera una URL demasiado larga y Supabase responde "Bad Request" —
+// encontramos este mismo patrón 3 veces el mismo día (agregarPorSistema,
+// aplicarAsignacionProspectosCampana, renderProspectos de telemarketing:
+// Carolina veía 0 prospectos asignados porque esta función nunca lograba
+// asignárselos). Estos dos helpers mandan el .in('id',...) en lotes de 200
+// y sí revisan el error de cada lote, en vez de ignorarlo en silencio.
+async function actualizarPorLotesIds(tabla,ids,patch,tamanoLote=200){
+  for(let i=0;i<ids.length;i+=tamanoLote){
+    const lote=ids.slice(i,i+tamanoLote);
+    const {error}=await sb.from(tabla).update(patch).in('id',lote);
+    if(error) console.error(`actualizarPorLotesIds(${tabla}) lote ${i}:`,error);
+  }
+}
+async function seleccionarPorLotesIds(tabla,columnas,ids,filtroExtra,tamanoLote=200){
+  let out=[];
+  for(let i=0;i<ids.length;i+=tamanoLote){
+    const lote=ids.slice(i,i+tamanoLote);
+    let q=sb.from(tabla).select(columnas).in('id',lote);
+    if(filtroExtra) q=filtroExtra(q);
+    const {data,error}=await q;
+    if(error){console.error(`seleccionarPorLotesIds(${tabla}) lote ${i}:`,error);continue;}
+    out=out.concat(data||[]);
+  }
+  return out;
+}
 async function aplicarAsignacionProspectosCampana(campanaId,agenteId){
   if(!agenteId) return;
   const {data:rel}=await sb.from('campana_prospectos').select('prospecto_id').eq('campana_id',campanaId);
   const ids=(rel||[]).map(r=>r.prospecto_id);
   if(!ids.length) return;
-  await sb.from('prospectos').update({asignado_a:agenteId}).in('id',ids);
+  await actualizarPorLotesIds('prospectos',ids,{asignado_a:agenteId});
 }
 
 async function toggleCampanaActiva(id,activar){
@@ -18177,7 +18217,7 @@ async function agregarPorEvento(campanaId){
   const {error}=await sb.from('campana_prospectos').upsert(filas,{onConflict:'campana_id,prospecto_id',ignoreDuplicates:true});
   if(error){alert('Error al agregar: '+error.message);return;}
   const agenteEv=document.getElementById('editCampAsignado')?.value;
-  if(agenteEv) await sb.from('prospectos').update({asignado_a:agenteEv}).in('id',ids);
+  if(agenteEv) await actualizarPorLotesIds('prospectos',ids,{asignado_a:agenteEv});
   await abrirCampana(campanaId);
   const msgEl=document.createElement('div');
   msgEl.textContent=`✓ ${ids.length} prospecto(s) agregado(s) a la campaña`;
@@ -18216,7 +18256,7 @@ async function agregarPorSistema(campanaId){
   const {error}=await sb.from('campana_prospectos').upsert(filas,{onConflict:'campana_id,prospecto_id',ignoreDuplicates:true});
   if(error){alert('Error al agregar: '+error.message);return;}
   const agenteSis=document.getElementById('editCampAsignado')?.value;
-  if(agenteSis) await sb.from('prospectos').update({asignado_a:agenteSis}).in('id',ids);
+  if(agenteSis) await actualizarPorLotesIds('prospectos',ids,{asignado_a:agenteSis});
   await abrirCampana(campanaId);
   const msgEl=document.createElement('div');
   msgEl.textContent=`✓ ${ids.length} prospecto(s) agregado(s) a la campaña`;
