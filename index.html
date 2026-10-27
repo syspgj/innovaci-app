@@ -7815,7 +7815,16 @@ async function _guardarFilaPipeInterno(irASiguiente){
     // en Vtiger. Proyección siempre gana — no se pregunta, se sobreescribe.
     const orig=window._pipeEditOriginal;
     if(!error&&orig&&orig.oportunidad_crm_id&&(orig.estatus!==payload.estatus||orig.probabilidad!==payload.probabilidad||orig.tipo_servicio!==payload.tipo_servicio)){
-      await crmActualizarOportunidad(orig.oportunidad_crm_id,payload.estatus,payload.probabilidad,payload.tipo_servicio);
+      // Jp, 2026-10-27: el backend (api/crm-actualizar-oportunidad.js) rechaza
+      // la llamada COMPLETA si tipo_servicio no es uno de los 9 valores
+      // homologados con Vtiger — y eso incluía valores heredados como "Otro"
+      // (63 negociaciones en Proyección, 51 ya ligadas al CRM), bloqueando
+      // también el cambio de Estatus/Probabilidad que sí era válido. Ahora
+      // solo se manda tipo_servicio al CRM cuando es uno de los valores
+      // reconocidos; si es un valor heredado se omite (undefined) y el
+      // backend solo actualiza fase_venta/probabilidad, sin rechazar nada.
+      const tipoServicioParaCRM=TIPOS_SERVICIO.includes(payload.tipo_servicio)?payload.tipo_servicio:undefined;
+      await crmActualizarOportunidad(orig.oportunidad_crm_id,payload.estatus,payload.probabilidad,tipoServicioParaCRM);
     }
     // Jp, 2026-10-14: "cuando yo las ligue a una cuenta, debería de habilitarme
     // el sistema a poderlo ligar también a una oportunidad que esté abierta
@@ -18190,8 +18199,18 @@ async function agregarPorSistema(campanaId){
   }
   const idsProspectosConSistema=[...new Set(eventosDelSistema.map(e=>e.prospecto_id))];
   if(!idsProspectosConSistema.length){alert('No hay prospectos con ese sistema');return;}
-  const {data:prospectosContactables}=await sb.from('prospectos').select('id').in('id',idsProspectosConSistema).eq('no_contactar',false);
-  const ids=(prospectosContactables||[]).map(p=>p.id);
+  // Jp, 2026-10-27: con muchos ids (ej. 676 de Siigo Fiscal) el .in('id',ids) en
+  // un solo request generaba una URL demasiado larga y Supabase respondía "Bad
+  // Request" — el código anterior ignoraba ese error (solo leía `data`), así que
+  // la pantalla decía "no hay prospectos contactables" aunque sí los había. Ahora
+  // se consulta en lotes de 200 ids y se avisa si algún lote realmente falla.
+  let ids=[];
+  for(let i=0;i<idsProspectosConSistema.length;i+=200){
+    const lote=idsProspectosConSistema.slice(i,i+200);
+    const {data:loteData,error:errLote}=await sb.from('prospectos').select('id').in('id',lote).eq('no_contactar',false);
+    if(errLote){alert('Error al consultar prospectos: '+errLote.message);return;}
+    ids=ids.concat((loteData||[]).map(p=>p.id));
+  }
   if(!ids.length){alert('No hay prospectos contactables con ese sistema');return;}
   const filas=ids.map(id=>({campana_id:campanaId,prospecto_id:id}));
   const {error}=await sb.from('campana_prospectos').upsert(filas,{onConflict:'campana_id,prospecto_id',ignoreDuplicates:true});
