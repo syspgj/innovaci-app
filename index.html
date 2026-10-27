@@ -13098,6 +13098,7 @@ const VENTAS_SUBTABS=[
   {id:'liberaciones',label:'Liberaciones'},
   {id:'crm',label:'📋 Prospectos'},
   {id:'campanas',label:'🎯 Campañas'},
+  {id:'cotizadordir',label:'🧮 Cotizador'},
   {id:'cartera',label:'💼 Cartera'},
   {id:'proyectosdir',label:'📁 Proyectos'},
   {id:'suscripciones',label:'📋 Suscripciones'},
@@ -13155,6 +13156,7 @@ function renderDirectorTab(){
   else if(id==='liberaciones')renderDirectorLiberaciones();
   else if(id==='crm')renderDirectorCRM();
   else if(id==='campanas')renderDirectorCampanas();
+  else if(id==='cotizadordir')renderCotizador(); // Jp, 2026-10-27: el Cotizador existía para Vendedor/Telemarketing pero nunca se enlazó en el menú del Director — por eso Jp no lo veía en "su perfil". renderCotizador() ya detecta esDirector internamente (muestra ⚙️ Descuentos de distribuidor), así que basta con enlazarlo aquí.
   else if(id==='cartera')renderDirectorCartera();
   else if(id==='proyectosdir')renderDirectorProyectos();
   else if(id==='suscripciones')renderDirectorSuscripcionesModulo();
@@ -17691,6 +17693,36 @@ async function aplicarAsignacionProspectosCampana(campanaId,agenteId){
   await actualizarPorLotesIds('prospectos',ids,{asignado_a:agenteId});
 }
 
+// Jp, 2026-10-27: "estatus" vive en el prospecto mismo, no por campaña — un
+// prospecto ya trabajado en una campaña anterior (ej. marcado "No contestó"
+// o "Interesado" hace meses) arrastraba ese mismo estatus a una campaña
+// nueva, aunque nadie lo hubiera llamado todavía en esa ronda. Jp decidió no
+// tocar los datos de campañas ya existentes, pero sí dejar esto listo para
+// que las campañas nuevas empiecen limpias de aquí en adelante: cuando un
+// prospecto entra POR PRIMERA VEZ a una campaña, se reinicia su estatus a
+// "Nuevo" — salvo que ya tenga una conversión real lograda ("Canalizado a
+// ventas" / "Compró el taller 24/7"), que nunca se toca.
+const ESTATUS_TERMINALES_NO_RESETEAR=['Canalizado a ventas','Compró el taller 24/7'];
+async function obtenerIdsEnCampana(campanaId){
+  let out=[],desde=0; const pageSize=1000;
+  while(true){
+    const {data,error}=await sb.from('campana_prospectos').select('prospecto_id').eq('campana_id',campanaId).range(desde,desde+pageSize-1);
+    if(error||!data||!data.length) break;
+    out=out.concat(data.map(r=>r.prospecto_id));
+    if(data.length<pageSize) break;
+    desde+=pageSize;
+  }
+  return out;
+}
+async function reiniciarEstatusProspectosNuevosEnCampana(idsNuevos){
+  if(!idsNuevos||!idsNuevos.length) return;
+  for(let i=0;i<idsNuevos.length;i+=200){
+    const lote=idsNuevos.slice(i,i+200);
+    const {error}=await sb.from('prospectos').update({estatus:'Nuevo'}).in('id',lote).not('estatus','in',`(${ESTATUS_TERMINALES_NO_RESETEAR.map(s=>`"${s}"`).join(',')})`);
+    if(error) console.error('reiniciarEstatusProspectosNuevosEnCampana lote',i,error);
+  }
+}
+
 async function toggleCampanaActiva(id,activar){
   if(activar){
     // Solo una campaña activa a la vez: desactivar todas las demás primero
@@ -18170,6 +18202,7 @@ async function crearCampanaDesdeFiltro(){
   const filas=ids.map(id=>({campana_id:nuevaCamp.id,prospecto_id:id}));
   const {error:errRel}=await sb.from('campana_prospectos').upsert(filas,{onConflict:'campana_id,prospecto_id',ignoreDuplicates:true});
   if(errRel){alert('La campaña "'+nombre+'" se creó, pero hubo un error agregando los prospectos: '+errRel.message);return;}
+  await reiniciarEstatusProspectosNuevosEnCampana(ids); // campaña recién creada: todos son nuevos en ella
   alert(`✓ Campaña "${nombre}" creada con ${ids.length} prospecto(s).`);
   abrirCampana(nuevaCamp.id);
 }
@@ -18199,6 +18232,7 @@ async function toggleProspectoEnCampana(campanaId,prospectoId,marcado){
   if(marcado){
     await sb.from('campana_prospectos').insert({campana_id:campanaId,prospecto_id:prospectoId});
     window._idsEnCampanaActual?.add(prospectoId);
+    await reiniciarEstatusProspectosNuevosEnCampana([prospectoId]);
     const agente=document.getElementById('editCampAsignado')?.value;
     if(agente) await sb.from('prospectos').update({asignado_a:agente}).eq('id',prospectoId);
   }else{
@@ -18213,9 +18247,15 @@ async function agregarPorEvento(campanaId){
   const {data:prospectosDelEvento}=await sb.from('prospectos').select('id').eq('evento',evento).eq('no_contactar',false);
   const ids=(prospectosDelEvento||[]).map(p=>p.id);
   if(!ids.length){alert('No hay prospectos contactables de ese evento');return;}
+  // Jp, 2026-10-27: solo se reinicia el estatus de los que de verdad son
+  // nuevos en ESTA campaña — si el botón se vuelve a usar, no se debe borrar
+  // el avance de quien ya se trabajó aquí mismo.
+  const idsPreviosEv=new Set(await obtenerIdsEnCampana(campanaId));
+  const idsNuevosEv=ids.filter(id=>!idsPreviosEv.has(id));
   const filas=ids.map(id=>({campana_id:campanaId,prospecto_id:id}));
   const {error}=await sb.from('campana_prospectos').upsert(filas,{onConflict:'campana_id,prospecto_id',ignoreDuplicates:true});
   if(error){alert('Error al agregar: '+error.message);return;}
+  await reiniciarEstatusProspectosNuevosEnCampana(idsNuevosEv);
   const agenteEv=document.getElementById('editCampAsignado')?.value;
   if(agenteEv) await actualizarPorLotesIds('prospectos',ids,{asignado_a:agenteEv});
   await abrirCampana(campanaId);
@@ -18252,9 +18292,14 @@ async function agregarPorSistema(campanaId){
     ids=ids.concat((loteData||[]).map(p=>p.id));
   }
   if(!ids.length){alert('No hay prospectos contactables con ese sistema');return;}
+  // Jp, 2026-10-27: igual que agregarPorEvento — solo reiniciar estatus de
+  // los que de verdad son nuevos en esta campaña.
+  const idsPreviosSis=new Set(await obtenerIdsEnCampana(campanaId));
+  const idsNuevosSis=ids.filter(id=>!idsPreviosSis.has(id));
   const filas=ids.map(id=>({campana_id:campanaId,prospecto_id:id}));
   const {error}=await sb.from('campana_prospectos').upsert(filas,{onConflict:'campana_id,prospecto_id',ignoreDuplicates:true});
   if(error){alert('Error al agregar: '+error.message);return;}
+  await reiniciarEstatusProspectosNuevosEnCampana(idsNuevosSis);
   const agenteSis=document.getElementById('editCampAsignado')?.value;
   if(agenteSis) await actualizarPorLotesIds('prospectos',ids,{asignado_a:agenteSis});
   await abrirCampana(campanaId);
