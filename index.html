@@ -5953,7 +5953,7 @@ function cotizadorPintar(){
   // muestran desde el primero que alcanza hacia los superiores (Jp, 2026-10-26:
   // "si necesita 3, se le muestra Empresarial, pero también se le puede
   // mostrar Corporativo" — para comparar, no solo el exacto).
-  const planesAplican=planesProducto.filter(p=>p.rfcs_cubiertos==null||p.rfcs_cubiertos>=n);
+  const planesAplican=planesProducto.filter(p=>p.capacidad_cubierta==null||p.capacidad_cubierta>=n);
   // Jp, 2026-10-26 (4ta ronda): "no pude seleccionar qué paquete se iba a
   // cotizar" — antes se guardaba el primero que aplicaba sin preguntar. Ahora
   // hay botón "Elegir este plan" en cada tarjeta; si no hay nada elegido
@@ -5967,11 +5967,21 @@ function cotizadorPintar(){
   const notasPrevias=document.getElementById('cotizNotas')?.value||'';
   const buscarPrevio=document.getElementById('cotizBuscarCuenta')?.value||'';
   const ligadoAPrevio=document.getElementById('cotizLigadoA')?.innerHTML||'';
+  // Jp, 2026-10-27: 2do producto (NOI Asistente) — el cotizador ahora
+  // muestra una pestaña por cada producto activo en cotizador_productos, en
+  // vez de estar amarrado a Siigo Fiscal. Cambiar de pestaña resetea el plan
+  // elegido (los ids de plan son de otro producto) pero conserva # capturado
+  // /periodicidad/IVA, ya que son conceptos que aplican igual a cualquiera.
+  const productosOrdenados=(window._cotizProductos||[]).slice().sort((a,b)=>(a.orden||0)-(b.orden||0));
+  const tabsProducto=productosOrdenados.length>1?`<div style="display:flex;gap:6px;margin-bottom:10px;">
+    ${productosOrdenados.map(p=>`<button class="cartera-subtab ${p.slug===cotizProductoSlug?'active':''}" style="${p.slug===cotizProductoSlug?'background:var(--navy);color:#fff;':''}" onclick="cotizProductoSlug='${p.slug}';cotizPlanSeleccionado=null;cotizadorPintar();">${p.nombre}</button>`).join('')}
+  </div>`:'';
   mc.innerHTML=`
-  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
     <div>
       <div style="font-size:18px;font-weight:600;color:var(--text);">🧮 Cotizador</div>
-      <div style="font-size:12px;color:var(--text3);">Cotizador de Ciclo Fiscal — ${producto.nombre}</div>
+      ${tabsProducto}
+      <div style="font-size:12px;color:var(--text3);">${producto.nombre}</div>
     </div>
     ${esDirector?`<button class="cartera-subtab" onclick="cotizadorAbrirDescuentos()">⚙️ Descuentos de distribuidor</button>`:''}
   </div>
@@ -5979,7 +5989,7 @@ function cotizadorPintar(){
   <div class="card" style="padding:16px 18px;margin-bottom:16px;">
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;">
       <div>
-        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">¿Cuántas empresas (RFCs) necesita el cliente?</div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">${producto.etiqueta_capacidad||'¿Cuántas empresas (RFCs) necesita el cliente?'}</div>
         <input type="number" min="1" id="cotizInputEmpresas" value="${n}" style="width:100px;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;" oninput="cotizEmpresas=this.value;cotizadorPintar();">
       </div>
       <div>
@@ -5996,7 +6006,7 @@ function cotizadorPintar(){
     </div>
   </div>
 
-  ${!planesAplican.length?`<div style="padding:20px;color:var(--text3);">Ningún plan cubre ${n} empresas/RFCs — revisa el número capturado.</div>`:`
+  ${!planesAplican.length?`<div style="padding:20px;color:var(--text3);">Ningún plan cubre ${n} ${producto.unidad_capacidad||'RFC'}${n>1?'s':''} — revisa el número capturado.</div>`:`
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-bottom:18px;">
     ${planesAplican.map(p=>cotizadorTarjetaPlan(p,producto)).join('')}
   </div>`}
@@ -6119,7 +6129,7 @@ async function cotizadorRecienteCrearOportunidad(cotizId){
   window._cotizVinculandoId=cotizId;
   await agregarFilaPipe();
   const periodoLabel=(r.periodicidad||'')[0]?.toUpperCase()+(r.periodicidad||'').slice(1);
-  const nombreProducto=(window._cotizProductos||[]).find(p=>p.id===r.producto_id)?.nombre||'Siigo Fiscal';
+  const nombreProducto=(window._cotizProductos||[]).find(p=>p.id===r.producto_id)?.nombre||'';
   const inProducto=document.getElementById('pProducto'), inMonto=document.getElementById('pMonto');
   if(inProducto) inProducto.value=`${nombreProducto} — ${r.cotizador_planes?.nombre||''} (${periodoLabel})`;
   if(inMonto) inMonto.value=parseFloat(r.precio_total_periodo||0).toFixed(2);
@@ -6143,7 +6153,13 @@ function cotizadorTarjetaPlan(plan,producto){
     ${plan.recomendado&&!seleccionado?'<div style="background:var(--teal);color:#fff;font-size:10px;font-weight:700;text-align:center;padding:3px 0;border-radius:4px;margin:-16px -16px 10px -16px;">RECOMENDADO</div>':''}
     ${seleccionado?'<div style="background:var(--navy);color:#fff;font-size:10px;font-weight:700;text-align:center;padding:3px 0;border-radius:4px;margin:-16px -16px 10px -16px;">✓ PLAN A COTIZAR</div>':''}
     <div style="font-weight:700;font-size:14px;color:var(--text);margin-bottom:2px;">${plan.nombre}</div>
-    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">${plan.rfcs_cubiertos==null?'RFCs ilimitados':plan.rfcs_cubiertos+' RFC'+(plan.rfcs_cubiertos>1?'s':'')} · ${plan.usuarios} usuario${plan.usuarios>1?'s':''}</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">${(()=>{
+      // Jp, 2026-10-27: segundo producto (NOI Asistente) mide capacidad por
+      // empleados, no por RFCs — la unidad viene del producto, no hardcodeada.
+      const unidad=producto.unidad_capacidad||'RFC';
+      const capTxt=plan.capacidad_cubierta==null?`${unidad}s ilimitados`:`Hasta ${plan.capacidad_cubierta} ${unidad}${plan.capacidad_cubierta>1?'s':''}`;
+      return plan.usuarios?`${capTxt} · ${plan.usuarios} usuario${plan.usuarios>1?'s':''}`:capTxt;
+    })()}</div>
     <div style="font-size:22px;font-weight:800;color:var(--navy);">${fmt(c.precioMensualFinal)}<span style="font-size:11px;font-weight:600;color:var(--text3);">/mes</span></div>
     ${c.descPct>0?`<div style="font-size:11px;color:var(--teal);font-weight:700;margin-top:2px;">-${c.descPct}% distribuidor activo</div>`:''}
 
@@ -6208,7 +6224,7 @@ async function cotizadorGuardar(crearOportunidad){
   const producto=(window._cotizProductos||[]).find(p=>p.slug===cotizProductoSlug);
   const n=parseInt(cotizEmpresas)||1;
   const planesProducto=(window._cotizPlanes||[]).filter(p=>p.producto_id===producto.id);
-  const planesAplican=planesProducto.filter(p=>p.rfcs_cubiertos==null||p.rfcs_cubiertos>=n);
+  const planesAplican=planesProducto.filter(p=>p.capacidad_cubierta==null||p.capacidad_cubierta>=n);
   // Jp, 2026-10-26 (4ta ronda): se guarda el plan que el usuario eligió con
   // el botón "Elegir este plan" (cotizPlanSeleccionado), no automáticamente
   // el más chico que aplica.
