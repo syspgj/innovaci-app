@@ -24811,10 +24811,11 @@ async function guardarFactIngreso(){
   }
   if(window._fiXmlText && window._fiXmlParsed){
     await fiAsegurarCacheClientes();
+    await asegurarAliasClientesXML();
     const d=window._fiXmlParsed;
     const norm=s=>(s||'').toUpperCase().trim();
     const avisos=[];
-    if(d.cliente && norm(d.cliente)!==norm(cliente)){
+    if(d.cliente && norm(d.cliente)!==norm(cliente) && !hayAliasAceptado(cliente,d.cliente)){
       avisos.push('• La razón social del XML ("'+d.cliente+'") no coincide con lo capturado ("'+cliente+'").');
     }
     if(cliente_cartera_id){
@@ -24890,6 +24891,31 @@ function abrirCargaMasivaXMLIng(){
 
 let _xmlParsedIng=[];
 
+// Alias permanentes de razón social sistema↔XML (Jp, 2026-10-28): una vez que
+// Jp confirma con "✅ Omitir y guardar" que un par de nombres es la misma
+// cuenta (nombre comercial, puntuación, nombre corto entre paréntesis...),
+// se guarda aquí y deja de marcarse como inconsistencia en cualquier
+// validación futura — carga masiva o captura individual.
+async function asegurarAliasClientesXML(){
+  if(window._aliasClientesXML) return;
+  const {data}=await sb.from('fact_alias_clientes_xml').select('nombre_sistema_norm,nombre_xml_norm');
+  window._aliasClientesXML=data||[];
+}
+function hayAliasAceptado(nombreSistema,nombreXml){
+  const norm=s=>(s||'').toUpperCase().trim();
+  const ns=norm(nombreSistema), nx=norm(nombreXml);
+  return (window._aliasClientesXML||[]).some(a=>a.nombre_sistema_norm===ns&&a.nombre_xml_norm===nx);
+}
+async function guardarAliasClienteXML(nombreSistema,nombreXml){
+  const {error}=await sb.from('fact_alias_clientes_xml').insert({nombre_sistema:nombreSistema,nombre_xml:nombreXml});
+  if(error && !error.message?.includes('duplicate')){alert('No se pudo guardar el alias: '+error.message);return false;}
+  (window._aliasClientesXML||(window._aliasClientesXML=[])).push({
+    nombre_sistema_norm:(nombreSistema||'').toUpperCase().trim(),
+    nombre_xml_norm:(nombreXml||'').toUpperCase().trim()
+  });
+  return true;
+}
+
 async function previsualizarXMLsIng(){
   const files=Array.from(document.getElementById('xmlMasivoIng')?.files||[]);
   if(!files.length)return;
@@ -24904,6 +24930,7 @@ async function previsualizarXMLsIng(){
     d._file=file.name; d._xmlText=txt; d._rubro=''; d._vendedor=''; d._fechaPago=''; d._estatus='EMITIDA'; d._existe=false;
     _xmlParsedIng.push(d);
   }
+  await asegurarAliasClientesXML();
   const folios=_xmlParsedIng.map(d=>d.folio).filter(Boolean);
   if(folios.length){
     const {data:existentes}=await sb.from('fact_ingresos').select('id,folio,cliente,total,xml_path').in('folio',folios);
@@ -24918,8 +24945,9 @@ async function previsualizarXMLsIng(){
         d._existeTieneXml=!!e.xml_path;
         // Cruce cliente/monto contra lo ya registrado (Jp, 2026-10-28 — esto es
         // justo lo que hubiera atrapado el caso Ezequiel: el XML de una
-        // factura ligado por error a otro cliente/monto en el sistema).
-        d._mismatchCliente=!!(d.cliente&&e.cliente&&norm(d.cliente)!==norm(e.cliente));
+        // factura ligado por error a otro cliente/monto en el sistema). Si ya
+        // hay un alias aceptado para este par de nombres, no se marca.
+        d._mismatchCliente=!!(d.cliente&&e.cliente&&norm(d.cliente)!==norm(e.cliente)&&!hayAliasAceptado(e.cliente,d.cliente));
         d._mismatchTotal=!!(d.total&&e.total&&Math.abs(d.total-e.total)>1);
       }
     });
@@ -25049,9 +25077,11 @@ async function guardarXMLsMasivoIng(){
 }
 
 function mostrarInconsistenciasXMLMasivo(lista){
+  window._inconsistenciasXMLActual=lista;
   const html=`
     <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">
       Estos XML corresponden (por folio) a facturas que ya estaban registradas, pero el cliente y/o el monto del XML <b>no coinciden</b> con lo capturado. El XML ya se adjuntó para que lo puedas consultar — revisa cada caso: puede ser una factura mal ligada a otro cliente (como pasó con el caso Ezequiel).
+      <br>Si la diferencia de cliente es solo nombre comercial/puntuación y es la misma cuenta, usa <b>"✅ Omitir y guardar"</b> para que no se vuelva a marcar ese par de nombres. Si solo aplica a esta factura (sin que sea una regla general), usa <b>"☑️ Pasar por esta vez"</b>.
     </div>
     <div style="max-height:420px;overflow-y:auto;">
     <table style="font-size:11px;border-collapse:collapse;width:100%;">
@@ -25061,18 +25091,49 @@ function mostrarInconsistenciasXMLMasivo(lista){
         <th style="padding:6px 8px;text-align:right;">Total XML</th><th style="padding:6px 8px;"></th>
       </tr></thead>
       <tbody>
-        ${lista.map(x=>`<tr style="border-bottom:1px solid var(--border);background:rgba(232,64,64,0.05);">
+        ${lista.map((x,idx)=>`<tr id="xmlInconsistRow_${idx}" style="border-bottom:1px solid var(--border);background:rgba(232,64,64,0.05);">
           <td style="padding:5px 8px;font-weight:700;color:var(--navy);">${x.folio||'—'}</td>
           <td style="padding:5px 8px;${x.mismatchCliente?'color:var(--red);font-weight:600;':''}">${x.clienteSistema||'—'}</td>
           <td style="padding:5px 8px;${x.mismatchCliente?'color:var(--red);font-weight:600;':''}">${x.clienteXml||'—'}</td>
           <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;${x.mismatchTotal?'color:var(--red);font-weight:700;':''}">${fmt(x.totalSistema||0)}</td>
           <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;${x.mismatchTotal?'color:var(--red);font-weight:700;':''}">${fmt(x.totalXml||0)}</td>
-          <td style="padding:5px 8px;text-align:center;"><button onclick="irAEditarDesdeAlerta('${x.id}')" style="background:none;border:1px solid var(--border);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">Revisar</button></td>
+          <td style="padding:5px 8px;text-align:center;white-space:nowrap;">
+            <button onclick="irAEditarDesdeAlerta('${x.id}')" style="background:none;border:1px solid var(--border);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;margin-right:4px;">Revisar</button>
+            ${x.mismatchCliente?`<button onclick="omitirYGuardarAliasXML(${idx})" title="Guardar este par de nombres como la misma cuenta, para siempre" style="background:#27AE60;color:#fff;border:none;border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;margin-right:4px;">✅ Omitir y guardar</button>
+            <button onclick="pasarInconsistenciaXMLPorEstaVez(${idx})" title="Aceptar solo esta factura, sin crear una regla" style="background:none;border:1px solid var(--border);color:var(--text3);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">☑️ Pasar por esta vez</button>`:''}
+          </td>
         </tr>`).join('')}
       </tbody>
     </table>
     </div>`;
   mkModal('modalXmlInconsistenciasIng','🚨 XML no coincide con lo registrado',html,null,'Cerrar',true);
+}
+
+function _marcarFilaXMLResuelta(idx,texto,color){
+  const fila=document.getElementById('xmlInconsistRow_'+idx);
+  if(!fila)return;
+  fila.style.background='rgba(39,174,96,0.06)';
+  fila.style.opacity='0.6';
+  const btns=fila.querySelector('td:last-child');
+  if(btns) btns.innerHTML=`<span style="font-size:10px;color:${color||'#27AE60'};font-weight:600;">${texto}</span>`;
+}
+
+// "✅ Omitir y guardar" — Jp confirma que es la misma cuenta con variante de
+// nombre (comercial/puntuación), y lo guarda como regla permanente: cualquier
+// factura futura con este mismo par de nombres ya no se va a marcar.
+async function omitirYGuardarAliasXML(idx){
+  const x=(window._inconsistenciasXMLActual||[])[idx];
+  if(!x)return;
+  const ok=await guardarAliasClienteXML(x.clienteSistema,x.clienteXml);
+  if(!ok)return;
+  _marcarFilaXMLResuelta(idx,'✅ Guardado como la misma cuenta (regla permanente)');
+}
+
+// "☑️ Pasar por esta vez" — Jp confirma que esta factura en particular está
+// bien así, pero SIN crear una regla general (p. ej. un cliente facturado a
+// nombre de otra persona, que no debe aplicar a cualquier otro cliente).
+function pasarInconsistenciaXMLPorEstaVez(idx){
+  _marcarFilaXMLResuelta(idx,'☑️ Aceptado solo para esta factura','var(--text3)');
 }
 
 // ─── MODAL EDICIÓN INGRESO ────────────────────────────────────────────────────
@@ -25179,10 +25240,11 @@ async function guardarEdicionIngreso(){
   }
   if(window._eiiXmlText && window._eiiXmlParsed){
     await fiAsegurarCacheClientes();
+    await asegurarAliasClientesXML();
     const d=window._eiiXmlParsed;
     const norm=s=>(s||'').toUpperCase().trim();
     const avisos=[];
-    if(d.cliente && norm(d.cliente)!==norm(payload.cliente)){
+    if(d.cliente && norm(d.cliente)!==norm(payload.cliente) && !hayAliasAceptado(payload.cliente,d.cliente)){
       avisos.push('• La razón social del XML ("'+d.cliente+'") no coincide con lo capturado ("'+payload.cliente+'").');
     }
     if(cliente_cartera_id){
@@ -25251,6 +25313,7 @@ function abrirConciliacionBancoIng(){
     <div id="bancoIngDetalle" style="max-height:420px;overflow-y:auto;"></div>`;
   mkModal('modalConcBancoIng','🏦 Conciliación de ingresos con banco',html,null,'Cerrar',true);
 }
+
 
 // Movimientos que llegan vía tienda en línea (Shopify) o el procesador que
 // usa (SPEI RECIBIDO JP MORGAN): el banco los deposita netos de comisión, así
