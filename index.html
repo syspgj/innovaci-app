@@ -14118,7 +14118,27 @@ async function renderDirectorVendedores(){
   // quedarse con el valor de un render anterior (mismo fix aplicado en renderDirectorResumen)
   const metaDeptoRowV=kpiConfig.find(k=>k.kpi_key==='meta_depto');
   metaDepto=metaDeptoRowV?metaDeptoRowV.meta_dulce:160000;
-  const totalSvcPreliminarV=vendedores.reduce((s,u)=>s+getTotals(allRegistros,u.id).svc,0);
+  // Jp, 2026-10-28: ESTA es la función real que arma la pestaña "Vendedores"
+  // de Vista Director (renderDirectorResumen, donde se había puesto este
+  // mismo fix primero, resultó ser una función que ya no está enlazada a
+  // ningún tab — por eso Jp seguía viendo los números viejos después de
+  // desplegar). Mismo fix aquí: desde octubre 2026 (usaFinanzasRealDesde),
+  // Servicios/Aspel/IT se calculan en vivo contra Finanzas en vez de sumar
+  // las fotos fijas de "Registrar día" — mismo mecanismo que ya usa el propio
+  // vendedor en "Mi Mes".
+  const usaFinanzasRealMesV=usaFinanzasRealDesde(currentYear,currentMonth);
+  const ventasRealesPorVendedorV={};
+  if(usaFinanzasRealMesV){
+    await Promise.all(vendedores.map(async u=>{
+      const filtro=vendedorFactIngresosFiltro(u);
+      if(!filtro) return;
+      ventasRealesPorVendedorV[u.id]=await calcVentasRealesFinanzas(filtro,currentYear,currentMonth);
+    }));
+  }
+  const totalSvcPreliminarV=vendedores.reduce((s,u)=>{
+    const vr=ventasRealesPorVendedorV[u.id];
+    return s+(vr?vr.svc:getTotals(allRegistros,u.id).svc);
+  },0);
   deptoAlcanzado=totalSvcPreliminarV>=metaDepto;
   // Cargar ajustes manuales del mes (una sola consulta, no por vendedor)
   const {data:ajustesMesV}=await sb.from('ajustes_comision').select('*').eq('anio',currentYear).eq('mes',currentMonth);
@@ -14136,6 +14156,11 @@ async function renderDirectorVendedores(){
   <div class="shead">Vendedores B2B</div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;">${vendedores.map(u=>{
     const tot=getTotals(allRegistros,u.id);
+    const ventasRealesUV=ventasRealesPorVendedorV[u.id];
+    if(ventasRealesUV){
+      tot.svc=ventasRealesUV.svc; tot.aspel=ventasRealesUV.aspel; tot.it=ventasRealesUV.it;
+      tot.dip=ventasRealesUV.dip; tot.cur_vivo=ventasRealesUV.cursos_vivo;
+    }
     const metaKey=u.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
     const svcM=kpiConfig.find(k=>k.kpi_key==='svc');
     const svcMeta=svcM?svcM[metaKey]:80000;
@@ -14571,8 +14596,6 @@ async function verRegistrosVendedor(userId, nombre, rol){
     });
     rows.sort((a,b)=>a.fecha<b.fecha?-1:1);
   }
-  const auditados=rows.filter(r=>r.auditado).length;
-  const pendientes=rows.length-auditados;
   const cols=esTele?[
     {h:'Campaña',k:'_dCampana',money:false,text:true},
     {h:'Total llam.',k:'_dTotal',money:false},
@@ -14623,25 +14646,22 @@ async function verRegistrosVendedor(userId, nombre, rol){
     <button onclick="renderDirectorVendedores()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:7px 14px;font-size:12px;cursor:pointer;color:var(--text2);font-family:'Inter',sans-serif;">← Volver</button>
     <div>
       <div style="font-size:16px;font-weight:700;color:var(--text);">Registros de ${nombre} — ${getNombreMes(currentMonth)} ${currentYear}</div>
-      <div style="font-size:12px;color:var(--text3);">${rows.length} días registrados · <span style="color:#27AE60;font-weight:600;">${auditados} auditados</span> · <span style="color:#F5A623;font-weight:600;">${pendientes} pendientes</span></div>
+      <div style="font-size:12px;color:var(--text3);">${rows.length} días registrados</div>
       ${esTele?`<div style="font-size:10px;color:${_crmErr?'var(--red)':_crmCount>0?'#27AE60':'#F5A623'};margin-top:2px;">${_crmErr?'⚠️ Error al leer llamadas CRM: '+_crmErr.message:_crmCount>0?`✓ ${_crmCount} días con llamadas CRM cargadas`:'⚠️ 0 registros en llamadas_crm_directas (¿RLS o sin capturar?)'}</div>`:''}
     </div>
-    ${pendientes===0&&rows.length>0?'<span style="background:rgba(39,174,96,0.1);color:#27AE60;border:1px solid rgba(39,174,96,0.3);border-radius:20px;padding:4px 12px;font-size:12px;font-weight:600;">✅ Mes completamente auditado</span>':''}
   </div>
   <div style="overflow-x:auto;">
   <table style="width:100%;border-collapse:collapse;font-size:12px;">
     <thead>
       <tr style="background:var(--navy);color:#fff;font-size:11px;">
         <th style="padding:8px 10px;text-align:left;">Fecha</th>
-        <th style="padding:8px 10px;text-align:left;">Fecha</th>
         ${cols.map(c=>`<th style="padding:8px 10px;text-align:${c.money?'right':'center'};">${c.h}</th>`).join('')}
-        <th style="padding:8px 10px;text-align:center;">Auditoría</th>
         <th style="padding:8px 10px;text-align:center;">Acciones</th>
       </tr>
     </thead>
     <tbody id="auditBody">
       ${rows.map(r=>filaAuditoria(r,cols)).join('')}
-      ${rows.length===0?`<tr><td colspan="${cols.length+3}" style="text-align:center;padding:24px;color:var(--text3);">Sin registros este mes</td></tr>`:''}
+      ${rows.length===0?`<tr><td colspan="${cols.length+2}" style="text-align:center;padding:24px;color:var(--text3);">Sin registros este mes</td></tr>`:''}
     </tbody>
     <tfoot>
       <tr style="background:var(--surface-2,#f4f6f8);font-weight:700;font-size:11px;">
@@ -14651,18 +14671,26 @@ async function verRegistrosVendedor(userId, nombre, rol){
           if(c.pct){const totEf=rows.reduce((s,r)=>s+(r._dEfectivas||0),0);const totTot=rows.reduce((s,r)=>s+(r._dTotal||0),0);const p=totTot>0?Math.round(totEf/totTot*100):0;return `<td style="padding:8px 10px;text-align:center;font-weight:700;color:${p>=50?'#27AE60':p>=30?'#F5A623':'#E84040'};">${totTot>0?p+'%':'—'}</td>`;}
           const sum=rows.reduce((s,r)=>s+(r[c.k]||0),0);return `<td style="padding:8px 10px;text-align:${c.money?'right':'center'};color:${c.k==='svc'?'var(--teal)':'inherit'};">${c.money?fmt(sum):sum}</td>`;
         }).join('')}
-        <td colspan="2"></td>
+        <td></td>
       </tr>
     </tfoot>
   </table>
   </div>`;
 }
 
+// Jp, 2026-10-28: se quitó la auditoría manual día-por-día ("Auditar"/"✓ OK")
+// — Servicios/Aspel/IT/Diplomados-Cursos Vivo ya no son autorreporte (vienen
+// verificados de Facturación, ver usaFinanzasRealDesde), así que ya no hay
+// nada que confirmar ahí; y el resto de columnas (cotizaciones, demos,
+// valoraciones, clientes nuevos, negociaciones, prospectos canalizados)
+// nunca tuvo una auditoría POR COLUMNA, solo un check de toda la fila, así
+// que no se estaba verificando nada específico de todas formas. También se
+// corrigió un <th>Fecha</th> duplicado en el encabezado que llevaba tiempo
+// desalineando esta tabla contra sus columnas reales.
 function filaAuditoria(r,cols){cols=cols||window._auditCols||[];
-  const auditado=r.auditado;
   const hoy=todayLocal();
   const esHoy=r.fecha===hoy;
-  return `<tr id="arow_${r.id}" style="border-bottom:1px solid var(--border);background:${auditado?'rgba(39,174,96,0.04)':'transparent'};">
+  return `<tr id="arow_${r.id}" style="border-bottom:1px solid var(--border);">
     <td style="padding:7px 10px;font-weight:500;white-space:nowrap;">
       ${r.fecha}${esHoy?'<span style="font-size:10px;color:var(--teal);margin-left:4px;">HOY</span>':''}
       ${r.updated_at&&r.updated_at!==r.created_at?'<div style="font-size:9px;color:var(--text3);">✏️ editado</div>':''}
@@ -14673,39 +14701,11 @@ function filaAuditoria(r,cols){cols=cols||window._auditCols||[];
       if(c.pct){return `<td style="padding:7px 10px;text-align:center;font-family:'JetBrains Mono',monospace;color:${v>=50?'#27AE60':v>=30?'#F5A623':v>0?'#E84040':'var(--text3)'};font-weight:600;">${r._dTotal>0?v+'%':'—'}</td>`;}
       return `<td style="padding:7px 10px;text-align:${c.money?'right':'center'};color:${v>0&&c.k==='svc'?'var(--teal)':v>0?'var(--text)':'var(--text3)'};">${v>0?(c.money?fmt(v):v):'—'}</td>`;
     }).join('')}
-    <td style="padding:7px 10px;text-align:center;">
-      ${auditado
-        ?`<div style="font-size:10px;color:#27AE60;font-weight:600;">✅ Auditado</div>
-           <div style="font-size:9px;color:var(--text3);">${r.auditado_at?r.auditado_at.split('T')[0]:''}</div>`
-        :`<span style="font-size:10px;color:#F5A623;font-weight:600;">⏳ Pendiente</span>`}
-    </td>
     <td style="padding:7px 10px;text-align:center;white-space:nowrap;">
       <button onclick="editarRegistroDir('${r.id}','${r.usuario_id}','${r.fecha}')"
-        style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:3px 8px;font-size:11px;cursor:pointer;color:var(--text2);margin-right:4px;">✏️</button>
-      <button onclick="toggleAuditado('${r.id}',${auditado})"
-        style="background:${auditado?'rgba(39,174,96,0.1)':'var(--navy)'};color:${auditado?'#27AE60':'#fff'};border:1px solid ${auditado?'rgba(39,174,96,0.3)':'transparent'};border-radius:var(--radsm);padding:3px 10px;font-size:11px;cursor:pointer;font-weight:600;">
-        ${auditado?'✓ OK':'Auditar'}
-      </button>
+        style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:3px 8px;font-size:11px;cursor:pointer;color:var(--text2);">✏️</button>
     </td>
   </tr>`;
-}
-
-async function toggleAuditado(registroId, esAuditado){
-  const nuevo=!esAuditado;
-  const upd={auditado:nuevo, updated_at:new Date().toISOString()};
-  if(nuevo){upd.auditado_por=currentUser.id; upd.auditado_at=new Date().toISOString();}
-  else{upd.auditado_por=null; upd.auditado_at=null;}
-  const {error}=await sb.from('registros_diarios').update(upd).eq('id',registroId);
-  if(error){alert('Error: '+error.message);return;}
-  // Update row in DOM without full reload
-  const {data:r}=await sb.from('registros_diarios').select('*').eq('id',registroId).single();
-  if(r){
-    const row=document.getElementById('arow_'+registroId);
-    if(row) row.outerHTML=filaAuditoria(r,window._auditCols);
-  }
-  // Update header counts
-  const allRows=document.querySelectorAll('[id^="arow_"]');
-  // Simple approach: refresh the view
 }
 
 async function editarRegistroDir(registroId, userId, fecha){
