@@ -183,9 +183,29 @@ async function listarComentarios(crmid) {
   }));
 }
 
-async function agregarComentario(crmid, comentario) {
+// Jp, 2026-10-28 — "create ModComments falló... assigned_user_id does not
+// have a value": el mismo requisito de Vtiger ya documentado en
+// crm-documento.js (exige assigned_user_id para casi cualquier create) nunca
+// se había aplicado aquí porque ModComments llevaba varias semanas
+// funcionando sin él — hasta que dejó de hacerlo. Mismo patrón de respaldo:
+// usuarios.crm_user_id del vendedor que comenta, o el usuario "Analisis"
+// (19x27) si no viene vendedor_usuario_id o no tiene CRM ligado.
+const VTIGER_USUARIO_RESPALDO = '19x27';
+
+async function resolverAssignedUserId(vendedorUsuarioId) {
+  if (!vendedorUsuarioId) return VTIGER_USUARIO_RESPALDO;
+  const url = `${SUPABASE_URL}/rest/v1/usuarios?id=eq.${encodeURIComponent(vendedorUsuarioId)}&select=crm_user_id`;
+  const res = await fetch(url, {
+    headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
+  });
+  if (!res.ok) return VTIGER_USUARIO_RESPALDO;
+  const rows = await res.json().catch(() => []);
+  return rows?.[0]?.crm_user_id || VTIGER_USUARIO_RESPALDO;
+}
+
+async function agregarComentario(crmid, comentario, assignedUserId) {
   const sessionName = await vtigerLogin();
-  const record = { commentcontent: comentario, related_to: crmid };
+  const record = { commentcontent: comentario, related_to: crmid, assigned_user_id: assignedUserId };
   const body = new URLSearchParams({ operation: 'create', sessionName, element: JSON.stringify(record), elementType: 'ModComments' });
   const json = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body }).then((r) => r.json());
   if (!json.success) throw new Error('create ModComments falló: ' + JSON.stringify(json));
@@ -208,7 +228,8 @@ export default async function handler(req, res) {
       const tipo = body.tipo;
       if (!body.comentario || !body.comentario.trim()) return res.status(400).json({ ok: false, error: 'Falta el texto del comentario' });
       const crmid = await obtenerCrmId(tipo, body);
-      const resultado = await agregarComentario(crmid, body.comentario.trim());
+      const assignedUserId = await resolverAssignedUserId(body.vendedor_usuario_id);
+      const resultado = await agregarComentario(crmid, body.comentario.trim(), assignedUserId);
       // Jp, 2026-10-14 — se regresa el id del comentario recién creado
       // (ModComments) para poder adjuntarle un documento específico después
       // (ver api/crm-documento.js): Jp pidió que los documentos queden
