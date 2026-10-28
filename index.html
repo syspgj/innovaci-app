@@ -13811,7 +13811,28 @@ async function renderDirectorResumen(){
   // con los datos del mes actual antes de evaluar la comisión de cada vendedor.
   const metaDeptoRow=kpiConfig.find(k=>k.kpi_key==='meta_depto');
   metaDepto=metaDeptoRow?metaDeptoRow.meta_dulce:160000;
-  const totalSvcPreliminar=vendedoresRes.reduce((s,u)=>s+getTotals(allRegistros,u.id).svc,0);
+  // Jp, 2026-10-28: "Vista Director" sumaba las fotos fijas de "Registrar día"
+  // (registros_diarios.svc/aspel/it), en vez de calcular en vivo contra
+  // Finanzas. Eso dejaba huecos grandes cuando una factura se capturaba
+  // DESPUÉS de que el vendedor ya había guardado su registro de ese día —
+  // caso real encontrado: "Venta IT" salía en $0 para Dulce y Manuel en
+  // octubre, aunque sí facturaron Cloud ese mes ($116K y $13K reales). Mismo
+  // mecanismo que ya usa el propio vendedor en "Mi Mes" desde el 2026-10-23
+  // (usaFinanzasRealDesde/calcVentasRealesFinanzas) — ahora también aplica
+  // aquí, para que Director vea exactamente lo mismo que ve cada vendedor.
+  const usaFinanzasRealMes=usaFinanzasRealDesde(currentYear,currentMonth);
+  const ventasRealesPorVendedor={};
+  if(usaFinanzasRealMes){
+    await Promise.all(vendedoresRes.map(async u=>{
+      const filtro=vendedorFactIngresosFiltro(u);
+      if(!filtro) return;
+      ventasRealesPorVendedor[u.id]=await calcVentasRealesFinanzas(filtro,currentYear,currentMonth);
+    }));
+  }
+  const totalSvcPreliminar=vendedoresRes.reduce((s,u)=>{
+    const vr=ventasRealesPorVendedor[u.id];
+    return s+(vr?vr.svc:getTotals(allRegistros,u.id).svc);
+  },0);
   deptoAlcanzado=totalSvcPreliminar>=metaDepto;
   // Cargar ajustes manuales del mes (una sola consulta, no por vendedor)
   const {data:ajustesMes}=await sb.from('ajustes_comision').select('*').eq('anio',currentYear).eq('mes',currentMonth);
@@ -13819,6 +13840,11 @@ async function renderDirectorResumen(){
   (ajustesMes||[]).forEach(a=>{ajustesPorUsuario[a.usuario_id]=a;});
   const vData=vendedoresRes.map(u=>{
     const tot=getTotals(allRegistros,u.id);
+    const ventasRealesU=ventasRealesPorVendedor[u.id];
+    if(ventasRealesU){
+      tot.svc=ventasRealesU.svc; tot.aspel=ventasRealesU.aspel; tot.it=ventasRealesU.it;
+      tot.dip=ventasRealesU.dip; tot.cur_vivo=ventasRealesU.cursos_vivo;
+    }
     const svcM=kpiConfig.find(k=>k.kpi_key==='svc');
     const metaKey=u.email.toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
     const svcMeta=svcM?svcM[metaKey]:80000;
@@ -14409,6 +14435,22 @@ async function reporteComparativoAnual(){
     dataVend[r.usuario_id].aspel[m]+=(r.aspel||0);
     dataVend[r.usuario_id].total+=(r.svc||0);
   });
+  // Jp, 2026-10-28: mismo fix que en "Vendedores" del director — los meses
+  // desde octubre 2026 (usaFinanzasRealDesde) sustituyen la foto fija de
+  // "Registrar día" por el dato real de Finanzas, para que este comparativo
+  // no muestre los mismos huecos (ej. ventas capturadas en Finanzas después
+  // de que el vendedor ya había guardado su registro de ese día).
+  await Promise.all(vendedores.map(async u=>{
+    const filtro=vendedorFactIngresosFiltro(u);
+    if(!filtro) return;
+    for(let m=1;m<=12;m++){
+      if(!usaFinanzasRealDesde(currentYear,m)) continue;
+      const real=await calcVentasRealesFinanzas(filtro,currentYear,m);
+      dataVend[u.id].svc[m]=real.svc;
+      dataVend[u.id].aspel[m]=real.aspel;
+    }
+    dataVend[u.id].total=dataVend[u.id].svc.reduce((s,v)=>s+v,0);
+  }));
   const colores=['#00A99D','#0D2240','#F5A623','#8B5CF6','#E84040'];
   const mesesConDatos=[];
   for(let m=1;m<=12;m++){if(vendedores.some(u=>dataVend[u.id].svc[m]>0))mesesConDatos.push(m);}
@@ -24243,6 +24285,36 @@ async function toggleCobrado(id,cobrado){
   renderIngresosTabla();
 }
 
+// Jp, 2026-10-28: faltaba por completo (el botón ✓/○ de "Conciliado" en la
+// tabla de Ingresos llamaba a toggleConciliadoIng, que nunca existió — solo
+// existía toggleConciliado, que es de fact_egresos. El botón no hacía
+// absolutamente nada al dar clic).
+async function toggleConciliadoIng(id,val){
+  const {error}=await sb.from('fact_ingresos').update({conciliado:val}).eq('id',id);
+  if(error){alert('Error al conciliar: '+error.message);return;}
+  const row=(window._fiRows||[]).find(r=>r.id===id);
+  if(row) row.conciliado=val;
+  renderIngresosTabla();
+}
+
+// Jp, 2026-10-28: también faltaba por completo (el botón ✕ de la tabla de
+// Ingresos llamaba a eliminarFactIngreso, que nunca se había definido — "está
+// el tachecito, pero no le das clic y no hace absolutamente nada"). Mismo
+// patrón que eliminarFactEgreso. gb_retenciones y
+// ventas_calendario_recordatorios se borran en cascada (FK ON DELETE
+// CASCADE); academia_inscripciones y circulo_membresias solo se desligan
+// (ON DELETE SET NULL) — no se pierden la inscripción ni la membresía, solo
+// la referencia a esta factura.
+async function eliminarFactIngreso(id){
+  const row=(window._fiRows||[]).find(r=>r.id===id);
+  const detalle=row?('\n\n• '+(row.folio||'(sin folio)')+' — '+(row.cliente||'(sin cliente)')+' — '+fmt(row.total||0)+' ('+(row.estatus||'')+')'):'';
+  if(!confirm('¿Eliminar esta factura de ingreso?'+detalle+'\n\nEsta acción no se puede deshacer. Si tenía retención de Guillermo Blancas asociada, también se eliminará; si tenía un alumno/socio ligado, solo se desligará (no se borra su inscripción/membresía).')) return;
+  const {error}=await sb.from('fact_ingresos').delete().eq('id',id);
+  if(error){alert('Error al eliminar: '+error.message);return;}
+  window._fiRows=(window._fiRows||[]).filter(r=>r.id!==id);
+  renderIngresosTabla();
+}
+
 async function renderAdminGB(){
   const ac=adminCont();if(!ac)return;
   ac.innerHTML='<div class="loading"><div class="spinner"></div></div>';
@@ -24259,7 +24331,7 @@ async function renderAdminGB(){
   const totalFactAnio=(gbAnio||[]).reduce((s,r)=>s+(r.monto_factura||0),0);
   ac.innerHTML=`
   <div style="margin-bottom:12px;padding:12px 16px;background:rgba(232,64,64,0.06);border:1px solid rgba(232,64,64,0.2);border-radius:8px;font-size:12px;color:var(--text3);">
-    <strong style="color:var(--text);">Serie GVE — Guillermo Blancas</strong> · Retención fija: <strong>2.5%</strong> por factura · Las facturas GVE se registran automáticamente aquí al capturarlas en Ingresos.
+    <strong style="color:var(--text);">Serie GBE — Guillermo Blancas</strong> · Retención fija: <strong>2.5%</strong> por factura · Las facturas GBE se registran automáticamente aquí al capturarlas en Ingresos.
   </div>
   <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px;">
     <div class="card" style="padding:14px;">
@@ -25747,17 +25819,39 @@ async function procesarExcelBancoIng(){
     if(match){match._usado=true;cuadrados++;}
     else enBancoNoSistema.push(mb);
   });
+  // Abonos ya ligados a mano con "🔗 Ligar con facturas" (Jp, 2026-10-28 —
+  // caso real: depósito de $7,999 + depósito de $500 que juntos cubren la
+  // factura INN583 de $8,499; ninguno de los dos cuadra 1:1 por monto contra
+  // ninguna factura, así que sin esto volvían a salir como "sin registrar"
+  // cada vez que se recargaba el estado de cuenta, aunque ya estuvieran
+  // ligados). Se cruza por día + monto (±1 peso) contra
+  // conciliacion_ingresos_agrupada del mismo mes/año del Excel.
+  const {data:yaLigados}=await sb.from('conciliacion_ingresos_agrupada')
+    .select('dia_banco,monto,factura_id').eq('anio',currentYear).eq('mes',currentMonth);
+  const ligadosDisponibles=(yaLigados||[]).map(l=>({...l,_usado:false}));
+  const enBancoNoSistemaLigadoRaw=[];
+  const enBancoNoSistemaSinLigar=[];
+  enBancoNoSistema.forEach(mb=>{
+    const match=ligadosDisponibles.find(l=>!l._usado&&String(l.dia_banco)===String(mb.dia)&&Math.abs((l.monto||0)-mb.abono)<=1);
+    if(match){match._usado=true;enBancoNoSistemaLigadoRaw.push({...mb,_facturaId:match.factura_id});}
+    else enBancoNoSistemaSinLigar.push(mb);
+  });
   // Separa lo que es tienda en línea (Shopify/JP Morgan) de lo que de verdad
   // falta por registrar — lo de tienda llega neto de comisión y por diseño no
   // va a cuadrar 1:1, así que no debe contarse como "faltante" (Jp, 2026-10-28).
-  const enBancoNoSistemaOtros=enBancoNoSistema.filter(m=>!esMovBancoTienda(m.concepto));
-  const enBancoNoSistemaTienda=enBancoNoSistema.filter(m=>esMovBancoTienda(m.concepto));
+  const enBancoNoSistemaOtros=enBancoNoSistemaSinLigar.filter(m=>!esMovBancoTienda(m.concepto));
+  const enBancoNoSistemaTienda=enBancoNoSistemaSinLigar.filter(m=>esMovBancoTienda(m.concepto));
+  const enBancoNoSistemaLigado=enBancoNoSistemaLigadoRaw.map(m=>{
+    const f=(window._fiRows||[]).find(r=>String(r.id)===String(m._facturaId));
+    return {...m,_facturaTexto:f?(f.cliente||'')+' · '+(f.folio||'sin folio'):'(factura fuera de este mes o ya eliminada)'};
+  });
   const enSistemaNoBancoTodos=ingRegistrados.filter(r=>!r._usado);
   const enSistemaNoBanco=enSistemaNoBancoTodos.filter(r=>!r.pago_via_tienda);
   const enSistemaNoBancoTienda=enSistemaNoBancoTodos.filter(r=>r.pago_via_tienda);
   const faltanteMonto=enBancoNoSistemaOtros.reduce((s,m)=>s+m.abono,0);
   window._concFaltantesIng=enBancoNoSistemaOtros;
   window._concFaltantesIngTienda=enBancoNoSistemaTienda;
+  window._concFaltantesIngLigado=enBancoNoSistemaLigado;
   window._concSistemaNoBancoIng=enSistemaNoBanco;
 
   window._concBancoIng={
@@ -25789,7 +25883,7 @@ async function procesarExcelBancoIng(){
       </div>
     </div>
     <div style="font-size:11px;color:var(--text2);margin-bottom:12px;padding:8px 12px;background:var(--surface-2,#f8f9fa);border-radius:6px;">
-      ✅ ${cuadrados} cuadrados · ⚠️ ${enBancoNoSistemaOtros.length} entradas sin registrar · 🔵 ${enSistemaNoBanco.length} en sistema sin match${enBancoNoSistemaTienda.length?` · 🛍️ ${enBancoNoSistemaTienda.length} de tienda en línea (aparte, no cuentan como faltantes)`:''}
+      ✅ ${cuadrados} cuadrados · ⚠️ ${enBancoNoSistemaOtros.length} entradas sin registrar · 🔵 ${enSistemaNoBanco.length} en sistema sin match${enBancoNoSistemaTienda.length?` · 🛍️ ${enBancoNoSistemaTienda.length} de tienda en línea (aparte, no cuentan como faltantes)`:''}${enBancoNoSistemaLigado.length?` · ✓ ${enBancoNoSistemaLigado.length} ya ligada(s) a mano (aparte, no cuentan como faltantes)`:''}
     </div>`;
 
   detalle.innerHTML=`
@@ -25826,6 +25920,20 @@ async function procesarExcelBancoIng(){
           <td style="padding:5px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${m.dia}</td>
           <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:#8B5CF6;">${fmt(m.abono)}</td>
           <td style="padding:5px 8px;color:var(--text2);font-size:10px;">${m.concepto.slice(0,70)}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </details>`:''}
+    ${enBancoNoSistemaLigado.length>0?`
+    <details style="margin-bottom:16px;">
+      <summary style="cursor:pointer;font-size:12px;font-weight:700;color:#27AE60;padding:6px 0;">✓ ${enBancoNoSistemaLigado.length} entrada(s) ya ligada(s) a mano (${fmt(enBancoNoSistemaLigado.reduce((s,m)=>s+m.abono,0))}) — no cuentan como faltantes</summary>
+      <div style="font-size:10px;color:var(--text3);margin:4px 0 8px;">Pagos parciales/divididos que ya ligaste con "🔗 Ligar con facturas" en una carga anterior del estado de cuenta (ej. dos depósitos que juntos cubren una sola factura).</div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead><tr style="background:rgba(39,174,96,0.08);"><th style="padding:6px 8px;text-align:center;">Día</th><th style="padding:6px 8px;text-align:right;">Monto</th><th style="padding:6px 8px;text-align:left;">Concepto (banco)</th><th style="padding:6px 8px;text-align:left;">Ligado a</th></tr></thead>
+        <tbody>${enBancoNoSistemaLigado.map(m=>`<tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:5px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${m.dia}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:#27AE60;">${fmt(m.abono)}</td>
+          <td style="padding:5px 8px;color:var(--text2);font-size:10px;">${m.concepto.slice(0,55)}</td>
+          <td style="padding:5px 8px;color:var(--text2);font-size:10px;">${m._facturaTexto}</td>
         </tr>`).join('')}</tbody>
       </table>
     </details>`:''}
@@ -25950,12 +26058,17 @@ function calcLigarDif(sumaAbonos){
   const resumen=document.getElementById('ligarResumen');
   const btn=document.getElementById('ligarConfirmBtn');
   if(checks.length===0){resumen.textContent='Selecciona facturas para ver el cuadre.';btn.disabled=true;btn.style.opacity='0.5';return;}
-  const comision=sumaFacturas-sumaAbonos; // lo facturado menos lo que entró = comisión retenida
+  const comision=sumaFacturas-sumaAbonos; // lo facturado menos lo que entró = comisión retenida (o $0 si es solo un pago dividido en varios depósitos)
   const cuadraExacto=Math.abs(comision)<1;
   resumen.style.background=comision>=0?'#f0fdf4':'#fef2f2';
   resumen.style.color=comision>=0?'#15803d':'#dc2626';
+  // Jp, 2026-10-28: esta pantalla también se usa para el caso de un pago
+  // dividido en 2+ depósitos (ej. cliente deposita $7,999 y luego $500 para
+  // cubrir una factura de $8,499) — ahí no hay comisión de plataforma, solo
+  // cuadra exacto, así que el texto de "comisión retenida/Stripe" no aplica.
   resumen.innerHTML=`Facturado: <strong>${fmt(sumaFacturas)}</strong> · Entró al banco: <strong>${fmt(sumaAbonos)}</strong><br>
-    ${comision>=0?`Diferencia (comisión retenida por la plataforma): <strong>${fmt(comision)}</strong><br><span style="font-size:10px;">Esta comisión NO se registra como egreso aquí — la ligarás con la factura de comisión que te emitan (ej. Stripe Payments México).</span>`
+    ${cuadraExacto?`✅ Cuadra exacto — se ligarán ${checks.length} factura(s) con ${(window._ligarAbonos||[]).length} abono(s) del banco.`
+    :comision>0?`Diferencia (comisión retenida por la plataforma): <strong>${fmt(comision)}</strong><br><span style="font-size:10px;">Si esta diferencia es una comisión de plataforma (Stripe, Shopify, etc.), NO se registra como egreso aquí — ligala aparte con la factura de comisión que te emitan. Si en cambio es un pago dividido que no cuadra, revisa la selección.</span>`
     :`⚠️ Entró más de lo facturado (${fmt(Math.abs(comision))}). Revisa la selección.`}`;
   btn.disabled=false;btn.style.opacity='1';
 }
