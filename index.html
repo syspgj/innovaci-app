@@ -23925,10 +23925,18 @@ function abrirAlertaSinConciliar(){
 
 async function irAEditarDesdeAlerta(id){
   if(!(window._fiRows||[]).some(r=>r.id===id)){
-    const row=(window._alertaSinConciliar||[]).find(r=>r.id===id);
+    let row=(window._alertaSinConciliar||[]).find(r=>r.id===id);
+    if(!row){
+      // Puede venir de cualquier otro origen (p.ej. el aviso de inconsistencias
+      // de carga masiva de XML) sin que la fila esté precargada en memoria —
+      // se trae directo de la base como respaldo (Jp, 2026-10-28).
+      const {data}=await sb.from('fact_ingresos').select('*').eq('id',id).maybeSingle();
+      row=data||null;
+    }
     if(row) window._fiRows=[...(window._fiRows||[]),row];
   }
   document.getElementById('modalAlertaSinConciliar')?.remove();
+  document.getElementById('modalXmlInconsistenciasIng')?.remove();
   await editarIngreso(id);
 }
 
@@ -24077,14 +24085,20 @@ function renderIngresosTabla(){
       ${rows.length===0?`<tr><td colspan="17" style="text-align:center;color:var(--text3);padding:24px;">Sin resultados</td></tr>`:''}
       ${rows.map(r=>{
         const noCobrado=!r.cobrado&&r.estatus!=='CANCELADA';
-        const bg=noCobrado?'background:rgba(232,64,64,0.04);':'';
-        const bord=noCobrado?'border-left:3px solid rgba(232,64,64,0.4);':'';
+        // Origen banco (Jp, 2026-10-28): se dio de alta directo desde "Añadir
+        // como ingreso" en conciliación bancaria, con datos mínimos — se
+        // resalta en lila para distinguirlo de lo capturado normalmente y que
+        // sea fácil detectarlo y completarlo (cliente real, folio, rubro...).
+        const bg=r.origen_banco?'background:rgba(139,92,246,0.06);':(noCobrado?'background:rgba(232,64,64,0.04);':'');
+        const bord=r.origen_banco?'border-left:3px solid rgba(139,92,246,0.5);':(noCobrado?'border-left:3px solid rgba(232,64,64,0.4);':'');
         const ce="outline:none;border:none;background:transparent;width:100%;font-size:11px;font-family:inherit;";
         const num=ce+"text-align:right;font-family:'JetBrains Mono',monospace;";
         return`<tr style="border-bottom:1px solid var(--border);${bg}${bord}">
           <td style="padding:4px 6px;min-width:90px;"><span contenteditable="true" onblur="editarFactIng('${r.id}','fecha',this.textContent.trim())" style="${ce}white-space:nowrap;">${r.fecha||''}</span></td>
           <td style="padding:4px 6px;font-family:'JetBrains Mono',monospace;white-space:nowrap;cursor:pointer;" onclick="editarIngreso('${r.id}')">
             ${r.serie?`<span style="background:${r.serie==='GBE'?'rgba(232,64,64,0.1)':'rgba(0,169,157,0.1)'};color:${r.serie==='GBE'?'var(--red)':'var(--teal)'};padding:1px 5px;border-radius:4px;font-size:10px;font-weight:600;">${r.serie}</span> `:''}
+            ${r.origen_banco?`<span title="Dado de alta desde conciliación bancaria — completar datos" style="background:rgba(139,92,246,0.15);color:#8B5CF6;padding:1px 5px;border-radius:4px;font-size:10px;font-weight:600;">🏦</span> `:''}
+            ${r.pago_via_tienda?`<span title="Marcado como pago vía tienda en línea">🛍️</span> `:''}
             <span style="text-decoration:underline;text-decoration-style:dotted;color:var(--navy);">${r.folio||'(sin folio)'}</span>
           </td>
           <td style="padding:4px 6px;max-width:150px;"><span contenteditable="true" onblur="editarFactIng('${r.id}','cliente',this.textContent.trim())" style="${ce}font-weight:500;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.cliente||''}</span></td>
@@ -24892,19 +24906,33 @@ async function previsualizarXMLsIng(){
   }
   const folios=_xmlParsedIng.map(d=>d.folio).filter(Boolean);
   if(folios.length){
-    const {data:existentes}=await sb.from('fact_ingresos').select('id,folio').in('folio',folios);
+    const {data:existentes}=await sb.from('fact_ingresos').select('id,folio,cliente,total,xml_path').in('folio',folios);
+    const norm=s=>(s||'').toUpperCase().trim();
     (existentes||[]).forEach(e=>{
       const d=_xmlParsedIng.find(x=>x.folio===e.folio);
-      if(d){d._existe=true;}
+      if(d){
+        d._existe=true;
+        d._existeId=e.id;
+        d._existeCliente=e.cliente;
+        d._existeTotal=e.total;
+        d._existeTieneXml=!!e.xml_path;
+        // Cruce cliente/monto contra lo ya registrado (Jp, 2026-10-28 — esto es
+        // justo lo que hubiera atrapado el caso Ezequiel: el XML de una
+        // factura ligado por error a otro cliente/monto en el sistema).
+        d._mismatchCliente=!!(d.cliente&&e.cliente&&norm(d.cliente)!==norm(e.cliente));
+        d._mismatchTotal=!!(d.total&&e.total&&Math.abs(d.total-e.total)>1);
+      }
     });
   }
   const nuevos=_xmlParsedIng.filter(d=>!d._existe).length;
-  const dups=_xmlParsedIng.filter(d=>d._existe).length;
+  const dups=_xmlParsedIng.filter(d=>d._existe&&!d._mismatchCliente&&!d._mismatchTotal).length;
+  const inconsistentes=_xmlParsedIng.filter(d=>d._existe&&(d._mismatchCliente||d._mismatchTotal)).length;
   const INP2='width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;box-sizing:border-box;font-family:Inter,sans-serif;';
   area.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
       <span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(39,174,96,0.12);color:#27AE60;">✅ ${nuevos} nuevo${nuevos!==1?'s':''}</span>
-      ${dups>0?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(245,166,35,0.15);color:#b45309;">⚠️ ${dups} ya existe${dups!==1?'n':''} — se omitirán</span>`:''}
+      ${dups>0?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(0,169,157,0.12);color:var(--teal);">🔗 ${dups} ya registrada${dups!==1?'s':''} — se adjuntará el XML</span>`:''}
+      ${inconsistentes>0?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(232,64,64,0.12);color:var(--red);">🚨 ${inconsistentes} inconsistente${inconsistentes!==1?'s':''} — revisar</span>`:''}
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:11px;">
       <thead><tr style="background:var(--navy);color:#fff;">
@@ -24921,13 +24949,19 @@ async function previsualizarXMLsIng(){
       <tbody>
         ${_xmlParsedIng.map((d,i)=>{
           if(d._existe){
-            return`<tr style="border-bottom:1px solid var(--border);background:#fef3c7;opacity:0.65;">
+            const inconsist=d._mismatchCliente||d._mismatchTotal;
+            const detalle=inconsist
+              ?[d._mismatchCliente?`cliente en sistema: "${d._existeCliente||'—'}" vs. XML: "${d.cliente||'—'}"`:null,
+                d._mismatchTotal?`total en sistema: $${(d._existeTotal||0).toLocaleString('es-MX',{minimumFractionDigits:2})} vs. XML: $${d.total.toLocaleString('es-MX',{minimumFractionDigits:2})}`:null]
+                .filter(Boolean).join(' · ')
+              :(d._existeTieneXml?'ya tiene XML — no se reemplaza':'coincide — se adjuntará el XML');
+            return`<tr style="border-bottom:1px solid var(--border);background:${inconsist?'rgba(232,64,64,0.08)':'#f0fdfa'};${inconsist?'':'opacity:0.75;'}">
             <td style="padding:4px 6px;color:var(--text3);font-size:10px;">${d._file.slice(0,20)}</td>
             <td style="padding:4px 6px;text-align:center;">${d.fecha}</td>
             <td style="padding:4px 6px;text-align:center;font-weight:700;color:var(--navy);">${d.folio||'—'}</td>
             <td style="padding:4px 6px;">${d.cliente||''}</td>
             <td style="padding:4px 6px;text-align:right;font-weight:700;">$${d.total.toLocaleString('es-MX',{minimumFractionDigits:2})}</td>
-            <td colspan="4" style="padding:4px 6px;font-size:10px;color:#b45309;font-style:italic;">⚠️ ya registrado — se omite</td>
+            <td colspan="4" style="padding:4px 6px;font-size:10px;color:${inconsist?'var(--red)':'var(--teal)'};font-style:italic;font-weight:${inconsist?'700':'400'};">${inconsist?'🚨 ya registrado pero NO coincide: '+detalle:'🔗 '+detalle}</td>
           </tr>`;
           }
           return`<tr style="border-bottom:1px solid var(--border);background:${i%2===0?'#f9fafb':'#fff'};">
@@ -24945,16 +24979,36 @@ async function previsualizarXMLsIng(){
       </tbody>
     </table>
     <div style="margin-top:10px;padding:8px 12px;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:6px;font-size:11px;color:#5b21b6;font-weight:600;">
-      Se guardarán ${nuevos} factura(s) nueva(s). ${dups>0?`${dups} duplicado(s) por folio serán ignorados.`:''} Revisa Vendedor y Rubro antes de guardar — no vienen en el XML.
+      Se guardarán ${nuevos} factura(s) nueva(s). ${dups>0?`${dups} ya registrada(s) solo se les adjuntará el XML (no se duplican). `:''}${inconsistentes>0?`🚨 ${inconsistentes} no coinciden con lo ya registrado — revísalas antes de continuar, se van a adjuntar igual para que puedas consultarlas.`:''} Revisa Vendedor y Rubro antes de guardar — no vienen en el XML.
     </div>`;
 }
 
 async function guardarXMLsMasivoIng(){
   if(!_xmlParsedIng.length){alert('Primero selecciona archivos XML.');return;}
   const msg=document.getElementById('xmlMasivoIngMsg');
-  let ok=0,err=0,omitidos=0;
+  let ok=0,err=0,vinculados=0;
+  const inconsistenciasDetectadas=[];
   for(const d of _xmlParsedIng){
-    if(d._existe){omitidos++;continue;}
+    if(d._existe){
+      // Ya está registrado por folio: no se duplica, pero sí se adjunta el
+      // XML (si no tenía uno) para poder consultarlo después, y se reporta
+      // si el cliente/monto del XML no coincide con lo capturado — esto es
+      // justo el control que hubiera atrapado el caso Ezequiel (Jp, 2026-10-28).
+      if(!d._existeTieneXml && d._xmlText){
+        const path=await subirXMLStorage(d._xmlText,'ingresos',d.folio);
+        if(path) await sb.from('fact_ingresos').update({xml_path:path}).eq('id',d._existeId);
+      }
+      vinculados++;
+      if(d._mismatchCliente||d._mismatchTotal){
+        inconsistenciasDetectadas.push({
+          id:d._existeId, folio:d.folio,
+          clienteSistema:d._existeCliente, clienteXml:d.cliente,
+          totalSistema:d._existeTotal, totalXml:d.total,
+          mismatchCliente:d._mismatchCliente, mismatchTotal:d._mismatchTotal
+        });
+      }
+      continue;
+    }
     const vendedor=d._vendedor||null;
     const serie=vendedor==='GUILLERMO BLANCAS'?'GBE':null;
     const estatus=d._estatus||'EMITIDA';
@@ -24983,11 +25037,42 @@ async function guardarXMLsMasivoIng(){
       });
     }
   }
-  if(msg){msg.style.color=err?'var(--red)':'#15803d';
-    msg.textContent=`✅ ${ok} guardadas${omitidos?` | ⏭️ ${omitidos} omitidas (ya existían)`:''}${err?` | ⚠️ ${err} con error`:''}`;}
-  if(ok>0){
+  if(msg){msg.style.color=(err||inconsistenciasDetectadas.length)?'var(--red)':'#15803d';
+    msg.textContent=`✅ ${ok} guardadas${vinculados?` | 🔗 ${vinculados} ya existían, XML adjuntado`:''}${inconsistenciasDetectadas.length?` | 🚨 ${inconsistenciasDetectadas.length} inconsistentes`:''}${err?` | ⚠️ ${err} con error`:''}`;}
+  if(inconsistenciasDetectadas.length>0){
+    // No se cierra solo ni se refresca automático: Jp necesita ver el detalle
+    // de las inconsistencias antes de seguir (Jp, 2026-10-28).
+    mostrarInconsistenciasXMLMasivo(inconsistenciasDetectadas);
+  }else if(ok>0||vinculados>0){
     setTimeout(()=>{document.getElementById('modalXmlMasivoIng')?.remove();renderAdminIngresos();},1500);
   }
+}
+
+function mostrarInconsistenciasXMLMasivo(lista){
+  const html=`
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">
+      Estos XML corresponden (por folio) a facturas que ya estaban registradas, pero el cliente y/o el monto del XML <b>no coinciden</b> con lo capturado. El XML ya se adjuntó para que lo puedas consultar — revisa cada caso: puede ser una factura mal ligada a otro cliente (como pasó con el caso Ezequiel).
+    </div>
+    <div style="max-height:420px;overflow-y:auto;">
+    <table style="font-size:11px;border-collapse:collapse;width:100%;">
+      <thead><tr style="background:var(--navy);color:#fff;">
+        <th style="padding:6px 8px;text-align:left;">Folio</th><th style="padding:6px 8px;text-align:left;">Cliente en sistema</th>
+        <th style="padding:6px 8px;text-align:left;">Cliente en XML</th><th style="padding:6px 8px;text-align:right;">Total sistema</th>
+        <th style="padding:6px 8px;text-align:right;">Total XML</th><th style="padding:6px 8px;"></th>
+      </tr></thead>
+      <tbody>
+        ${lista.map(x=>`<tr style="border-bottom:1px solid var(--border);background:rgba(232,64,64,0.05);">
+          <td style="padding:5px 8px;font-weight:700;color:var(--navy);">${x.folio||'—'}</td>
+          <td style="padding:5px 8px;${x.mismatchCliente?'color:var(--red);font-weight:600;':''}">${x.clienteSistema||'—'}</td>
+          <td style="padding:5px 8px;${x.mismatchCliente?'color:var(--red);font-weight:600;':''}">${x.clienteXml||'—'}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;${x.mismatchTotal?'color:var(--red);font-weight:700;':''}">${fmt(x.totalSistema||0)}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;${x.mismatchTotal?'color:var(--red);font-weight:700;':''}">${fmt(x.totalXml||0)}</td>
+          <td style="padding:5px 8px;text-align:center;"><button onclick="irAEditarDesdeAlerta('${x.id}')" style="background:none;border:1px solid var(--border);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">Revisar</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>`;
+  mkModal('modalXmlInconsistenciasIng','🚨 XML no coincide con lo registrado',html,null,'Cerrar',true);
 }
 
 // ─── MODAL EDICIÓN INGRESO ────────────────────────────────────────────────────
@@ -25167,6 +25252,16 @@ function abrirConciliacionBancoIng(){
   mkModal('modalConcBancoIng','🏦 Conciliación de ingresos con banco',html,null,'Cerrar',true);
 }
 
+// Movimientos que llegan vía tienda en línea (Shopify) o el procesador que
+// usa (SPEI RECIBIDO JP MORGAN): el banco los deposita netos de comisión, así
+// que casi nunca van a matchear 1:1 contra el total facturado. Antes esto
+// inflaba "entradas sin registrar" con cosas que en realidad sí estaban bien
+// (Jp, 2026-10-28).
+function esMovBancoTienda(concepto){
+  const c=(concepto||'').toUpperCase();
+  return c.includes('SHOPIFY')||c.includes('JP MORGAN')||c.includes('JPMORGAN');
+}
+
 async function procesarExcelBancoIng(){
   const file=document.getElementById('bancoExcelIng')?.files?.[0];
   if(!file)return;
@@ -25214,16 +25309,24 @@ async function procesarExcelBancoIng(){
     if(match){match._usado=true;cuadrados++;}
     else enBancoNoSistema.push(mb);
   });
-  const enSistemaNoBanco=ingRegistrados.filter(r=>!r._usado);
-  const faltanteMonto=enBancoNoSistema.reduce((s,m)=>s+m.abono,0);
-  window._concFaltantesIng=enBancoNoSistema;
+  // Separa lo que es tienda en línea (Shopify/JP Morgan) de lo que de verdad
+  // falta por registrar — lo de tienda llega neto de comisión y por diseño no
+  // va a cuadrar 1:1, así que no debe contarse como "faltante" (Jp, 2026-10-28).
+  const enBancoNoSistemaOtros=enBancoNoSistema.filter(m=>!esMovBancoTienda(m.concepto));
+  const enBancoNoSistemaTienda=enBancoNoSistema.filter(m=>esMovBancoTienda(m.concepto));
+  const enSistemaNoBancoTodos=ingRegistrados.filter(r=>!r._usado);
+  const enSistemaNoBanco=enSistemaNoBancoTodos.filter(r=>!r.pago_via_tienda);
+  const enSistemaNoBancoTienda=enSistemaNoBancoTodos.filter(r=>r.pago_via_tienda);
+  const faltanteMonto=enBancoNoSistemaOtros.reduce((s,m)=>s+m.abono,0);
+  window._concFaltantesIng=enBancoNoSistemaOtros;
+  window._concFaltantesIngTienda=enBancoNoSistemaTienda;
   window._concSistemaNoBancoIng=enSistemaNoBanco;
 
   window._concBancoIng={
     mes:currentMonth, anio:currentYear,
     movBanco:abonosBanco.length, totalBanco,
     registrados:ingRegistrados.length, totalRegistrado,
-    faltan:enBancoNoSistema.length, faltanteMonto, cuadrados
+    faltan:enBancoNoSistemaOtros.length, faltanteMonto, cuadrados
   };
 
   resumen.innerHTML=`
@@ -25241,20 +25344,20 @@ async function procesarExcelBancoIng(){
         <div style="font-size:18px;font-weight:800;color:#2980B9;">${ingRegistrados.length}</div>
         <div style="font-size:11px;color:var(--text3);">${fmt(totalRegistrado)}</div>
       </div>
-      <div style="background:${enBancoNoSistema.length>0?'#fef3c7':'#f0fdf4'};border:1px solid ${enBancoNoSistema.length>0?'#F5A623':'#27AE60'};border-radius:8px;padding:12px 14px;">
+      <div style="background:${enBancoNoSistemaOtros.length>0?'#fef3c7':'#f0fdf4'};border:1px solid ${enBancoNoSistemaOtros.length>0?'#F5A623':'#27AE60'};border-radius:8px;padding:12px 14px;">
         <div style="font-size:10px;color:var(--text3);text-transform:uppercase;font-weight:700;">Entradas sin registrar</div>
-        <div style="font-size:18px;font-weight:800;color:${enBancoNoSistema.length>0?'#b45309':'#27AE60'};">${enBancoNoSistema.length}</div>
-        <div style="font-size:11px;color:${enBancoNoSistema.length>0?'#b45309':'#27AE60'};font-weight:600;">${fmt(faltanteMonto)}</div>
+        <div style="font-size:18px;font-weight:800;color:${enBancoNoSistemaOtros.length>0?'#b45309':'#27AE60'};">${enBancoNoSistemaOtros.length}</div>
+        <div style="font-size:11px;color:${enBancoNoSistemaOtros.length>0?'#b45309':'#27AE60'};font-weight:600;">${fmt(faltanteMonto)}</div>
       </div>
     </div>
     <div style="font-size:11px;color:var(--text2);margin-bottom:12px;padding:8px 12px;background:var(--surface-2,#f8f9fa);border-radius:6px;">
-      ✅ ${cuadrados} cuadrados · ⚠️ ${enBancoNoSistema.length} entradas sin registrar · 🔵 ${enSistemaNoBanco.length} en sistema sin match
+      ✅ ${cuadrados} cuadrados · ⚠️ ${enBancoNoSistemaOtros.length} entradas sin registrar · 🔵 ${enSistemaNoBanco.length} en sistema sin match${enBancoNoSistemaTienda.length?` · 🛍️ ${enBancoNoSistemaTienda.length} de tienda en línea (aparte, no cuentan como faltantes)`:''}
     </div>`;
 
   detalle.innerHTML=`
-    ${enBancoNoSistema.length>0?`
+    ${enBancoNoSistemaOtros.length>0?`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
-      <div style="font-size:12px;font-weight:700;color:#b45309;">⚠️ Entradas en banco NO registradas (${enBancoNoSistema.length})</div>
+      <div style="font-size:12px;font-weight:700;color:#b45309;">⚠️ Entradas en banco NO registradas (${enBancoNoSistemaOtros.length})</div>
       <div style="display:flex;gap:6px;align-items:center;">
         <label style="font-size:10px;color:var(--text3);cursor:pointer;"><input type="checkbox" id="concIngSelectAll" onclick="document.querySelectorAll('.concIngCheck').forEach(c=>c.checked=this.checked)" style="vertical-align:middle;"> Todos</label>
         <button onclick="anadirIngresosBanco()" style="background:#27AE60;color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">➕ Añadir como ingreso</button>
@@ -25268,23 +25371,67 @@ async function procesarExcelBancoIng(){
         <th style="padding:6px 8px;text-align:right;">Monto</th>
         <th style="padding:6px 8px;text-align:left;">Concepto (banco)</th>
       </tr></thead>
-      <tbody>${enBancoNoSistema.map((m,idx)=>`<tr style="border-bottom:1px solid var(--border);">
+      <tbody>${enBancoNoSistemaOtros.map((m,idx)=>`<tr style="border-bottom:1px solid var(--border);">
         <td style="padding:5px 8px;text-align:center;"><input type="checkbox" class="concIngCheck" data-idx="${idx}" style="cursor:pointer;"></td>
         <td style="padding:5px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${m.dia}</td>
         <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:#27AE60;">${fmt(m.abono)}</td>
         <td style="padding:5px 8px;color:var(--text2);font-size:10px;">${m.concepto.slice(0,55)}</td>
       </tr>`).join('')}</tbody>
     </table>`:'<div style="padding:16px;text-align:center;color:#27AE60;font-weight:600;">✅ Todas las entradas del banco están registradas.</div>'}
+    ${enBancoNoSistemaTienda.length>0?`
+    <details style="margin-bottom:16px;">
+      <summary style="cursor:pointer;font-size:12px;font-weight:700;color:#8B5CF6;padding:6px 0;">🛍️ Entradas de tienda en línea — Shopify/JP Morgan (${enBancoNoSistemaTienda.length}, ${fmt(enBancoNoSistemaTienda.reduce((s,m)=>s+m.abono,0))}) — no cuentan como faltantes</summary>
+      <div style="font-size:10px;color:var(--text3);margin:4px 0 8px;">Llegan netas de comisión, por eso no van a cuadrar contra el monto facturado. Revísalas aquí solo si algo se ve raro; si no, no requieren acción.</div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead><tr style="background:rgba(139,92,246,0.08);"><th style="padding:6px 8px;text-align:center;">Día</th><th style="padding:6px 8px;text-align:right;">Monto</th><th style="padding:6px 8px;text-align:left;">Concepto (banco)</th></tr></thead>
+        <tbody>${enBancoNoSistemaTienda.map(m=>`<tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:5px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${m.dia}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:#8B5CF6;">${fmt(m.abono)}</td>
+          <td style="padding:5px 8px;color:var(--text2);font-size:10px;">${m.concepto.slice(0,70)}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </details>`:''}
     ${enSistemaNoBanco.length>0?`
-    <div style="font-size:12px;font-weight:700;color:#2980B9;margin-bottom:8px;">🔵 Cobrados en sistema sin match en banco (${enSistemaNoBanco.length}):</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+      <div style="font-size:12px;font-weight:700;color:#2980B9;">🔵 Cobrados en sistema sin match en banco (${enSistemaNoBanco.length})</div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <label style="font-size:10px;color:var(--text3);cursor:pointer;"><input type="checkbox" id="concFactSelectAll" onclick="document.querySelectorAll('.concFactCheck').forEach(c=>c.checked=this.checked)" style="vertical-align:middle;"> Todos</label>
+        <button onclick="marcarPagoTienda()" style="background:#8B5CF6;color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">🛍️ Marcar como pago vía tienda</button>
+      </div>
+    </div>
+    <div style="font-size:10px;color:var(--text3);margin-bottom:6px;">Si sabes que un cobro llegó por la tienda en línea (Shopify u otro procesador), márcalo aquí — deja de contarse como "sin match" en futuras conciliaciones.</div>
     <table style="width:100%;border-collapse:collapse;font-size:11px;">
-      <thead><tr style="background:rgba(41,128,185,0.08);"><th style="padding:6px 8px;text-align:left;">Cliente</th><th style="padding:6px 8px;text-align:right;">Total</th><th style="padding:6px 8px;text-align:left;">Folio</th></tr></thead>
+      <thead><tr style="background:rgba(41,128,185,0.08);"><th style="padding:6px 8px;width:28px;"></th><th style="padding:6px 8px;text-align:left;">Cliente</th><th style="padding:6px 8px;text-align:right;">Total</th><th style="padding:6px 8px;text-align:left;">Folio</th></tr></thead>
       <tbody>${enSistemaNoBanco.map(r=>`<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:5px 8px;text-align:center;"><input type="checkbox" class="concFactCheck" data-id="${r.id}" style="cursor:pointer;"></td>
         <td style="padding:5px 8px;">${r.cliente||'—'}</td>
         <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(r.total||0)}</td>
         <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">${r.folio||'—'}</td>
       </tr>`).join('')}</tbody>
-    </table>`:''}`;
+    </table>`:''}
+    ${enSistemaNoBancoTienda.length>0?`
+    <details style="margin-top:12px;">
+      <summary style="cursor:pointer;font-size:11px;font-weight:700;color:var(--text3);padding:6px 0;">✓ ${enSistemaNoBancoTienda.length} ya marcado(s) como pago vía tienda (no se muestran arriba)</summary>
+      <table style="width:100%;border-collapse:collapse;font-size:11px;margin-top:6px;">
+        <tbody>${enSistemaNoBancoTienda.map(r=>`<tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:5px 8px;">${r.cliente||'—'}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(r.total||0)}</td>
+          <td style="padding:5px 8px;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">${r.folio||'—'}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </details>`:''}`;
+}
+
+async function marcarPagoTienda(){
+  const checks=Array.from(document.querySelectorAll('.concFactCheck:checked'));
+  if(checks.length===0){alert('Selecciona al menos una factura.');return;}
+  const ids=checks.map(c=>c.dataset.id);
+  if(!confirm(`¿Marcar ${ids.length} factura(s) como "pago vía tienda"?\n\nDejarán de aparecer como "sin match" en la conciliación bancaria, porque sabes que llegaron por la tienda en línea y no por transferencia directa.`))return;
+  const {error}=await sb.from('fact_ingresos').update({pago_via_tienda:true}).in('id',ids);
+  if(error){alert('Error: '+error.message);return;}
+  ids.forEach(id=>{const row=(window._fiRows||[]).find(r=>r.id===id);if(row) row.pago_via_tienda=true;});
+  const fileInput=document.getElementById('bancoExcelIng');
+  if(fileInput&&fileInput.files.length) await procesarExcelBancoIng();
 }
 
 async function anadirIngresosBanco(){
@@ -25303,7 +25450,8 @@ async function anadirIngresosBanco(){
       concepto:mov.concepto.slice(0,120), rubro:'POR CLASIFICAR',
       subtotal_original:subtotal, descuento:0, subtotal_final:subtotal,
       iva, total:mov.abono, forma_pago:'TRANSFERENCIA',
-      estatus:'PAGADA', cobrado:true, conciliado:true
+      estatus:'PAGADA', cobrado:true, conciliado:true,
+      origen_banco:true // para resaltarlo en la tabla de Ingresos (Jp, 2026-10-28)
     };
   });
   if(!confirm(`¿Añadir ${nuevos.length} entrada(s) como ingreso?\n\nSe registran como cobradas y conciliadas, con IVA calculado al 16%. Podrás editarlas para asignar cliente/folio/rubro.`))return;
