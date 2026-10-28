@@ -3650,6 +3650,26 @@ async function academiaGuardarNuevoAsistente(generacionId){
     return;
   }
 
+  // Validación de pago antes de dar acceso (Jp, 2026-10-28 — a raíz del caso
+  // Ezequiel: se le dio acceso sin que existiera un pago real confirmado).
+  // Solo ADVIERTE, no bloquea (decisión de Jp): busca si este alumno ya tiene
+  // alguna factura ligada en Finanzas y en qué estado está. "Conciliada" =
+  // confirmada contra el estado de cuenta bancario, el único estado en el que
+  // de verdad sabemos que el dinero llegó.
+  const {data:facturasAlumno,error:errFactAlumno}=await sb.from('fact_ingresos')
+    .select('id,cobrado,conciliado,total,fecha')
+    .eq('academia_participante_id',participanteId);
+  if(!errFactAlumno){
+    const factConciliada=(facturasAlumno||[]).some(f=>f.cobrado&&f.conciliado);
+    if(!factConciliada){
+      const factCobradaSinConciliar=(facturasAlumno||[]).some(f=>f.cobrado&&!f.conciliado);
+      const msg=factCobradaSinConciliar
+        ? 'Este alumno tiene una factura marcada como "cobrada" en Finanzas, pero TODAVÍA NO se ha confirmado contra el estado de cuenta bancario (no conciliada). No hay confirmación de que el pago realmente haya llegado.\n\n¿Dar el acceso de todas formas?'
+        : 'No encuentro ninguna factura de Finanzas ligada a este alumno (ni cobrada ni conciliada). Si no hay factura confirmada, no hay forma de saber si el pago realmente llegó — este fue justo el error del caso de Ezequiel.\n\n¿Dar el acceso de todas formas?';
+      if(!confirm(msg)) return;
+    }
+  }
+
   const {data:folio,error:errFolio}=await sb.rpc('academia_generar_folio',{
     p_sistema:prefijo, p_generacion:gen?.clave, p_acceso:academiaAccesoLetra(nivelAcceso),
   });
@@ -14493,12 +14513,14 @@ async function verRegistrosVendedor(userId, nombre, rol){
     {h:'Cursos 24/7',k:'venta_cursos_tele',money:true},
   ]:[
     {h:'Servicios',k:'svc',money:true},{h:'Vtas.Svc',k:'ventas_servicio_num',money:false},
-    {h:'Aspel',k:'aspel',money:true},{h:'IT',k:'it',money:true},{h:'Diplomados',k:'diplomados',money:true},
+    {h:'Aspel',k:'aspel',money:true},{h:'IT',k:'it',money:true},
     {h:'Monto Cotiz.',k:'monto_cotizaciones',money:true},{h:'# Cotiz.',k:'cotizaciones',money:false},
     {h:'Clientes',k:'clientes_nuevos',money:false},{h:'Demos',k:'demos',money:false},{h:'Val.',k:'valoraciones',money:false},
     {h:'Cursos 24/7',k:'cursos',money:false},{h:'Siigo',k:'siigo_fiscal',money:false},
     {h:'Sus.',k:'suscripciones',money:false},
-    {h:'Prosp.Canaliz.',k:'prospectos_canalizados',money:false},{h:'Cursos Vivo',k:'talleres_vivo',money:true},
+    // "Diplomados" se fusionó con "Cursos en Vivo" (Jp, 2026-10-28) — una sola
+    // columna, "diplomados" queda en 0 desde el rediseño de Registrar día.
+    {h:'Prosp.Canaliz.',k:'prospectos_canalizados',money:false},{h:'Diplom./Cursos Vivo',k:'talleres_vivo',money:true},
     {h:'Llam.Segto',k:'llamadas_seguimiento',money:false},{h:'Llam.Prosp',k:'llamadas_prospeccion',money:false},
     {h:'Neg.Cli #',k:'neg_clientes_num',money:false},{h:'Neg.Cli $',k:'neg_clientes_monto',money:true},
     {h:'Neg.Pros #',k:'neg_prospectos_num',money:false},{h:'Neg.Pros $',k:'neg_prospectos_monto',money:true},
@@ -23829,6 +23851,85 @@ async function renderAdminIngresos(){
   window._fiSort={col:'fecha',asc:true};
   window._fiFilter={rubro:[],vendedor:'',estatus:'',texto:''};
   renderIngresosTabla();
+  // Alerta de facturas cobradas sin conciliar (Jp, 2026-10-28 — a raíz del caso
+  // Ezequiel: una factura se marcó "cobrada" sin que el pago llegara al banco
+  // y nadie lo detectó). Cruza TODOS los meses desde octubre, no solo el mes
+  // en pantalla, y pinta aparte para no retrasar la tabla principal.
+  cargarAlertaSinConciliar();
+}
+
+async function cargarAlertaSinConciliar(){
+  const {data:rows}=await sb.from('fact_ingresos').select('*')
+    .eq('cobrado',true).eq('conciliado',false)
+    .neq('estatus','CANCELADA')
+    .gte('fecha','2026-10-01')
+    .order('fecha',{ascending:true});
+  window._alertaSinConciliar=rows||[];
+  pintarAlertaSinConciliar();
+}
+
+function pintarAlertaSinConciliar(){
+  const box=document.getElementById('alertaSinConciliarBox');
+  if(!box)return;
+  const rows=window._alertaSinConciliar||[];
+  if(rows.length===0){
+    box.innerHTML=`<div style="display:flex;align-items:center;gap:10px;background:#f0fdf4;border:1px solid #27AE60;border-radius:8px;padding:9px 16px;margin-bottom:14px;">
+      <span style="font-size:12px;font-weight:700;color:#15803d;">✅ Sin facturas cobradas pendientes de conciliar (desde octubre)</span>
+    </div>`;
+    return;
+  }
+  const total=rows.reduce((s,r)=>s+(r.total||0),0);
+  const hoy=new Date();
+  const masViejo=rows.reduce((min,r)=>{const d=new Date(r.fecha);return d<min?d:min;},new Date(rows[0].fecha));
+  const diasMax=Math.floor((hoy-masViejo)/86400000);
+  box.innerHTML=`<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#fef2f2;border:1px solid #E84040;border-radius:8px;padding:9px 16px;margin-bottom:14px;">
+    <span style="font-size:12px;font-weight:700;color:#b91c1c;">🚨 ${rows.length} factura(s) marcada(s) "cobrada" sin conciliar con banco desde octubre (${fmt(total)}) — la más antigua lleva ${diasMax} día(s) sin confirmarse contra el estado de cuenta</span>
+    <button onclick="abrirAlertaSinConciliar()" style="margin-left:auto;background:#E84040;color:#fff;border:none;border-radius:5px;padding:4px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">Ver detalle</button>
+  </div>`;
+}
+
+function abrirAlertaSinConciliar(){
+  const rows=[...(window._alertaSinConciliar||[])].sort((a,b)=>new Date(a.fecha)-new Date(b.fecha));
+  const hoy=new Date();
+  const html=`
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">
+      Facturas marcadas como <b>cobradas</b> en la app que todavía no se han confirmado contra el estado de cuenta bancario (paso "Conciliar con banco"). Esto fue justo lo que dejó pasar el caso de Ezequiel: se registró como pagada sin que el dinero realmente llegara. Revísalas una por una y corrige o liga lo que corresponda.
+    </div>
+    <div style="max-height:460px;overflow-y:auto;">
+    <table style="font-size:11px;border-collapse:collapse;width:100%;">
+      <thead><tr style="background:var(--navy);color:#fff;">
+        <th style="padding:6px 8px;text-align:left;">Fecha</th><th style="padding:6px 8px;text-align:left;">Cliente</th>
+        <th style="padding:6px 8px;text-align:left;">Vendedor</th><th style="padding:6px 8px;text-align:left;">Rubro</th>
+        <th style="padding:6px 8px;text-align:right;">Total</th><th style="padding:6px 8px;text-align:right;">Días</th>
+        <th style="padding:6px 8px;"></th>
+      </tr></thead>
+      <tbody>
+        ${rows.map(r=>{
+          const dias=Math.floor((hoy-new Date(r.fecha))/86400000);
+          const critico=dias>30;
+          return `<tr style="border-bottom:1px solid var(--border);${critico?'background:rgba(232,64,64,0.05);':''}">
+            <td style="padding:5px 8px;white-space:nowrap;">${r.fecha||''}</td>
+            <td style="padding:5px 8px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.cliente||''}${r.academia_participante_id?' <span title="Ligada a un alumno de Academia">🎓</span>':''}</td>
+            <td style="padding:5px 8px;white-space:nowrap;">${r.vendedor||''}</td>
+            <td style="padding:5px 8px;">${r.rubro||''}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(r.total||0)}</td>
+            <td style="padding:5px 8px;text-align:right;font-weight:700;color:${critico?'#E84040':'var(--text3)'};">${dias}</td>
+            <td style="padding:5px 8px;text-align:center;"><button onclick="irAEditarDesdeAlerta('${r.id}')" style="background:none;border:1px solid var(--border);border-radius:5px;padding:3px 8px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">Revisar</button></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+    </div>`;
+  mkModal('modalAlertaSinConciliar','🚨 Cobradas sin conciliar (desde octubre)',html,null,'Cerrar',true);
+}
+
+async function irAEditarDesdeAlerta(id){
+  if(!(window._fiRows||[]).some(r=>r.id===id)){
+    const row=(window._alertaSinConciliar||[]).find(r=>r.id===id);
+    if(row) window._fiRows=[...(window._fiRows||[]),row];
+  }
+  document.getElementById('modalAlertaSinConciliar')?.remove();
+  await editarIngreso(id);
 }
 
 function toggleRubroMultiDropdown(){
@@ -23895,6 +23996,7 @@ function renderIngresosTabla(){
   const selStyle='padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:11px;font-family:\'Inter\',sans-serif;';
 
   ac.innerHTML=`
+  <div id="alertaSinConciliarBox"></div>
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:${(window._concBancoIng&&window._concBancoIng.mes===currentMonth&&window._concBancoIng.anio===currentYear)?'10':'14'}px;">
     <div class="thc"><div class="th-lbl">Total facturado</div><div class="th-val">${fmt(totalFact)}</div></div>
     <div class="thc"><div class="th-lbl">IVA cobrado</div><div class="th-val" style="color:#27AE60;">${fmt(totalIvaCob)}</div></div>
@@ -24028,6 +24130,10 @@ function renderIngresosTabla(){
     })():''}
   </table>
   </div>`;
+  // El innerHTML de arriba borra el contenido previo de la alerta; si ya
+  // la habíamos cargado (p. ej. tras filtrar o editar una fila), repíntala
+  // sin volver a consultar la base de datos (Jp, 2026-10-28).
+  if(window._alertaSinConciliar) pintarAlertaSinConciliar();
 }
 
 async function actualizarRubroIng(id,rubro){
@@ -24057,6 +24163,14 @@ async function editarFactIngNum(id,campo,texto){
 }
 
 async function toggleCobrado(id,cobrado){
+  // Validación contra evidencia real (Jp, 2026-10-28 — caso Ezequiel): marcar
+  // cobrada una factura sin XML adjunto solo advierte, nunca bloquea.
+  if(cobrado){
+    const row=(window._fiRows||[]).find(r=>r.id===id);
+    if(row && !row.xml_path){
+      if(!confirm('Esta factura no tiene ningún XML del SAT adjunto. Sin el XML no hay forma de confirmar que el comprobante es real ni que el pago corresponde (este fue justo el error del caso Ezequiel).\n\n¿Marcar como cobrada de todas formas?')) return;
+    }
+  }
   await sb.from('fact_ingresos').update({cobrado,fecha_cobro:cobrado?new Date().toISOString().slice(0,10):null}).eq('id',id);
   const row=(window._fiRows||[]).find(r=>r.id===id);
   if(row){row.cobrado=cobrado;}
@@ -24453,9 +24567,26 @@ function selPares(id,pares,val=''){return `<select id="${id}" style="width:100%;
 const FI_RUBROS_ALUMNO=['MEMBRESIA','MEMBERSIA','24/7','CURSOS O TALLERES EN VIVO','DIPLOMADOS EN VIVO','DIPLOMADO','EXTENSION PRACTICAS','EXTENSION DE PRACTICAS'];
 function fiRubroNecesitaAlumno(r){ return FI_RUBROS_ALUMNO.includes((r||'').toUpperCase().trim()); }
 
+// Mapea el nombre real de usuarios.nombre al texto libre que usa el select
+// "Vendedor" de Finanzas/Ingresos (histórico, no son iguales). Null si no
+// aplica (ej. Anel/Violeta/Administración — cuentas que no son de un vendedor
+// B2B no deben forzar nada en ese campo).
+function mapNombreAVendedorFi(nombre){
+  const n=(nombre||'').toLowerCase();
+  if(n.includes('dulce')) return 'DULCE SOLANO';
+  if(n.includes('manuel')) return 'MANUEL PEÑA';
+  if(n.includes('mireya')) return 'MIREYA';
+  if(n.includes('guillermo')) return 'GUILLERMO BLANCAS';
+  return null;
+}
 async function fiAsegurarCacheClientes(){
   if(!window._cartClientes){
-    window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente,alias_nombres'); // Jp, 2026-10-05: paginado con .range() — ver carteraFetchTodosClientes.
+    window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente,alias_nombres,vendedor_asignado'); // Jp, 2026-10-05: paginado con .range() — ver carteraFetchTodosClientes. vendedor_asignado agregado 2026-10-28 para autocompletar "Vendedor" al ligar cuenta.
+  }
+  if(!window._fiUsuariosMap){
+    const {data:us}=await sb.from('usuarios').select('id,nombre');
+    window._fiUsuariosMap={};
+    (us||[]).forEach(u=>{window._fiUsuariosMap[u.id]=u.nombre;});
   }
 }
 async function fiAsegurarCacheAlumnos(){
@@ -24498,6 +24629,16 @@ function fiLigarCliente(p,id,razonSocial){
   document.getElementById(p+'ClienteSugs').style.display='none';
   document.getElementById(p+'ClienteLigado').style.display='inline';
   document.getElementById(p+'ClienteLigadoNombre').textContent=razonSocial;
+  // Autocompletar "Vendedor" desde el vendedor asignado de la cuenta (Jp,
+  // 2026-10-28 — evita el error de capturarlo a mano y asignarlo a quien no
+  // es). Sigue siendo editable: solo se sugiere, no se bloquea el campo.
+  const cuenta=(window._cartClientes||[]).find(c=>c.id===id);
+  const vendSel=document.getElementById(p+'Vendedor');
+  if(cuenta&&vendSel){
+    const nombreUsuario=window._fiUsuariosMap?.[cuenta.vendedor_asignado];
+    const vendTxt=mapNombreAVendedorFi(nombreUsuario);
+    if(vendTxt) vendSel.value=vendTxt;
+  }
   document.getElementById(p+'ClienteSinLigar').style.display='none';
 }
 function fiQuitarLigaCliente(p,ocultarSugs=true){
@@ -24601,6 +24742,7 @@ async function parsearXmlIngreso(){
   const txt=await file.text();
   window._fiXmlText=txt;
   const d=parsearCFDI(txt);
+  window._fiXmlParsed=d; // para cruzar contra lo capturado al guardar (Jp, 2026-10-28)
   if(document.getElementById('fiFecha')) document.getElementById('fiFecha').value=d.fecha||todayLocal();
   if(document.getElementById('fiFolio')) document.getElementById('fiFolio').value=d.folio||'';
   if(document.getElementById('fiCliente')) document.getElementById('fiCliente').value=d.cliente||'';
@@ -24646,6 +24788,34 @@ async function guardarFactIngreso(){
   if(!cliente){alert('El cliente es obligatorio.');return;}
   const serie=vendedor==='GUILLERMO BLANCAS'?'GBE':null;
   const cliente_cartera_id=document.getElementById('fiClienteCarteraId')?.value||null;
+
+  // Validación contra evidencia real antes de guardar (Jp, 2026-10-28 — caso
+  // Ezequiel: se marcó pagada una factura sin XML y sin que el pago llegara
+  // al banco, y nadie lo detectó). Solo ADVIERTE, nunca bloquea.
+  if(cobrado && !window._fiXmlText){
+    if(!confirm('Vas a guardar esta factura como PAGADA sin haber subido el XML del SAT. Sin el XML no hay forma de confirmar que el comprobante es real (este fue justo el error del caso Ezequiel).\n\n¿Guardar de todas formas?')) return;
+  }
+  if(window._fiXmlText && window._fiXmlParsed){
+    await fiAsegurarCacheClientes();
+    const d=window._fiXmlParsed;
+    const norm=s=>(s||'').toUpperCase().trim();
+    const avisos=[];
+    if(d.cliente && norm(d.cliente)!==norm(cliente)){
+      avisos.push('• La razón social del XML ("'+d.cliente+'") no coincide con lo capturado ("'+cliente+'").');
+    }
+    if(cliente_cartera_id){
+      const cuenta=(window._cartClientes||[]).find(c=>c.id===cliente_cartera_id);
+      if(cuenta?.rfc && d.rfcReceptor && norm(cuenta.rfc)!==norm(d.rfcReceptor)){
+        avisos.push('• El RFC del XML ("'+d.rfcReceptor+'") no coincide con el RFC de la cuenta ligada ("'+cuenta.rfc+'").');
+      }
+    }
+    if(d.total && Math.abs(d.total-total)>1){
+      avisos.push('• El total del XML ('+fmt(d.total)+') no coincide con el total capturado ('+fmt(total)+').');
+    }
+    if(avisos.length){
+      if(!confirm('El XML que subiste no coincide del todo con lo capturado:\n\n'+avisos.join('\n')+'\n\n¿Guardar de todas formas?')) return;
+    }
+  }
   // Alumno de Academia (Jp, 2026-09-27): si ya se eligió uno existente se usa
   // ese id; si se llenó "+ Alumno nuevo" se crea con el mismo RPC que usa
   // Academia (find_or_create, para no duplicar si el nombre ya existe).
@@ -24912,6 +25082,37 @@ async function guardarEdicionIngreso(){
     complemento_pago:document.getElementById('eiiComplemento')?.value.trim()||null,
   };
   payload.cobrado=payload.estatus==='PAGADA';
+
+  // Validación contra evidencia real antes de guardar (Jp, 2026-10-28 — caso
+  // Ezequiel). Solo ADVIERTE, nunca bloquea.
+  if(payload.cobrado){
+    const rowActual=(window._fiRows||[]).find(r=>r.id===id);
+    const tieneXml=!!(window._eiiXmlText||rowActual?.xml_path);
+    if(!tieneXml){
+      if(!confirm('Vas a guardar esta factura como PAGADA sin que tenga ningún XML del SAT adjunto. Sin el XML no hay forma de confirmar que el comprobante es real (este fue justo el error del caso Ezequiel).\n\n¿Guardar de todas formas?')) return;
+    }
+  }
+  if(window._eiiXmlText && window._eiiXmlParsed){
+    await fiAsegurarCacheClientes();
+    const d=window._eiiXmlParsed;
+    const norm=s=>(s||'').toUpperCase().trim();
+    const avisos=[];
+    if(d.cliente && norm(d.cliente)!==norm(payload.cliente)){
+      avisos.push('• La razón social del XML ("'+d.cliente+'") no coincide con lo capturado ("'+payload.cliente+'").');
+    }
+    if(cliente_cartera_id){
+      const cuenta=(window._cartClientes||[]).find(c=>c.id===cliente_cartera_id);
+      if(cuenta?.rfc && d.rfcReceptor && norm(cuenta.rfc)!==norm(d.rfcReceptor)){
+        avisos.push('• El RFC del XML ("'+d.rfcReceptor+'") no coincide con el RFC de la cuenta ligada ("'+cuenta.rfc+'").');
+      }
+    }
+    if(d.total && Math.abs(d.total-payload.total)>1){
+      avisos.push('• El total del XML ('+fmt(d.total)+') no coincide con el total capturado ('+fmt(payload.total)+').');
+    }
+    if(avisos.length){
+      if(!confirm('El XML que subiste no coincide del todo con lo capturado:\n\n'+avisos.join('\n')+'\n\n¿Guardar de todas formas?')) return;
+    }
+  }
   // XML subido desde Editar factura (Jp, 2026-09-27): se sube a Storage igual
   // que en "Nueva factura" y se liga con xml_path.
   if(window._eiiXmlText){
@@ -24936,6 +25137,7 @@ async function editarIngresoParsearXml(){
   const txt=await file.text();
   window._eiiXmlText=txt;
   const d=parsearCFDI(txt);
+  window._eiiXmlParsed=d; // para cruzar contra lo capturado al guardar (Jp, 2026-10-28)
   const setIfEmpty=(elId,val)=>{ const el=document.getElementById(elId); if(el && !el.value?.trim() && val) el.value=val; };
   setIfEmpty('eiiFolio',d.folio);
   setIfEmpty('eiiConcepto',d.concepto);
