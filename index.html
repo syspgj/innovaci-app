@@ -3193,7 +3193,10 @@ function academiaPintarParticipantes(){
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       ${gen?.curso?.modalidad!=='24_7'?`<button class="cartera-subtab" onclick="academiaAbrirRecordatorios('${cache.generacionId}')">📣 Recordatorios de sesión</button>`:''}
       ${gen?.curso?.tipo==='empresarial'?`<button class="cartera-subtab" onclick="academiaAbrirPortalEmpresa('${cache.generacionId}')">🔗 Portal del cliente</button>`:''}
-      <button class="cartera-subtab" style="background:var(--teal);color:#fff;" onclick="academiaAbrirNuevoAsistente('${cache.generacionId}')">+ Agregar asistente</button>
+      ${gen?.curso?.tipo==='empresarial'
+        ?`<button class="cartera-subtab" style="background:var(--teal);color:#fff;" onclick="academiaAbrirNuevoAsistente('${cache.generacionId}')">+ Agregar asistente</button>`
+        :`<button class="cartera-subtab" style="background:var(--text3);color:#fff;cursor:not-allowed;" title="Bloqueado — el alta ahora se hace desde Facturación" onclick="alert('Las altas individuales ya no se hacen directo en Academia (Jp, 2026-10-28). Se registran desde Facturación, en el bloque \\'Alumno (Academia)\\' al emitir la factura — eso crea automáticamente esta inscripción.\\n\\n¿Necesitas corregir algo de un alumno ya inscrito? Ábrelo desde \\'Ver ficha\\'.')">🔒 + Agregar asistente</button>`
+      }
     </div>
   </div>
   <div class="card" style="padding:14px;margin-bottom:12px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
@@ -3302,6 +3305,22 @@ async function academiaAbrirNuevoAsistente(generacionId){
   // esa cuenta y se liga automáticamente al guardar, sin pedirle a Jp que
   // busque/confirme nada (eso solo aplica para el caso de cliente en texto
   // libre, que sigue igual que siempre).
+  // Excepción de cursos empresariales (Jp, 2026-10-28): esta generación SÍ
+  // permite seguir dando de alta asistentes directo aquí (una factura puede
+  // cubrir a 10-20 personas que normalmente llegan después, vía lista del
+  // cliente) — pero cada alta debe quedar ligada a la factura de "CURSO
+  // EMPRESARIAL" ya PAGADA que la cubre, para que quede evidencia de que
+  // hubo un pago real detrás (mismo espíritu que el aviso de pago de venta
+  // individual, pero aquí es obligatorio, no solo advertencia).
+  const esEmpresarial=gen?.curso?.tipo==='empresarial';
+  let facturasEmpresarialOpts='';
+  if(esEmpresarial){
+    let qFact=sb.from('fact_ingresos').select('id,folio,cliente,total,fecha').eq('rubro','CURSO EMPRESARIAL').eq('cobrado',true).order('fecha',{ascending:false}).limit(100);
+    if(gen.cliente_cartera_id) qFact=qFact.eq('cliente_cartera_id',gen.cliente_cartera_id);
+    const {data:facturasEmp}=await qFact;
+    window._academiaFacturasEmpresarial=facturasEmp||[];
+    facturasEmpresarialOpts=(facturasEmp||[]).map(f=>`<option value="${f.id}">${f.folio||'(sin folio)'} — ${f.cliente||''} — ${fmt(f.total)} (${f.fecha||''})</option>`).join('');
+  }
   const [disponibles,{data:vendedoresActivos},clienteCarteraGenRes]=await Promise.all([
     academiaEmpresasDisponiblesSistema(sistemaId),
     sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre'),
@@ -3314,6 +3333,12 @@ async function academiaAbrirNuevoAsistente(generacionId){
   const empresaOpts=disponibles.map(e=>`<option value="${e.id}">Empresa #${e.numero}${e.servidor?` (servidor ${e.servidor})`:''}</option>`).join('');
   const vendedorOpts=`<option value="">— Elegir —</option>`+(vendedoresActivos||[]).map(v=>`<option value="${v.nombre}">${v.nombre}</option>`).join('');
   const html=`
+    ${esEmpresarial?`
+    <div style="border:1px solid var(--teal);border-radius:8px;padding:10px 12px;margin-bottom:14px;background:rgba(0,169,157,0.05);">
+      <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:6px;">FACTURA DE CURSO EMPRESARIAL (obligatorio)</div>
+      ${fld('Factura ya pagada que cubre a este asistente',`<select id="naFacturaEmpresarialId" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;"><option value="">— Selecciona la factura —</option>${facturasEmpresarialOpts}</select>`)}
+      ${facturasEmpresarialOpts?'':'<div style="font-size:10px;color:var(--text3);margin-top:4px;">No encontré ninguna factura PAGADA con rubro "CURSO EMPRESARIAL"'+(gen.cliente_cartera_id?' para esta cuenta':'')+' — dala de alta primero en Facturación.</div>'}
+    </div>`:''}
     <div style="border:1px dashed var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px;background:#f8fafb;">
       <label for="naImagenInput" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#fff;background:var(--teal);padding:7px 14px;border-radius:6px;cursor:pointer;">📷 Cargar desde imagen</label>
       <input type="file" id="naImagenInput" accept="image/*" style="display:none;" onchange="academiaExtraerAsistenteDesdeImagen(this)">
@@ -3552,6 +3577,11 @@ async function academiaGuardarNuevoAsistente(generacionId){
   const prefijo=prefijoInput?.value?.trim()?.toUpperCase();
   if(!nombre){alert('El nombre del participante es obligatorio.');return;}
   if(!prefijo && prefijoInput?.dataset.noRequerido!=='1'){alert('Falta el prefijo de folio (sistema+versión, ej. "NOI11"). Revisa el folio de otro participante de esta misma generación si no lo sabes.');return;}
+  // Excepción de cursos empresariales (Jp, 2026-10-28): obligatorio ligar la
+  // factura de "CURSO EMPRESARIAL" ya pagada que cubre a este asistente.
+  const facturaEmpresarialSel=document.getElementById('naFacturaEmpresarialId');
+  if(facturaEmpresarialSel && !facturaEmpresarialSel.value){alert('Selecciona la factura de Curso Empresarial ya pagada que cubre a este asistente antes de guardar.');return;}
+  const factIngresoId=facturaEmpresarialSel?.value||null;
 
   // Protección contra doble clic (Jp, 2026-09-30): el botón "Guardar" de este
   // modal no se deshabilitaba mientras se guardaba, así que un doble clic (o
@@ -3691,6 +3721,7 @@ async function academiaGuardarNuevoAsistente(generacionId){
     fecha_inicio_laboratorio:document.getElementById('naFechaCompra')?.value||null,
     fecha_fin_laboratorio:document.getElementById('naFechaFinLab')?.value||null,
     fecha_fin_sesion_privada:document.getElementById('naFechaFinSesion')?.value||null,
+    fact_ingreso_id:factIngresoId,
   }).select('id').single();
   if(errInsc){
     const mensajeAmigable=errInsc.message?.includes('academia_inscripciones_participante_id_generacion_id_key')
@@ -9868,7 +9899,7 @@ async function irACuentaDesdeProspecto(clienteId){
 // y de nuevo, ligeramente distinto, dentro de agregarFilaSistema) para que ambos
 // usen el mismo catálogo y no se desincronicen.
 const SISTEMAS_CATALOGO=[
-  {key:'SAE',label:'SAE'},{key:'COI',label:'COI'},{key:'NOI',label:'NOI'},{key:'FACTURE',label:'FACTURe'},
+  {key:'SAE',label:'SAE'},{key:'COI',label:'COI'},{key:'NOI',label:'NOI'},{key:'NOI_ASISTENTE',label:'NOI Asistente'},{key:'FACTURE',label:'FACTURe'},
   {key:'BANCO',label:'Banco'},{key:'CAJA',label:'Caja'},{key:'PROD',label:'Producción'},{key:'ADM',label:'Administración'},
   {key:'SIIGO_FISCAL',label:'Siigo Fiscal'},{key:'SIIGO_NUBE',label:'Siigo Nube'}
 ];
@@ -9886,6 +9917,7 @@ const VERSION_CATALOGO_POR_SISTEMA={
   SAE:['v7.0 Compra','v7.0 Suscripción','v8.0 Compra','v8.0 Suscripción','v8.0 Suscripción con INN','v9.0 Compra','v9.0 Suscripción','v9.0 Suscripción con INN','v10.0 Compra','v10.0 Suscripción','v10.0 Suscripción con INN'],
   COI:['v7.0 Compra','v8.0 Compra','v8.0 Suscripción','v9.0 Compra','v9.0 Suscripción','v9.0 Suscripción con INN','v10.0 Compra','v10.0 Suscripción','v10.0 Suscripción con INN','v11.0 Compra','v11.0 Suscripción','v11.0 Suscripción con INN'],
   NOI:['v8.0 Compra','v8.0 Suscripción','v9.0 Compra','v9.0 Suscripción','v10.0 Compra','v10.0 Suscripción','v10.0 Suscripción con INN','v11.0 Compra','v11.0 Suscripción','v11.0 Suscripción con INN'],
+  NOI_ASISTENTE:['Suscripción'],
   BANCO:['v4.0 Suscripción','v5.0 Compra','v6.0 Compra','v6.0 Suscripción','v6.0 Suscripción con INN'],
   CAJA:['v4.0 Suscripción','v5.0 Compra','v5.0 Suscripción'],
   PROD:['v4.0 Suscripción','v5.0 Compra','v5.0 Suscripción','v5.0 Suscripción con INN'],
@@ -10729,7 +10761,7 @@ async function fcSincronizarActividadCrm(numCliente,tipo,fecha,hora,resultado,no
     const res=await fetch('/api/crm-comentarios',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({tipo:'cuenta',num_cliente:numCliente,comentario:contenido}),
+      body:JSON.stringify({tipo:'cuenta',num_cliente:numCliente,comentario:contenido,vendedor_usuario_id:currentUser?.id||null}),
     });
     const j=await res.json().catch(()=>({}));
     if(!res.ok||!j.ok){console.error('CRM comentario (actividad cartera) failed',j);return null;}
@@ -10796,7 +10828,7 @@ async function fcAgregarComentarioCrm(clienteId,numCliente,sufijo){
     const res=await fetch('/api/crm-comentarios',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({tipo:'cuenta',num_cliente:numCliente,comentario:texto}),
+      body:JSON.stringify({tipo:'cuenta',num_cliente:numCliente,comentario:texto,vendedor_usuario_id:currentUser?.id||null}),
     });
     const j=await res.json().catch(()=>({}));
     if(!res.ok||!j.ok){msg.style.color='var(--red)';msg.textContent='Error: '+(j.error||res.status);return;}
@@ -15646,7 +15678,7 @@ async function sincronizarLlamadaCarteraCrm(clienteId,campanaId,resultado,nota){
     const res=await fetch('/api/crm-comentarios',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({tipo:'cuenta',num_cliente:c.num_cliente,comentario:contenido}),
+      body:JSON.stringify({tipo:'cuenta',num_cliente:c.num_cliente,comentario:contenido,vendedor_usuario_id:currentUser?.id||null}),
     });
     const j=await res.json().catch(()=>({}));
     if(!res.ok||!j.ok) console.error('CRM comentario (llamada cartera) failed',j);
@@ -15690,7 +15722,7 @@ async function quitarSistemaCuentaTele(clienteId,sistema,campanaId){
       await fetch('/api/crm-comentarios',{
         method:'POST',
         headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-        body:JSON.stringify({tipo:'cuenta',num_cliente:c.num_cliente,comentario:`[Cartera] Se quitó el sistema ${sistema} — cliente confirmó que ya no lo usa.`}),
+        body:JSON.stringify({tipo:'cuenta',num_cliente:c.num_cliente,comentario:`[Cartera] Se quitó el sistema ${sistema} — cliente confirmó que ya no lo usa.`,vendedor_usuario_id:currentUser?.id||null}),
       });
     }catch(e){ console.error('CRM comentario (quitar sistema) error',e); }
   }
@@ -16098,21 +16130,27 @@ async function renderTeleRegistro(fechaSel){
   const {data:existing}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).eq('fecha',fecha).maybeSingle();
   const r=existing||{};
 
-  // Llamadas efectivas — automático desde prospecto_llamadas (solo aplica para hoy)
+  // Llamadas efectivas — automático desde prospecto_llamadas, para CUALQUIER
+  // día seleccionado (Jp, 2026-10-28 — caso real de Carolina: si un día no se
+  // guarda antes de medianoche, antes se perdía para siempre el conteo
+  // automático y quedaba en 0 aunque las llamadas SÍ existieran en
+  // prospecto_llamadas — porque el cálculo en vivo solo se hacía cuando
+  // fecha===hoy; cualquier otro día usaba el valor ya guardado (o 0 si nunca
+  // se guardó). Ahora se calcula en vivo sin importar qué día se esté viendo,
+  // para que un día atrasado se pueda registrar correctamente después.
   const {data:llamadasHoy}=await sb.from('prospecto_llamadas').select('id').eq('usuario_id',currentUser.id).eq('fecha',fecha);
-  const llamadasAuto=fecha===today?(llamadasHoy||[]).length:(r.llamadas_efectivas||0);
+  const llamadasAuto=(llamadasHoy||[]).length;
 
-  // Llamadas a cartera de clientes — automático desde llamadas_cartera (solo aplica para hoy)
+  // Llamadas a cartera de clientes — automático desde llamadas_cartera, para
+  // cualquier día (mismo fix que arriba).
   const {data:llamadasCartHoy}=await sb.from('llamadas_cartera')
     .select('id').eq('usuario_id',currentUser.id)
     .gte('created_at',fecha+'T00:00:00').lte('created_at',fecha+'T23:59:59');
-  const llamadasCartAuto=fecha===today?(llamadasCartHoy||[]).length:(r.llamadas_cartera||0);
+  const llamadasCartAuto=(llamadasCartHoy||[]).length;
 
-  // Prospectos canalizados — automático
+  // Prospectos canalizados — automático, para cualquier día (mismo fix).
   const {data:misProspectos}=await sb.from('prospectos').select('vendedor_asignado,updated_at').eq('asignado_a',currentUser.id).not('vendedor_asignado','is',null);
-  const canalizadosAuto=fecha===today
-    ?(misProspectos||[]).filter(p=>p.updated_at&&p.updated_at.slice(0,10)===fecha).length
-    :(r.prospectos_canalizados||0);
+  const canalizadosAuto=(misProspectos||[]).filter(p=>p.updated_at&&p.updated_at.slice(0,10)===fecha).length;
 
   // Cargar campañas de ambas fuentes para el dropdown de llamadas CRM
   const [{data:campProsp},{data:campCart},{data:crmExist},{data:vendB2B}]=await Promise.all([
@@ -16267,25 +16305,39 @@ async function saveTeleRegistro(fecha,llamadasAuto,canalizadosAuto,llamadasCartA
   else{msg.style.color='var(--green)';msg.textContent='✓ Registro guardado correctamente';}
 }
 
+// Jp, 2026-10-28 — caso real de Carolina: esta función solo miraba
+// llamadas_cartera, así que un día con actividad SOLO de prospección
+// (prospecto_llamadas, el caso normal de Telemarketing) nunca se detectaba
+// aquí — y si se detectaba por tener alguna llamada de cartera, igual se
+// insertaba con llamadas_efectivas/prospectos_canalizados en 0 a fuerza,
+// aunque sí hubiera actividad real de esas. Ahora considera las 3 fuentes
+// automáticas (mismas que renderTeleRegistro) para cualquier día sin
+// registro guardado.
 async function autoRegistrarDiasCartera(registrosExistentes){
-  const {data:llCart}=await sb.from('llamadas_cartera')
-    .select('created_at').eq('usuario_id',currentUser.id);
-  if(!llCart||!llCart.length) return;
-  const diasConLlamadas={};
-  llCart.forEach(l=>{
-    const d=(l.created_at||'').slice(0,10);
-    if(d) diasConLlamadas[d]=(diasConLlamadas[d]||0)+1;
-  });
+  const [{data:llCart},{data:llProsp},{data:misProspectos}]=await Promise.all([
+    sb.from('llamadas_cartera').select('created_at').eq('usuario_id',currentUser.id),
+    sb.from('prospecto_llamadas').select('fecha').eq('usuario_id',currentUser.id),
+    sb.from('prospectos').select('updated_at').eq('asignado_a',currentUser.id).not('vendedor_asignado','is',null),
+  ]);
+  const diasConCartera={};
+  (llCart||[]).forEach(l=>{ const d=(l.created_at||'').slice(0,10); if(d) diasConCartera[d]=(diasConCartera[d]||0)+1; });
+  const diasConProspeccion={};
+  (llProsp||[]).forEach(l=>{ if(l.fecha) diasConProspeccion[l.fecha]=(diasConProspeccion[l.fecha]||0)+1; });
+  const diasConCanalizados={};
+  (misProspectos||[]).forEach(p=>{ const d=p.updated_at?p.updated_at.slice(0,10):null; if(d) diasConCanalizados[d]=(diasConCanalizados[d]||0)+1; });
+  const todosLosDias=new Set([...Object.keys(diasConCartera),...Object.keys(diasConProspeccion),...Object.keys(diasConCanalizados)]);
+  if(!todosLosDias.size) return;
   const fechasConRegistro=new Set((registrosExistentes||[]).map(r=>r.fecha));
   const today=todayLocal();
-  for(const [fecha,count] of Object.entries(diasConLlamadas)){
+  for(const fecha of todosLosDias){
     if(fecha>=today) continue;
     if(fechasConRegistro.has(fecha)) continue;
     await sb.from('registros_diarios').insert({
       usuario_id:currentUser.id, fecha,
-      llamadas_efectivas:0, prospectos_canalizados:0,
-      llamadas_cartera:count,
-      notas:'⚙️ Registro automático — se detectaron '+count+' llamada(s) a cartera pero el vendedor no registró el día.',
+      llamadas_efectivas:diasConProspeccion[fecha]||0,
+      prospectos_canalizados:diasConCanalizados[fecha]||0,
+      llamadas_cartera:diasConCartera[fecha]||0,
+      notas:'⚙️ Registro automático — se detectó actividad de llamadas ese día pero no se guardó el registro.',
       updated_at:new Date().toISOString()
     });
   }
@@ -17726,7 +17778,7 @@ async function sincronizarLlamadaProspectoCrm(prospectoId,resultado,nota){
     const res=await fetch('/api/crm-comentarios',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({tipo:'prospecto',prospecto_id:prospectoId,comentario:contenido}),
+      body:JSON.stringify({tipo:'prospecto',prospecto_id:prospectoId,comentario:contenido,vendedor_usuario_id:currentUser?.id||null}),
     });
     const j=await res.json().catch(()=>({}));
     if(!res.ok||!j.ok) console.error('CRM comentario (llamada prospecto) failed',j);
@@ -24519,22 +24571,28 @@ function filtrarEgresosPorEstado(estado){
   renderEgresosTabla();
 }
 
-function mkModal(id,titulo,contenido,onSave,saveLabel='Guardar',wide=false){
+function mkModal(id,titulo,contenido,onSave,saveLabel='Guardar',wide=false,onClose=null){
   document.getElementById(id)?.remove();
   const m=document.createElement('div');
   m.id=id;
   m.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:24px;overflow-y:auto;';
   const modalWidth=wide===true?'700px':(typeof wide==='string'&&wide?wide:'520px');
+  // onClose (Jp, 2026-10-28): acción personalizada para el botón único cuando
+  // no hay onSave — por defecto solo cierra el modal, pero algunos modales
+  // (p.ej. el de inconsistencias de XML) necesitan además cerrar otro modal
+  // y refrescar la pantalla, para que no se sienta como que el proceso se
+  // vuelve a ciclar.
+  const accionCierre=onClose?onClose+'()':`document.getElementById('${id}').remove()`;
   m.innerHTML=`<div style="background:#fff;border-radius:var(--rad,16px);padding:24px;width:${modalWidth};max-width:98vw;margin:auto;box-shadow:0 2px 6px rgba(13,34,64,0.06),0 8px 24px rgba(13,34,64,0.07);">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
       <div style="font-size:15px;font-weight:700;color:var(--navy);">${titulo}</div>
-      <button onclick="document.getElementById('${id}').remove()" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);line-height:1;">✕</button>
+      <button onclick="${accionCierre}" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);line-height:1;">✕</button>
     </div>
     ${contenido}
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
       ${onSave?`<button onclick="document.getElementById('${id}').remove()" style="padding:8px 18px;border:1px solid var(--border);border-radius:var(--radsm,10px);background:none;cursor:pointer;font-size:12px;font-family:'Inter',sans-serif;">Cancelar</button>
       <button onclick="${onSave}()" style="padding:8px 18px;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm,10px);cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">${saveLabel}</button>`
-      :`<button onclick="document.getElementById('${id}').remove()" style="padding:8px 18px;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm,10px);cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">${saveLabel}</button>`}
+      :`<button onclick="${accionCierre}" style="padding:8px 18px;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm,10px);cursor:pointer;font-size:12px;font-weight:600;font-family:'Inter',sans-serif;">${saveLabel}</button>`}
     </div>
   </div>`;
   document.body.appendChild(m);
@@ -24698,7 +24756,80 @@ function fiToggleAlumnoNuevo(p='fi'){
   if(box) box.style.display=box.style.display==='none'?'block':'none';
 }
 
+// Generaciones ACTIVAS de Academia para el selector de Facturación (Jp,
+// 2026-10-28): "ya no se tiene que dar de alta directamente en la academia...
+// que llegue a través de facturación". Mismo criterio de "activa" que ya usa
+// Academia en otros selectores (no archivada manual, y no con TODOS sus
+// inscritos ya con constancia/estatus final) — pero aquí se excluyen los
+// cursos EMPRESARIALES (esos no se venden/registran uno por uno, tienen su
+// propio flujo de excepción directo en Academia).
+async function fiAsegurarCacheGeneracionesAlumno(){
+  if(window._fiGeneracionesActivas) return;
+  const [{data:gens},{data:inscsArch}]=await Promise.all([
+    sb.from('academia_generaciones').select('id,clave,archivado_manual,curso:curso_id(nombre,tipo,sistema:sistema_id(clave,codigo_clave))').order('clave',{ascending:false}).limit(300),
+    sb.from('academia_inscripciones').select('generacion_id,estatus_final,constancias:academia_constancias(enviada)'),
+  ]);
+  const inscsPorGen={};
+  (inscsArch||[]).forEach(i=>{(inscsPorGen[i.generacion_id]=inscsPorGen[i.generacion_id]||[]).push(i);});
+  window._fiGeneracionesActivas=(gens||[]).filter(g=>{
+    if(g.curso?.tipo==='empresarial') return false;
+    if(g.archivado_manual) return false;
+    const suyas=inscsPorGen[g.id]||[];
+    if(!suyas.length) return true;
+    return !suyas.every(i=>(i.constancias||[]).some(c=>c.enviada)||!!i.estatus_final);
+  });
+}
+// Igual que academiaAbrirNuevoAsistente: si la clave de la generación ya
+// arranca con el sistema (claves auto-generadas desde 2026-10-06), el folio
+// no necesita que se capture el prefijo a mano.
+function fiAlumnoGeneracionCambio(p){
+  const sel=document.getElementById(p+'AlumnoGeneracion');
+  const wrap=document.getElementById(p+'AlumnoPrefijoWrap');
+  if(!sel||!wrap) return;
+  const gen=(window._fiGeneracionesActivas||[]).find(g=>g.id===sel.value);
+  const sistemaClaveGen=(gen?.curso?.sistema?.codigo_clave||gen?.curso?.sistema?.clave||'').toUpperCase();
+  const claveEsAuto=!!(gen?.clave&&sistemaClaveGen&&gen.clave.toUpperCase().startsWith(sistemaClaveGen+'-'));
+  wrap.style.display=(sel.value&&!claveEsAuto)?'block':'none';
+}
+// Da de alta la inscripción real (acceso en Academia) al guardar la factura
+// desde Facturación (Jp, 2026-10-28). No toca servidor/RDP/Aspel/empresa de
+// práctica/vigencia — eso se sigue completando después desde Academia, igual
+// que ya se puede editar campo por campo desde la ficha del asistente.
+// Devuelve {ok:false} si algo impide continuar (debe abortar el guardado de
+// la factura); {ok:true} si ya quedó resuelto (inscrito, ya existía, o no
+// aplicaba).
+async function fiCrearInscripcionAlumno(p,participanteId,vendedorTexto){
+  const generacionId=document.getElementById(p+'AlumnoGeneracion')?.value||'';
+  if(!generacionId||!participanteId) return {ok:true};
+  const gen=(window._fiGeneracionesActivas||[]).find(g=>g.id===generacionId);
+  const {data:yaInscrito,error:errCheck}=await sb.from('academia_inscripciones').select('id').eq('participante_id',participanteId).eq('generacion_id',generacionId).maybeSingle();
+  if(errCheck){alert('No se pudo verificar si el alumno ya estaba inscrito en esa generación: '+errCheck.message);return {ok:false};}
+  if(yaInscrito) return {ok:true};
+  const nivelAcceso=document.getElementById(p+'AlumnoAcceso')?.value||'esencial';
+  const tipo=document.getElementById(p+'AlumnoTipo')?.value||'entero';
+  const sistemaClaveGen=(gen?.curso?.sistema?.codigo_clave||gen?.curso?.sistema?.clave||'').toUpperCase();
+  const claveEsAuto=!!(gen?.clave&&sistemaClaveGen&&gen.clave.toUpperCase().startsWith(sistemaClaveGen+'-'));
+  const prefijo=claveEsAuto?'':(document.getElementById(p+'AlumnoPrefijo')?.value?.trim()?.toUpperCase()||'');
+  if(!claveEsAuto&&!prefijo){
+    alert('Falta el prefijo de folio para inscribir al alumno en Academia (sistema+versión, ej. "NOI11"). Revisa el folio de otro participante de esa generación y vuelve a guardar.');
+    return {ok:false};
+  }
+  const {data:folio,error:errFolio}=await sb.rpc('academia_generar_folio',{p_sistema:prefijo,p_generacion:gen?.clave,p_acceso:academiaAccesoLetra(nivelAcceso)});
+  if(errFolio){alert('No se pudo generar el folio de Academia para este alumno: '+errFolio.message+'. La factura se guardará, pero inscríbelo a mano desde Academia.');return {ok:true};}
+  const {error:errInsc}=await sb.from('academia_inscripciones').insert({
+    participante_id:participanteId,generacion_id:generacionId,nivel_acceso:nivelAcceso,tipo,folio,
+    vendedor_nombre_original:vendedorTexto||null,
+  });
+  if(errInsc){
+    const amigable=errInsc.message?.includes('academia_inscripciones_participante_id_generacion_id_key')?'Este alumno ya estaba inscrito en esa generación (con otro correo/teléfono registrado).':errInsc.message;
+    alert('El alumno se guardó ligado a la factura, pero no se pudo inscribir en Academia: '+amigable+'. Puedes darlo de alta a mano desde Academia.');
+  }
+  return {ok:true};
+}
+
 function fiAlumnoHtml(p='fi',valores={}){
+  const gens=window._fiGeneracionesActivas||[];
+  const genOpts=`<option value="">— Ninguna (no se inscribe en Academia) —</option>`+gens.map(g=>`<option value="${g.id}">${g.clave} — ${g.curso?.nombre||''}</option>`).join('');
   return `
     <div id="${p}AlumnoBloque" style="display:none;margin-bottom:10px;padding:10px 12px;background:rgba(0,169,157,0.05);border:1px dashed var(--teal);border-radius:8px;">
       <div style="font-size:11px;color:var(--text3);margin-bottom:4px;font-weight:500;">Alumno (Academia) — venta individual</div>
@@ -24713,10 +24844,23 @@ function fiAlumnoHtml(p='fi',valores={}){
         ${fld('Correo',inp(p+'AlumnoMail','email','opcional'))}
         ${fld('Teléfono',inp(p+'AlumnoTel','text','opcional'))}
       </div>
+      <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;font-weight:500;">Inscripción en Academia (alta real de acceso — ya no se da de alta directo en el módulo de Academia)</div>
+        <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;">
+          ${fld('Generación',`<select id="${p}AlumnoGeneracion" onchange="fiAlumnoGeneracionCambio('${p}')" style="${INP}">${genOpts}</select>`)}
+          ${fld('Nivel de acceso',`<select id="${p}AlumnoAcceso" style="${INP}"><option value="esencial">esencial</option><option value="plus">plus</option><option value="premium">premium</option></select>`)}
+          ${fld('Tipo',sel(p+'AlumnoTipo',['entero','cortesia']))}
+        </div>
+        <div id="${p}AlumnoPrefijoWrap" style="display:none;margin-top:8px;">
+          ${fld('Prefijo de folio (sistema+versión, ej. "NOI11")',inp(p+'AlumnoPrefijo','text','Ej. NOI11'))}
+        </div>
+        <div style="font-size:10px;color:var(--text3);margin-top:4px;">Servidor, RDP, Aspel, empresa de práctica y vigencia se completan después desde Academia/Capacitación.</div>
+      </div>
     </div>`;
 }
 
-function abrirNuevaFactIngreso(){
+async function abrirNuevaFactIngreso(){
+  await fiAsegurarCacheGeneracionesAlumno();
   const today=todayLocal();
   const rubros=window._rubrosIng||['MEMBRESIA','TIMBRES','CLOUD','CLIENTES GB'];
   const html=`
@@ -24853,6 +24997,19 @@ async function guardarFactIngreso(){
   if(academia_participante_id && cliente_cartera_id){
     await sb.from('academia_participantes').update({cliente_cartera_id}).eq('id',academia_participante_id);
   }
+  // Inscripción real en Academia (Jp, 2026-10-28): si se eligió una
+  // generación, se da de alta la inscripción (acceso real) en el mismo
+  // momento en que Facturación emite la factura — ya no se vuelve a dar de
+  // alta por separado desde el módulo de Academia.
+  if(academia_participante_id && fiRubroNecesitaAlumno(rubro)){
+    const generacionElegida=document.getElementById('fiAlumnoGeneracion')?.value||'';
+    if(!generacionElegida){
+      if(!confirm('No seleccionaste la generación de Academia para este alumno. La factura se guardará y el alumno quedará ligado, pero NO quedará inscrito ni con acceso en Academia.\n\n¿Continuar sin inscribirlo en una generación?')) return;
+    }else{
+      const r=await fiCrearInscripcionAlumno('fi',academia_participante_id,vendedor);
+      if(!r.ok) return;
+    }
+  }
   const {data:newRow,error}=await sb.from('fact_ingresos').insert({
     anio:currentYear,mes:currentMonth,fecha,folio,serie,cliente,vendedor,concepto,rubro,
     subtotal_original,descuento,subtotal_final,iva,total,forma_pago,estatus,fecha_pago,cobrado,conciliado:false,
@@ -24933,7 +25090,7 @@ async function previsualizarXMLsIng(){
   await asegurarAliasClientesXML();
   const folios=_xmlParsedIng.map(d=>d.folio).filter(Boolean);
   if(folios.length){
-    const {data:existentes}=await sb.from('fact_ingresos').select('id,folio,cliente,total,xml_path').in('folio',folios);
+    const {data:existentes}=await sb.from('fact_ingresos').select('id,folio,cliente,total,xml_path,xml_mismatch_descartado').in('folio',folios);
     const norm=s=>(s||'').toUpperCase().trim();
     (existentes||[]).forEach(e=>{
       const d=_xmlParsedIng.find(x=>x.folio===e.folio);
@@ -24946,9 +25103,12 @@ async function previsualizarXMLsIng(){
         // Cruce cliente/monto contra lo ya registrado (Jp, 2026-10-28 — esto es
         // justo lo que hubiera atrapado el caso Ezequiel: el XML de una
         // factura ligado por error a otro cliente/monto en el sistema). Si ya
-        // hay un alias aceptado para este par de nombres, no se marca.
-        d._mismatchCliente=!!(d.cliente&&e.cliente&&norm(d.cliente)!==norm(e.cliente)&&!hayAliasAceptado(e.cliente,d.cliente));
-        d._mismatchTotal=!!(d.total&&e.total&&Math.abs(d.total-e.total)>1);
+        // hay un alias aceptado para este par de nombres, o si Jp ya revisó y
+        // descartó la inconsistencia para ESTA factura puntual ("Pasar por
+        // esta vez"), no se marca de nuevo.
+        const yaDescartado=!!e.xml_mismatch_descartado;
+        d._mismatchCliente=!!(d.cliente&&e.cliente&&norm(d.cliente)!==norm(e.cliente)&&!hayAliasAceptado(e.cliente,d.cliente)&&!yaDescartado);
+        d._mismatchTotal=!!(d.total&&e.total&&Math.abs(d.total-e.total)>1&&!yaDescartado);
       }
     });
   }
@@ -25014,9 +25174,22 @@ async function previsualizarXMLsIng(){
 async function guardarXMLsMasivoIng(){
   if(!_xmlParsedIng.length){alert('Primero selecciona archivos XML.');return;}
   const msg=document.getElementById('xmlMasivoIngMsg');
+  // Contador de progreso (Jp, 2026-10-28): con lotes grandes (60+ XML) no
+  // había ninguna señal de que se estuviera procesando. Se deshabilita el
+  // botón para evitar doble clic mientras corre.
+  const btnGuardar=document.querySelector('#modalXmlMasivoIng button[onclick^="guardarXMLsMasivoIng"]');
+  if(btnGuardar){ if(btnGuardar.disabled) return; btnGuardar.disabled=true; btnGuardar.dataset.textoOriginal=btnGuardar.textContent; }
+  const total=_xmlParsedIng.length;
+  let procesados=0;
+  const actualizarProgreso=()=>{
+    procesados++;
+    if(msg){msg.style.color='#5b21b6';msg.textContent=`Guardando ${procesados} de ${total}...`;}
+    if(btnGuardar) btnGuardar.textContent=`Guardando ${procesados}/${total}...`;
+  };
   let ok=0,err=0,vinculados=0;
   const inconsistenciasDetectadas=[];
   for(const d of _xmlParsedIng){
+    actualizarProgreso();
     if(d._existe){
       // Ya está registrado por folio: no se duplica, pero sí se adjunta el
       // XML (si no tenía uno) para poder consultarlo después, y se reporta
@@ -25065,6 +25238,7 @@ async function guardarXMLsMasivoIng(){
       });
     }
   }
+  if(btnGuardar){btnGuardar.disabled=false;btnGuardar.textContent=btnGuardar.dataset.textoOriginal||'💾 Guardar';}
   if(msg){msg.style.color=(err||inconsistenciasDetectadas.length)?'var(--red)':'#15803d';
     msg.textContent=`✅ ${ok} guardadas${vinculados?` | 🔗 ${vinculados} ya existían, XML adjuntado`:''}${inconsistenciasDetectadas.length?` | 🚨 ${inconsistenciasDetectadas.length} inconsistentes`:''}${err?` | ⚠️ ${err} con error`:''}`;}
   if(inconsistenciasDetectadas.length>0){
@@ -25106,7 +25280,7 @@ function mostrarInconsistenciasXMLMasivo(lista){
       </tbody>
     </table>
     </div>`;
-  mkModal('modalXmlInconsistenciasIng','🚨 XML no coincide con lo registrado',html,null,'Cerrar',true);
+  mkModal('modalXmlInconsistenciasIng','🚨 XML no coincide con lo registrado',html,null,'Continuar','1200px','cerrarInconsistenciasXMLMasivo');
 }
 
 function _marcarFilaXMLResuelta(idx,texto,color){
@@ -25131,9 +25305,28 @@ async function omitirYGuardarAliasXML(idx){
 
 // "☑️ Pasar por esta vez" — Jp confirma que esta factura en particular está
 // bien así, pero SIN crear una regla general (p. ej. un cliente facturado a
-// nombre de otra persona, que no debe aplicar a cualquier otro cliente).
-function pasarInconsistenciaXMLPorEstaVez(idx){
+// nombre de otra persona, que no debe aplicar a cualquier otro cliente). Se
+// guarda contra ESTA factura (xml_mismatch_descartado=true) para que no
+// vuelva a aparecer en próximas cargas de XML — antes esto solo se ocultaba
+// en pantalla y se te volvía a aparecer cada vez que recargabas (Jp, 2026-10-28).
+async function pasarInconsistenciaXMLPorEstaVez(idx){
+  const x=(window._inconsistenciasXMLActual||[])[idx];
+  if(!x)return;
+  const {error}=await sb.from('fact_ingresos').update({xml_mismatch_descartado:true}).eq('id',x.id);
+  if(error){alert('No se pudo guardar: '+error.message);return;}
+  const row=(window._fiRows||[]).find(r=>r.id===x.id);
+  if(row) row.xml_mismatch_descartado=true;
   _marcarFilaXMLResuelta(idx,'☑️ Aceptado solo para esta factura','var(--text3)');
+}
+
+// Botón "Continuar" del reporte de inconsistencias (Jp, 2026-10-28): antes
+// solo cerraba este modal y regresaba a la pantalla de carga masiva, lo que
+// se sentía como que el proceso se volvía a ciclar. Ahora cierra los dos
+// modales y refresca la tabla de Ingresos de una vez.
+function cerrarInconsistenciasXMLMasivo(){
+  document.getElementById('modalXmlInconsistenciasIng')?.remove();
+  document.getElementById('modalXmlMasivoIng')?.remove();
+  renderAdminIngresos();
 }
 
 // ─── MODAL EDICIÓN INGRESO ────────────────────────────────────────────────────
@@ -25149,6 +25342,7 @@ async function editarIngreso(id){
     alumnoNombrePrevio=(window._academiaCache.participantesTodos||[]).find(x=>x.id===r.academia_participante_id)?.nombre||'';
   }
   await fiAsegurarCacheClientes();
+  await fiAsegurarCacheGeneracionesAlumno();
   const clienteCarteraPrevio=r.cliente_cartera_id?(window._cartClientes||[]).find(c=>c.id===r.cliente_cartera_id):null;
   const html=`
     <div style="background:rgba(0,169,157,0.06);border:1px dashed var(--teal);border-radius:8px;padding:10px 12px;margin-bottom:12px;display:flex;align-items:center;gap:10px;">
@@ -25229,6 +25423,19 @@ async function guardarEdicionIngreso(){
   };
   payload.cobrado=payload.estatus==='PAGADA';
 
+  // Inscripción real en Academia (Jp, 2026-10-28): igual que en Nueva
+  // factura — si se eligió una generación, se da de alta la inscripción en
+  // este mismo guardado.
+  if(academia_participante_id && fiRubroNecesitaAlumno(payload.rubro)){
+    const generacionElegida=document.getElementById('eiiAlumnoGeneracion')?.value||'';
+    if(!generacionElegida){
+      if(!confirm('No seleccionaste la generación de Academia para este alumno. La factura se guardará y el alumno quedará ligado, pero NO quedará inscrito ni con acceso en Academia.\n\n¿Continuar sin inscribirlo en una generación?')) return;
+    }else{
+      const r=await fiCrearInscripcionAlumno('eii',academia_participante_id,payload.vendedor);
+      if(!r.ok) return;
+    }
+  }
+
   // Validación contra evidencia real antes de guardar (Jp, 2026-10-28 — caso
   // Ezequiel). Solo ADVIERTE, nunca bloquea.
   if(payload.cobrado){
@@ -25244,7 +25451,8 @@ async function guardarEdicionIngreso(){
     const d=window._eiiXmlParsed;
     const norm=s=>(s||'').toUpperCase().trim();
     const avisos=[];
-    if(d.cliente && norm(d.cliente)!==norm(payload.cliente) && !hayAliasAceptado(payload.cliente,d.cliente)){
+    const rowActualXml=(window._fiRows||[]).find(r=>r.id===id);
+    if(d.cliente && norm(d.cliente)!==norm(payload.cliente) && !hayAliasAceptado(payload.cliente,d.cliente) && !rowActualXml?.xml_mismatch_descartado){
       avisos.push('• La razón social del XML ("'+d.cliente+'") no coincide con lo capturado ("'+payload.cliente+'").');
     }
     if(cliente_cartera_id){
