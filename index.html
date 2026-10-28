@@ -549,14 +549,19 @@ function calcBonoCirculoInnovaci(montoCirculo, deptoAlcanzo, vendedorCumplioMeta
 const FINANZAS_CATEGORIA={
   'SISTEMA ASPEL':'aspel', 'TIMBRES':'aspel',
   '24/7':'cursos247',
+  // Diplomados y Cursos en Vivo homologados a UNA sola categoría (Jp, 2026-10-28):
+  // "cursos o talleres en vivo, diplomados en vivo y nada más".
   'CURSOS O TALLERES EN VIVO':'cursos_vivo',
-  'DIPLOMADOS EN VIVO':'dip', 'DIPLOMADO':'dip',
-  'CLOUD':'it', 'SOFTWARE':'it', 'HARDWARE':'it', 'DESARROLLO CON TERCERO':'it',
+  'DIPLOMADOS EN VIVO':'cursos_vivo', 'DIPLOMADO':'cursos_vivo',
+  // IT es únicamente Cloud/Hardware/Software "y nada más" (Jp, 2026-10-28) —
+  // Desarrollo con tercero se movió a Servicios (abajo).
+  'CLOUD':'it', 'SOFTWARE':'it', 'HARDWARE':'it',
   'POLIZA ASPEL':'svc', 'POLIZA RESGUARDO':'svc', 'RESGUARDO':'svc', 'POLIZA TOTAL O ALIADO':'svc',
   'POLIZA':'svc', 'SERVICIO POR EVENTO':'svc', 'ASESORIA':'svc', 'SERVICIO DE ACTUALIZACIÓN':'svc',
-  'CURSO EMPRESARIAL':'svc',
+  'CURSO EMPRESARIAL':'svc', 'DESARROLLO CON TERCERO':'svc',
   'CIRCULO INNOVACI':'circulo',
-  // Fuera de alcance, no suman a ninguna categoría de comisión (Jp, 2026-10-23):
+  // Fuera de alcance, no suman a ninguna categoría de comisión (Jp, 2026-10-23,
+  // confirmado de nuevo 2026-10-28 — "no entra en ningún rubro"):
   // CLIENTES GB, ANTICIPO, POR CLASIFICAR, RENTA ASPEL, EXTENSION PRACTICAS,
   // EXTENSION DE PRACTICAS, null.
 };
@@ -578,6 +583,72 @@ async function calcVentasRealesFinanzas(vendFiltroFact, anio, mes){
   });
   return out;
 }
+// Igual que calcVentasRealesFinanzas pero para UN SOLO DÍA — usada en "Registrar
+// día" (Jp, 2026-10-28) para mostrar "Ventas generadas en el día" ya facturadas
+// y cobradas, también incluye # de ventas de servicio (conteo, para ticket
+// promedio/tasa de conversión que antes se capturaba a mano).
+async function calcVentasRealesFinanzasDia(vendFiltroFact, fecha){
+  const out={svc:0, aspel:0, it:0, cursos247:0, cursos_vivo:0, circulo:0, ventasSvcNum:0, cursos247Num:0};
+  if(!vendFiltroFact) return out;
+  const {data}=await sb.from('fact_ingresos').select('rubro,total,subtotal_original,descuento,vendedor,cobrado')
+    .eq('fecha',fecha).eq('cobrado',true)
+    .ilike('vendedor','%'+vendFiltroFact+'%');
+  (data||[]).forEach(r=>{
+    const cat=FINANZAS_CATEGORIA[(r.rubro||'').toUpperCase()];
+    if(!cat) return;
+    const base=(r.subtotal_original||0)-(r.descuento||0);
+    out[cat]+=base;
+    if(cat==='svc') out.ventasSvcNum++;
+    if(cat==='cursos247') out.cursos247Num++;
+  });
+  return out;
+}
+// Negociaciones abiertas en Proyección — ya no se capturan a mano (Jp, 2026-10-28):
+// cuántas se crearon HOY y cuántas acumula el MES, para el vendedor logueado.
+async function calcNegociacionesAutoDia(usuarioId, fecha){
+  // Desglosa cliente existente (cliente_cartera_id) vs prospecto nuevo
+  // (prospecto_crm_id/prospecto_app_id) para mantener el mismo esquema que
+  // antes se capturaba a mano (neg_clientes_*/neg_prospectos_*).
+  const out={hoyNum:0,hoyMonto:0,mesNum:0,mesMonto:0,
+    hoyCliNum:0,hoyCliMonto:0,hoyProsNum:0,hoyProsMonto:0,
+    mesCliNum:0,mesCliMonto:0,mesProsNum:0,mesProsMonto:0};
+  const [y,m]=fecha.split('-');
+  const desdeMes=`${y}-${m}-01`;
+  const ultimoDiaMes=new Date(parseInt(y),parseInt(m),0).getDate();
+  const hastaMes=`${y}-${m}-${String(ultimoDiaMes).padStart(2,'0')}`;
+  const {data}=await sb.from('pipeline_vendedor').select('monto_total,created_at,cliente_cartera_id,prospecto_crm_id,prospecto_app_id')
+    .eq('usuario_id',usuarioId).eq('perfil','vendedor')
+    .gte('created_at',desdeMes+'T00:00:00').lte('created_at',hastaMes+'T23:59:59');
+  (data||[]).forEach(r=>{
+    const m2=r.monto_total||0;
+    const esCliente=!!r.cliente_cartera_id;
+    const esHoy=(r.created_at||'').slice(0,10)===fecha;
+    out.mesNum++; out.mesMonto+=m2;
+    if(esCliente){ out.mesCliNum++; out.mesCliMonto+=m2; } else { out.mesProsNum++; out.mesProsMonto+=m2; }
+    if(esHoy){
+      out.hoyNum++; out.hoyMonto+=m2;
+      if(esCliente){ out.hoyCliNum++; out.hoyCliMonto+=m2; } else { out.hoyProsNum++; out.hoyProsMonto+=m2; }
+    }
+  });
+  return out;
+}
+// Siigo Fiscal — ya no se captura a mano (Jp, 2026-10-28): cuenta las suscripciones
+// Siigo Fiscal NUEVAS (dadas de alta hoy en Suscripciones) para clientes de este
+// vendedor. Nota: usa fecha de creación del registro, no fecha_marcado (esa es de
+// renovaciones) — confirmar con Jp si en la práctica no coincide con lo esperado.
+const SIIGO_FISCAL_CLAVES=['SIIGO_FISCAL_DESPACHOS','SIIGO_FISCAL_PYME','SIIGO_FISCAL_EMPRESARIAL'];
+async function calcSiigoFiscalAutoDia(usuarioId, fecha){
+  const {data:sistemas}=await sb.from('suscripciones_sistemas').select('id,clave').in('clave',SIIGO_FISCAL_CLAVES);
+  const idsSistemas=(sistemas||[]).map(s=>s.id);
+  if(!idsSistemas.length) return {count:0,detalle:[]};
+  const {data}=await sb.from('suscripciones_cartera')
+    .select('id,numserie,producto,created_at,clientes_cartera!inner(razon_social,vendedor_asignado)')
+    .eq('clientes_cartera.vendedor_asignado',usuarioId)
+    .in('sistema_id',idsSistemas)
+    .gte('created_at',fecha+'T00:00:00').lte('created_at',fecha+'T23:59:59');
+  const rows=data||[];
+  return {count:rows.length, detalle:rows.map(r=>({cliente:r.clientes_cartera?.razon_social||'',serie:r.numserie||'',producto:r.producto||''}))};
+}
 // Corte de octubre 2026 (Jp, 2026-10-23): a partir de este mes, la comisión
 // principal de Manuel y Dulce usa el dato real de Finanzas en vez del
 // autorreporte de Registrar día. Meses anteriores NO se recalculan.
@@ -595,6 +666,8 @@ function vendedorFactIngresosFiltro(u){
   const email=(u&&u.email||'').toLowerCase();
   if(email.includes('manuel')) return 'MANUEL';
   if(email.includes('dulce')) return 'DULCE';
+  // Mireya Villegas agregada (Jp, 2026-10-28) — mismo tratamiento que Manuel/Dulce.
+  if(email.includes('mireya')) return 'MIREYA';
   return null;
 }
 
@@ -7220,15 +7293,34 @@ async function renderRegistroForm(fechaSel){
   // Buscar si ya hay registro para la fecha seleccionada
   const {data:existing}=await sb.from('registros_diarios').select('*').eq('usuario_id',currentUser.id).eq('fecha',fecha).single();
   const r=existing||{};
-  const {data:siigoDet}=await sb.from('siigo_fiscal_detalle').select('*').eq('usuario_id',currentUser.id).eq('fecha',fecha).order('idx');
-  window._siigoDetalleInicial=(siigoDet||[]).map(d=>({cliente:d.cliente_nombre||'',serie:d.numero_serie||'',rfc:d.rfc||''}));
   const dias=ultimosDias(7);
   const cred=await verificarCreditosEdicion();
+  // Rediseño "Registro del día" (Jp, 2026-10-28): Servicios/Aspel/IT/Cursos
+  // 24-7/Diplomados-Cursos en vivo/Círculo Innovaci/Siigo Fiscal/Negociaciones
+  // ya NO se capturan a mano — se jalan automáticas de lo facturado y cobrado
+  // en Finanzas (mismo motor que ya corre en "Mi Mes" desde el 2026-10-23,
+  // ver calcVentasRealesFinanzasDia/FINANZAS_CATEGORIA) y de Suscripciones/
+  // Proyección. Solo quedan como captura manual: # Cotizaciones, Monto
+  // cotizaciones, Clientes nuevos, Prospectos canalizados, Demos, Valoraciones,
+  // Llamadas (cartera/prospección/WhatsApp-Respond.io).
+  const vendFiltroFact=vendedorFactIngresosFiltro(userProfile);
+  const [ventasDia,siigoAuto,negoc]=await Promise.all([
+    calcVentasRealesFinanzasDia(vendFiltroFact,fecha),
+    calcSiigoFiscalAutoDia(currentUser.id,fecha),
+    calcNegociacionesAutoDia(currentUser.id,fecha),
+  ]);
+  window._regAuto={ventasDia,siigoAuto,negoc}; // usado por saveRegistro()
+  const primerNombre=(userProfile?.nombre||'').split(' ')[0]||'';
   const selectorDias=dias.map(d=>{
     const label=d===today?'Hoy':fmtFecha(d);
     const activo=d===fecha;
     return `<button onclick="renderRegistroForm('${d}')" style="padding:5px 12px;border-radius:20px;border:1.5px solid ${activo?'var(--teal)':'var(--border)'};background:${activo?'var(--teal)':'transparent'};color:${activo?'#fff':'var(--text3)'};font-size:11px;font-weight:${activo?'700':'400'};cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">${label}</button>`;
   }).join('');
+  const ventaCard=(nombre,val,icon)=>`<div style="background:var(--surface-2,#f8f9fa);border-radius:8px;padding:10px 12px;">
+    <div style="font-size:10px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:0.03em;">${icon} ${nombre}</div>
+    <div style="font-size:18px;font-weight:700;color:var(--navy);font-family:'JetBrains Mono',monospace;">${fmt(val||0)}</div>
+  </div>`;
+  const siigoDetalleHtml=siigoAuto.detalle.length?`<div style="margin-top:8px;">${siigoAuto.detalle.map(d=>`<div style="font-size:11px;color:var(--text2);padding:4px 0;border-top:1px solid var(--border);">💼 <strong>${d.cliente||'(sin nombre)'}</strong>${d.serie?' — serie '+d.serie:''}</div>`).join('')}</div>`:'';
   document.getElementById('mainContent').innerHTML=`
   <div class="reg-form">
     <div style="margin-bottom:14px;">
@@ -7242,82 +7334,73 @@ async function renderRegistroForm(fechaSel){
       ${existing?'<span class="badge bg">Editando</span>':'<span class="badge bt">Nuevo</span>'}
       ${fecha!==today?'<span style="font-size:10px;background:#fff3cd;color:#856404;border:1px solid #ffc107;border-radius:4px;padding:2px 7px;margin-left:4px;">Día pasado</span>':''}
     </div>
-    <div style="margin-bottom:16px;font-size:13px;color:var(--text2);">Ingresa tus ventas y actividades de hoy.</div>
-    <div class="shead">Ventas</div>
+    <div style="margin-bottom:16px;font-size:14px;color:var(--navy);font-weight:600;">Hola ${primerNombre}, cuéntanos cómo te fue hoy 👋</div>
+
+    <!-- ACTIVIDADES DEL DÍA -->
+    <div class="shead">📋 Actividades del día</div>
     <div class="form-grid fg3">
-      <div class="form-field"><label>Servicios ($)</label><div class="prefix"><input type="number" id="fSvc" value="${r.svc||''}" placeholder="0.00" min="0" step="0.01"></div></div>
-      <div class="form-field"><label># Ventas de servicio cerradas</label><input type="number" id="fVentasSvc" value="${r.ventas_servicio_num||''}" placeholder="0" min="0"></div>
-      <div class="form-field"><label>Aspel ($)</label><div class="prefix"><input type="number" id="fAspel" value="${r.aspel||''}" placeholder="0.00" min="0" step="0.01"></div></div>
-      <div class="form-field"><label>IT ($)</label><div class="prefix"><input type="number" id="fIt" value="${r.it||''}" placeholder="0.00" min="0" step="0.01"></div></div>
-    </div>
-    <div style="font-size:11px;color:var(--text3);margin:4px 0 0 2px;">"# Ventas de servicio cerradas" solo cuenta cierres de <strong>servicios</strong> (no Aspel/IT) — se usa para calcular tu ticket promedio y tasa de conversión.</div>
-    <div class="form-grid fg3" style="margin-top:10px;">
-      <div class="form-field"><label>Diplomados ($)</label><div class="prefix"><input type="number" id="fDip" value="${r.diplomados||''}" placeholder="0.00" min="0" step="0.01"></div></div>
-      <div class="form-field"><label>Monto cotizaciones ($)</label><div class="prefix"><input type="number" id="fCotMonto" value="${r.monto_cotizaciones||''}" placeholder="0.00" min="0" step="0.01"></div></div>
       <div class="form-field"><label># Cotizaciones</label><input type="number" id="fCot" value="${r.cotizaciones||''}" placeholder="0" min="0"></div>
-    </div>
-    <div class="shead" style="margin-top:16px;">Actividades</div>
-    <div class="form-grid" style="margin-top:0;">
+      <div class="form-field"><label>Monto cotizaciones ($)</label><div class="prefix"><input type="number" id="fCotMonto" value="${r.monto_cotizaciones||''}" placeholder="0.00" min="0" step="0.01"></div></div>
       <div class="form-field"><label>Clientes nuevos</label><input type="number" id="fCn" value="${r.clientes_nuevos||''}" placeholder="0" min="0"></div>
+    </div>
+
+    <!-- VENTAS GENERADAS EN EL DÍA (AUTOMÁTICO, DE FINANZAS) -->
+    <div class="shead" style="margin-top:16px;">💰 Ventas generadas en el día</div>
+    ${vendFiltroFact?`
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Se toma de lo realmente facturado y cobrado en Finanzas — se va actualizando durante el día conforme se registra el ingreso. No se captura a mano.</div>
+    <div class="form-grid fg3">
+      ${ventaCard('Servicios',ventasDia.svc,'🧰')}
+      ${ventaCard('Aspel',ventasDia.aspel,'🅰️')}
+      ${ventaCard('IT',ventasDia.it,'💻')}
+    </div>
+    <div class="form-grid fg3" style="margin-top:8px;">
+      ${ventaCard('Cursos 24/7',ventasDia.cursos247,'🎓')}
+      ${ventaCard('Diplomados / Cursos en vivo',ventasDia.cursos_vivo,'🎙')}
+      ${ventaCard('Círculo Innovaci',ventasDia.circulo,'🔷')}
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin-top:8px;"># Ventas de servicio cerradas hoy: <strong style="color:var(--navy);">${ventasDia.ventasSvcNum}</strong> (automático, cuenta las transacciones de Servicios del día)</div>
+    `:`<div style="font-size:12px;color:var(--red);background:#fff3f3;border:1px solid #f5c2c2;border-radius:8px;padding:10px;">Tu usuario todavía no está configurado para ventas automáticas de Finanzas. Avísale a tu director para que lo active.</div>`}
+
+    <!-- SIIGO FISCAL (AUTOMÁTICO) -->
+    <div class="shead" style="margin-top:16px;">💼 Siigo Fiscal</div>
+    <div style="font-size:11px;color:var(--text3);">Se cuentan solas las suscripciones Siigo Fiscal nuevas dadas de alta hoy en Suscripciones para tus clientes.</div>
+    <div style="font-size:18px;font-weight:700;color:var(--navy);font-family:'JetBrains Mono',monospace;margin-top:4px;">${siigoAuto.count} cierre${siigoAuto.count===1?'':'s'}</div>
+    ${siigoDetalleHtml}
+
+    <!-- PROSPECTOS CANALIZADOS -->
+    <div class="shead" style="margin-top:16px;">📨 Prospectos canalizados</div>
+    <div class="form-grid fg3" style="margin-top:0;">
+      <div class="form-field"><label>¿Cuántos recibiste de Telemarketing?</label><input type="number" id="fPros" value="${r.prospectos_canalizados||''}" placeholder="0" min="0"></div>
+    </div>
+
+    <!-- OPORTUNIDADES EN PROYECCIÓN (AUTOMÁTICO) -->
+    <div class="shead" style="margin-top:16px;">🤝 Oportunidades en Proyección</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Ya no se capturan a mano — se cuentan solas desde Proyección.</div>
+    <div class="form-grid fg3">
+      <div style="background:var(--surface-2,#f8f9fa);border-radius:8px;padding:10px 12px;">
+        <div style="font-size:10px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:0.03em;">🆕 Creadas hoy</div>
+        <div style="font-size:18px;font-weight:700;color:var(--navy);font-family:'JetBrains Mono',monospace;">${negoc.hoyNum} — ${fmt(negoc.hoyMonto)}</div>
+      </div>
+      <div style="background:var(--surface-2,#f8f9fa);border-radius:8px;padding:10px 12px;">
+        <div style="font-size:10px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:0.03em;">📅 Acumuladas del mes</div>
+        <div style="font-size:18px;font-weight:700;color:var(--navy);font-family:'JetBrains Mono',monospace;">${negoc.mesNum} — ${fmt(negoc.mesMonto)}</div>
+      </div>
+    </div>
+
+    <!-- DEMOS Y VALORACIONES -->
+    <div class="shead" style="margin-top:16px;">🎯 Demos y valoraciones</div>
+    <div class="form-grid fg3" style="margin-top:0;">
       <div class="form-field"><label>Demos realizados</label><input type="number" id="fDemos" value="${r.demos||''}" placeholder="0" min="0"></div>
       <div class="form-field"><label>Valoraciones</label><input type="number" id="fVal" value="${r.valoraciones||''}" placeholder="0" min="0"></div>
-      <div class="form-field"><label>Cursos 24/7 / Membresías</label><input type="number" id="fCur" value="${r.cursos||''}" placeholder="0" min="0"></div>
-      <div class="form-field"><label>Siigo Fiscal (cierres)</label><input type="number" id="fSf" value="${r.siigo_fiscal||''}" placeholder="0" min="0" oninput="renderSiigoDetalle()"></div>
-      <div class="form-field"><label>Prospectos canalizados</label><input type="number" id="fPros" value="${r.prospectos_canalizados||''}" placeholder="0" min="0"></div>
-    </div>
-    <div style="font-size:11px;color:var(--text3);margin:6px 0 0 2px;">"Suscripciones / Cambio distribuidor" y "Renovaciones Aspel" ya no se capturan aquí — se calculan automáticamente desde Cartera de Cuentas (altas y renovaciones marcadas este mes).</div>
-
-    <!-- DESGLOSE SIIGO FISCAL -->
-    <div id="siigoDetalleWrap" style="display:${(r.siigo_fiscal||0)>0?'block':'none'};margin-top:14px;">
-      <div class="shead">💼 Desglose de clientes Siigo Fiscal</div>
-      <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Por cada cierre de Siigo Fiscal, captura el cliente, número de serie y RFC.</div>
-      <div id="siigoDetalleContainer"></div>
     </div>
 
-    <!-- CURSOS EN VIVO -->
-    <div class="shead" style="margin-top:16px;">🎙 Cursos en Vivo</div>
-    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Monto total vendido en cursos en vivo este día.</div>
-    <div class="form-grid fg3" style="margin-top:0;">
-      <div class="form-field">
-        <label>Cursos en Vivo — venta del día ($)</label>
-        <div class="prefix"><input type="number" id="fTalVivo" value="${r.talleres_vivo||''}" placeholder="0.00" min="0" step="0.01"></div>
-      </div>
-    </div>
-
-    <!-- LLAMADAS (INFORMATIVO) -->
-    <div class="shead" style="margin-top:16px;">📞 Llamadas (informativo)</div>
+    <!-- LLAMADAS -->
+    <div class="shead" style="margin-top:16px;">📞 Llamadas</div>
     <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">No cuentan para comisión — sirven para seguimiento de actividad.</div>
     <div class="form-grid fg3" style="margin-top:0;">
-      <div class="form-field">
-        <label>Llamadas seguimiento cartera</label>
-        <input type="number" id="fLlamSeg" value="${r.llamadas_seguimiento||''}" placeholder="0" min="0">
-      </div>
-      <div class="form-field">
-        <label>Llamadas prospección</label>
-        <input type="number" id="fLlamPros" value="${r.llamadas_prospeccion||''}" placeholder="0" min="0">
-      </div>
-    </div>
-
-    <!-- NEGOCIACIONES ABIERTAS -->
-    <div class="shead" style="margin-top:16px;">🤝 Negociaciones abiertas al cierre del día</div>
-    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">Registra cuántas negociaciones tienes activas y el monto total estimado.</div>
-    <div class="form-grid" style="margin-top:0;">
-      <div class="form-field">
-        <label>Con clientes existentes — # negs.</label>
-        <input type="number" id="fNegCliNum" value="${r.neg_clientes_num||''}" placeholder="0" min="0">
-      </div>
-      <div class="form-field">
-        <label>Con clientes existentes — monto est. ($)</label>
-        <div class="prefix"><input type="number" id="fNegCliMonto" value="${r.neg_clientes_monto||''}" placeholder="0.00" min="0" step="0.01"></div>
-      </div>
-      <div class="form-field">
-        <label>Con prospectos nuevos — # negs.</label>
-        <input type="number" id="fNegProsNum" value="${r.neg_prospectos_num||''}" placeholder="0" min="0">
-      </div>
-      <div class="form-field">
-        <label>Con prospectos nuevos — monto est. ($)</label>
-        <div class="prefix"><input type="number" id="fNegProsMonto" value="${r.neg_prospectos_monto||''}" placeholder="0.00" min="0" step="0.01"></div>
-      </div>
+      <div class="form-field"><label>Llamadas seguimiento cartera</label><input type="number" id="fLlamSeg" value="${r.llamadas_seguimiento||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Llamadas prospección</label><input type="number" id="fLlamPros" value="${r.llamadas_prospeccion||''}" placeholder="0" min="0"></div>
+      <div class="form-field"><label>Atención de prospectos por WhatsApp (Respond.io)</label><input type="number" id="fWhatsapp" value="${r.atencion_whatsapp||''}" placeholder="0" min="0"></div>
     </div>
 
     <div class="form-actions">
@@ -7325,47 +7408,6 @@ async function renderRegistroForm(fechaSel){
     </div>
     <div class="save-msg" id="saveMsg"></div>
   </div>`;
-  renderSiigoDetalle();
-}
-
-function renderSiigoDetalle(){
-  const fSf=document.getElementById('fSf');
-  const wrap=document.getElementById('siigoDetalleWrap');
-  const cont=document.getElementById('siigoDetalleContainer');
-  if(!fSf||!wrap||!cont) return;
-  const n=Math.min(parseInt(fSf.value)||0,50);
-  wrap.style.display=n>0?'block':'none';
-  if(n===0){cont.innerHTML='';return;}
-  // Preservar lo ya escrito antes de regenerar
-  const current=[];
-  for(let i=0;i<50;i++){
-    const cli=document.getElementById('siigoCli_'+i);
-    if(!cli) break;
-    current.push({cliente:cli.value,serie:document.getElementById('siigoSerie_'+i).value,rfc:document.getElementById('siigoRfc_'+i).value});
-  }
-  const inicial=window._siigoDetalleInicial||[];
-  const esc=s=>(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
-  let html='';
-  for(let i=0;i<n;i++){
-    const d=current[i]||inicial[i]||{cliente:'',serie:'',rfc:''};
-    html+=`<div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px;padding:10px;background:var(--surface-2,#f8f9fa);border-radius:8px;">
-      <div class="form-field" style="margin:0;"><label style="font-size:10px;">Cliente #${i+1}</label><input type="text" id="siigoCli_${i}" value="${esc(d.cliente)}" placeholder="Nombre del cliente"></div>
-      <div class="form-field" style="margin:0;"><label style="font-size:10px;">N° de serie</label><input type="text" id="siigoSerie_${i}" value="${esc(d.serie)}" placeholder="N° serie"></div>
-      <div class="form-field" style="margin:0;"><label style="font-size:10px;">RFC</label><input type="text" id="siigoRfc_${i}" value="${esc(d.rfc)}" placeholder="RFC" style="text-transform:uppercase;"></div>
-    </div>`;
-  }
-  cont.innerHTML=html;
-}
-
-function collectSiigoDetalle(){
-  const n=parseInt(document.getElementById('fSf')?.value)||0;
-  const out=[];
-  for(let i=0;i<n;i++){
-    const cli=document.getElementById('siigoCli_'+i);
-    if(!cli) break;
-    out.push({idx:i,cliente_nombre:cli.value||'',numero_serie:document.getElementById('siigoSerie_'+i)?.value||'',rfc:(document.getElementById('siigoRfc_'+i)?.value||'').toUpperCase()});
-  }
-  return out;
 }
 
 async function saveRegistro(fecha,existingId){
@@ -7394,34 +7436,40 @@ async function saveRegistro(fecha,existingId){
     const hora=ahora.getHours()+':'+String(ahora.getMinutes()).padStart(2,'0');
     notasLog=`✏️ Editado el ${fmtFecha(today)} a las ${hora}`;
   }
+  // Ventas/Siigo Fiscal/Negociaciones ya no se leen de inputs — vienen de los
+  // cálculos automáticos hechos al renderizar el formulario (window._regAuto),
+  // igual que se ven en pantalla, para que lo guardado coincida con lo mostrado.
+  const auto=window._regAuto||{ventasDia:{},siigoAuto:{count:0},negoc:{}};
+  const vd=auto.ventasDia||{}, sf=auto.siigoAuto||{count:0}, ng=auto.negoc||{};
   const payload={
     usuario_id:currentUser.id,fecha,
-    svc:Math.round(parseFloat(document.getElementById('fSvc').value)||0),
-    ventas_servicio_num:parseInt(document.getElementById('fVentasSvc').value)||0,
-    aspel:Math.round(parseFloat(document.getElementById('fAspel').value)||0),
-    it:Math.round(parseFloat(document.getElementById('fIt').value)||0),
-    diplomados:Math.round(parseFloat(document.getElementById('fDip').value)||0),
+    svc:Math.round(vd.svc||0),
+    ventas_servicio_num:vd.ventasSvcNum||0,
+    aspel:Math.round(vd.aspel||0),
+    it:Math.round(vd.it||0),
+    cursos:vd.cursos247Num||0,
+    diplomados:0, // homologado a talleres_vivo (Jp, 2026-10-28) — ver nota en FINANZAS_CATEGORIA
+    talleres_vivo:Math.round(vd.cursos_vivo||0),
+    siigo_fiscal:sf.count||0,
     monto_cotizaciones:Math.round(parseFloat(document.getElementById('fCotMonto').value)||0),
     cotizaciones:parseInt(document.getElementById('fCot').value)||0,
     clientes_nuevos:parseInt(document.getElementById('fCn').value)||0,
     demos:parseInt(document.getElementById('fDemos').value)||0,
     valoraciones:parseInt(document.getElementById('fVal').value)||0,
-    cursos:parseInt(document.getElementById('fCur').value)||0,
-    siigo_fiscal:parseInt(document.getElementById('fSf').value)||0,
-    talleres_vivo:Math.round(parseFloat(document.getElementById('fTalVivo').value)||0),
+    prospectos_canalizados:parseInt(document.getElementById('fPros').value)||0,
     llamadas_seguimiento:parseInt(document.getElementById('fLlamSeg').value)||0,
     llamadas_prospeccion:parseInt(document.getElementById('fLlamPros').value)||0,
-    neg_clientes_num:parseInt(document.getElementById('fNegCliNum').value)||0,
-    neg_clientes_monto:Math.round(parseFloat(document.getElementById('fNegCliMonto').value)||0),
-    neg_prospectos_num:parseInt(document.getElementById('fNegProsNum').value)||0,
-    neg_prospectos_monto:Math.round(parseFloat(document.getElementById('fNegProsMonto').value)||0),
+    atencion_whatsapp:parseInt(document.getElementById('fWhatsapp').value)||0,
+    neg_clientes_num:ng.hoyCliNum||0,
+    neg_clientes_monto:Math.round(ng.hoyCliMonto||0),
+    neg_prospectos_num:ng.hoyProsNum||0,
+    neg_prospectos_monto:Math.round(ng.hoyProsMonto||0),
     updated_at:new Date().toISOString(),
   };
   // ── VALIDACIÓN DE CORDURA: # Cotizaciones se ha confundido antes con los
   // campos de monto (Servicios o Monto cotizaciones), metiendo cifras como
   // 24,663 "cotizaciones" en un solo día. Si pinta sospechoso, confirmar.
   const cotizSospechosas = payload.cotizaciones>50
-    || (payload.cotizaciones>0 && payload.cotizaciones===payload.svc)
     || (payload.cotizaciones>0 && payload.cotizaciones===payload.monto_cotizaciones);
   if(cotizSospechosas){
     btn.disabled=false;btn.textContent='💾 Guardar registro';
@@ -7430,14 +7478,6 @@ async function saveRegistro(fecha,existingId){
   }
   if(notasLog) payload.notas=notasLog;
   const {error}=await sb.from('registros_diarios').upsert(payload,{onConflict:'usuario_id,fecha'});
-  if(!error){
-    // Guardar desglose de clientes Siigo Fiscal: borra lo anterior de este día y reinserta
-    const detalle=collectSiigoDetalle();
-    await sb.from('siigo_fiscal_detalle').delete().eq('usuario_id',currentUser.id).eq('fecha',fecha);
-    if(detalle.length>0){
-      await sb.from('siigo_fiscal_detalle').insert(detalle.map(d=>({...d,usuario_id:currentUser.id,fecha})));
-    }
-  }
   btn.disabled=false;btn.textContent='💾 Guardar registro';
   if(error){msg.style.color='var(--red)';msg.textContent='Error al guardar: '+error.message;}
   else{
