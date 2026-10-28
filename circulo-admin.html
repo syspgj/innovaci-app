@@ -180,6 +180,9 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
       <span class="chev">▾</span>
     </div>
     <div id="altaBody" class="hidden" style="margin-top:18px">
+    <div style="background:#eefaf9;border:1px solid var(--teal);border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:12.5px;color:#0b5d59">
+      ℹ️ La <strong>compra directa</strong> de membresía ya no se da de alta aquí (Jp, 2026-10-28) — se crea automáticamente cuando Facturación guarda una factura con rubro "CIRCULO INNOVACI". Este formulario ahora es solo para la <strong>vinculación de una suscripción Aspel</strong> ya activa y pagada. Si necesitas completar fechas/plan de un socio que vino de Facturación, bÚscalo en la tabla de abajo y usa "Editar".
+    </div>
     <div class="row">
       <div class="field"><label>Nombre completo</label><input id="nNombre"></div>
       <div class="field"><label>Correo</label><input id="nEmail" type="email"></div>
@@ -199,7 +202,7 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
         <select id="nPlan" onchange="actualizarCosto()"><option value="socio">Socio</option><option value="socio_pro">Socio Pro</option></select>
       </div>
       <div class="field"><label>Origen</label>
-        <select id="nOrigen" onchange="toggleOrigen()"><option value="compra_directa">Compra directa</option><option value="vinculacion_aspel">Vinculación suscripción Aspel</option></select>
+        <select id="nOrigen" onchange="toggleOrigen()"><option value="vinculacion_aspel">Vinculación suscripción Aspel</option></select>
       </div>
       <div class="field"><label>Costo (automático)</label>
         <div class="costolabel" id="costoLabel">Con costo</div>
@@ -319,6 +322,23 @@ function toggleOrigen(){
 // ("1 USU | 1 EMP | SERV", "1U|2E|1S", etc.) y solo está lleno en ~65% de los
 // casos NOI, así que no es confiable para escribir el número automáticamente;
 // el staff lo captura a mano viendo la referencia.
+// Validación "activa y pagada" (Jp, 2026-10-28 — pendiente original desde el
+// 21/10: "validar que el número de serie que reporta un solicitante de
+// Círculo Innovaci sigue activo con Innovaci"). Dos factores, ambos
+// obligatorios:
+// 1. VIGENTE: fecha_proxima_renovacion no vencida (si no hay fecha registrada,
+//    no se puede confirmar vigencia — se trata como no vigente).
+// 2. PAGADA: estado en ('reclamada','renovada') — confirmado por el cruce con
+//    el reporte de comisiones que Aspel ya pagó a Innovaci (import de
+//    Suscripciones 2026.xlsx / catálogo vivo). 'sin_reclamar' significa que
+//    todavía no se ha confirmado ese cobro; 'no_renovada' que ya venció sin
+//    renovarse.
+// alerta_posible_perdida=true también bloquea — si el catálogo vivo de Aspel
+// ya no trae esta serie, no se puede considerar "activa" aunque la fecha no
+// haya vencido.
+// Este candado SÍ bloquea (a diferencia de los avisos de folio en
+// Facturación) — vincular una suscripción no vigente/no pagada le da acceso
+// real a Academia/Laboratorio Virtual a alguien que no debería tenerlo.
 async function validarSerie(){
   const serie=document.getElementById('nNumSerie').value.trim();
   const msg=document.getElementById('serieMsg');
@@ -327,7 +347,7 @@ async function validarSerie(){
   if(!serie){ msg.innerHTML='<span class="serieerr">Captura un número de serie.</span>'; return; }
 
   const {data:sus,error}=await sb.from('suscripciones_cartera')
-    .select('cliente_id,periodicidad,estado')
+    .select('cliente_id,periodicidad,estado,fecha_proxima_renovacion,alerta_posible_perdida')
     .eq('numserie',serie)
     .maybeSingle();
   if(error || !sus){ msg.innerHTML='<span class="serieerr">No se encontró esa suscripción en Cartera.</span>'; return; }
@@ -335,9 +355,23 @@ async function validarSerie(){
     msg.innerHTML='<span class="serieerr">Esta suscripción es mensual — no aplica para vinculación al Círculo (solo semestral/anual).</span>';
     return;
   }
+  if(sus.alerta_posible_perdida){
+    msg.innerHTML='<span class="serieerr">⚠ Esta suscripción está marcada como "posible pérdida" (ya no aparece en el catálogo vivo de Aspel) — no se puede vincular hasta que Dirección investigue y descarte la alerta en Suscripciones.</span>';
+    return;
+  }
+  const hoy=new Date().toISOString().slice(0,10);
+  const vigente = !!sus.fecha_proxima_renovacion && sus.fecha_proxima_renovacion>=hoy;
+  const pagada = sus.estado==='reclamada' || sus.estado==='renovada';
+  if(!vigente || !pagada){
+    const motivos=[];
+    if(!vigente) motivos.push(sus.fecha_proxima_renovacion?('vencida desde '+sus.fecha_proxima_renovacion):'sin fecha de vigencia registrada');
+    if(!pagada) motivos.push('pago no confirmado todavía (estado: '+(sus.estado||'sin estado')+')');
+    msg.innerHTML='<span class="serieerr">Esta suscripción no está activa y pagada — '+motivos.join(' y ')+'. No se puede vincular. Si crees que es un error, revisa/actualiza esta serie en el módulo de Suscripciones.</span>';
+    return;
+  }
 
   clienteCarteraIdActual = sus.cliente_id;
-  msg.innerHTML=`<span class="serieok">Suscripción válida ✓ (${sus.periodicidad||'periodicidad no especificada'})</span>`;
+  msg.innerHTML=`<span class="serieok">Suscripción válida ✓ — activa y pagada (${sus.periodicidad||'periodicidad no especificada'}, vigente hasta ${sus.fecha_proxima_renovacion})</span>`;
 
   const especialidad=document.getElementById('nEspecialidad').value;
   const {data:sis}=await sb.from('clientes_cartera_sistemas')
@@ -460,6 +494,19 @@ async function crearMembresia(){
   if(!nombre || !email){ msg.innerHTML='<div class="msg err">Falta nombre o correo.</div>'; return; }
 
   const origen=document.getElementById('nOrigen').value;
+  // Candado duro (Jp, 2026-10-28): este formulario ya solo da de alta por
+  // vinculación de suscripción Aspel (la compra directa viene de
+  // Facturación) — no se puede crear sin haber validado la serie con éxito
+  // (clienteCarteraIdActual solo se llena cuando validarSerie() confirmó que
+  // está activa y pagada). Evita que alguien teclee una serie y le dé
+  // "Crear" sin presionar "Validar", o que la edite después de validar.
+  if(origen==='vinculacion_aspel'){
+    const serieCapturada=document.getElementById('nNumSerie').value.trim();
+    if(!serieCapturada || !clienteCarteraIdActual){
+      msg.innerHTML='<div class="msg err">Captura el número de serie y presiona "Validar" — debe confirmarse como activa y pagada antes de poder crear la membresía.</div>';
+      return;
+    }
+  }
   const payload={
     nombre, email,
     telefono: document.getElementById('nTelefono').value.trim()||null,

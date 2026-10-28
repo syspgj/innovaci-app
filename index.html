@@ -24639,6 +24639,18 @@ function selPares(id,pares,val=''){return `<select id="${id}" style="width:100%;
 const FI_RUBROS_ALUMNO=['MEMBRESIA','MEMBERSIA','24/7','CURSOS O TALLERES EN VIVO','DIPLOMADOS EN VIVO','DIPLOMADO','EXTENSION PRACTICAS','EXTENSION DE PRACTICAS'];
 function fiRubroNecesitaAlumno(r){ return FI_RUBROS_ALUMNO.includes((r||'').toUpperCase().trim()); }
 
+// Círculo Innovaci — compra directa de membresía (Jp, 2026-10-28): "con
+// Círculo Innovaci también damos de alta a un asistente... debería de venir
+// de facturación". A partir de ahora, el alta de "Compra directa" (origen en
+// circulo_membresias) se crea automáticamente aquí al guardar la factura con
+// rubro "CIRCULO INNOVACI" — solo lo esencial (nombre/correo/teléfono); las
+// fechas de activación/vencimiento, plan exacto y especialidad se completan
+// después desde circulo-admin.html. La vía de "Vinculación suscripción
+// Aspel" sigue dándose de alta directo ahí (no pasa por Facturación) — ver
+// fiRubroEsCirculo / fiCirculoHtml.
+const FI_RUBRO_CIRCULO='CIRCULO INNOVACI';
+function fiRubroEsCirculo(r){ return (r||'').toUpperCase().trim()===FI_RUBRO_CIRCULO; }
+
 // Mapea el nombre real de usuarios.nombre al texto libre que usa el select
 // "Vendedor" de Finanzas/Ingresos (histórico, no son iguales). Null si no
 // aplica (ej. Anel/Violeta/Administración — cuentas que no son de un vendedor
@@ -24737,6 +24749,8 @@ function fiToggleAlumnoBlock(p='fi'){
   const r=document.getElementById(p+'RubroOtro')?.style.display!=='none'?document.getElementById(p+'RubroOtro')?.value:document.getElementById(p+'RubroSel')?.value;
   const bloque=document.getElementById(p+'AlumnoBloque');
   if(bloque) bloque.style.display=fiRubroNecesitaAlumno(r)?'block':'none';
+  const bloqueCirc=document.getElementById(p+'CirculoBloque');
+  if(bloqueCirc) bloqueCirc.style.display=fiRubroEsCirculo(r)?'block':'none';
 }
 
 async function fiSugerirAlumno(p='fi'){
@@ -24859,6 +24873,104 @@ function fiAlumnoHtml(p='fi',valores={}){
     </div>`;
 }
 
+// ─── Círculo Innovaci — compra directa (Jp, 2026-10-28) ────────────────────
+async function fiAsegurarCacheSociosCirculo(){
+  if(window._fiSociosCirculo) return;
+  const {data}=await sb.from('circulo_membresias').select('id,nombre,email,telefono,estado,fecha_vencimiento').order('nombre');
+  window._fiSociosCirculo=data||[];
+}
+async function fiSugerirSocioCirculo(p='fi'){
+  const q=(document.getElementById(p+'CirculoBuscar')?.value||'').trim().toLowerCase();
+  const box=document.getElementById(p+'CirculoSugs');
+  document.getElementById(p+'CirculoMembresiaId').value='';
+  if(!box||q.length<3){ if(box)box.style.display='none'; return; }
+  await fiAsegurarCacheSociosCirculo();
+  const res=(window._fiSociosCirculo||[]).filter(x=>(x.nombre||'').toLowerCase().includes(q)||(x.email||'').toLowerCase().includes(q)).slice(0,8);
+  if(!res.length){ box.innerHTML='<div style="padding:6px 10px;font-size:11px;color:var(--text3);">Sin coincidencias — llena los datos de abajo para un socio nuevo.</div>'; box.style.display='block'; return; }
+  box.innerHTML=res.map(x=>`<div style="padding:6px 10px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--border);" onmousedown="event.preventDefault();document.getElementById('${p}CirculoBuscar').value='${(x.nombre||'').replace(/'/g,"\\'")}';document.getElementById('${p}CirculoMembresiaId').value='${x.id}';document.getElementById('${p}CirculoSugs').style.display='none';">${x.nombre}${x.email?` <span style="color:var(--text3);">· ${x.email}</span>`:''} <span style="color:var(--text3);">(${x.estado||'—'})</span></div>`).join('');
+  box.style.display='block';
+}
+function fiCirculoHtml(p='fi'){
+  return `
+    <div id="${p}CirculoBloque" style="display:none;margin-bottom:10px;padding:10px 12px;background:rgba(0,169,157,0.05);border:1px dashed var(--teal);border-radius:8px;">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px;font-weight:500;">Socio de Círculo Innovaci — compra directa (solo lo esencial; fechas/plan/especialidad se completan después en Círculo Innovaci)</div>
+      <div style="position:relative;">
+        <input id="${p}CirculoBuscar" type="text" placeholder="Buscar socio existente por nombre o correo (si es renovación)..." oninput="fiSugerirSocioCirculo('${p}')" style="${INP}">
+        <div id="${p}CirculoSugs" style="display:none;position:absolute;z-index:20;background:#fff;border:1px solid var(--border);border-radius:6px;width:100%;max-height:200px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,0.1);"></div>
+        <input id="${p}CirculoMembresiaId" type="hidden" value="">
+      </div>
+      <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+        ${fld('Nombre',inp(p+'CirculoNombre','text','Nombre completo (si es socio nuevo)'))}
+        ${fld('Correo',inp(p+'CirculoEmail','email','correo@ejemplo.com'))}
+        ${fld('Teléfono',inp(p+'CirculoTel','text','opcional'))}
+      </div>
+    </div>`;
+}
+// Da de alta (o liga, si se eligió uno existente) el socio de Círculo
+// Innovaci al guardar la factura con rubro CIRCULO INNOVACI. No bloquea el
+// guardado de la factura si algo falla — mismo criterio que Academia.
+// Devuelve {ok:true, membresiaId} o {ok:true} si no aplicaba.
+async function fiCrearOActualizarSocioCirculo(p,factIngresoId,clienteCarteraId){
+  if(!fiRubroEsCirculo(document.getElementById(p+'Rubro')?.value)) return {ok:true};
+  let membresiaId=document.getElementById(p+'CirculoMembresiaId')?.value||'';
+  const nombre=document.getElementById(p+'CirculoNombre')?.value?.trim()||'';
+  const email=document.getElementById(p+'CirculoEmail')?.value?.trim()?.toLowerCase()||'';
+  const telefono=document.getElementById(p+'CirculoTel')?.value?.trim()||'';
+  if(!membresiaId && !nombre && !email){
+    // Sin socio capturado — se puede ligar después editando la factura o
+    // directamente desde Círculo Innovaci. No bloquea el guardado.
+    return {ok:true};
+  }
+  if(!membresiaId){
+    // Socio nuevo (no se eligió uno existente de la búsqueda) — evita
+    // duplicar si ya existe exactamente ese correo (ej. Jp buscó por nombre
+    // pero el socio está registrado con otro nombre).
+    if(email){
+      const {data:dup}=await sb.from('circulo_membresias').select('id,nombre,estado').ilike('email',email).maybeSingle();
+      if(dup){
+        if(!confirm('Ya existe un socio de Círculo Innovaci con el correo "'+email+'" ('+dup.nombre+', estado: '+(dup.estado||'—')+').\n\n¿Es la misma persona? Presiona Aceptar para ligar esta factura a ese socio existente, o Cancelar para crear un registro nuevo de todas formas.')) {
+          // Cancelar → se crea nuevo registro igual (puede ser otro ciclo/otra persona con el mismo correo corporativo)
+        } else {
+          membresiaId=dup.id;
+        }
+      }
+    }
+  }
+  if(membresiaId){
+    const {error}=await sb.from('circulo_membresias').update({fact_ingreso_id:factIngresoId}).eq('id',membresiaId);
+    if(error){ alert('La factura se guardó, pero no se pudo ligar al socio de Círculo existente: '+error.message); return {ok:true}; }
+    return {ok:true,membresiaId};
+  }
+  if(!nombre||!email){
+    alert('La factura se guardará, pero falta nombre o correo para dar de alta al socio nuevo de Círculo Innovaci — complétalo después a mano en Círculo Innovaci y liga la factura "'+(document.getElementById(p+'Folio')?.value||'')+'".');
+    return {ok:true};
+  }
+  const {data:sess}=await sb.auth.getSession();
+  const {data:nuevo,error:errNuevo}=await sb.from('circulo_membresias').insert({
+    nombre,email,telefono:telefono||null,
+    cliente_cartera_id:clienteCarteraId||null,
+    origen:'compra_directa',
+    costo_cero:false,
+    estado:'activa',
+    fact_ingreso_id:factIngresoId,
+    codigo_acceso:generarCodigoCirculoFi(),
+    creado_por:sess.session?.user?.id||null,
+  }).select().single();
+  if(errNuevo){ alert('La factura se guardó, pero no se pudo dar de alta al socio nuevo de Círculo Innovaci: '+errNuevo.message+'. Dalo de alta a mano desde Círculo Innovaci y liga la factura.'); return {ok:true}; }
+  window._fiSociosCirculo=null; // refrescar cache
+  return {ok:true,membresiaId:nuevo.id};
+}
+// Mismo alfabeto/longitud que generarCodigo() de circulo-admin.html, para
+// mantener consistencia de formato del código de acceso del socio.
+function generarCodigoCirculoFi(len=6){
+  const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let out='';
+  const rnd=new Uint32Array(len);
+  crypto.getRandomValues(rnd);
+  for(let i=0;i<len;i++) out+=chars[rnd[i]%chars.length];
+  return out;
+}
+
 async function abrirNuevaFactIngreso(){
   await fiAsegurarCacheGeneracionesAlumno();
   const today=todayLocal();
@@ -24879,6 +24991,7 @@ async function abrirNuevaFactIngreso(){
     </div>
     <div style="margin-bottom:10px;">${fld('Concepto',inp('fiConcepto','text','Descripción del servicio'))}</div>
     ${fiAlumnoHtml()}
+    ${fiCirculoHtml('fi')}
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;">
       ${fld('Subtotal',inp('fiSubtotal','number','0','','min=0 step=0.01 oninput="calcIngTotales()"'))}
       ${fld('Descuento',inp('fiDescuento','number','0','','min=0 step=0.01 oninput="calcIngTotales()"'))}
@@ -24925,6 +25038,36 @@ function calcIngTotales(){
   }
 }
 
+// Candado de folio (Jp, 2026-10-28): detecta (a) que el folio ya exista en
+// OTRA factura, y (b) que haya un salto en la numeración del mismo prefijo
+// (ej. el último INN capturado fue 605 y se está capturando 610, sin que
+// existan 606-609). Ambos casos solo ADVIERTEN con confirm() — nunca
+// bloquean — porque puede haber correcciones/reemisiones legítimas.
+// excluirId: al editar, se excluye la propia fila de la búsqueda de
+// duplicados (si no, se "detectaría a sí misma" todo el tiempo).
+async function fiValidarFolio(folio,excluirId){
+  if(!folio) return true;
+  let qDup=sb.from('fact_ingresos').select('id,cliente,rubro,fecha,estatus').eq('folio',folio).limit(1);
+  if(excluirId) qDup=qDup.neq('id',excluirId);
+  const {data:folioExistente}=await qDup.maybeSingle();
+  if(folioExistente){
+    return confirm('El folio "'+folio+'" ya existe en otra factura:\n\n• '+(folioExistente.cliente||'(sin cliente)')+' — '+(folioExistente.rubro||'(sin rubro)')+' — '+(folioExistente.fecha||'')+' ('+(folioExistente.estatus||'')+')\n\n¿Seguro que quieres guardar OTRA factura con el mismo folio?');
+  }
+  const m=folio.match(/^([A-Za-z]+)(\d+)$/);
+  if(!m) return true;
+  const prefijo=m[1], numero=parseInt(m[2],10);
+  const {data:mismoPrefijo}=await sb.from('fact_ingresos').select('folio').ilike('folio',prefijo+'%');
+  let maxNum=0;
+  (mismoPrefijo||[]).forEach(r=>{
+    const mm=(r.folio||'').match(new RegExp('^'+prefijo+'(\\d+)$','i'));
+    if(mm){ const n=parseInt(mm[1],10); if(n>maxNum) maxNum=n; }
+  });
+  if(maxNum>0 && numero>maxNum+1){
+    return confirm('Parece que hay un salto en la numeración: el último folio "'+prefijo+'" registrado es '+prefijo+maxNum+', y estás capturando '+folio+' (faltarían '+prefijo+(maxNum+1)+(numero-1>maxNum+1?' a '+prefijo+(numero-1):'')+').\n\n¿Guardar de todas formas?');
+  }
+  return true;
+}
+
 async function guardarFactIngreso(){
   const fecha=document.getElementById('fiFecha')?.value||null;
   const folio=document.getElementById('fiFolio')?.value.trim()||null;
@@ -24946,6 +25089,12 @@ async function guardarFactIngreso(){
   if(!cliente){alert('El cliente es obligatorio.');return;}
   const serie=vendedor==='GUILLERMO BLANCAS'?'GBE':null;
   const cliente_cartera_id=document.getElementById('fiClienteCarteraId')?.value||null;
+
+  // Folio duplicado/salteado (Jp, 2026-10-28 — caso real: INN606 se cargó
+  // DOS veces, una vez como Círculo Innovaci y otra como Póliza Aspel, sin
+  // que nada avisara). Solo ADVIERTE, nunca bloquea — puede haber
+  // correcciones legítimas.
+  if(!await fiValidarFolio(folio)) return;
 
   // Validación contra evidencia real antes de guardar (Jp, 2026-10-28 — caso
   // Ezequiel: se marcó pagada una factura sin XML y sin que el pago llegara
@@ -25016,6 +25165,9 @@ async function guardarFactIngreso(){
     cliente_cartera_id,academia_participante_id
   }).select().single();
   if(error){alert('Error: '+error.message);return;}
+  // Socio de Círculo Innovaci — compra directa (Jp, 2026-10-28): se crea/liga
+  // hasta aquí porque necesita el id ya insertado de la factura.
+  await fiCrearOActualizarSocioCirculo('fi',newRow.id,cliente_cartera_id);
   if(window._fiXmlText){
     const path=await subirXMLStorage(window._fiXmlText,'ingresos',folio);
     if(path) await sb.from('fact_ingresos').update({xml_path:path}).eq('id',newRow.id);
@@ -25361,6 +25513,7 @@ async function editarIngreso(id){
     </div>
     <div style="margin-bottom:10px;">${fld('Concepto',inp('eiiConcepto','text','',r.concepto||''))}</div>
     ${fiAlumnoHtml('eii',{nombre:alumnoNombrePrevio,id:r.academia_participante_id||''})}
+    ${fiCirculoHtml('eii')}
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px;">
       ${fld('Subtotal orig.',inp('eiiSubOrig','number','',r.subtotal_original||0,'min=0 step=0.01'))}
       ${fld('Descuento',inp('eiiDescuento','number','',r.descuento||0,'min=0 step=0.01'))}
@@ -25384,6 +25537,18 @@ async function editarIngreso(id){
 async function guardarEdicionIngreso(){
   const id=document.getElementById('eiiId')?.value;
   if(!id)return;
+  // Folio duplicado (Jp, 2026-10-28) — mismo candado que Nueva factura,
+  // excluyendo esta propia fila de la búsqueda. No se repite aquí el aviso
+  // de "salto en la numeración": al EDITAR normalmente no se está dando de
+  // alta un folio nuevo en la secuencia, así que esa alerta solo aplicaría
+  // en Nueva factura.
+  const folioEdit=document.getElementById('eiiFolio')?.value.trim()||null;
+  if(folioEdit){
+    const {data:folioDup}=await sb.from('fact_ingresos').select('id,cliente,rubro,fecha,estatus').eq('folio',folioEdit).neq('id',id).limit(1).maybeSingle();
+    if(folioDup){
+      if(!confirm('El folio "'+folioEdit+'" ya existe en otra factura:\n\n• '+(folioDup.cliente||'(sin cliente)')+' — '+(folioDup.rubro||'(sin rubro)')+' — '+(folioDup.fecha||'')+' ('+(folioDup.estatus||'')+')\n\n¿Seguro que quieres dejar el mismo folio en ambas?')) return;
+    }
+  }
   const cliente_cartera_id=document.getElementById('eiiClienteCarteraId')?.value||null;
   let academia_participante_id=document.getElementById('eiiAlumnoParticipanteId')?.value||null;
   const alumnoNombreNuevo=document.getElementById('eiiAlumnoNombre')?.value?.trim();
@@ -25477,6 +25642,8 @@ async function guardarEdicionIngreso(){
   }
   const {error}=await sb.from('fact_ingresos').update(payload).eq('id',id);
   if(error){alert('Error: '+error.message);return;}
+  // Socio de Círculo Innovaci — compra directa (Jp, 2026-10-28).
+  await fiCrearOActualizarSocioCirculo('eii',id,cliente_cartera_id);
   const row=(window._fiRows||[]).find(r=>r.id===id);
   if(row) Object.assign(row,payload);
   document.getElementById('modalIngEdit')?.remove();
