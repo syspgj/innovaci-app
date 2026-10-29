@@ -215,7 +215,17 @@ async function resolverAccountIdCrm(numCliente) {
 }
 
 async function agregarComentarioCrm(sessionName, relatedTo, comentario) {
-  return vtigerCreate(sessionName, 'ModComments', { commentcontent: comentario, related_to: relatedTo });
+  // Jp, 2026-10-29 — bug real encontrado en la auditoría general: esta
+  // instalación de Vtiger exige "assigned_user_id" también para crear un
+  // ModComments (no solo para Leads), y aquí nunca se mandaba —
+  // comentarEventosPendientes() tronaba con MANDATORY_FIELDS_MISSING
+  // cada vez que un prospecto ya marcado como cuenta tenía eventos
+  // pendientes de comentar en el CRM (10 fallas reales, 16-27 oct).
+  return vtigerCreate(sessionName, 'ModComments', {
+    commentcontent: comentario,
+    related_to: relatedTo,
+    assigned_user_id: VTIGER_USUARIO_RESPALDO,
+  });
 }
 
 function formatearFechaEvento(ev) {
