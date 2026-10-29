@@ -20232,8 +20232,13 @@ async function renderDirectorOperaciones(){
   mc.classList.add('full-width');
   mc.innerHTML=`
   <div style="padding:20px;">
-    <div style="font-size:18px;font-weight:700;color:var(--navy);margin-bottom:4px;">🛠 Operaciones — Mesa de Control</div>
-    <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">Catálogo de pólizas, contratos de clientes y banco de horas.</div>
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+      <div>
+        <div style="font-size:18px;font-weight:700;color:var(--navy);margin-bottom:4px;">🛠 Operaciones — Mesa de Control</div>
+        <div style="font-size:12px;color:var(--text3);margin-bottom:16px;">Catálogo de pólizas, contratos de clientes y banco de horas.</div>
+      </div>
+      <button id="btnSyncCrmAhora" onclick="sincronizarCrmAhora()" title="Vuelve a traer Cuentas, Oportunidades y Proyectos desde el CRM ahora mismo, sin esperar al cron automático — incluye detectar renovaciones de pólizas (resguardo y soporte)." style="padding:7px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--teal);background:none;color:var(--teal);font-family:'Inter',sans-serif;white-space:nowrap;">🔄 Sincronizar CRM ahora</button>
+    </div>
     <div style="display:flex;gap:8px;margin-bottom:18px;border-bottom:1px solid var(--border);padding-bottom:10px;flex-wrap:wrap;">
       <button onclick="swOps('resumen')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='resumen'?'var(--navy)':'none'};color:${currentOpsTab==='resumen'?'#fff':'var(--text2)'};">📊 Resumen</button>
       <button onclick="swOps('catalogo')" style="padding:7px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentOpsTab==='catalogo'?'var(--navy)':'none'};color:${currentOpsTab==='catalogo'?'#fff':'var(--text2)'};">📋 Catálogo de pólizas</button>
@@ -20252,6 +20257,51 @@ async function renderDirectorOperaciones(){
   else if(currentOpsTab==='polizashist') await renderOpsPolizasHistorico();
   else if(currentOpsTab==='cartera') await renderDirectorCartera('opsBody');
   else await renderOpsTickets();
+}
+
+// Jp, 2026-10-29 — botón manual "Sincronizar CRM ahora" en Mesa de Control.
+// Dispara los 3 syncs del CRM (Cuentas, Oportunidades, Proyectos — este
+// último incluye la detección automática de renovación de pólizas de
+// resguardo y soporte) sin esperar la próxima corrida del cron (~cada 3h)
+// ni tener que abrir la URL a mano con el secreto. El secreto nunca llega
+// al navegador: lo agrega el servidor (api/admin-sync-crm.js).
+async function sincronizarCrmAhora(){
+  const btn=document.getElementById('btnSyncCrmAhora');
+  if(!btn||btn.disabled) return;
+  btn.disabled=true;
+  const textoOriginal=btn.textContent;
+  btn.textContent='⏳ Sincronizando…';
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const res=await fetch('/api/admin-sync-crm',{method:'POST',headers:{'Authorization':'Bearer '+token}});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){
+      alert('No se pudo sincronizar: '+(j.error||res.status));
+      return;
+    }
+    const renov=j.proyectos?.renovaciones;
+    const renovTexto=renov&&!renov.error
+      ?(renov.creadas>0
+        ?`\n\n🔁 Renovaciones detectadas y aplicadas (${renov.creadas}):\n`+(renov.detalle||[]).filter(d=>!d.error).map(d=>`• ${d.cliente}: ${d.de} → ${d.a}`).join('\n')
+        :'\n\nSin renovaciones nuevas que aplicar.')
+      :(renov?.error?`\n\n⚠ La detección de renovaciones tuvo un error: ${renov.error}`:'');
+    alert(
+      'Sincronización completa.\n\n'+
+      `Cuentas: ${j.cuentas?.ok?'✓ '+(j.cuentas.total??j.cuentas.totalMapeado??'ok'):'✗ '+(j.cuentas?.error||j.cuentas?.status)}\n`+
+      `Oportunidades: ${j.oportunidades?.ok?'✓ ok':'✗ '+(j.oportunidades?.error||j.oportunidades?.status)}\n`+
+      `Proyectos: ${j.proyectos?.ok?'✓ '+(j.proyectos.totalMapeado??'ok'):'✗ '+(j.proyectos?.error||j.proyectos?.status)}`+
+      renovTexto
+    );
+    if(currentOpsTab==='resumen') await renderOpsResumen();
+    else if(currentOpsTab==='contratos') await renderOpsContratos();
+    else if(currentOpsTab==='polizashist') await renderOpsPolizasHistorico();
+  }catch(e){
+    alert('Error al sincronizar: '+e.message);
+  }finally{
+    btn.disabled=false;
+    btn.textContent=textoOriginal;
+  }
 }
 
 // ── RESUMEN / TORRE DE CONTROL (Jp, 2026-09-04): "la mesa de control es como
