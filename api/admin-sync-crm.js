@@ -49,17 +49,16 @@ export default async function handler(req, res) {
   if (!SYNC_SECRET) return res.status(500).json({ ok: false, error: 'Falta SYNC_SECRET en el servidor' });
 
   try {
-    // En paralelo a propósito: cada uno abre su propia sesión de Vtiger
-    // (independientes entre sí), y correrlos en paralelo mantiene la
-    // duración total de ESTE endpoint acotada al más lento de los 3 en
-    // vez de la suma — importante porque Vercel le pone un límite de
-    // tiempo a cada función serverless, y este endpoint ya envuelve 3
-    // llamadas HTTP de por sí.
-    const [cuentas, oportunidades, proyectos] = await Promise.all([
-      dispararSync('sync-crm-accounts'),
-      dispararSync('sync-crm-oportunidades'),
-      dispararSync('sync-crm-proyectos'),
-    ]);
+    // Jp, 2026-10-29 — se probó en paralelo y Vtiger respondió
+    // INVALID_USER_CREDENTIALS en 2 de los 3 (Cuentas y Oportunidades),
+    // mientras que Proyectos sí sincronizó bien (2,675 registros): Vtiger
+    // no soporta bien que el MISMO usuario pida challenge+login al mismo
+    // tiempo desde 2-3 llamadas simultáneas (se pisan los tokens de
+    // reto entre sí) — por eso ahora van uno por uno, en serie. Un poco
+    // más lento, pero confiable.
+    const cuentas = await dispararSync('sync-crm-accounts');
+    const oportunidades = await dispararSync('sync-crm-oportunidades');
+    const proyectos = await dispararSync('sync-crm-proyectos');
     return res.status(200).json({ ok: true, cuentas, oportunidades, proyectos });
   } catch (err) {
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
