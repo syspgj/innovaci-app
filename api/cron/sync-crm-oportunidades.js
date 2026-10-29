@@ -114,8 +114,22 @@ async function upsertRaw(table, idField, crmIdKey, rows) {
 }
 
 export default async function handler(req, res) {
+  // Jp, 2026-10-29 — bug encontrado: Vercel Cron manda su propio header
+  // "authorization: Bearer <CRON_SECRET>" en cada corrida programada, pero
+  // este endpoint solo aceptaba "?secret=" o "x-sync-secret" (los que se
+  // usan al probar a mano desde el navegador) — así que CADA corrida
+  // automática fallaba con 401 en silencio desde que se creó este cron
+  // (confirmado: stg_oportunidades_crm_raw no avanza desde 2026-10-12,
+  // pese a estar programado cada ~3h). Se acepta el header authorization
+  // contra SYNC_SECRET *o* CRON_SECRET (no sabemos cuál de los dos manda
+  // Vercel realmente en esta cuenta, y si llegaran a tener valores
+  // distintos esto cubre ambos casos sin arriesgar nada).
   const secret = req.query?.secret || req.headers['x-sync-secret'];
-  if (!SYNC_SECRET || secret !== SYNC_SECRET) {
+  const authHeader = req.headers['authorization'];
+  const autorizadoPorHeader =
+    authHeader === `Bearer ${SYNC_SECRET}` ||
+    (process.env.CRON_SECRET && authHeader === `Bearer ${process.env.CRON_SECRET}`);
+  if (!SYNC_SECRET || (secret !== SYNC_SECRET && !autorizadoPorHeader)) {
     res.status(401).json({ ok: false, error: 'No autorizado' });
     return;
   }

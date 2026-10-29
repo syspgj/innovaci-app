@@ -215,9 +215,195 @@ function parseMonedaCRM(v) {
   return Number.isFinite(num) ? num : null;
 }
 
+async function sbPatch(pathConFiltro, cambios) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${pathConFiltro}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify(cambios),
+  });
+  if (!res.ok) throw new Error(`PATCH ${pathConFiltro} falló (${res.status}): ${await res.text()}`);
+}
+
+async function sbPost(table, fila) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify(fila),
+  });
+  if (!res.ok) throw new Error(`POST ${table} falló (${res.status}): ${await res.text()}`);
+}
+
+// ---------------------------------------------------------------------
+// Jp, 2026-10-29 — detección automática de renovación de pólizas
+// (Resguardo y Soporte), pedida a raíz de un caso real: RIVACOLOR
+// renovó su póliza de Resguardo INN2 en el CRM (proyecto viejo PROJ2376
+// quedó "Concluido", proyecto nuevo PROJ2655 con la nueva vigencia), pero
+// Mesa de Control seguía mostrando solo la vieja como vencida — nadie
+// había notado que el nuevo proyecto nunca generaba su propia fila en
+// clientes_polizas. Mismo problema aplica a pólizas de Soporte
+// (Elite/Infinito/Aliado/etc.), que también se renuevan como proyecto
+// nuevo en CRM cada año.
+//
+// Comportamiento (confirmado con Jp, totalmente automático, sin
+// confirmación manual): para cada fila de clientes_polizas que ya
+// seguíamos (tiene numero_proyecto_crm) y no está CERRADA, si su
+// proyecto en CRM quedó Concluido/Archivado y existe un proyecto MÁS
+// reciente del mismo cliente y de la misma categoría de póliza
+// (Resguardo, o Soporte/Aliado) que sigue activo y todavía no tiene su
+// propia fila en clientes_polizas:
+//   1. Cierra la póliza vieja (estatus='CERRADA' — mismo efecto que dar
+//      clic en "Cerrar póliza" a mano).
+//   2. Crea la póliza nueva clonando la configuración de la vieja
+//      (mismo poliza_catalogo_id — mismo tipo/subtipo exacto — más
+//      servidor/carpeta Dropbox si es Resguardo, horas incluidas si es
+//      Soporte) con las fechas y el número de proyecto del proyecto
+//      nuevo. horas_consumidas se reinicia en 0 (nuevo periodo).
+// Solo se dispara para categorías que ya se siguen como póliza real en
+// polizas_catalogo (RESGUARDO/ALIADO/ASPEL) — nunca para Capacitaciones,
+// Servicios sueltos, etc. Es idempotente: en la siguiente corrida la
+// fila vieja ya está CERRADA y se ignora.
+// ---------------------------------------------------------------------
+const TIPOS_SOPORTE_CRM = new Set(Object.keys(NIVEL_POR_TIPO_PROYECTO));
+const TIPO_RESGUARDO_CRM = 'poliza backup';
+
+function soloDigitos(v) {
+  return (v || '').match(/\d+/)?.[0] || null;
+}
+
+async function sincronizarRenovacionesPolizas(proyectosPayload) {
+  const proyectosValidos = proyectosPayload.filter(
+    (p) => p.cliente_cartera_id && p.tipo_proyecto && p.estatus_proyecto && p.fecha_inicio && p.crm_project_no
+  );
+  if (!proyectosValidos.length) return { revisadas: 0, cerradas: 0, creadas: 0, detalle: [] };
+
+  const [polizas, catalogo] = await Promise.all([
+    fetchTodo(
+      'clientes_polizas',
+      'id,cliente_cartera_id,cliente_nombre,numero_proyecto_crm,estatus,poliza_catalogo_id,horas_totales,vendedor,servidor_cloud_id,resguardo_periodicidad_dias_override,resguardo_dropbox_folder,tipo_resguardo_texto,contacto_telefono,contacto_correo,credenciales_aspel,personas_autorizadas'
+    ),
+    fetchTodo('polizas_catalogo', 'id,categoria'),
+  ]);
+
+  const polizasConProyecto = polizas.filter(
+    (c) => c.cliente_cartera_id && c.numero_proyecto_crm && c.estatus !== 'CERRADA'
+  );
+  if (!polizasConProyecto.length) return { revisadas: 0, cerradas: 0, creadas: 0, detalle: [] };
+
+  const categoriaPorCatalogoId = new Map(catalogo.map((c) => [c.id, c.categoria]));
+  const numerosYaEnApp = new Set(polizas.map((c) => soloDigitos(c.numero_proyecto_crm)).filter(Boolean));
+  const proyectoPorNumero = new Map(proyectosValidos.map((p) => [soloDigitos(p.crm_project_no), p]));
+
+  const porClienteYCategoria = new Map(); // `${cliente_cartera_id}|${categoria}` -> proyectos activos
+  for (const p of proyectosValidos) {
+    if (!p.activo) continue;
+    const tipoNorm = normalizarTipoProyecto(p.tipo_proyecto);
+    let categoria = null;
+    if (tipoNorm === TIPO_RESGUARDO_CRM) categoria = 'RESGUARDO';
+    else if (TIPOS_SOPORTE_CRM.has(tipoNorm)) categoria = 'SOPORTE';
+    if (!categoria) continue;
+    const key = `${p.cliente_cartera_id}|${categoria}`;
+    if (!porClienteYCategoria.has(key)) porClienteYCategoria.set(key, []);
+    porClienteYCategoria.get(key).push(p);
+  }
+
+  let cerradas = 0;
+  let creadas = 0;
+  const detalle = [];
+
+  for (const poliza of polizasConProyecto) {
+    const numeroViejo = soloDigitos(poliza.numero_proyecto_crm);
+    const proyectoViejo = numeroViejo ? proyectoPorNumero.get(numeroViejo) : null;
+    // Si no vimos el proyecto en este sync, o sigue activo, no hay nada
+    // que hacer todavía.
+    if (!proyectoViejo || proyectoViejo.activo) continue;
+
+    const categoriaCatalogo = categoriaPorCatalogoId.get(poliza.poliza_catalogo_id);
+    const categoria =
+      categoriaCatalogo === 'RESGUARDO' ? 'RESGUARDO' : categoriaCatalogo === 'ALIADO' || categoriaCatalogo === 'ASPEL' ? 'SOPORTE' : null;
+    if (!categoria) continue;
+
+    const umbral = proyectoViejo.fecha_fin_prevista || proyectoViejo.fecha_inicio;
+    const candidatos = (porClienteYCategoria.get(`${poliza.cliente_cartera_id}|${categoria}`) || [])
+      .filter((p) => {
+        const numeroNuevo = soloDigitos(p.crm_project_no);
+        if (!numeroNuevo || numerosYaEnApp.has(numeroNuevo)) return false; // ya tiene su propia fila
+        return p.fecha_inicio >= umbral;
+      })
+      .sort((a, b) => (a.fecha_inicio < b.fecha_inicio ? 1 : -1));
+
+    const proyectoNuevo = candidatos[0];
+    if (!proyectoNuevo) continue;
+
+    try {
+      await sbPatch(`clientes_polizas?id=eq.${poliza.id}`, { estatus: 'CERRADA' });
+      cerradas++;
+
+      const numeroNuevo = soloDigitos(proyectoNuevo.crm_project_no);
+      await sbPost('clientes_polizas', {
+        cliente_nombre: poliza.cliente_nombre,
+        cliente_cartera_id: poliza.cliente_cartera_id,
+        poliza_catalogo_id: poliza.poliza_catalogo_id,
+        fecha_inicio: proyectoNuevo.fecha_inicio,
+        fecha_vencimiento: proyectoNuevo.fecha_fin_prevista || proyectoNuevo.fecha_inicio,
+        horas_totales: poliza.horas_totales || 0,
+        horas_consumidas: 0,
+        vendedor: poliza.vendedor,
+        personas_autorizadas: poliza.personas_autorizadas,
+        estatus: 'VIGENTE',
+        origen: 'crm_renovacion_auto',
+        numero_proyecto_crm: `POL${numeroNuevo}`,
+        servidor_cloud_id: poliza.servidor_cloud_id,
+        resguardo_periodicidad_dias_override: poliza.resguardo_periodicidad_dias_override,
+        resguardo_dropbox_folder: poliza.resguardo_dropbox_folder,
+        tipo_resguardo_texto: poliza.tipo_resguardo_texto,
+        contacto_telefono: poliza.contacto_telefono,
+        contacto_correo: poliza.contacto_correo,
+        credenciales_aspel: poliza.credenciales_aspel,
+      });
+      creadas++;
+      numerosYaEnApp.add(numeroNuevo);
+      detalle.push({ cliente: poliza.cliente_nombre, de: poliza.numero_proyecto_crm, a: `POL${numeroNuevo}` });
+    } catch (errRenov) {
+      // No se detiene el sync completo por un error en una sola póliza —
+      // se reporta en la respuesta para que se note, y se reintenta sola
+      // en la siguiente corrida (la vieja puede haber quedado cerrada sin
+      // la nueva creada; eso se corrige solo porque polizasConProyecto ya
+      // no la vuelve a encontrar activa — revisar el log si esto pasa).
+      detalle.push({ cliente: poliza.cliente_nombre, de: poliza.numero_proyecto_crm, error: String(errRenov?.message || errRenov) });
+    }
+  }
+
+  return { revisadas: polizasConProyecto.length, cerradas, creadas, detalle };
+}
+
 export default async function handler(req, res) {
+  // Jp, 2026-10-29 — bug encontrado: Vercel Cron manda su propio header
+  // "authorization: Bearer <CRON_SECRET>" en cada corrida programada, pero
+  // este endpoint solo aceptaba "?secret=" o "x-sync-secret" (los que se
+  // usan al probar a mano desde el navegador) — así que CADA corrida
+  // automática fallaba con 401 en silencio desde que se creó este cron
+  // (confirmado: proyectos_crm.updated_at no avanza desde 2026-10-14,
+  // único día en que alguien lo probó a mano con ?secret=, pese a estar
+  // programado cada ~3h desde entonces). Se acepta el header authorization
+  // contra SYNC_SECRET *o* CRON_SECRET (no sabemos cuál de los dos manda
+  // Vercel realmente en esta cuenta, y si llegaran a tener valores
+  // distintos esto cubre ambos casos sin arriesgar nada).
   const secret = req.query?.secret || req.headers['x-sync-secret'];
-  if (!SYNC_SECRET || secret !== SYNC_SECRET) {
+  const authHeader = req.headers['authorization'];
+  const autorizadoPorHeader =
+    authHeader === `Bearer ${SYNC_SECRET}` ||
+    (process.env.CRON_SECRET && authHeader === `Bearer ${process.env.CRON_SECRET}`);
+  if (!SYNC_SECRET || (secret !== SYNC_SECRET && !autorizadoPorHeader)) {
     res.status(401).json({ ok: false, error: 'No autorizado' });
     return;
   }
@@ -303,6 +489,17 @@ export default async function handler(req, res) {
     const conCuenta = payload.filter((p) => p.cliente_cartera_id).length;
     const activos = payload.filter((p) => p.activo).length;
 
+    // Jp, 2026-10-29 — reconciliación de renovaciones de pólizas (ver
+    // sincronizarRenovacionesPolizas arriba). Va en try/catch propio para
+    // que un error aquí nunca tumbe el sync de proyectos_crm, que ya para
+    // este punto quedó guardado bien.
+    let renovaciones = { revisadas: 0, cerradas: 0, creadas: 0, detalle: [] };
+    try {
+      renovaciones = await sincronizarRenovacionesPolizas(payload);
+    } catch (errRenov) {
+      renovaciones = { error: String(errRenov?.message || errRenov) };
+    }
+
     res.status(200).json({
       ok: true,
       totalRaw,
@@ -310,6 +507,7 @@ export default async function handler(req, res) {
       conCuenta,
       sinCuenta: totalMapeado - conCuenta,
       activos,
+      renovaciones,
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err?.message || err) });
