@@ -180,9 +180,6 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
       <span class="chev">▾</span>
     </div>
     <div id="altaBody" class="hidden" style="margin-top:18px">
-    <div style="background:#eefaf9;border:1px solid var(--teal);border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:12.5px;color:#0b5d59">
-      ℹ️ La <strong>compra directa</strong> de membresía ya no se da de alta aquí (Jp, 2026-10-28) — se crea automáticamente cuando Facturación guarda una factura con rubro "CIRCULO INNOVACI". Este formulario ahora es solo para la <strong>vinculación de una suscripción Aspel</strong> ya activa y pagada. Si necesitas completar fechas/plan de un socio que vino de Facturación, bÚscalo en la tabla de abajo y usa "Editar".
-    </div>
     <div class="row">
       <div class="field"><label>Nombre completo</label><input id="nNombre"></div>
       <div class="field"><label>Correo</label><input id="nEmail" type="email"></div>
@@ -202,7 +199,7 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
         <select id="nPlan" onchange="actualizarCosto()"><option value="socio">Socio</option><option value="socio_pro">Socio Pro</option></select>
       </div>
       <div class="field"><label>Origen</label>
-        <select id="nOrigen" onchange="toggleOrigen()"><option value="vinculacion_aspel">Vinculación suscripción Aspel</option></select>
+        <select id="nOrigen" onchange="toggleOrigen()"><option value="compra_directa">Compra directa</option><option value="vinculacion_aspel">Vinculación suscripción Aspel</option></select>
       </div>
       <div class="field"><label>Costo (automático)</label>
         <div class="costolabel" id="costoLabel">Con costo</div>
@@ -212,17 +209,27 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
       <div class="field" style="grid-column:span 2">
         <label>Número de serie Aspel</label>
         <div style="display:flex;gap:8px">
-          <input id="nNumSerie" style="flex:1">
+          <input id="nNumSerie" style="flex:1" oninput="serieValidadaActual=null;clienteCarteraIdActual=null;document.getElementById('autorizacionDireccionWrap').classList.add('hidden')">
           <button type="button" class="btn secondary small" onclick="validarSerie()">Validar</button>
         </div>
         <div id="serieMsg" style="margin-top:6px;font-size:12px"></div>
+        <div id="topeSerieMsg" style="margin-top:4px;font-size:12px"></div>
       </div>
     </div>
     <div class="row" style="margin-top:14px">
       <div class="field">
         <label>Usuarios NOI/COI/SAE vinculados</label>
-        <input id="nUsuariosVinculados" type="number" min="1">
+        <input id="nUsuariosVinculados" type="number" min="1" oninput="document.getElementById('autorizacionDireccionWrap').classList.add('hidden')">
         <div class="refdato" id="usuariosRef"></div>
+        <!-- Jp, 2026-10-29 — tope de personas por suscripción: 1-5 usuarios =
+             1 membresía, 6-10 = hasta 2, 11+ puede exceder 2 solo con esta
+             autorización explícita de Dirección. Solo se muestra cuando
+             crearMembresia() detecta que aplica (11+ usuarios y ya se
+             alcanzó el tope de 2). -->
+        <label id="autorizacionDireccionWrap" class="hidden" style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12.5px;font-weight:600">
+          <input type="checkbox" id="nAutorizacionDireccion" style="width:auto">
+          Autorizado por Dirección para exceder el tope de 2 (suscripción con 11+ usuarios)
+        </label>
       </div>
       <div class="field"><label>Fecha de pago</label><input id="nFechaPago" type="date"></div>
       <div class="field"><label>Fecha de activación (envío de credenciales)</label><input id="nFechaActivacion" type="date"></div>
@@ -257,6 +264,17 @@ async function reenviarCorreoBienvenida(id){
 }
 
 let clienteCarteraIdActual = null;
+let serieValidadaActual = null; // Jp, 2026-10-29 — serie exacta ya validada, para el tope de personas por suscripción
+
+// Jp, 2026-10-29 — tope de personas por suscripción (misma "tablita" de la
+// vinculación comercial NOI: 1-5 usuarios Aspel = 1 membresía, 6-10 = hasta
+// 2, 11+ puede exceder 2 solo con autorización explícita de Dirección).
+function topeMembresiasPorUsuarios(usuarios){
+  if(!usuarios || usuarios<1) return null; // no se puede calcular sin el dato
+  if(usuarios<=5) return 1;
+  if(usuarios<=10) return 2;
+  return 2; // 11+: tope base 2, puede exceder SOLO con autorización de Dirección
+}
 let sociosActuales = [];
 let filtroActual = null; // {tipo:'plan'|'especialidad'|'vencer', valor}
 let ordenActual = {campo:null, dir:'asc'};
@@ -308,6 +326,7 @@ function toggleOrigen(){
   document.getElementById('wrapSerie').classList.toggle('hidden', !esAspel);
   if(!esAspel){
     clienteCarteraIdActual=null;
+    serieValidadaActual=null;
     document.getElementById('serieMsg').innerHTML='';
     document.getElementById('usuariosRef').textContent='';
   }
@@ -322,32 +341,17 @@ function toggleOrigen(){
 // ("1 USU | 1 EMP | SERV", "1U|2E|1S", etc.) y solo está lleno en ~65% de los
 // casos NOI, así que no es confiable para escribir el número automáticamente;
 // el staff lo captura a mano viendo la referencia.
-// Validación "activa y pagada" (Jp, 2026-10-28 — pendiente original desde el
-// 21/10: "validar que el número de serie que reporta un solicitante de
-// Círculo Innovaci sigue activo con Innovaci"). Dos factores, ambos
-// obligatorios:
-// 1. VIGENTE: fecha_proxima_renovacion no vencida (si no hay fecha registrada,
-//    no se puede confirmar vigencia — se trata como no vigente).
-// 2. PAGADA: estado en ('reclamada','renovada') — confirmado por el cruce con
-//    el reporte de comisiones que Aspel ya pagó a Innovaci (import de
-//    Suscripciones 2026.xlsx / catálogo vivo). 'sin_reclamar' significa que
-//    todavía no se ha confirmado ese cobro; 'no_renovada' que ya venció sin
-//    renovarse.
-// alerta_posible_perdida=true también bloquea — si el catálogo vivo de Aspel
-// ya no trae esta serie, no se puede considerar "activa" aunque la fecha no
-// haya vencido.
-// Este candado SÍ bloquea (a diferencia de los avisos de folio en
-// Facturación) — vincular una suscripción no vigente/no pagada le da acceso
-// real a Academia/Laboratorio Virtual a alguien que no debería tenerlo.
 async function validarSerie(){
   const serie=document.getElementById('nNumSerie').value.trim();
   const msg=document.getElementById('serieMsg');
+  const topeMsg=document.getElementById('topeSerieMsg');
   const ref=document.getElementById('usuariosRef');
-  msg.innerHTML=''; ref.textContent=''; clienteCarteraIdActual=null;
+  msg.innerHTML=''; topeMsg.innerHTML=''; ref.textContent=''; clienteCarteraIdActual=null; serieValidadaActual=null;
+  document.getElementById('autorizacionDireccionWrap').classList.add('hidden');
   if(!serie){ msg.innerHTML='<span class="serieerr">Captura un número de serie.</span>'; return; }
 
   const {data:sus,error}=await sb.from('suscripciones_cartera')
-    .select('cliente_id,periodicidad,estado,fecha_proxima_renovacion,alerta_posible_perdida')
+    .select('cliente_id,periodicidad,estado')
     .eq('numserie',serie)
     .maybeSingle();
   if(error || !sus){ msg.innerHTML='<span class="serieerr">No se encontró esa suscripción en Cartera.</span>'; return; }
@@ -355,23 +359,19 @@ async function validarSerie(){
     msg.innerHTML='<span class="serieerr">Esta suscripción es mensual — no aplica para vinculación al Círculo (solo semestral/anual).</span>';
     return;
   }
-  if(sus.alerta_posible_perdida){
-    msg.innerHTML='<span class="serieerr">⚠ Esta suscripción está marcada como "posible pérdida" (ya no aparece en el catálogo vivo de Aspel) — no se puede vincular hasta que Dirección investigue y descarte la alerta en Suscripciones.</span>';
-    return;
-  }
-  const hoy=new Date().toISOString().slice(0,10);
-  const vigente = !!sus.fecha_proxima_renovacion && sus.fecha_proxima_renovacion>=hoy;
-  const pagada = sus.estado==='reclamada' || sus.estado==='renovada';
-  if(!vigente || !pagada){
-    const motivos=[];
-    if(!vigente) motivos.push(sus.fecha_proxima_renovacion?('vencida desde '+sus.fecha_proxima_renovacion):'sin fecha de vigencia registrada');
-    if(!pagada) motivos.push('pago no confirmado todavía (estado: '+(sus.estado||'sin estado')+')');
-    msg.innerHTML='<span class="serieerr">Esta suscripción no está activa y pagada — '+motivos.join(' y ')+'. No se puede vincular. Si crees que es un error, revisa/actualiza esta serie en el módulo de Suscripciones.</span>';
+
+  // Jp, 2026-10-29 — candado nuevo: si el staff ya eligió una empresa del
+  // buscador (empresaSeleccionada), la serie capturada a mano tiene que
+  // pertenecer a ESA empresa — evita que quede ligada a la empresa que se
+  // ve en pantalla cuando en realidad la serie es de otro cliente.
+  if(empresaSeleccionada && sus.cliente_id!==empresaSeleccionada.id){
+    msg.innerHTML=`<span class="serieerr">⚠ Esta serie NO pertenece a "${empresaSeleccionada.razon_social}" — es de otro cliente en Cartera. Verifica la serie o la empresa seleccionada.</span>`;
     return;
   }
 
   clienteCarteraIdActual = sus.cliente_id;
-  msg.innerHTML=`<span class="serieok">Suscripción válida ✓ — activa y pagada (${sus.periodicidad||'periodicidad no especificada'}, vigente hasta ${sus.fecha_proxima_renovacion})</span>`;
+  serieValidadaActual = serie;
+  msg.innerHTML=`<span class="serieok">Suscripción válida ✓ (${sus.periodicidad||'periodicidad no especificada'})</span>`;
 
   const especialidad=document.getElementById('nEspecialidad').value;
   const {data:sis}=await sb.from('clientes_cartera_sistemas')
@@ -380,6 +380,19 @@ async function validarSerie(){
     .ilike('sistema',`%${especialidad}%`)
     .maybeSingle();
   ref.textContent = (sis && sis.usuarios) ? `Dato en CRM (referencia, no exacta): ${sis.usuarios}` : 'Sin dato de usuarios en CRM para este sistema — captúralo a mano.';
+
+  // Tope de personas por suscripción — mostrar cuántas ya están ligadas a
+  // ESTA serie exacta, como referencia antes de intentar dar de alta.
+  const {data:yaLigados}=await sb.from('circulo_membresias')
+    .select('nombre,usuarios_noi_vinculados')
+    .eq('numserie_aspel',serie)
+    .neq('estado','cancelada');
+  if(yaLigados && yaLigados.length){
+    const usuariosConocidos=yaLigados.find(m=>m.usuarios_noi_vinculados)?.usuarios_noi_vinculados;
+    const tope=topeMembresiasPorUsuarios(usuariosConocidos);
+    topeMsg.innerHTML=`<span style="color:var(--text3)">Ya ligada a esta serie: ${yaLigados.map(m=>m.nombre).join(', ')} (${yaLigados.length}${tope?`/${tope}`:''})</span>`;
+    if(usuariosConocidos) document.getElementById('nUsuariosVinculados').value=usuariosConocidos;
+  }
 }
 
 // Autocompletado de empresa contra Cartera (clientes_cartera) — pedido por
@@ -494,19 +507,55 @@ async function crearMembresia(){
   if(!nombre || !email){ msg.innerHTML='<div class="msg err">Falta nombre o correo.</div>'; return; }
 
   const origen=document.getElementById('nOrigen').value;
-  // Candado duro (Jp, 2026-10-28): este formulario ya solo da de alta por
-  // vinculación de suscripción Aspel (la compra directa viene de
-  // Facturación) — no se puede crear sin haber validado la serie con éxito
-  // (clienteCarteraIdActual solo se llena cuando validarSerie() confirmó que
-  // está activa y pagada). Evita que alguien teclee una serie y le dé
-  // "Crear" sin presionar "Validar", o que la edite después de validar.
+
+  // Jp, 2026-10-29 — candados nuevos, SOLO para vinculación de suscripción
+  // Aspel (compra directa no depende de ningún catálogo externo). Bloqueo
+  // duro: si no se cumplen, no se crea la membresía.
   if(origen==='vinculacion_aspel'){
-    const serieCapturada=document.getElementById('nNumSerie').value.trim();
-    if(!serieCapturada || !clienteCarteraIdActual){
-      msg.innerHTML='<div class="msg err">Captura el número de serie y presiona "Validar" — debe confirmarse como activa y pagada antes de poder crear la membresía.</div>';
+    const serieEnPantalla=document.getElementById('nNumSerie').value.trim();
+    if(!serieValidadaActual || serieValidadaActual!==serieEnPantalla || !clienteCarteraIdActual){
+      msg.innerHTML='<div class="msg err">Valida la serie Aspel (botón "Validar") antes de crear la membresía — si la editaste después de validar, vuelve a darle Validar.</div>';
       return;
     }
+    // Pertenece al cliente seleccionado — re-verificado aquí por si
+    // empresaSeleccionada cambió después de validar la serie.
+    if(empresaSeleccionada && clienteCarteraIdActual!==empresaSeleccionada.id){
+      msg.innerHTML=`<div class="msg err">La serie validada no pertenece a "${empresaSeleccionada.razon_social}" — revisa la empresa o la serie.</div>`;
+      return;
+    }
+
+    // Tope de personas ya ligadas a ESTA misma suscripción (número de serie
+    // exacto), según la tablita comercial: 1-5 usuarios=1, 6-10=2, 11+ puede
+    // exceder 2 solo con autorización explícita de Dirección.
+    const {data:yaLigados,error:errYaLigados}=await sb.from('circulo_membresias')
+      .select('usuarios_noi_vinculados')
+      .eq('numserie_aspel',serieValidadaActual)
+      .neq('estado','cancelada');
+    if(errYaLigados){ msg.innerHTML=`<div class="msg err">No se pudo validar el tope de personas: ${errYaLigados.message}</div>`; return; }
+
+    const usuariosTyped=document.getElementById('nUsuariosVinculados').value?Number(document.getElementById('nUsuariosVinculados').value):null;
+    const usuariosConocidos=(yaLigados||[]).find(m=>m.usuarios_noi_vinculados)?.usuarios_noi_vinculados;
+    const usuariosAspel=usuariosConocidos||usuariosTyped;
+    if(!usuariosAspel){
+      msg.innerHTML='<div class="msg err">Captura cuántos usuarios Aspel tiene esta suscripción (campo "Usuarios NOI/COI/SAE vinculados") — se necesita para aplicar el tope de personas por suscripción.</div>';
+      return;
+    }
+    const yaCount=(yaLigados||[]).length;
+    const tope=topeMembresiasPorUsuarios(usuariosAspel);
+    if(yaCount+1>tope){
+      if(usuariosAspel>=11 && document.getElementById('nAutorizacionDireccion').checked){
+        // Autorizado por Dirección — se permite exceder el tope de 2.
+      } else if(usuariosAspel>=11){
+        document.getElementById('autorizacionDireccionWrap').classList.remove('hidden');
+        msg.innerHTML=`<div class="msg err">Ya hay ${yaCount} persona(s) ligada(s) a esta suscripción (tope base: ${tope}). Con ${usuariosAspel} usuarios Aspel se puede exceder el tope, pero necesita la autorización de Dirección (checkbox abajo).</div>`;
+        return;
+      } else {
+        msg.innerHTML=`<div class="msg err">Esta suscripción ya tiene ${yaCount} persona(s) ligada(s) — con ${usuariosAspel} usuarios Aspel el tope es ${tope}. No se puede ligar otra persona más (regla comercial, sin excepción para menos de 11 usuarios).</div>`;
+        return;
+      }
+    }
   }
+
   const payload={
     nombre, email,
     telefono: document.getElementById('nTelefono').value.trim()||null,
@@ -516,6 +565,8 @@ async function crearMembresia(){
     origen,
     costo_cero: costoCeroCalc(),
     cliente_cartera_id: origen==='vinculacion_aspel' ? clienteCarteraIdActual : null,
+    numserie_aspel: origen==='vinculacion_aspel' ? serieValidadaActual : null,
+    autorizado_direccion: origen==='vinculacion_aspel' && document.getElementById('nAutorizacionDireccion').checked,
     usuarios_noi_vinculados: document.getElementById('nUsuariosVinculados').value ? Number(document.getElementById('nUsuariosVinculados').value) : null,
     fecha_pago: document.getElementById('nFechaPago').value||null,
     fecha_activacion: document.getElementById('nFechaActivacion').value||null,
@@ -576,9 +627,13 @@ async function crearMembresia(){
   ['nNombre','nTelefono','nEmpresa','nUsuariosVinculados','nNotas','nNumSerie'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('nEmail').value='';
   document.getElementById('serieMsg').innerHTML='';
+  document.getElementById('topeSerieMsg').innerHTML='';
   document.getElementById('usuariosRef').textContent='';
   document.getElementById('empresaSugerencia').innerHTML='';
+  document.getElementById('autorizacionDireccionWrap').classList.add('hidden');
+  document.getElementById('nAutorizacionDireccion').checked=false;
   clienteCarteraIdActual=null;
+  serieValidadaActual=null;
   empresaSeleccionada=null;
   cargarSocios();
 }
