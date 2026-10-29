@@ -94,33 +94,66 @@ async function vtigerQuery(sessionName, q) {
 
 async function upsertToSupabase(table, rows, conflictCol) {
   if (rows.length === 0) return;
-  const url = `${SUPABASE_URL}/rest/v1/${table}?on_conflict=${conflictCol}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      apikey: SUPABASE_SERVICE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-      'Content-Type': 'application/json',
-      Prefer: 'resolution=merge-duplicates,return=minimal',
-    },
-    body: JSON.stringify(rows),
-  });
-  if (!res.ok) {
+  // Jp, 2026-10-29 — bug encontrado al correr el sync manual desde el
+  // botón nuevo: Vtiger ya tiene un campo personalizado ("cf_1180") en
+  // Cuentas que no existe como columna en stg_cuentas_crm_raw (se agregó
+  // en el CRM después de crear esta tabla espejo) — Supabase rechaza el
+  // insert COMPLETO por eso (PGRST204 "Could not find the column"), y
+  // como este sync nunca corría de verdad por el bug de autenticación ya
+  // corregido, nadie lo había notado hasta ahora. En vez de que un campo
+  // nuevo en el CRM tumbe todo el sync cada vez que esto vuelva a pasar,
+  // se detecta la columna que falta, se quita de este lote, y se
+  // reintenta — ese campo puntual se queda fuera del espejo crudo hasta
+  // que alguien agregue la columna a mano (no son campos que hoy se usen
+  // para nada de negocio, solo el espejo crudo pierde ese dato puntual).
+  let filasActuales = rows;
+  for (let intentos = 0; intentos < 10; intentos++) {
+    const url = `${SUPABASE_URL}/rest/v1/${table}?on_conflict=${conflictCol}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+        Prefer: 'resolution=merge-duplicates,return=minimal',
+      },
+      body: JSON.stringify(filasActuales),
+    });
+    if (res.ok) return;
     const text = await res.text();
+    const columnaFaltante = res.status === 400 ? text.match(/Could not find the '([^']+)' column/)?.[1] : null;
+    if (columnaFaltante) {
+      filasActuales = filasActuales.map((fila) => {
+        const { [columnaFaltante]: _omitida, ...resto } = fila;
+        return resto;
+      });
+      continue;
+    }
     throw new Error(`Supabase upsert failed (${res.status}): ${text}`);
   }
+  throw new Error('Supabase upsert: demasiadas columnas faltantes seguidas, se detuvo por seguridad');
 }
 
 export default async function handler(req, res) {
   // Protección simple: sólo responde si trae el secreto correcto (Vercel
   // Cron manda su propio header de autorización interno; este header extra
   // evita que cualquiera en internet pueda disparar el sync a mano).
+  //
+  // Jp, 2026-10-29 — reforzado: stg_cuentas_crm_raw seguía sin avanzar
+  // (último sync real 2026-10-06) pese a que este archivo ya traía el
+  // check de "authorization: Bearer <SYNC_SECRET>" desde el 2026-10-27 —
+  // seña de que lo que Vercel realmente manda en esta cuenta es
+  // "Bearer <CRON_SECRET>" (variable de entorno separada, valor distinto).
+  // Se acepta cualquiera de los dos para no depender de adivinar cuál es.
   const authHeader = req.headers['authorization'];
   const secretHeader = req.headers['x-sync-secret'];
+  const autorizadoPorHeader =
+    authHeader === `Bearer ${process.env.SYNC_SECRET}` ||
+    (process.env.CRON_SECRET && authHeader === `Bearer ${process.env.CRON_SECRET}`);
   if (
     process.env.SYNC_SECRET &&
     secretHeader !== process.env.SYNC_SECRET &&
-    authHeader !== `Bearer ${process.env.SYNC_SECRET}`
+    !autorizadoPorHeader
   ) {
     return res.status(401).json({ error: 'unauthorized' });
   }
