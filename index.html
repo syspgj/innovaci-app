@@ -6786,6 +6786,82 @@ async function renderDirectorProyeccionTele(){
   </div>`;
 }
 
+// Jp, 2026-10-29 — "pólizas de resguardo por renovar": ver el banner en
+// renderVendorMiMes (15 días antes de vencer, o ya vencidas, y sin mandar
+// a Proyección todavía). Caso real que lo disparó: POL2386 (Panadería
+// Ajla Gourmet) venció el mismo día sin que nadie le diera seguimiento.
+function abrirModalPolizasPorRenovar(){
+  const lista=window._polizasPorRenovar||[];
+  const hoy=todayLocal();
+  const html=`
+    <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">Al mandar una a Proyección se crea una negociación nueva (fase "Prospectando") y su Oportunidad espejo en el CRM, para darle seguimiento como cualquier otra venta.</div>
+    <div style="max-height:60vh;overflow-y:auto;">
+    ${lista.length===0?'<div style="padding:20px;text-align:center;color:var(--text3);">Sin pólizas pendientes de renovar.</div>':lista.map(p=>{
+      const vencida=p.fecha_vencimiento<hoy;
+      return `<div id="polRenovarFila_${p.id}" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);">
+        <div>
+          <div style="font-size:12.5px;font-weight:700;color:var(--navy);">${p.cliente_nombre}</div>
+          <div style="font-size:11px;color:var(--text3);">${p.polizas_catalogo?.nombre||'Resguardo'} · ${p.numero_proyecto_crm||'—'} · ${vencida?`<span style="color:#E84040;font-weight:700;">venció ${fmtFecha(p.fecha_vencimiento)}</span>`:`vence ${fmtFecha(p.fecha_vencimiento)}`}</div>
+        </div>
+        <button onclick="enviarPolizaAProyeccion('${p.id}')" style="padding:6px 14px;background:var(--teal);color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">→ Enviar a Proyección</button>
+      </div>`;
+    }).join('')}
+    </div>`;
+  mkModal('modalPolizasRenovar','🔄 Pólizas de resguardo por renovar',html,null,'Cerrar',true);
+}
+
+async function enviarPolizaAProyeccion(polizaId){
+  const poliza=(window._polizasPorRenovar||[]).find(p=>p.id===polizaId);
+  if(!poliza) return;
+  const fila=document.getElementById('polRenovarFila_'+polizaId);
+  if(fila) fila.style.opacity='0.5';
+  try{
+    const nombreProducto=`Renovación ${poliza.polizas_catalogo?.nombre||'Resguardo'}`;
+    const {data:nuevaFila,error}=await sb.from('pipeline_vendedor').insert({
+      usuario_id:currentUser.id, perfil:'vendedor',
+      anio:currentYear, mes:currentMonth,
+      tipo_servicio:'Resguardo', producto:nombreProducto,
+      cliente:poliza.cliente_nombre, cliente_cartera_id:poliza.cliente_cartera_id,
+      monto_total:poliza.precio_contratado||0, probabilidad:50,
+      fecha_prevista:poliza.fecha_vencimiento, estatus:'Prospectando',
+      siguiente_paso:'Contactar para renovar póliza de resguardo',
+    }).select().single();
+    if(error){alert('Error al mandar a Proyección: '+error.message);if(fila)fila.style.opacity='1';return;}
+    await sb.from('clientes_polizas').update({renovacion_pipeline_id:nuevaFila.id}).eq('id',polizaId);
+    // Oportunidad espejo en el CRM — mismo patrón que
+    // crmCrearOportunidadDesdeNuevaFila, pero no se bloquea el flujo si
+    // falla (la negociación en Proyección ya quedó guardada de todos modos).
+    if(poliza.cliente_cartera_id){
+      try{
+        const {data:sess}=await sb.auth.getSession();
+        const token=sess?.session?.access_token;
+        const res=await fetch('/api/crm-crear-oportunidad',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+          body:JSON.stringify({
+            cliente_cartera_id:poliza.cliente_cartera_id,
+            nombre_oportunidad:`${poliza.cliente_nombre} | ${nombreProducto}`,
+            monto:poliza.precio_contratado||0,
+            fase_venta:'Prospectando',
+            probabilidad:50,
+            fecha_prevista:poliza.fecha_vencimiento,
+            vendedor_usuario_id:currentUser.id,
+            tipo_servicio:'Resguardo',
+          }),
+        });
+        const j=await res.json().catch(()=>({}));
+        if(res.ok&&j.ok) await sb.from('pipeline_vendedor').update({oportunidad_crm_id:j.oportunidad_crm_id}).eq('id',nuevaFila.id);
+      }catch(e){ /* la negociación ya quedó guardada; la liga al CRM se puede reintentar luego a mano */ }
+    }
+    window._polizasPorRenovar=(window._polizasPorRenovar||[]).filter(p=>p.id!==polizaId);
+    if(fila) fila.remove();
+    if((window._polizasPorRenovar||[]).length===0) document.getElementById('modalPolizasRenovar')?.remove();
+  }catch(e){
+    alert('Error: '+e.message);
+    if(fila) fila.style.opacity='1';
+  }
+}
+
 async function renderVendorMiMes(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando datos...</div>';
@@ -6824,6 +6900,24 @@ async function renderVendorMiMes(){
     .eq('estado','sin_reclamar')
     .gte('fecha_proxima_renovacion',inicioMesSusc).lte('fecha_proxima_renovacion',finMesSusc);
   const countSuscPendientes=(susVencenAlert||[]).length;
+  // Jp, 2026-10-29 — alerta de "pólizas de resguardo por renovar": igual
+  // que la de suscripciones de arriba, pero para pólizas de Resguardo que
+  // están a 15 días o menos de vencer (o ya vencidas) y todavía no se
+  // mandaron a Proyección como oportunidad de renovación. Caso real que
+  // la disparó: POL2386 (Panadería Ajla Gourmet) venció el mismo día sin
+  // que nadie la estuviera trabajando.
+  const en15Dias=new Date(Date.now()+15*86400000).toISOString().slice(0,10);
+  const {data:polizasPorRenovarRaw}=await sb.from('clientes_polizas')
+    .select('id,cliente_nombre,cliente_cartera_id,numero_proyecto_crm,fecha_vencimiento,precio_contratado,polizas_catalogo!inner(nombre,categoria),clientes_cartera!inner(vendedor_asignado)')
+    .eq('clientes_cartera.vendedor_asignado',currentUser.id)
+    .eq('polizas_catalogo.categoria','RESGUARDO')
+    .neq('estatus','CERRADA')
+    .is('renovacion_pipeline_id',null)
+    .not('fecha_vencimiento','is',null)
+    .lte('fecha_vencimiento',en15Dias)
+    .order('fecha_vencimiento');
+  window._polizasPorRenovar=polizasPorRenovarRaw||[];
+  const countPolizasPorRenovar=window._polizasPorRenovar.length;
   // Calcular totales
   const tot={svc:0,aspel:0,it:0,cursos:0,sf:0,demos:0,val:0,cn:0,dip:0,sus:susAuto,ren:renovAuto,cur_vivo:0};
   for(const r of registros){tot.svc+=r.svc||0;tot.aspel+=r.aspel||0;tot.it+=r.it||0;tot.cursos+=r.cursos||0;tot.sf+=r.siigo_fiscal||0;tot.demos+=r.demos||0;tot.val+=r.valoraciones||0;tot.cn+=r.clientes_nuevos||0;tot.dip+=r.diplomados||0;tot.cur_vivo+=r.talleres_vivo||0;}
@@ -6977,6 +7071,16 @@ async function renderVendorMiMes(){
       </div>
     </div>
     <span style="font-size:18px;color:#B8740A;">→</span>
+  </div>`:''}
+  ${countPolizasPorRenovar>0?`<div onclick="abrirModalPolizasPorRenovar()" style="cursor:pointer;background:rgba(232,64,64,0.08);border:1px solid rgba(232,64,64,0.3);border-radius:var(--rad);padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span style="font-size:20px;">🔄</span>
+      <div>
+        <div style="font-size:13px;font-weight:700;color:#C0392B;">${countPolizasPorRenovar} ${countPolizasPorRenovar===1?'póliza de resguardo':'pólizas de resguardo'} por renovar</div>
+        <div style="font-size:11px;color:var(--text2);">Vencen en los próximos 15 días (o ya vencieron) y nadie las ha mandado a Proyección todavía</div>
+      </div>
+    </div>
+    <span style="font-size:18px;color:#C0392B;">→</span>
   </div>`:''}
   <!-- META DEPARTAMENTAL + COMISIÓN DEL MES — en dos columnas, con colores
        distintos para diferenciarlas a simple vista (Jp, 2026-10-13). -->
@@ -20635,13 +20739,28 @@ function opsHorasAMinutosTexto(h){
 async function renderOpsContratos(){
   const body=document.getElementById('opsBody');
   body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
-  const [{data:contratos,error},{data:polizas}]=await Promise.all([
+  const [{data:contratos,error},{data:polizas},{data:proyectosCrm}]=await Promise.all([
     sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,horas_incluidas), clientes_cartera(razon_social,vendedor_asignado,telefono,correo_principal,telefono_whatsapp)').order('fecha_vencimiento'),
     sb.from('polizas_catalogo').select('id,categoria,nombre,modalidad,horas_incluidas,precio,vigencia_meses').eq('activo',true).order('categoria').order('precio'),
+    // Jp, 2026-10-29 — "Estado CRM" (ver renovación de pólizas): el campo
+    // "Estado" del proyecto en Vtiger (En curso/Concluido/En Asignación/
+    // etc.), distinto del "Estatus" propio de la app (Vigente/Por vencer/
+    // Vencida/...) — se arma un mapa por dígitos del POL# para pegarlo a
+    // cada póliza sin tener que cambiar la consulta principal.
+    sb.from('proyectos_crm').select('crm_project_no,estatus_proyecto').not('crm_project_no','is',null),
     opsCargarMapasMinutos()
   ]);
   if(error){body.innerHTML=`<div style="color:var(--red);">Error: ${error.message}</div>`;return;}
   window._opsPolizasCat=polizas||[];
+  const estadoCrmPorDigitos={};
+  (proyectosCrm||[]).forEach(p=>{
+    const d=(p.crm_project_no||'').match(/\d+/)?.[0];
+    if(d) estadoCrmPorDigitos[d]=p.estatus_proyecto;
+  });
+  (contratos||[]).forEach(c=>{
+    const d=(c.numero_proyecto_crm||'').match(/\d+/)?.[0];
+    c._estadoCrm=d?(estadoCrmPorDigitos[d]||null):null;
+  });
   // Pólizas cerradas (Jp, 2026-09-09): "poner la póliza como cerrada
   // concluida y en automático se mande al histórico de pólizas" — se
   // quitan de la tabla/fichas normales de "📋 Pólizas"; siguen siendo
@@ -20754,7 +20873,19 @@ function opsPintarPolizas(){
   const {col,dir}=opsPolizasSort, mult=dir==='asc'?1:-1;
   const valorOrden=(c)=>{
     const est=opsEstadoPoliza(c);
-    if(col==='pol') return c.poliza_numero_legacy||'';
+    // Jp, 2026-10-29 — bug encontrado: ordenar por "POL#" usaba solo
+    // poliza_numero_legacy, que la mayoría de las pólizas NO tiene (está
+    // null salvo unas pocas) — así que casi todas empataban en '' y el
+    // orden salía prácticamente al azar (ej. POL2326 antes que POL1842).
+    // Ahora saca el número real de donde sea que se esté mostrando en la
+    // columna (poliza_numero_legacy, o si no, los dígitos de
+    // numero_proyecto_crm "POL2376"->2376) y ordena NUMÉRICO, no como
+    // texto (si no, "942" queda antes que "1207" porque '9'>'1').
+    if(col==='pol'){
+      const txt=c.poliza_numero_legacy||(c.numero_proyecto_crm||'').replace(/^POL/i,'');
+      const n=parseInt(txt,10);
+      return Number.isFinite(n)?n:-1;
+    }
     if(col==='cliente') return c.cliente_nombre||'';
     if(col==='poliza') return c.polizas_catalogo?.nombre||'';
     if(col==='fecha_inicio') return c.fecha_inicio||'';
@@ -20763,6 +20894,7 @@ function opsPintarPolizas(){
     if(col==='consumidas') return c.horas_consumidas||0;
     if(col==='restantes') return est.restantes;
     if(col==='estatus') return est.label;
+    if(col==='estadocrm') return c._estadoCrm||'';
     return '';
   };
   filas=[...filas].sort((a,b)=>{
@@ -20778,10 +20910,10 @@ function opsPintarPolizas(){
         ${opsThPolizas('pol','POL#','center')}${opsThPolizas('cliente','Cliente')}${opsThPolizas('poliza','Póliza')}
         ${opsThPolizas('fecha_inicio','Inicio','center')}${opsThPolizas('fecha_vencimiento','Vencimiento','center')}
         ${opsThPolizas('horas','Horas','right')}${opsThPolizas('consumidas','Consumidas','center')}
-        ${opsThPolizas('restantes','Restantes','center')}${opsThPolizas('estatus','Estatus','center')}
+        ${opsThPolizas('restantes','Restantes','center')}${opsThPolizas('estatus','Estatus','center')}${opsThPolizas('estadocrm','Estado CRM','center')}
       </tr></thead>
       <tbody>
-        ${filas.length===0?'<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--text3);">Sin pólizas con estos filtros</td></tr>':''}
+        ${filas.length===0?'<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text3);">Sin pólizas con estos filtros</td></tr>':''}
         ${filas.map(c=>{
           const est=opsEstadoPoliza(c);
           return `<tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="abrirDetallePoliza('${c.id}')">
@@ -20794,6 +20926,7 @@ function opsPintarPolizas(){
             <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${est.totales?est.consumidas+'h':'—'}</td>
             <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;color:${est.porVencerHoras?'#E84040':'var(--text)'};">${est.totales?est.restantes+'h':'—'}</td>
             <td style="padding:6px 8px;text-align:center;"><span style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${est.color}22;color:${est.color};">${est.label}</span></td>
+            <td style="padding:6px 8px;text-align:center;font-size:11px;color:var(--text3);">${c._estadoCrm||'—'}</td>
           </tr>`;
         }).join('')}
       </tbody>
