@@ -90,12 +90,20 @@ function esc(s) {
 }
 
 export default async function handler(req, res) {
+  // Jp, 2026-10-29 — mismo bug que se encontró y corrigió hoy en
+  // sync-crm-accounts/oportunidades/proyectos y ventas-calendario-sync:
+  // Vercel Cron manda "authorization: Bearer <CRON_SECRET>" (variable de
+  // entorno separada de SYNC_SECRET), y este archivo nunca la aceptaba —
+  // así que el aviso diario de Círculo Innovaci nunca se mandó solo.
   const authHeader = req.headers['authorization'];
   const secretHeader = req.headers['x-sync-secret'];
+  const autorizadoPorHeader =
+    authHeader === `Bearer ${process.env.SYNC_SECRET}` ||
+    (process.env.CRON_SECRET && authHeader === `Bearer ${process.env.CRON_SECRET}`);
   if (
     process.env.SYNC_SECRET &&
     secretHeader !== process.env.SYNC_SECRET &&
-    authHeader !== `Bearer ${process.env.SYNC_SECRET}`
+    !autorizadoPorHeader
   ) {
     return res.status(401).json({ error: 'unauthorized' });
   }
