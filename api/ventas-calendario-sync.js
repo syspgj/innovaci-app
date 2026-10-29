@@ -24,6 +24,16 @@
 import crypto from 'crypto';
 
 // ─── Config: qué rubros disparan cada tipo de recordatorio ─────────────────
+// Jp, 2026-10-29 — se agregan Resguardo y Círculo Innovaci como tipos
+// propios (antes "POLIZA RESGUARDO" caía en el bucket genérico de
+// "poliza", y "CIRCULO INNOVACI" no generaba ningún recordatorio).
+// Confirmado contra fact_ingresos.rubro (valores reales, no supuestos):
+// existen tanto "POLIZA RESGUARDO" (8 facturas) como la variante suelta
+// "RESGUARDO" (1 factura) — se incluyen las dos en el tipo nuevo. Para
+// Círculo Innovaci el rubro real es "CIRCULO INNOVACI" (70 facturas).
+// Mismo supuesto de 12 meses de vigencia que ya se usaba para
+// timbres/pólizas (Jp: "más adelante lo sofisticamos" si la vigencia real
+// de Resguardo o Círculo llega a ser distinta).
 const CONFIG_RECORDATORIOS = {
   timbres: {
     rubros: ['TIMBRES'],
@@ -33,11 +43,25 @@ const CONFIG_RECORDATORIOS = {
     emoji: '📠',
   },
   poliza: {
-    rubros: ['POLIZA', 'POLIZA ASPEL', 'POLIZA RESGUARDO', 'POLIZA TOTAL O ALIADO'],
+    rubros: ['POLIZA', 'POLIZA ASPEL', 'POLIZA TOTAL O ALIADO'],
     meses_vigencia: 12,
     dias_anticipacion: 15,
     etiqueta: 'Renovación de póliza',
     emoji: '🛡️',
+  },
+  resguardo: {
+    rubros: ['POLIZA RESGUARDO', 'RESGUARDO'],
+    meses_vigencia: 12,
+    dias_anticipacion: 15,
+    etiqueta: 'Renovación de Resguardo',
+    emoji: '💾',
+  },
+  circulo: {
+    rubros: ['CIRCULO INNOVACI'],
+    meses_vigencia: 12,
+    dias_anticipacion: 15,
+    etiqueta: 'Renovación de membresía Círculo Innovaci',
+    emoji: '🌐',
   },
 };
 
@@ -153,9 +177,26 @@ async function sb(path, options = {}) {
 
 export default async function handler(req, res) {
   // Protección simple del endpoint (igual patrón que TELEGRAM_WEBHOOK_SECRET)
+  //
+  // Jp, 2026-10-29 — bug encontrado al auditar este mismo patrón en otros
+  // 4 crons (sync-crm-accounts/oportunidades/proyectos,
+  // ventas-calendario-sync): Vercel Cron manda su propio header
+  // "authorization: Bearer <CRON_SECRET>" en cada corrida programada, pero
+  // este endpoint solo aceptaba "x-cron-secret" o "?secret=" (los que se
+  // usan al probar a mano) — así que CADA corrida automática fallaba con
+  // 401 en silencio desde que se creó (2026-10-02). Confirmado: la tabla
+  // ventas_calendario_recordatorios tiene 0 filas pese a estar programado
+  // diario desde esa fecha — nunca se sembraron ni las ~186 filas
+  // iniciales. Se acepta ahora también el header authorization contra
+  // VENTAS_CALENDARIO_CRON_SECRET o contra CRON_SECRET (no se sabe cuál de
+  // los dos manda Vercel en esta cuenta sin ver los valores reales).
   const secretEsperado = process.env.VENTAS_CALENDARIO_CRON_SECRET;
   const secretRecibido = req.headers['x-cron-secret'] || req.query?.secret;
-  if (secretEsperado && secretRecibido !== secretEsperado) {
+  const authHeader = req.headers['authorization'];
+  const autorizadoPorHeader =
+    (secretEsperado && authHeader === `Bearer ${secretEsperado}`) ||
+    (process.env.CRON_SECRET && authHeader === `Bearer ${process.env.CRON_SECRET}`);
+  if (secretEsperado && secretRecibido !== secretEsperado && !autorizadoPorHeader) {
     res.status(401).json({ error: 'No autorizado' });
     return;
   }
@@ -229,6 +270,10 @@ export default async function handler(req, res) {
 
       for (const rec of pendientes) {
         const cfg = CONFIG_RECORDATORIOS[rec.origen_tipo];
+        // Jp, 2026-10-29 — confirmó la nomenclatura: primero el vendedor
+        // (para saber de un vistazo de quién es la cuenta), luego el
+        // motivo del recordatorio, luego el cliente. Ya estaba así desde
+        // que se construyó — se deja igual, solo se documenta.
         const vendedorNombre = nombreVendedor(rec.vendedor);
         const titulo = `${cfg?.emoji || '📞'} ${vendedorNombre} — ${cfg?.etiqueta || 'Renovación'}: ${rec.cliente || 'cliente'}`;
         const descripcion = [
@@ -246,7 +291,22 @@ export default async function handler(req, res) {
             description: descripcion,
             start: { date: rec.fecha_recordatorio },
             end: { date: sumarUnDia(rec.fecha_recordatorio) },
-            reminders: { useDefault: true },
+            // Jp, 2026-10-29 — pidió "recordatorios o alertas de
+            // recordatorios": antes se usaba useDefault:true, que depende
+            // de la configuración personal de notificaciones de cada
+            // quien tenga abierto el calendario compartido (podía no
+            // avisar nada si alguien las tiene apagadas). Ahora se fuerzan
+            // explícitas en el evento mismo — popup y correo el mismo día
+            // que aparece el evento (que ya es 15 días antes del
+            // vencimiento) — así el aviso llega sí o sí, sin depender de
+            // la configuración de nadie.
+            reminders: {
+              useDefault: false,
+              overrides: [
+                { method: 'popup', minutes: 0 },
+                { method: 'email', minutes: 0 },
+              ],
+            },
           });
           await sb(`ventas_calendario_recordatorios?id=eq.${rec.id}`, {
             method: 'PATCH',
