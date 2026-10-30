@@ -26034,7 +26034,10 @@ async function editarIngreso(id){
       <span style="font-size:12px;font-weight:600;color:var(--teal);">📎 ${r.xml_path?'Reemplazar XML SAT':'Cargar XML SAT'}</span>
       <input type="file" id="eiiXmlFile" accept=".xml" onchange="editarIngresoParsearXml()" style="font-size:11px;flex:1;">
       ${r.xml_path?'<span style="font-size:10px;color:var(--teal);font-weight:600;">🔗 ya tiene XML</span>':''}
+      ${r.xml_path?`<button type="button" onclick="verXMLGuardado('${r.xml_path}')" style="background:#fff;border:1px solid var(--teal);color:var(--teal);border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">👁 Ver XML</button>`:''}
+      <button type="button" onclick="validarIngresoContraXml('${id}')" style="background:var(--teal);border:none;color:#fff;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">✔ Validar contra XML</button>
     </div>
+    <div id="eiiValidacionXml" style="margin-bottom:12px;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha',inp('eiiFecha','date','',r.fecha||''))}
       ${fld('Folio',inp('eiiFolio','text','',r.folio||''))}
@@ -26065,6 +26068,74 @@ async function editarIngreso(id){
     <input type="hidden" id="eiiId" value="${id}">`;
   mkModal('modalIngEdit','Editar factura — '+( r.folio||r.cliente||''),html,'guardarEdicionIngreso',undefined,true);
   fiToggleAlumnoBlock('eii');
+}
+
+// Jp, 2026-10-30 — "Validar contra XML" en Editar factura: el XML sirve para
+// verificar que quien capturó no haya omitido o cambiado un número. El XML
+// trae Subtotal, Descuento, IVA y Total (NO trae "Subtotal final" — ese se
+// calcula: Subtotal − Descuento). Se compara cada campo capturado contra el
+// XML, se muestra cuál difiere, y se puede aplicar los valores del XML al
+// formulario (sin guardar hasta que se dé "Guardar").
+async function validarIngresoContraXml(id){
+  const out=document.getElementById('eiiValidacionXml');
+  if(!out) return;
+  out.innerHTML='<div style="font-size:11px;color:var(--text3);">Leyendo XML...</div>';
+  const row=(window._fiRows||[]).find(x=>x.id===id);
+  let xmlText=window._eiiXmlText||null;
+  if(!xmlText && row?.xml_path){
+    const {data,error}=await sb.storage.from('facturas-xml').download(row.xml_path);
+    if(error||!data){out.innerHTML='<div style="color:var(--red);font-size:11px;">No se pudo leer el XML guardado: '+(error?.message||'')+'</div>';return;}
+    xmlText=await data.text();
+  }
+  if(!xmlText){out.innerHTML='<div style="color:var(--red);font-size:11px;">Esta factura no tiene XML — carga uno arriba para validar.</div>';return;}
+  const d=parsearCFDI(xmlText);
+  window._eiiValidacionXml=d;
+  const val=elId=>parseFloat(document.getElementById(elId)?.value)||0;
+  const cap={sub:val('eiiSubOrig'),desc:val('eiiDescuento'),sf:val('eiiSubFin'),iva:val('eiiIva'),total:val('eiiTotal')};
+  const sfCalc=Math.round((d.subtotal-d.descuento)*100)/100;
+  const f=n=>'$'+(n||0).toLocaleString('es-MX',{minimumFractionDigits:2});
+  const filas=[
+    ['Subtotal original',cap.sub,d.subtotal],
+    ['Descuento',cap.desc,d.descuento],
+    ['Subtotal final (= Subtotal − Descuento)',cap.sf,sfCalc],
+    ['IVA',cap.iva,d.ivaTras],
+    ['Total',cap.total,d.total],
+  ];
+  const filasHtml=filas.map(([n,a,b])=>{
+    const ok=Math.abs(a-b)<=0.01;
+    return `<tr style="border-bottom:1px solid var(--border);${ok?'':'background:rgba(232,64,64,0.07);'}">
+      <td style="padding:4px 8px;">${n}</td>
+      <td style="padding:4px 8px;text-align:right;font-family:'JetBrains Mono',monospace;${ok?'':'color:var(--red);font-weight:700;'}">${f(a)}</td>
+      <td style="padding:4px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${f(b)}</td>
+      <td style="padding:4px 8px;text-align:center;">${ok?'✅':'❌'}</td></tr>`;
+  }).join('');
+  const todoOk=filas.every(([,a,b])=>Math.abs(a-b)<=0.01);
+  const avisosExtra=[];
+  const folioCap=document.getElementById('eiiFolio')?.value.trim()||'';
+  if(d.folio&&folioCap&&d.folio.toUpperCase()!==folioCap.toUpperCase()) avisosExtra.push(`Folio capturado "${folioCap}" ≠ XML "${d.folio}"`);
+  if(!d.cuadra) avisosExtra.push(`El propio XML no cuadra: S.Final + IVA${d.ivaRet||d.isr?' − retenciones':''} = ${f(d.totalCalculado)} vs Total ${f(d.total)} (diferencia ${f(d.diferenciaImportes)})`);
+  out.innerHTML=`<div style="border:1px solid ${todoOk?'#27AE60':'var(--red)'};border-radius:8px;padding:10px 12px;background:${todoOk?'rgba(39,174,96,0.06)':'rgba(232,64,64,0.04)'};">
+    <div style="font-size:12px;font-weight:700;color:${todoOk?'#1E8449':'var(--red)'};margin-bottom:6px;">${todoOk?'✅ Los importes capturados coinciden con el XML':'❌ Hay diferencias entre lo capturado y el XML'}</div>
+    <table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <thead><tr style="background:var(--navy);color:#fff;"><th style="padding:4px 8px;text-align:left;">Campo</th><th style="padding:4px 8px;text-align:right;">Capturado</th><th style="padding:4px 8px;text-align:right;">XML</th><th></th></tr></thead>
+      <tbody>${filasHtml}</tbody>
+    </table>
+    ${avisosExtra.length?`<div style="font-size:11px;color:var(--red);margin-top:6px;">${avisosExtra.map(a=>'⚠ '+a).join('<br>')}</div>`:''}
+    ${todoOk?'':`<button type="button" onclick="aplicarValoresXmlEnEdicion()" style="margin-top:8px;background:#27AE60;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Aplicar valores del XML al formulario</button> <span style="font-size:10px;color:var(--text3);">(no se guarda hasta dar "Guardar")</span>`}
+  </div>`;
+}
+
+function aplicarValoresXmlEnEdicion(){
+  const d=window._eiiValidacionXml;
+  if(!d) return;
+  const set=(elId,v)=>{const el=document.getElementById(elId); if(el) el.value=v;};
+  set('eiiSubOrig',d.subtotal);
+  set('eiiDescuento',d.descuento);
+  set('eiiSubFin',(Math.round((d.subtotal-d.descuento)*100)/100).toFixed(2));
+  set('eiiIva',d.ivaTras);
+  set('eiiTotal',d.total);
+  const out=document.getElementById('eiiValidacionXml');
+  if(out) out.innerHTML='<div style="font-size:11px;color:#1E8449;font-weight:600;">✅ Valores del XML aplicados al formulario — revisa y da "Guardar".</div>';
 }
 
 async function guardarEdicionIngreso(){
@@ -26197,6 +26268,8 @@ async function editarIngresoParsearXml(){
   setIfEmpty('eiiFolio',d.folio);
   setIfEmpty('eiiConcepto',d.concepto);
   setIfEmpty('eiiSubOrig',d.subtotal||'');
+  setIfEmpty('eiiDescuento',d.descuento||'');
+  setIfEmpty('eiiSubFin',d.subtotalFinal||'');
   setIfEmpty('eiiIva',d.ivaTras||'');
   setIfEmpty('eiiTotal',d.total||'');
   if(document.getElementById('eiiComplemento')&&d.uuid) document.getElementById('eiiComplemento').value=d.uuid;
