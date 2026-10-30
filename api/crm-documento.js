@@ -255,6 +255,31 @@ async function crearDocumentoVtiger(sessionName, nombreArchivo, urlFirmada, nota
   };
   const candidatos = _folderIdCache ? [_folderIdCache] : await candidatosFolderId(sessionName);
   const intentos = [];
+  // Jp, 2026-10-30 — la liga externa (tipo 'E') usa una URL firmada de Supabase
+  // que CADUCA, así que el documento en el CRM quedaba muerto al rato. Primero
+  // se intenta subir el archivo REAL a Vtiger (tipo 'I', multipart, como lo
+  // hace la interfaz); si el servidor no lo acepta, se cae al tipo 'E'.
+  try {
+    const resp = await fetch(urlFirmada);
+    if (resp.ok) {
+      const buf = await resp.arrayBuffer();
+      const mime = resp.headers.get('content-type') || 'application/octet-stream';
+      for (const folderid of candidatos) {
+        const fd = new FormData();
+        fd.append('operation', 'create');
+        fd.append('sessionName', sessionName);
+        fd.append('elementType', 'Documents');
+        fd.append('element', JSON.stringify({ ...base, filelocationtype: 'I', fileurl: '', filesize: buf.byteLength, filetype: mime, folderid }));
+        fd.append('filename', new Blob([buf], { type: mime }), nombreArchivo);
+        const r = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body: fd });
+        const t = await r.text();
+        let j = null; try { j = JSON.parse(t); } catch (_) {}
+        if (j && j.success) { _folderIdCache = folderid; j.result._modo = 'archivo real (I)'; return j.result; }
+        intentos.push(`I/${folderid}: ${j ? JSON.stringify(j.error || j) : `HTTP ${r.status} ${t.slice(0, 80)}`}`);
+        if (!/denied for id|folderid|folder/i.test(t)) break;
+      }
+    }
+  } catch (e) { intentos.push('I: ' + String(e?.message || e)); }
   for (const folderid of candidatos) {
     const body = new URLSearchParams({ operation: 'create', sessionName, element: JSON.stringify({ ...base, folderid }), elementType: 'Documents' });
     const json = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body }).then((r) => r.json());
@@ -264,7 +289,7 @@ async function crearDocumentoVtiger(sessionName, nombreArchivo, urlFirmada, nota
     // otro error (permiso real del módulo, campo obligatorio) no mejora cambiando de carpeta.
     if (!/denied for id|folderid|folder/i.test(JSON.stringify(json.error || json))) break;
   }
-  throw new Error('create Documents falló — carpetas probadas: ' + intentos.join(' | '));
+  throw new Error('create Documents falló — intentos: ' + intentos.join(' | '));
 }
 
 // Jp, 2026-10-30 — con el create de Documents ya funcionando (se crea el
@@ -426,7 +451,7 @@ export default async function handler(req, res) {
     if (padreId) {
       try {
         const r = await adjuntarAComentario(sessionName, { padreId, comentarioPadreId: crm_comentario_id, nombre: fila.nombre_archivo, docId, assignedUserId });
-        traza.push('adjunto-comentario: ' + r.resumen);
+        traza.push('modo documento: ' + (documento._modo || 'liga externa (E)') + ' || adjunto-comentario: ' + r.resumen);
         if (r.verificado) verificado = true;
       } catch (e) { traza.push('adjunto-comentario FALLÓ: ' + String(e?.message || e)); }
     }
