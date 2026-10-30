@@ -374,6 +374,72 @@ async function adjuntarAComentario(sessionName, { padreId, comentarioPadreId, no
   return { verificado: true, resumen: `respuesta ${r.json.result?.id} con enlace (${notas.join('; ') || 'sin comentario padre'})` };
 }
 
+
+// ─── Jp, 2026-10-30 (camino 2) ─────────────────────────────────────────────
+// El botón "Adjuntar archivos" del CRM NO usa el webservice: manda comentario +
+// archivo en un solo POST multipart a index.php (module=ModComments,
+// action=SaveAjax, campos commentcontent, related_to, parent_comments,
+// is_private, filename[] y el token CSRF __vtrftk), con sesión web iniciada.
+// Aquí se imita: login web con usuario/contraseña de integración (variables de
+// entorno VTIGER_UI_USER y VTIGER_UI_PASSWORD; si no existen, se omite este
+// paso y se usa el enlace como respaldo).
+const CRM_WEB_BASE = process.env.VTIGER_WEB_BASE_URL || 'http://crminn.dynns.com/innova';
+
+function guardarCookies(jar, res) {
+  const lista = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
+  for (const c of lista) {
+    const [par] = c.split(';');
+    const i = par.indexOf('=');
+    if (i > 0) jar[par.slice(0, i).trim()] = par.slice(i + 1).trim();
+  }
+}
+const cookieHeader = (jar) => Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
+function extraerToken(html) {
+  const m = html.match(/name=["']__vtrftk["'][^>]*value=["']([^"']+)["']/) || html.match(/value=["']([^"']+)["'][^>]*name=["']__vtrftk["']/) || html.match(/csrfMagicToken\s*=\s*["'](sid:[^"']+)["']/);
+  return m ? m[1] : null;
+}
+
+async function adjuntarComentarioWeb({ relatedNumId, texto, buffer, nombre, mime }) {
+  const usuario = process.env.VTIGER_UI_USER || process.env.VTIGER_USER;
+  const clave = process.env.VTIGER_UI_PASSWORD;
+  if (!clave) throw new Error('falta VTIGER_UI_PASSWORD en Vercel (se omite el adjunto real)');
+  const jar = {};
+  // 1) página de login -> cookie de sesión + token
+  let r = await fetch(`${CRM_WEB_BASE}/index.php`, { redirect: 'follow' });
+  guardarCookies(jar, r);
+  let token = extraerToken(await r.text());
+  if (!token) throw new Error('no se encontró el token CSRF en la página de login');
+  // 2) login
+  r = await fetch(`${CRM_WEB_BASE}/index.php?module=Users&action=Login`, {
+    method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookieHeader(jar) },
+    body: new URLSearchParams({ __vtrftk: token, username: usuario, password: clave }),
+  });
+  guardarCookies(jar, r);
+  const loc = r.headers.get('location') || '';
+  if (r.status < 300 || r.status > 399 || /Login|error/i.test(loc)) throw new Error(`login web rechazado (HTTP ${r.status}, location ${loc.slice(0, 80)})`);
+  // 3) token fresco ya con sesión
+  r = await fetch(`${CRM_WEB_BASE}/index.php?module=Home&view=DashBoard`, { redirect: 'follow', headers: { Cookie: cookieHeader(jar) } });
+  guardarCookies(jar, r);
+  token = extraerToken(await r.text());
+  if (!token) throw new Error('login hecho pero sin token CSRF en la sesión');
+  // 4) comentario + archivo (igual que el botón Publicar del CRM)
+  const fd = new FormData();
+  fd.append('__vtrftk', token);
+  fd.append('module', 'ModComments');
+  fd.append('action', 'SaveAjax');
+  fd.append('commentcontent', texto);
+  fd.append('related_to', String(relatedNumId));
+  fd.append('parent_comments', '');
+  fd.append('is_private', '0');
+  fd.append('filename[]', new Blob([buffer], { type: mime }), nombre);
+  r = await fetch(`${CRM_WEB_BASE}/index.php`, { method: 'POST', body: fd, headers: { Cookie: cookieHeader(jar), 'X-Requested-With': 'XMLHttpRequest' } });
+  const t = await r.text();
+  let j = null; try { j = JSON.parse(t); } catch (_) {}
+  if (!(j && j.success)) throw new Error(`SaveAjax: HTTP ${r.status} ${t.slice(0, 200)}`);
+  return { resumen: `comentario web creado con adjunto real: ${JSON.stringify(j.result || {}).slice(0, 200)}` };
+}
+
 async function actualizarFilaDocumento(id, cambios) {
   const url = `${SUPABASE_URL}/rest/v1/crm_documentos?id=eq.${encodeURIComponent(id)}`;
   await fetch(url, {
@@ -448,7 +514,23 @@ export default async function handler(req, res) {
     let verificado = false;
 
     // (A) Adjunto real en un comentario (respuesta al comentario de bitácora).
+    let adjuntoReal = false;
     if (padreId) {
+      try {
+        const rf = await fetch(urlFirmada);
+        if (!rf.ok) throw new Error('no se pudo bajar el archivo: HTTP ' + rf.status);
+        const rw = await adjuntarComentarioWeb({
+          relatedNumId: String(padreId).split('x').pop(),
+          texto: `Archivo adjunto: ${fila.nombre_archivo}`,
+          buffer: await rf.arrayBuffer(),
+          nombre: fila.nombre_archivo,
+          mime: rf.headers.get('content-type') || 'application/octet-stream',
+        });
+        adjuntoReal = true; verificado = true;
+        traza.push('ADJUNTO REAL: ' + rw.resumen);
+      } catch (e) { traza.push('adjunto real FALLÓ: ' + String(e?.message || e)); }
+    }
+    if (padreId && !adjuntoReal) {
       try {
         const r = await adjuntarAComentario(sessionName, { padreId, comentarioPadreId: crm_comentario_id, nombre: fila.nombre_archivo, docId, assignedUserId });
         traza.push('modo documento: ' + (documento._modo || 'liga externa (E)') + ' || adjunto-comentario: ' + r.resumen);
