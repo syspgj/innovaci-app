@@ -165,23 +165,81 @@ async function resolverAssignedUserId(vendedorUsuarioId) {
 // adjuntar al error justo qué carpetas existen de verdad — así, si vuelve a
 // fallar, el mensaje que ve Jp en la app ya trae la pista concreta en vez de
 // tener que pedir que se revise Supabase a mano.
+// Jp, 2026-10-28: confirmó que "Analisis" ya tiene Rol Administrador en
+// Vtiger — un Administrador se salta cualquier chequeo de permiso por
+// módulo, así que el describe() sin "folderid" visible probablemente NO es
+// un tema de permisos como se pensó el 21/oct. La otra posibilidad real:
+// que el módulo Folder esté genuinamente vacío en esta instalación (nunca
+// se creó ninguna carpeta desde la UI de Vtiger) y por eso 'T2' (adivinado)
+// no exista — Documents siempre exige un folderid válido. Esta función
+// ahora, además del describe, consulta directo el módulo Folder vía
+// query() (funciona aunque describe() no muestre el picklist) para traer
+// las carpetas reales que sí existen, con su id — así el próximo error que
+// vea Jp ya trae el dato concreto para decidir si hay que crear una carpeta
+// en Vtiger o solo corregir el folderid fijo de este código.
+async function listarCarpetasVtiger(sessionName) {
+  try {
+    const query = `select * from Folder;`;
+    const url = `${VTIGER_BASE_URL}/webservice.php?operation=query&sessionName=${encodeURIComponent(sessionName)}&query=${encodeURIComponent(query)}`;
+    const json = await fetch(url).then((r) => r.json());
+    if (!json.success) return `query a Folder falló: ${JSON.stringify(json.error || json)}`;
+    const carpetas = (json.result || []).map((f) => ({ id: f.folderid || f.id, name: f.foldername }));
+    return carpetas.length
+      ? `Carpetas reales encontradas en Vtiger (módulo Folder): ${JSON.stringify(carpetas)}`
+      : 'El módulo Folder de Vtiger está vacío — no existe ninguna carpeta todavía (por eso el folderid fijo \'T2\' que usa este código probablemente no es válido). Hay que crear al menos una carpeta en Vtiger (Documents → Nueva carpeta) y después ajustar el folderid aquí.';
+  } catch (e) {
+    return `No se pudo consultar el módulo Folder: ${String(e?.message || e)}`;
+  }
+}
+
 async function diagnosticarPermisosDocuments(sessionName) {
   try {
     const url = `${VTIGER_BASE_URL}/webservice.php?operation=describe&sessionName=${encodeURIComponent(sessionName)}&elementType=Documents`;
     const json = await fetch(url).then((r) => r.json());
-    if (!json.success) return `No se pudo consultar describe(Documents): ${JSON.stringify(json.error || json)}`;
+    const carpetasReales = await listarCarpetasVtiger(sessionName);
+    if (!json.success) return `No se pudo consultar describe(Documents): ${JSON.stringify(json.error || json)}. ${carpetasReales}`;
     const campoFolder = (json.result?.fields || []).find((f) => f.name === 'folderid');
-    const carpetas = campoFolder?.picklistValues || campoFolder?.referenceTo || null;
-    return carpetas
-      ? `Carpetas/valores disponibles para "folderid" según Vtiger: ${JSON.stringify(carpetas).slice(0, 500)}`
-      : 'El describe del módulo Documents no trae opciones de carpeta visibles para este usuario — probable falta de permiso de Crear en Documents para el usuario de integración (revisar Configuración → Roles en Vtiger).';
+    const carpetasDescribe = campoFolder?.picklistValues || campoFolder?.referenceTo || null;
+    const partesDescribe = carpetasDescribe
+      ? `Carpetas/valores disponibles para "folderid" según describe(): ${JSON.stringify(carpetasDescribe).slice(0, 500)}`
+      : 'describe(Documents) no trae opciones de carpeta visibles.';
+    return `${partesDescribe} — ${carpetasReales}`;
   } catch (e) {
     return `No se pudo diagnosticar (describe falló): ${String(e?.message || e)}`;
   }
 }
 
+// Jp, 2026-10-30 — confirmó que "Analisis" (el usuario de integración) ya
+// tiene Rol Administrador en Vtiger, así que el ACCESS_DENIED del create
+// casi seguro NO es un tema de permisos de rol (un Administrador se salta
+// esos chequeos) — apunta al folderid 'T2' adivinado, que probablemente no
+// existe en esta instalación. En vez de seguir adivinando un id fijo, se
+// resuelve en vivo contra el módulo Folder real de Vtiger (misma consulta
+// que ya usaba listarCarpetasVtiger para el diagnóstico) y se usa el
+// primero que exista. Se cachea por sessionName (dura lo que dura esta
+// invocación de la función) para no repetir la consulta si se llama más
+// de una vez.
+let _folderIdCache = null;
+async function resolverFolderId(sessionName) {
+  if (_folderIdCache) return _folderIdCache;
+  try {
+    const query = `select * from Folder;`;
+    const url = `${VTIGER_BASE_URL}/webservice.php?operation=query&sessionName=${encodeURIComponent(sessionName)}&query=${encodeURIComponent(query)}`;
+    const json = await fetch(url).then((r) => r.json());
+    if (json.success && Array.isArray(json.result) && json.result.length) {
+      // Prefiere una carpeta llamada "Documents"/"Documentos" si existe (la
+      // raíz típica de Vtiger); si no, usa la primera que haya.
+      const raiz = json.result.find((f) => /documents?$/i.test(f.foldername || '')) || json.result[0];
+      _folderIdCache = raiz.folderid || raiz.id;
+      return _folderIdCache;
+    }
+  } catch (_) { /* cae al valor fijo de respaldo abajo */ }
+  return 'T2'; // último recurso si no se pudo consultar Folder — valor original adivinado
+}
+
 async function crearDocumentoVtiger(sessionName, nombreArchivo, urlFirmada, notas, assignedUserId) {
   const ext = (nombreArchivo.split('.').pop() || '').toLowerCase();
+  const folderid = await resolverFolderId(sessionName);
   const record = {
     notes: notas || nombreArchivo,
     filename: nombreArchivo,
@@ -189,12 +247,12 @@ async function crearDocumentoVtiger(sessionName, nombreArchivo, urlFirmada, nota
     filelocationtype: 'E', // E = External URL (no se sube el binario a Vtiger, solo se liga)
     fileurl: urlFirmada,
     filestatus: 1,
-    folderid: 'T2', // carpeta raíz por defecto de Vtiger — si esta instalación usa otra, ajustar aquí
+    folderid, // Jp, 2026-10-30: resuelto en vivo contra el módulo Folder real — ver resolverFolderId
     assigned_user_id: assignedUserId, // Jp, 2026-10-14: faltaba — causaba el ACCESS_DENIED del primer intento
   };
   const body = new URLSearchParams({ operation: 'create', sessionName, element: JSON.stringify(record), elementType: 'Documents' });
   const json = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body }).then((r) => r.json());
-  if (!json.success) throw new Error('create Documents falló: ' + JSON.stringify(json));
+  if (!json.success) throw new Error(`create Documents falló (folderid usado: ${folderid}): ` + JSON.stringify(json));
   return json.result;
 }
 

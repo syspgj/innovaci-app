@@ -19,10 +19,18 @@
 // de pólizas (resguardo y soporte) — por eso basta con disparar los 3 de
 // siempre, no hace falta lógica nueva aquí.
 //
+// Jp, 2026-10-30 — "se dio de alta una nueva cuenta en CRM... y en la
+// aplicación siguen sin aparecer, a pesar de que ya podía sincronizar dos
+// veces la información": sync-crm-accounts solo llenaba el espejo crudo
+// (stg_cuentas_crm_raw); nunca existía el paso que diera de alta esas
+// cuentas nuevas en clientes_cartera (Cartera de cuentas) — se agrega
+// aquí, encadenado justo después de sincronizar Cuentas, el nuevo
+// api/cron/mapear-cuentas-crm.js.
+//
 // Protegido igual que api/crm-comentarios.js: solo exige que venga un
 // header Authorization (sesión de Supabase ya iniciada en la app) — el
-// botón mismo solo se muestra dentro de Mesa de Control/Vista Director,
-// que ya están gateados por rol en el frontend.
+// botón mismo solo se muestra dentro de Mesa de Control/Vista Director y
+// Cartera de cuentas, que ya están gateados por rol en el frontend.
 //
 // Variables de entorno: reutiliza SYNC_SECRET (ya configurada). Opcional
 // SYNC_SITE_URL si algún día el dominio cambia; por default usa
@@ -57,9 +65,12 @@ export default async function handler(req, res) {
     // reto entre sí) — por eso ahora van uno por uno, en serie. Un poco
     // más lento, pero confiable.
     const cuentas = await dispararSync('sync-crm-accounts');
+    // Da de alta en Cartera las cuentas que el paso anterior trajo nuevas
+    // al espejo crudo y que todavía no existían — ver mapear-cuentas-crm.js.
+    const cuentasNuevas = await dispararSync('mapear-cuentas-crm');
     const oportunidades = await dispararSync('sync-crm-oportunidades');
     const proyectos = await dispararSync('sync-crm-proyectos');
-    return res.status(200).json({ ok: true, cuentas, oportunidades, proyectos });
+    return res.status(200).json({ ok: true, cuentas, cuentasNuevas, oportunidades, proyectos });
   } catch (err) {
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
