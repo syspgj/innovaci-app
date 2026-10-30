@@ -267,11 +267,43 @@ async function crearDocumentoVtiger(sessionName, nombreArchivo, urlFirmada, nota
   throw new Error('create Documents falló — carpetas probadas: ' + intentos.join(' | '));
 }
 
+// Jp, 2026-10-30 — con el create de Documents ya funcionando (se crea el
+// documento en Vtiger: 15x184251), el siguiente paso fallaba en silencio:
+// "addRelatedRecord" NO es una operación de webservice que exista en Vtiger
+// (responde cuerpo vacío -> "Unexpected end of JSON input"), así que el
+// documento quedaba suelto en el módulo Documents sin ligarse a nada. Vtiger
+// 7 expone la relación como operación "add_related" (sourceRecordId = el
+// registro padre, relatedRecordId = el documento, relationIdLabel =
+// "Documents"). Como el nombre exacto varía entre versiones, se prueban las
+// variantes en orden y se lee la respuesta como texto (nunca .json() directo,
+// para que un cuerpo vacío no truene).
+async function postVtigerRaw(params) {
+  const res = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body: new URLSearchParams(params) });
+  const texto = await res.text();
+  let json = null;
+  try { json = texto ? JSON.parse(texto) : null; } catch (_) { /* respuesta no JSON */ }
+  return { status: res.status, texto, json };
+}
+
 async function relacionarDocumento(sessionName, crmId, documentoId) {
-  const body = new URLSearchParams({ operation: 'addRelatedRecord', sessionName, id: crmId, relatedId: documentoId.id || documentoId.documentsid || documentoId });
-  const json = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body }).then((r) => r.json());
-  if (!json.success) throw new Error('addRelatedRecord falló: ' + JSON.stringify(json));
-  return json.result;
+  const docId = documentoId.id || documentoId.documentsid || documentoId;
+  const variantes = [
+    { operation: 'add_related', sessionName, sourceRecordId: crmId, relatedRecordId: docId, relationIdLabel: 'Documents' },
+    { operation: 'add_related', sessionName, sourceRecordId: crmId, relatedRecordId: docId, relationIdLabel: 'Documentos' },
+    { operation: 'addRelated', sessionName, sourceRecordId: crmId, relatedRecordId: docId, relationIdLabel: 'Documents' },
+    { operation: 'addRelatedRecord', sessionName, id: crmId, relatedId: docId },
+  ];
+  const intentos = [];
+  for (const v of variantes) {
+    try {
+      const r = await postVtigerRaw(v);
+      if (r.json && r.json.success) return { ok: true, operacion: v.operation, relationIdLabel: v.relationIdLabel };
+      intentos.push(`${v.operation}${v.relationIdLabel ? '/' + v.relationIdLabel : ''}: ${r.json ? JSON.stringify(r.json.error || r.json) : `HTTP ${r.status}, cuerpo ${r.texto ? r.texto.slice(0, 120) : 'vacío'}`}`);
+    } catch (e) {
+      intentos.push(`${v.operation}: ${String(e?.message || e)}`);
+    }
+  }
+  throw new Error('no se pudo relacionar el documento — ' + intentos.join(' | '));
 }
 
 async function actualizarFilaDocumento(id, cambios) {
@@ -328,17 +360,34 @@ export default async function handler(req, res) {
       throw new Error(`${eCrear?.message || eCrear} — ${diagnostico}`);
     }
 
+    // Se intenta ligar primero al comentario de bitácora (si viene) y, si Vtiger
+    // no admite documentos en ModComments, al registro padre (Oportunidad o
+    // Cuenta) — así el documento al menos queda visible en la pestaña
+    // Documentos de la Oportunidad/Cuenta en vez de suelto.
+    let padreId = null;
+    if (fila.entidad_tipo === 'cuenta' && fila.cliente_cartera_id) {
+      const numCliente = await obtenerNumClienteDeCuenta(fila.cliente_cartera_id);
+      if (numCliente) padreId = await resolverAccountIdCrm(numCliente);
+    } else if (fila.entidad_tipo === 'oportunidad' && fila.pipeline_vendedor_id) {
+      padreId = await obtenerPotentialIdDeOportunidad(fila.pipeline_vendedor_id);
+    }
     let relacionError = null;
-    if (crmId) {
-      try {
-        await relacionarDocumento(sessionName, crmId, documento);
-      } catch (e) {
-        relacionError = String(e?.message || e);
+    const objetivos = [...new Set([crmId, padreId].filter(Boolean))];
+    if (objetivos.length) {
+      const fallos = [];
+      let ligado = false;
+      for (const objetivo of objetivos) {
+        try {
+          await relacionarDocumento(sessionName, objetivo, documento);
+          ligado = true;
+          break;
+        } catch (e) {
+          fallos.push(`${objetivo}: ${String(e?.message || e)}`);
+        }
       }
+      if (!ligado) relacionError = fallos.join(' || ');
     } else {
-      relacionError = relacionadoAComentario
-        ? null
-        : 'No se encontró el registro de Vtiger (Cuenta/Oportunidad) para relacionar — el documento se creó suelto.';
+      relacionError = 'No se encontró el registro de Vtiger (Cuenta/Oportunidad) para relacionar — el documento se creó suelto.';
     }
 
     await actualizarFilaDocumento(crm_documento_id, {
