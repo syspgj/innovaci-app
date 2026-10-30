@@ -11668,9 +11668,10 @@ async function renderDirectorCartera(containerId){
       <div style="font-size:18px;font-weight:600;color:var(--text);">Cartera de cuentas</div>
       <div style="font-size:12px;color:var(--text3);">Vista general de clientes y campañas de llamadas. Las suscripciones Aspel/Siigo ahora viven en el módulo 📋 Suscripciones.</div>
     </div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
       <button onclick="swDirCartera('auditoria')" id="dirCarteraTab_auditoria" class="cartera-subtab active">👥 Clientes</button>
       <button onclick="swDirCartera('campanas')" id="dirCarteraTab_campanas" class="cartera-subtab">📞 Campañas de cartera</button>
+      ${puedeCargarExcel?`<button id="btnSyncCrmAhora" onclick="sincronizarCrmAhora()" title="Vuelve a traer Cuentas, Oportunidades y Proyectos desde el CRM ahora mismo, sin esperar al cron automático — incluye dar de alta en Cartera las cuentas nuevas creadas directo en Vtiger." style="padding:7px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--teal);background:none;color:var(--teal);font-family:'Inter',sans-serif;white-space:nowrap;">🔄 Sincronizar CRM ahora</button>`:''}
     </div>
   </div>
   <div id="dirCarteraContenidoMain"></div>`;
@@ -20456,9 +20457,21 @@ async function sincronizarCrmAhora(){
         ?`\n\n🔁 Renovaciones detectadas y aplicadas (${renov.creadas}):\n`+(renov.detalle||[]).filter(d=>!d.error).map(d=>`• ${d.cliente}: ${d.de} → ${d.a}`).join('\n')
         :'\n\nSin renovaciones nuevas que aplicar.')
       :(renov?.error?`\n\n⚠ La detección de renovaciones tuvo un error: ${renov.error}`:'');
+    // Jp, 2026-10-30: "se dio de alta una nueva cuenta en CRM... y en la
+    // aplicación siguen sin aparecer, a pesar de que ya podía sincronizar
+    // dos veces" — se encontró que sync-crm-accounts solo llenaba el espejo
+    // crudo (stg_cuentas_crm_raw), pero nunca existía un paso que diera de
+    // alta esas cuentas nuevas en clientes_cartera (Cartera de cuentas). Se
+    // agregó api/cron/mapear-cuentas-crm.js, encadenado aquí después de
+    // sincronizar Cuentas.
+    const cuentasNuevas=j.cuentasNuevas;
+    const cuentasNuevasTexto=cuentasNuevas
+      ?(cuentasNuevas.ok?`\nCuentas nuevas dadas de alta en Cartera: ${cuentasNuevas.creadas??0}`:`\n⚠ No se pudo dar de alta cuentas nuevas en Cartera: ${cuentasNuevas.error||cuentasNuevas.status}`)
+      :'';
     alert(
       'Sincronización completa.\n\n'+
-      `Cuentas: ${j.cuentas?.ok?'✓ '+(j.cuentas.total??j.cuentas.totalMapeado??'ok'):'✗ '+(j.cuentas?.error||j.cuentas?.status)}\n`+
+      `Cuentas: ${j.cuentas?.ok?'✓ '+(j.cuentas.total??j.cuentas.totalMapeado??'ok'):'✗ '+(j.cuentas?.error||j.cuentas?.status)}`+
+      cuentasNuevasTexto+'\n'+
       `Oportunidades: ${j.oportunidades?.ok?'✓ ok':'✗ '+(j.oportunidades?.error||j.oportunidades?.status)}\n`+
       `Proyectos: ${j.proyectos?.ok?'✓ '+(j.proyectos.totalMapeado??'ok'):'✗ '+(j.proyectos?.error||j.proyectos?.status)}`+
       renovTexto
@@ -20466,6 +20479,7 @@ async function sincronizarCrmAhora(){
     if(currentOpsTab==='resumen') await renderOpsResumen();
     else if(currentOpsTab==='contratos') await renderOpsContratos();
     else if(currentOpsTab==='polizashist') await renderOpsPolizasHistorico();
+    if(document.getElementById('dirCarteraContenidoMain')) swDirCartera(_dirCarteraSubActual);
   }catch(e){
     alert('Error al sincronizar: '+e.message);
   }finally{
