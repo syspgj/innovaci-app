@@ -84,6 +84,37 @@ const VTIGER_USUARIO_RESPALDO = '19x27';
 const CAMPO_INTERES = 'cf_1068';
 const CAMPO_INTERES_ASPEL = 'cf_1116';
 
+// Jp, 2026-10-29 — bug encontrado en la auditoría general: el módulo Leads
+// de esta instalación de Vtiger exige el campo personalizado "Vendedor"
+// (cf_958, picklist) con valor, y este endpoint nunca lo mandaba —
+// MANDATORY_FIELDS_MISSING en el 100% de los Leads nuevos desde el 17 de
+// octubre (2,252 prospectos se quedaron sin llegar al CRM). Diagnóstico
+// vía api/crm-describir-leads.js confirmó las etiquetas reales del
+// picklist y que el propio campo ya trae un default en Vtiger Studio
+// ("Dulce Solano") — se usa ese mismo default como respaldo aquí, para no
+// inventar un valor que Vtiger no reconozca.
+const CAMPO_VENDEDOR = 'cf_958';
+const VENDEDOR_CRM_DEFAULT = 'Dulce Solano'; // mismo default que trae el campo en Vtiger Studio
+// Mapeo nombre interno (usuarios.nombre) -> etiqueta exacta del picklist en
+// Vtiger. Solo se mapean los casos donde el nombre interno no coincide
+// letra por letra con el picklist (acentos/abreviaturas) — el resto que sí
+// coincide exacto (ej. "Mireya Villegas", "Manuel Peña") no necesita
+// entrada aquí, se manda tal cual si existe en el picklist.
+const VENDEDOR_CRM_MAP = {
+  'Carolina Crisantos': 'Carolina Crisanto',
+  'Josué Peña': 'J. Peña',
+};
+const VENDEDOR_CRM_VALORES_VALIDOS = new Set([
+  'Dulce Solano', 'J. Peña', 'Maricarmen Solano', 'Grupo Ventas', 'Manuel Peña',
+  'Marketing', 'Carolina Crisanto', 'Samatha Sanchez', 'Manuel Pe?a', 'Samantha Sanchez',
+  'Dulce Solano, Samantha Sanchez', 'Mireya Villegas', 'Carlos Miranda', 'Eduardo Godoy',
+]);
+function resolverVendedorCrm(nombreUsuario) {
+  if (!nombreUsuario) return VENDEDOR_CRM_DEFAULT;
+  const mapeado = VENDEDOR_CRM_MAP[nombreUsuario] || nombreUsuario;
+  return VENDEDOR_CRM_VALORES_VALIDOS.has(mapeado) ? mapeado : VENDEDOR_CRM_DEFAULT;
+}
+
 async function vtigerLogin() {
   const challengeRes = await fetch(
     `${VTIGER_BASE}?operation=getchallenge&username=${encodeURIComponent(VTIGER_USER)}`
@@ -146,6 +177,28 @@ async function supabasePost(path, body, prefer) {
 
 async function supabaseInsert(table, row) {
   return supabasePost(table, row, 'return=representation');
+}
+
+// Jp, 2026-10-30 — lote de 3,031 pendientes corrido en vivo: 1,000 fallaron,
+// entre otras causas por "duplicate key value violates unique constraint
+// prospectos_crm_crm_leadid_key" — pasa cuando DOS prospectos de la app
+// (ej. dos familiares que compartieron el mismo teléfono en distintos
+// formularios) hacen match contra el MISMO Lead existente del CRM: el
+// primero crea la fila espejo en prospectos_crm sin problema, pero el
+// segundo truena porque crm_leadid es UNIQUE. Se corrige para que, si el
+// insert choca por esa razón, en vez de fallar se reutilice la fila espejo
+// que ya existe para ese Lead (ambos prospectos de la app quedan ligados al
+// mismo prospecto_crm_id — correcto, es el mismo Lead real).
+async function insertarOReusarEspejoLead(crm_leadid, row) {
+  try {
+    return await supabaseInsert('prospectos_crm', { crm_leadid, ...row });
+  } catch (err) {
+    const msg = String((err && err.message) || err);
+    if (!msg.includes('23505')) throw err;
+    const existentes = await supabaseGet(`prospectos_crm?crm_leadid=eq.${encodeURIComponent(crm_leadid)}&select=id`);
+    if (existentes[0]) return existentes[0];
+    throw err;
+  }
 }
 
 async function supabasePatch(path, patch) {
@@ -298,8 +351,7 @@ export default async function handler(req, res) {
     const leadExistente = await buscarLeadExistente(p.email, p.telefono);
     if (leadExistente) {
       const ahora = new Date().toISOString();
-      const nuevoEspejo = await supabaseInsert('prospectos_crm', {
-        crm_leadid: leadExistente.crm_leadid,
+      const nuevoEspejo = await insertarOReusarEspejoLead(leadExistente.crm_leadid, {
         nombre: p.nombre,
         estado_prospecto: leadExistente.estado_prospecto || null,
         vendedor_asignado: p.asignado_a || null,
@@ -337,12 +389,15 @@ export default async function handler(req, res) {
 
     // --- Validación 3: nada existía -> crear Lead nuevo (comportamiento original) ---
     let crmUserId = null;
+    let nombreUsuarioAsignado = null;
     if (p.asignado_a) {
-      const usuarios = await supabaseGet(`usuarios?id=eq.${encodeURIComponent(p.asignado_a)}&select=crm_user_id`);
+      const usuarios = await supabaseGet(`usuarios?id=eq.${encodeURIComponent(p.asignado_a)}&select=crm_user_id,nombre`);
       crmUserId = usuarios[0]?.crm_user_id || null;
+      nombreUsuarioAsignado = usuarios[0]?.nombre || null;
     }
     const asignadoFallback = !crmUserId;
     const assigned_user_id = crmUserId || VTIGER_USUARIO_RESPALDO;
+    const vendedorCrm = resolverVendedorCrm(nombreUsuarioAsignado);
     const sistemaAspel = (p.sistemas_aspel && p.sistemas_aspel.length) ? p.sistemas_aspel[p.sistemas_aspel.length - 1] : 'SIN INTERES';
 
     const sessionName = await vtigerLogin();
@@ -360,11 +415,15 @@ export default async function handler(req, res) {
       firstname: nombreCompleto,
       company: p.empresa || 'Sin empresa',
       designation: p.puesto || '',
-      phone: p.telefono || '',
+      // Jp, 2026-10-30 — "phone does not have a value" (MANDATORY_FIELDS_MISSING)
+      // en los 2 prospectos del lote sin teléfono capturado — mismo criterio
+      // que "company": nunca se manda vacío.
+      phone: p.telefono || 'Sin teléfono',
       email: p.email || '',
       leadsource: p.origen || 'Telemarketing',
       leadstatus: 'Not Contacted',
       assigned_user_id,
+      [CAMPO_VENDEDOR]: vendedorCrm,
       [CAMPO_INTERES]: p.interes || '',
       [CAMPO_INTERES_ASPEL]: sistemaAspel,
     };
