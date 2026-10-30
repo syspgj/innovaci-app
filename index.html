@@ -11867,9 +11867,20 @@ function resolverSistemaDesdeTexto(txt){
 // Esta vista corrige ambos huecos: filtra/busca por la suscripción misma
 // (serie, RFC, razón social, sistema, estado), no por el cliente.
 let suscListFiltroTexto='', suscListFiltroEstado='', suscListFiltroSistema='';
+let _suscListFiltroTextoTimeout=null;
+// Jp, 2026-10-30: "pongo una letra y me aparece el resultado y tengo que
+// esperar para poner la siguiente letra" — cada tecla reconstruía TODA la
+// pantalla (tarjetas + chips + lista completa, cientos de filas) de forma
+// síncrona, lo que se sentía como que el campo se trababa entre letra y
+// letra. Se agrega debounce (350ms sin teclear) — igual que el buscador de
+// empresa en circulo-admin.html — para que pueda escribir la palabra
+// completa de corrido y la lista se filtre una sola vez, al pausar.
 function onSuscListFiltroChange(scope){
-  suscListFiltroTexto=document.getElementById('suscListFiltroTextoInput')?.value||'';
-  renderTodasSuscripciones(scope);
+  clearTimeout(_suscListFiltroTextoTimeout);
+  _suscListFiltroTextoTimeout=setTimeout(()=>{
+    suscListFiltroTexto=document.getElementById('suscListFiltroTextoInput')?.value||'';
+    renderTodasSuscripciones(scope);
+  },350);
 }
 function suscListSwEstado(scope,estado){
   suscListFiltroEstado=(suscListFiltroEstado===estado)?'':estado;
@@ -11955,7 +11966,7 @@ async function renderTodasSuscripciones(scope){
     <div style="display:flex;gap:10px;align-items:flex-start;margin-bottom:10px;">
       <div style="position:relative;flex:1;">
         <input type="text" id="suscListFiltroTextoInput" placeholder="Buscar por número de serie, RFC, razón social o sistema..." value="${suscListFiltroTexto}" oninput="onSuscListFiltroChange('${scope}')" style="width:100%;padding:8px 36px 8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
-        ${suscListFiltroTexto?`<button onclick="suscListFiltroTexto='';document.getElementById('suscListFiltroTextoInput').value='';renderTodasSuscripciones('${scope}')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;line-height:1;">✕</button>`:''}
+        ${suscListFiltroTexto?`<button onclick="clearTimeout(_suscListFiltroTextoTimeout);suscListFiltroTexto='';document.getElementById('suscListFiltroTextoInput').value='';renderTodasSuscripciones('${scope}')" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:16px;line-height:1;">✕</button>`:''}
       </div>
       <button onclick="abrirAgregarSuscripcion('${scope}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;font-family:'Inter',sans-serif;">➕ Agregar suscripción</button>
     </div>
