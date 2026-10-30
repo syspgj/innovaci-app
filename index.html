@@ -26038,6 +26038,15 @@ async function editarIngreso(id){
       <button type="button" onclick="validarIngresoContraXml('${id}')" style="background:var(--teal);border:none;color:#fff;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">✔ Validar contra XML</button>
     </div>
     <div id="eiiValidacionXml" style="margin-bottom:12px;"></div>
+    ${(r.origen_banco||!r.folio)?`<div style="background:rgba(139,92,246,0.07);border:1px solid #8B5CF6;border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+      <div style="font-size:12px;font-weight:700;color:#8B5CF6;margin-bottom:4px;">🔗 Ligar este movimiento a una factura</div>
+      <div style="font-size:10px;color:var(--text3);margin-bottom:6px;">Si este cobro del banco corresponde a una factura que ya existe, elígela: la factura queda PAGADA y conciliada con este movimiento, y este registro desaparece (queda guardado que ese depósito ya está ligado, para que el próximo estado de cuenta no lo vuelva a marcar como faltante).</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <input id="eiiLigarBuscar" type="text" placeholder="Buscar folio o cliente..." oninput="ligarMovFiltrarFacturas('${id}')" style="${INP}width:auto;flex:1;min-width:150px;">
+        <select id="eiiLigarFactura" style="${INP}width:auto;flex:2;min-width:240px;"></select>
+        <button type="button" onclick="ligarMovimientoAFactura('${id}')" style="background:#8B5CF6;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">Ligar y quitar movimiento</button>
+      </div>
+    </div>`:''}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha',inp('eiiFecha','date','',r.fecha||''))}
       ${fld('Folio',inp('eiiFolio','text','',r.folio||''))}
@@ -26068,6 +26077,64 @@ async function editarIngreso(id){
     <input type="hidden" id="eiiId" value="${id}">`;
   mkModal('modalIngEdit','Editar factura — '+( r.folio||r.cliente||''),html,'guardarEdicionIngreso',undefined,true);
   fiToggleAlumnoBlock('eii');
+  if(r.origen_banco||!r.folio) ligarMovFiltrarFacturas(id);
+}
+
+// Jp, 2026-10-30 — "ligar" un movimiento del banco ya registrado (fila sin
+// folio/POR CLASIFICAR) a la factura que le corresponde, sin tener que
+// borrar el movimiento y volver a cargar el estado de cuenta. Candidatas: las
+// facturas con folio que NO están conciliadas todavía, ordenadas por qué tan
+// cerca está su total del monto del movimiento.
+function ligarMovFiltrarFacturas(movId){
+  const mov=(window._fiRows||[]).find(x=>x.id===movId);
+  const sel=document.getElementById('eiiLigarFactura');
+  if(!mov||!sel) return;
+  const q=(document.getElementById('eiiLigarBuscar')?.value||'').trim().toLowerCase();
+  const cand=(window._fiRows||[])
+    .filter(f=>f.id!==movId&&f.folio&&!f.origen_banco&&f.estatus!=='CANCELADA'&&!f.conciliado)
+    .filter(f=>!q||(f.folio||'').toLowerCase().includes(q)||(f.cliente||'').toLowerCase().includes(q))
+    .sort((a,b)=>Math.abs((a.total||0)-(mov.total||0))-Math.abs((b.total||0)-(mov.total||0)))
+    .slice(0,60);
+  sel.innerHTML=cand.length
+    ?cand.map(f=>{
+        const dif=Math.round(((f.total||0)-(mov.total||0))*100)/100;
+        return `<option value="${f.id}">${f.folio} · ${(f.cliente||'—').slice(0,34)} · ${fmt(f.total||0)}${Math.abs(dif)<=1?' ✅ mismo monto':' (dif '+fmt(dif)+')'}</option>`;
+      }).join('')
+    :'<option value="">— sin facturas pendientes que coincidan —</option>';
+}
+
+async function ligarMovimientoAFactura(movId){
+  const mov=(window._fiRows||[]).find(x=>x.id===movId);
+  const facId=document.getElementById('eiiLigarFactura')?.value;
+  if(!mov||!facId){alert('Elige la factura a la que corresponde este movimiento.');return;}
+  const fac=(window._fiRows||[]).find(x=>x.id===facId);
+  if(!fac) return;
+  const dif=Math.round(((fac.total||0)-(mov.total||0))*100)/100;
+  if(!confirm(`¿Ligar este movimiento del banco (${fmt(mov.total||0)}) a la factura ${fac.folio} — ${fac.cliente||''} (${fmt(fac.total||0)})?\n\n• La factura queda PAGADA y conciliada${mov.fecha_pago?' con fecha de pago '+mov.fecha_pago:''}.\n• Este movimiento se elimina de Ingresos (queda guardado como ya ligado).${Math.abs(dif)>1?'\n\n⚠ Los montos NO coinciden (diferencia '+fmt(dif)+').':''}`)) return;
+  const fp=mov.fecha_pago||fac.fecha_pago||null;
+  const dia=fp?String(parseInt(String(fp).slice(8,10),10)):null;
+  // 1) Trazabilidad: es lo que hace que el próximo estado de cuenta reconozca
+  //    este depósito como ya ligado (cruce por día + monto).
+  const {error:errT}=await sb.from('conciliacion_ingresos_agrupada').insert({
+    factura_id:facId,
+    anio:mov.anio||currentYear, mes:mov.mes||currentMonth,
+    dia_banco:dia, monto:mov.total||0,
+    concepto_banco:(mov.concepto||mov.cliente||'').slice(0,120),
+  });
+  if(errT){alert('No se pudo guardar el ligado: '+errT.message);return;}
+  // 2) La factura queda pagada y conciliada.
+  const cambios={cobrado:true,conciliado:true,estatus:'PAGADA'};
+  if(fp) cambios.fecha_pago=fp;
+  const {error:errF}=await sb.from('fact_ingresos').update(cambios).eq('id',facId);
+  if(errF){alert('No se pudo actualizar la factura: '+errF.message);return;}
+  Object.assign(fac,cambios);
+  // 3) Se quita el movimiento duplicado.
+  const {error:errD}=await sb.from('fact_ingresos').delete().eq('id',movId);
+  if(errD){alert('La factura quedó ligada, pero no se pudo eliminar el movimiento: '+errD.message+'\nElimínalo con la ✕.');}
+  else window._fiRows=(window._fiRows||[]).filter(x=>x.id!==movId);
+  document.getElementById('modalIngEdit')?.remove();
+  renderIngresosTabla();
+  alert(`✅ Movimiento ligado a ${fac.folio}.`);
 }
 
 // Jp, 2026-10-30 — "Validar contra XML" en Editar factura: el XML sirve para
@@ -26366,7 +26433,7 @@ async function procesarExcelBancoIng(){
   const enBancoNoSistemaLigadoRaw=[];
   const enBancoNoSistemaSinLigar=[];
   enBancoNoSistema.forEach(mb=>{
-    const match=ligadosDisponibles.find(l=>!l._usado&&String(l.dia_banco)===String(mb.dia)&&Math.abs((l.monto||0)-mb.abono)<=1);
+    const match=ligadosDisponibles.find(l=>!l._usado&&parseInt(l.dia_banco,10)===parseInt(mb.dia,10)&&Math.abs((l.monto||0)-mb.abono)<=1);
     if(match){match._usado=true;enBancoNoSistemaLigadoRaw.push({...mb,_facturaId:match.factura_id});}
     else enBancoNoSistemaSinLigar.push(mb);
   });
