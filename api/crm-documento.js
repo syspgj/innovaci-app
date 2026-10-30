@@ -316,40 +316,21 @@ async function verificarRelacionDocumento(sessionName, padreId, docId) {
   } catch (_) { return false; }
 }
 
-// Crea un comentario (ModComments) con el archivo adjunto de verdad, como el
-// botón "Adjuntar archivos" del CRM. Se prueban nombres de campo de archivo.
-async function adjuntarAComentario(sessionName, { padreId, comentarioPadreId, nombre, urlFirmada, assignedUserId }) {
-  const resp = await fetch(urlFirmada);
-  if (!resp.ok) throw new Error('no se pudo bajar el archivo de Storage: HTTP ' + resp.status);
-  const buf = await resp.arrayBuffer();
-  const mime = resp.headers.get('content-type') || 'application/octet-stream';
-  const element = { commentcontent: '\uD83D\uDCCE ' + nombre, related_to: padreId, assigned_user_id: assignedUserId };
+// Jp, 2026-10-30 (4a vuelta): la prueba mostró que el webservice de Vtiger
+// NO adjunta binarios a un ModComments (el comentario salió con filename "0"),
+// y que add_related responde success sin dejar la relación. Lo que SÍ funciona
+// y es verificable: el Document queda creado en Vtiger (módulo Documentos) y se
+// publica en la Oportunidad/Cuenta una respuesta al comentario con el enlace
+// directo a ese documento. Sin emojis (llegaban como "????").
+async function adjuntarAComentario(sessionName, { padreId, comentarioPadreId, nombre, docId, assignedUserId }) {
+  const numId = String(docId || '').split('x').pop();
+  const enlace = `${String(VTIGER_BASE_URL).replace(/\/+$/, '')}/index.php?module=Documents&view=Detail&record=${numId}`;
+  const element = { commentcontent: `Archivo adjunto: ${nombre}\nVer documento en CRM: ${enlace}`, related_to: padreId, assigned_user_id: assignedUserId };
   if (comentarioPadreId) element.parent_comments = comentarioPadreId;
-  const intentos = [];
-  for (const campo of ['filename', 'file', 'files']) {
-    const fd = new FormData();
-    fd.append('operation', 'create');
-    fd.append('sessionName', sessionName);
-    fd.append('elementType', 'ModComments');
-    fd.append('element', JSON.stringify(element));
-    fd.append(campo, new Blob([buf], { type: mime }), nombre);
-    const res = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body: fd });
-    const texto = await res.text();
-    let json = null; try { json = JSON.parse(texto); } catch (_) {}
-    if (json && json.success) {
-      const id = json.result?.id;
-      let verificado = JSON.stringify(json.result || {}).includes(nombre.slice(-20));
-      let detalle = '';
-      try {
-        const rr = await fetch(`${VTIGER_BASE_URL}/webservice.php?operation=retrieve&sessionName=${encodeURIComponent(sessionName)}&id=${encodeURIComponent(id)}`).then((r) => r.text());
-        detalle = rr.slice(0, 400);
-        if (rr.includes(nombre.slice(-20))) verificado = true;
-      } catch (_) {}
-      return { verificado, resumen: `comentario ${id} creado con campo "${campo}"; verificado=${verificado}; retrieve=${detalle}` };
-    }
-    intentos.push(`${campo}: ${json ? JSON.stringify(json.error || json) : `HTTP ${res.status} ${texto.slice(0, 100)}`}`);
-  }
-  throw new Error(intentos.join(' | '));
+  const r = await postVtigerRaw({ operation: 'create', sessionName, elementType: 'ModComments', element: JSON.stringify(element) });
+  if (!(r.json && r.json.success)) throw new Error(`create ModComments: ${r.json ? JSON.stringify(r.json.error || r.json) : `HTTP ${r.status} ${r.texto.slice(0, 100)}`}`);
+  const id = r.json.result?.id;
+  return { verificado: !!id, resumen: `comentario ${id} con enlace al documento ${docId} (${enlace})` };
 }
 
 async function actualizarFilaDocumento(id, cambios) {
@@ -428,7 +409,7 @@ export default async function handler(req, res) {
     // (A) Adjunto real en un comentario (respuesta al comentario de bitácora).
     if (padreId) {
       try {
-        const r = await adjuntarAComentario(sessionName, { padreId, comentarioPadreId: crm_comentario_id, nombre: fila.nombre_archivo, urlFirmada, assignedUserId });
+        const r = await adjuntarAComentario(sessionName, { padreId, comentarioPadreId: crm_comentario_id, nombre: fila.nombre_archivo, docId, assignedUserId });
         traza.push('adjunto-comentario: ' + r.resumen);
         if (r.verificado) verificado = true;
       } catch (e) { traza.push('adjunto-comentario FALLÓ: ' + String(e?.message || e)); }
