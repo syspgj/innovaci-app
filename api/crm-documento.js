@@ -306,6 +306,52 @@ async function relacionarDocumento(sessionName, crmId, documentoId) {
   throw new Error('no se pudo relacionar el documento — ' + intentos.join(' | '));
 }
 
+
+// Verifica que el Document de verdad quede relacionado al registro padre.
+async function verificarRelacionDocumento(sessionName, padreId, docId) {
+  try {
+    const url = `${VTIGER_BASE_URL}/webservice.php?operation=retrieve_related&sessionName=${encodeURIComponent(sessionName)}&id=${encodeURIComponent(padreId)}&relatedType=Documents&relatedLabel=Documents`;
+    const texto = await fetch(url).then((r) => r.text());
+    return !!docId && texto.includes(String(docId).split('x').pop()) && /"success"\s*:\s*true/.test(texto);
+  } catch (_) { return false; }
+}
+
+// Crea un comentario (ModComments) con el archivo adjunto de verdad, como el
+// botón "Adjuntar archivos" del CRM. Se prueban nombres de campo de archivo.
+async function adjuntarAComentario(sessionName, { padreId, comentarioPadreId, nombre, urlFirmada, assignedUserId }) {
+  const resp = await fetch(urlFirmada);
+  if (!resp.ok) throw new Error('no se pudo bajar el archivo de Storage: HTTP ' + resp.status);
+  const buf = await resp.arrayBuffer();
+  const mime = resp.headers.get('content-type') || 'application/octet-stream';
+  const element = { commentcontent: '\uD83D\uDCCE ' + nombre, related_to: padreId, assigned_user_id: assignedUserId };
+  if (comentarioPadreId) element.parent_comments = comentarioPadreId;
+  const intentos = [];
+  for (const campo of ['filename', 'file', 'files']) {
+    const fd = new FormData();
+    fd.append('operation', 'create');
+    fd.append('sessionName', sessionName);
+    fd.append('elementType', 'ModComments');
+    fd.append('element', JSON.stringify(element));
+    fd.append(campo, new Blob([buf], { type: mime }), nombre);
+    const res = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body: fd });
+    const texto = await res.text();
+    let json = null; try { json = JSON.parse(texto); } catch (_) {}
+    if (json && json.success) {
+      const id = json.result?.id;
+      let verificado = JSON.stringify(json.result || {}).includes(nombre.slice(-20));
+      let detalle = '';
+      try {
+        const rr = await fetch(`${VTIGER_BASE_URL}/webservice.php?operation=retrieve&sessionName=${encodeURIComponent(sessionName)}&id=${encodeURIComponent(id)}`).then((r) => r.text());
+        detalle = rr.slice(0, 400);
+        if (rr.includes(nombre.slice(-20))) verificado = true;
+      } catch (_) {}
+      return { verificado, resumen: `comentario ${id} creado con campo "${campo}"; verificado=${verificado}; retrieve=${detalle}` };
+    }
+    intentos.push(`${campo}: ${json ? JSON.stringify(json.error || json) : `HTTP ${res.status} ${texto.slice(0, 100)}`}`);
+  }
+  throw new Error(intentos.join(' | '));
+}
+
 async function actualizarFilaDocumento(id, cambios) {
   const url = `${SUPABASE_URL}/rest/v1/crm_documentos?id=eq.${encodeURIComponent(id)}`;
   await fetch(url, {
@@ -360,10 +406,14 @@ export default async function handler(req, res) {
       throw new Error(`${eCrear?.message || eCrear} — ${diagnostico}`);
     }
 
-    // Se intenta ligar primero al comentario de bitácora (si viene) y, si Vtiger
-    // no admite documentos en ModComments, al registro padre (Oportunidad o
-    // Cuenta) — así el documento al menos queda visible en la pestaña
-    // Documentos de la Oportunidad/Cuenta en vez de suelto.
+    // Jp, 2026-10-30 (3a vuelta): el documento se creaba y la app decía "en CRM"
+    // pero en el CRM no se veía nada. Dos causas: (1) un Document ligado por
+    // relación NO es lo mismo que un archivo adjunto a un comentario (lo que
+    // Jp ve al usar "Adjuntar archivos" en la pestaña Comentarios), y (2) el
+    // código daba por buena la relación sin comprobarla. Ahora: se publica una
+    // RESPUESTA al comentario con el archivo adjunto real (multipart, igual que
+    // el botón de Vtiger), se liga además el Document al registro padre, y solo
+    // se marca 'ok' si se COMPRUEBA en Vtiger. Si no, queda 'error' con la traza.
     let padreId = null;
     if (fila.entidad_tipo === 'cuenta' && fila.cliente_cartera_id) {
       const numCliente = await obtenerNumClienteDeCuenta(fila.cliente_cartera_id);
@@ -371,33 +421,39 @@ export default async function handler(req, res) {
     } else if (fila.entidad_tipo === 'oportunidad' && fila.pipeline_vendedor_id) {
       padreId = await obtenerPotentialIdDeOportunidad(fila.pipeline_vendedor_id);
     }
-    let relacionError = null;
-    const objetivos = [...new Set([crmId, padreId].filter(Boolean))];
-    if (objetivos.length) {
-      const fallos = [];
-      let ligado = false;
-      for (const objetivo of objetivos) {
-        try {
-          await relacionarDocumento(sessionName, objetivo, documento);
-          ligado = true;
-          break;
-        } catch (e) {
-          fallos.push(`${objetivo}: ${String(e?.message || e)}`);
-        }
-      }
-      if (!ligado) relacionError = fallos.join(' || ');
-    } else {
-      relacionError = 'No se encontró el registro de Vtiger (Cuenta/Oportunidad) para relacionar — el documento se creó suelto.';
+    const docId = documento.id || documento.documentsid || null;
+    const traza = [];
+    let verificado = false;
+
+    // (A) Adjunto real en un comentario (respuesta al comentario de bitácora).
+    if (padreId) {
+      try {
+        const r = await adjuntarAComentario(sessionName, { padreId, comentarioPadreId: crm_comentario_id, nombre: fila.nombre_archivo, urlFirmada, assignedUserId });
+        traza.push('adjunto-comentario: ' + r.resumen);
+        if (r.verificado) verificado = true;
+      } catch (e) { traza.push('adjunto-comentario FALLÓ: ' + String(e?.message || e)); }
     }
+    // (B) Relación del Document al registro padre (pestaña Documentos).
+    const objetivos = [...new Set([padreId, crmId].filter(Boolean))];
+    for (const objetivo of objetivos) {
+      try {
+        const rel = await relacionarDocumento(sessionName, objetivo, documento);
+        const ok = await verificarRelacionDocumento(sessionName, objetivo, docId);
+        traza.push(`relación ${objetivo} vía ${rel.operacion}: ${ok ? 'VERIFICADA' : 'respondió success pero NO aparece en retrieve_related'}`);
+        if (ok) { verificado = true; break; }
+      } catch (e) { traza.push(`relación ${objetivo}: ${String(e?.message || e)}`); }
+    }
+    if (!objetivos.length) traza.push('No se encontró el registro padre en Vtiger.');
+    const relacionError = verificado ? null : 'NO verificado en Vtiger — ' + traza.join(' || ');
 
     await actualizarFilaDocumento(crm_documento_id, {
-      crm_documento_id: documento.id || documento.documentsid || null,
+      crm_documento_id: docId,
       crm_comentario_id: crm_comentario_id || null,
-      crm_sync_estatus: relacionError ? 'error' : 'ok',
-      crm_sync_error: relacionError,
+      crm_sync_estatus: verificado ? 'ok' : 'error',
+      crm_sync_error: verificado ? ('diag: ' + traza.join(' || ')).slice(0, 1500) : relacionError.slice(0, 1500),
     });
 
-    return res.status(200).json({ ok: true, crm_documento_id: documento.id || documento.documentsid || null, relacion_error: relacionError });
+    return res.status(200).json({ ok: true, verificado, crm_documento_id: docId, relacion_error: relacionError, traza });
   } catch (err) {
     // Best-effort: si algo falla, el archivo ya quedó guardado en Supabase
     // Storage y la fila en crm_documentos — solo no se replicó a Vtiger.
