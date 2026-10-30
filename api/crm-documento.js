@@ -241,7 +241,11 @@ async function candidatosFolderId(sessionName) {
 async function crearDocumentoVtiger(sessionName, nombreArchivo, urlFirmada, notas, assignedUserId) {
   const ext = (nombreArchivo.split('.').pop() || '').toLowerCase();
   const base = {
-    notes: notas || nombreArchivo,
+    // Jp, 2026-10-30 — con la carpeta 22x1 ya aceptada, el siguiente error fue
+    // MANDATORY_FIELDS_MISSING "notes_title does not have a value": en Documents
+    // el título es "notes_title" (no "notes"), y la descripción es "notecontent".
+    notes_title: nombreArchivo,
+    notecontent: notas || '',
     filename: nombreArchivo,
     filetype: ext || 'bin',
     filelocationtype: 'E', // E = External URL (no se sube el binario a Vtiger, solo se liga)
