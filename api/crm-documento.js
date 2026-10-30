@@ -179,7 +179,7 @@ async function resolverAssignedUserId(vendedorUsuarioId) {
 // en Vtiger o solo corregir el folderid fijo de este código.
 async function listarCarpetasVtiger(sessionName) {
   try {
-    const query = `select * from Folder;`;
+    const query = `select * from DocumentFolders;`;
     const url = `${VTIGER_BASE_URL}/webservice.php?operation=query&sessionName=${encodeURIComponent(sessionName)}&query=${encodeURIComponent(query)}`;
     const json = await fetch(url).then((r) => r.json());
     if (!json.success) return `query a Folder falló: ${JSON.stringify(json.error || json)}`;
@@ -209,51 +209,58 @@ async function diagnosticarPermisosDocuments(sessionName) {
   }
 }
 
-// Jp, 2026-10-30 — confirmó que "Analisis" (el usuario de integración) ya
-// tiene Rol Administrador en Vtiger, así que el ACCESS_DENIED del create
-// casi seguro NO es un tema de permisos de rol (un Administrador se salta
-// esos chequeos) — apunta al folderid 'T2' adivinado, que probablemente no
-// existe en esta instalación. En vez de seguir adivinando un id fijo, se
-// resuelve en vivo contra el módulo Folder real de Vtiger (misma consulta
-// que ya usaba listarCarpetasVtiger para el diagnóstico) y se usa el
-// primero que exista. Se cachea por sessionName (dura lo que dura esta
-// invocación de la función) para no repetir la consulta si se llama más
-// de una vez.
+// Jp, 2026-10-30 — CAUSA REAL del ACCESS_DENIED (confirmada con el error en
+// pantalla: "Permission to perform the operation is denied for id" en el
+// create, y "denied for name : Folder" en el query): en el webservice de
+// Vtiger "Folder" NO es un módulo consultable — el módulo de carpetas de
+// Documents se llama "DocumentFolders", y su id de webservice NO es un número
+// suelto ni algo como 'T2' sino "<id del tipo>x<id>" (típicamente "22x1" para
+// la carpeta "Default"). Un folderid con formato inválido hace que Vtiger
+// responda justo "denied for id", y eso se confundió con un tema de permisos.
+// Como no se puede asumir el id del tipo en esta instalación, se prueban en
+// orden: (1) las carpetas reales que devuelva query a DocumentFolders, (2)
+// candidatos comunes "22x1".."22x4"; se usa el primero con el que el create
+// funcione y se cachea para el resto de la invocación.
 let _folderIdCache = null;
-async function resolverFolderId(sessionName) {
-  if (_folderIdCache) return _folderIdCache;
+async function candidatosFolderId(sessionName) {
+  const candidatos = [];
   try {
-    const query = `select * from Folder;`;
+    const query = `select * from DocumentFolders;`;
     const url = `${VTIGER_BASE_URL}/webservice.php?operation=query&sessionName=${encodeURIComponent(sessionName)}&query=${encodeURIComponent(query)}`;
     const json = await fetch(url).then((r) => r.json());
-    if (json.success && Array.isArray(json.result) && json.result.length) {
-      // Prefiere una carpeta llamada "Documents"/"Documentos" si existe (la
-      // raíz típica de Vtiger); si no, usa la primera que haya.
-      const raiz = json.result.find((f) => /documents?$/i.test(f.foldername || '')) || json.result[0];
-      _folderIdCache = raiz.folderid || raiz.id;
-      return _folderIdCache;
+    if (json.success && Array.isArray(json.result)) {
+      // Prefiere "Default"/"Documents" si existen.
+      const orden = [...json.result].sort((a, b) => (/default|documents?$/i.test(b.foldername || '') ? 1 : 0) - (/default|documents?$/i.test(a.foldername || '') ? 1 : 0));
+      orden.forEach((f) => { if (f.id) candidatos.push(String(f.id)); });
     }
-  } catch (_) { /* cae al valor fijo de respaldo abajo */ }
-  return 'T2'; // último recurso si no se pudo consultar Folder — valor original adivinado
+  } catch (_) { /* se sigue con los candidatos fijos */ }
+  ['22x1', '22x2', '22x3', '22x4'].forEach((c) => { if (!candidatos.includes(c)) candidatos.push(c); });
+  return candidatos;
 }
 
 async function crearDocumentoVtiger(sessionName, nombreArchivo, urlFirmada, notas, assignedUserId) {
   const ext = (nombreArchivo.split('.').pop() || '').toLowerCase();
-  const folderid = await resolverFolderId(sessionName);
-  const record = {
+  const base = {
     notes: notas || nombreArchivo,
     filename: nombreArchivo,
     filetype: ext || 'bin',
     filelocationtype: 'E', // E = External URL (no se sube el binario a Vtiger, solo se liga)
     fileurl: urlFirmada,
     filestatus: 1,
-    folderid, // Jp, 2026-10-30: resuelto en vivo contra el módulo Folder real — ver resolverFolderId
-    assigned_user_id: assignedUserId, // Jp, 2026-10-14: faltaba — causaba el ACCESS_DENIED del primer intento
+    assigned_user_id: assignedUserId,
   };
-  const body = new URLSearchParams({ operation: 'create', sessionName, element: JSON.stringify(record), elementType: 'Documents' });
-  const json = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body }).then((r) => r.json());
-  if (!json.success) throw new Error(`create Documents falló (folderid usado: ${folderid}): ` + JSON.stringify(json));
-  return json.result;
+  const candidatos = _folderIdCache ? [_folderIdCache] : await candidatosFolderId(sessionName);
+  const intentos = [];
+  for (const folderid of candidatos) {
+    const body = new URLSearchParams({ operation: 'create', sessionName, element: JSON.stringify({ ...base, folderid }), elementType: 'Documents' });
+    const json = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body }).then((r) => r.json());
+    if (json.success) { _folderIdCache = folderid; return json.result; }
+    intentos.push(`${folderid}: ${JSON.stringify(json.error || json)}`);
+    // Solo se sigue probando otra carpeta si el rechazo es por el id; cualquier
+    // otro error (permiso real del módulo, campo obligatorio) no mejora cambiando de carpeta.
+    if (!/denied for id|folderid|folder/i.test(JSON.stringify(json.error || json))) break;
+  }
+  throw new Error('create Documents falló — carpetas probadas: ' + intentos.join(' | '));
 }
 
 async function relacionarDocumento(sessionName, crmId, documentoId) {
