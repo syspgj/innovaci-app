@@ -24983,6 +24983,43 @@ async function fiAsegurarCacheClientes(){
     (us||[]).forEach(u=>{window._fiUsuariosMap[u.id]=u.nombre;});
   }
 }
+// Jp, 2026-10-30: "cuando administración genere un nuevo registro de
+// ingresos... se guarde como comentario en la cuenta del cliente
+// implicado." Reusa exactamente el mismo mecanismo ya en producción para
+// comentarios de Cuenta (fcAgregarComentarioCrm/fcSincronizarActividadCrm,
+// ver línea ~10914): POST a /api/crm-comentarios, que resuelve el
+// ACCOUNTID real de Vtiger a partir del num_cliente y agrega el comentario
+// al CRM — por eso aparece tanto en la ficha de Cartera (fcComentariosCrmBox)
+// como en el CRM. Si la factura no quedó ligada a una cuenta de Cartera, o
+// esa cuenta no tiene num_cliente (ACCxxx), no hace nada — nunca bloquea el
+// guardado de la factura (es un efecto secundario, no una validación).
+async function fiComentarNuevaFacturaEnCuenta(clienteCarteraId,factura){
+  if(!clienteCarteraId) return;
+  try{
+    await fiAsegurarCacheClientes();
+    const cuenta=(window._cartClientes||[]).find(c=>c.id===clienteCarteraId);
+    const numCliente=cuenta?.num_cliente;
+    if(!numCliente) return;
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    if(!token) return;
+    const fechaFmt=factura.fecha?String(factura.fecha).split('-').reverse().join('/'):'';
+    const partes=['[Finanzas] Nueva factura de Ingresos'];
+    if(factura.folio) partes.push('Folio '+factura.folio);
+    if(fechaFmt) partes.push(fechaFmt);
+    if(factura.rubro) partes.push(factura.rubro);
+    partes.push('Total '+fmt(factura.total||0));
+    partes.push(factura.estatus||'EMITIDA');
+    const comentario=partes.join(' · ');
+    await fetch('/api/crm-comentarios',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body:JSON.stringify({tipo:'cuenta',num_cliente:numCliente,comentario,vendedor_usuario_id:currentUser?.id||null}),
+    });
+  }catch(e){
+    console.error('No se pudo comentar la factura nueva en la cuenta del cliente',e);
+  }
+}
 async function fiAsegurarCacheAlumnos(){
   if(!window._academiaCache) window._academiaCache={};
   if(!window._academiaCache.participantesTodos){
@@ -25478,6 +25515,9 @@ async function guardarFactIngreso(){
   // Socio de Círculo Innovaci — compra directa (Jp, 2026-10-28): se crea/liga
   // hasta aquí porque necesita el id ya insertado de la factura.
   await fiCrearOActualizarSocioCirculo('fi',newRow.id,cliente_cartera_id);
+  // Comentario automático en la cuenta del cliente (Jp, 2026-10-30) — ver
+  // fiComentarNuevaFacturaEnCuenta arriba. No bloquea si falla.
+  fiComentarNuevaFacturaEnCuenta(cliente_cartera_id,newRow);
   if(window._fiXmlText){
     const path=await subirXMLStorage(window._fiXmlText,'ingresos',folio);
     if(path) await sb.from('fact_ingresos').update({xml_path:path}).eq('id',newRow.id);
@@ -25524,6 +25564,20 @@ function hayAliasAceptado(nombreSistema,nombreXml){
   const norm=s=>(s||'').toUpperCase().trim();
   const ns=norm(nombreSistema), nx=norm(nombreXml);
   return (window._aliasClientesXML||[]).some(a=>a.nombre_sistema_norm===ns&&a.nombre_xml_norm===nx);
+}
+// Jp, 2026-10-30: coincidencia EXACTA (sin acentos/mayúsculas) de la razón
+// social del XML contra Cartera, usada solo para la carga masiva de
+// Ingresos — ver previsualizarXMLsIng. A propósito no hace match parcial.
+function fiMatchClienteCarteraPorNombreXml(nombreXml){
+  const rmAcentos=s=>(s||'').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'').trim();
+  const nx=rmAcentos(nombreXml);
+  if(!nx) return null;
+  return (window._cartClientes||[]).find(c=>{
+    if(rmAcentos(c.razon_social)===nx) return true;
+    if((c.alias_nombres||[]).some(a=>rmAcentos(a)===nx)) return true;
+    if(hayAliasAceptado(c.razon_social,nombreXml)) return true;
+    return false;
+  })||null;
 }
 async function guardarAliasClienteXML(nombreSistema,nombreXml){
   const {error}=await sb.from('fact_alias_clientes_xml').insert({nombre_sistema:nombreSistema,nombre_xml:nombreXml});
@@ -25574,15 +25628,33 @@ async function previsualizarXMLsIng(){
       }
     });
   }
+  // Jp, 2026-10-30: liga cada factura NUEVA del lote a su cuenta de Cartera
+  // (antes la carga masiva nunca ligaba cliente_cartera_id, a diferencia de
+  // la captura individual) — necesario para que, al guardar, se pueda mandar
+  // el comentario automático a la cuenta (fiComentarNuevaFacturaEnCuenta).
+  // Solo se liga por COINCIDENCIA EXACTA de nombre (sin acentos/mayúsculas)
+  // contra razón social, alias_nombres, o un alias ya aceptado en
+  // fact_alias_clientes_xml — nunca por coincidencia parcial/difusa, para no
+  // repetir el error del caso Ezequiel (ligar a la cuenta equivocada). Si no
+  // hay coincidencia exacta, la factura se guarda igual pero sin ligar — se
+  // puede ligar después a mano desde "Editar factura".
+  await fiAsegurarCacheClientes();
+  _xmlParsedIng.filter(d=>!d._existe).forEach(d=>{
+    const match=fiMatchClienteCarteraPorNombreXml(d.cliente);
+    d._clienteCarteraId=match?.id||'';
+    d._clienteCarteraNombre=match?.razon_social||'';
+  });
   const nuevos=_xmlParsedIng.filter(d=>!d._existe).length;
   const dups=_xmlParsedIng.filter(d=>d._existe&&!d._mismatchCliente&&!d._mismatchTotal).length;
   const inconsistentes=_xmlParsedIng.filter(d=>d._existe&&(d._mismatchCliente||d._mismatchTotal)).length;
+  const ligadas=_xmlParsedIng.filter(d=>!d._existe&&d._clienteCarteraId).length;
   const INP2='width:100%;padding:4px 6px;border:1px solid var(--border);border-radius:4px;font-size:11px;box-sizing:border-box;font-family:Inter,sans-serif;';
   area.innerHTML=`
     <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
       <span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(39,174,96,0.12);color:#27AE60;">✅ ${nuevos} nuevo${nuevos!==1?'s':''}</span>
       ${dups>0?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(0,169,157,0.12);color:var(--teal);">🔗 ${dups} ya registrada${dups!==1?'s':''} — se adjuntará el XML</span>`:''}
       ${inconsistentes>0?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(232,64,64,0.12);color:var(--red);">🚨 ${inconsistentes} inconsistente${inconsistentes!==1?'s':''} — revisar</span>`:''}
+      ${nuevos>0?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(0,169,157,0.12);color:var(--teal);">🔗 ${ligadas} de ${nuevos} ligada${ligadas!==1?'s':''} a Cartera (comentario automático en la cuenta)</span>`:''}
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:11px;">
       <thead><tr style="background:var(--navy);color:#fff;">
@@ -25618,7 +25690,10 @@ async function previsualizarXMLsIng(){
           <td style="padding:4px 6px;color:var(--text3);font-size:10px;">${d._file.slice(0,20)}</td>
           <td style="padding:4px 6px;text-align:center;">${d.fecha}</td>
           <td style="padding:4px 6px;text-align:center;font-weight:700;color:var(--navy);">${d.folio||'—'}</td>
-          <td style="padding:4px 6px;max-width:130px;"><input type="text" value="${(d.cliente||'').replace(/"/g,'&quot;')}" oninput="_xmlParsedIng[${i}].cliente=this.value" style="${INP2}"></td>
+          <td style="padding:4px 6px;max-width:130px;">
+            <input type="text" value="${(d.cliente||'').replace(/"/g,'&quot;')}" oninput="_xmlParsedIng[${i}].cliente=this.value;_xmlParsedIng[${i}]._clienteCarteraId='';_xmlParsedIng[${i}]._clienteCarteraNombre='';document.getElementById('xiLiga_${i}').style.display='none';" style="${INP2}">
+            <div id="xiLiga_${i}" style="display:${d._clienteCarteraId?'block':'none'};font-size:9px;color:var(--teal);font-weight:600;margin-top:2px;">🔗 ${d._clienteCarteraNombre||''}</div>
+          </td>
           <td style="padding:4px 6px;text-align:right;font-weight:700;">$${d.total.toLocaleString('es-MX',{minimumFractionDigits:2})}</td>
           <td style="padding:4px 6px;"><select onchange="_xmlParsedIng[${i}]._vendedor=this.value" style="${INP2}">${vendedores.map(v=>`<option value="${v}">${v||'-- Vendedor --'}</option>`).join('')}</select></td>
           <td style="padding:4px 6px;"><select onchange="_xmlParsedIng[${i}]._rubro=this.value" style="${INP2}"><option value="">-- Rubro --</option>${rubros.map(r=>`<option value="${r}">${r}</option>`).join('')}</select></td>
@@ -25682,11 +25757,16 @@ async function guardarXMLsMasivoIng(){
       rubro:d._rubro||null,subtotal_original:d.subtotal||0,descuento:0,
       subtotal_final:d.subtotal||0,iva:d.ivaTras||0,total:d.total||0,
       forma_pago:'TRANSFERENCIA',estatus,fecha_pago:d._fechaPago||null,
-      cobrado,conciliado:false
+      cobrado,conciliado:false,
+      cliente_cartera_id:d._clienteCarteraId||null,
     };
     const {data:newRow,error}=await sb.from('fact_ingresos').insert(payload).select().single();
     if(error){err++;continue;}
     ok++;
+    // Comentario automático en la cuenta del cliente (Jp, 2026-10-30) — solo
+    // si quedó ligada por coincidencia exacta (ver fiMatchClienteCarteraPorNombreXml
+    // arriba en previsualizarXMLsIng). No bloquea si falla.
+    fiComentarNuevaFacturaEnCuenta(payload.cliente_cartera_id,newRow);
     if(d._xmlText){
       const path=await subirXMLStorage(d._xmlText,'ingresos',d.folio);
       if(path) await sb.from('fact_ingresos').update({xml_path:path}).eq('id',newRow.id);
