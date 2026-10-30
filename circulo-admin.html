@@ -483,9 +483,15 @@ async function sugerirSuscripcionEmpresa(){
   const especialidad=document.getElementById('nEspecialidad').value;
   const idsValidos=empresaSeleccionada.idsValidos||[empresaSeleccionada.id];
   const {data,error}=await sb.from('suscripciones_cartera')
-    .select('numserie,periodicidad,sistema,estado,fecha_proxima_renovacion,alerta_posible_perdida,cliente_id')
+    .select('numserie,periodicidad,producto,estado,fecha_proxima_renovacion,alerta_posible_perdida,cliente_id')
     .in('cliente_id',idsValidos)
-    .ilike('sistema',`%${especialidad}%`);
+    .eq('tipo_producto','suscripcion')
+    .ilike('producto',`${especialidad}%`);
+  // Jp, 2026-10-30 — BUG REAL: antes se consultaba la columna "sistema", que
+  // NO existe en suscripciones_cartera (el producto vive en "producto", ej.
+  // "NOI Suscrip"). La consulta devolvía error y siempre caía en el mensaje
+  // "no tiene ninguna suscripción" (casos Farmacias El Fénix del Centro y
+  // Corredor Eje 4), aunque la suscripción sí existiera y estuviera vigente.
   // Jp, 2026-10-30 — mensaje explícito cuando la empresa no tiene ninguna
   // suscripción elegible (antes no decía nada, solo se quedaba en blanco),
   // con la instrucción de Jp de remitir a Ventas.
@@ -503,7 +509,7 @@ async function sugerirSuscripcionEmpresa(){
   if(!elegibles.length){ sugWrap.innerHTML=SIN_SUSCRIPCION; return; }
   sugWrap.innerHTML=elegibles.map(s=>`
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:#eefaf9;border:1px solid var(--teal);border-radius:10px;padding:8px 12px;font-size:12.5px;margin-top:6px">
-      <span>${empresaSeleccionada.razon_social} ya tiene ${s.sistema||especialidad} · serie <strong>${s.numserie}</strong> (${s.periodicidad||'—'})${s.cliente_id!==empresaSeleccionada.id?' <span style="color:var(--text3);font-style:italic;">— en una subcuenta ligada</span>':''}</span>
+      <span>${empresaSeleccionada.razon_social} ya tiene ${s.producto||especialidad} · serie <strong>${s.numserie}</strong> (${s.periodicidad||'—'})${s.cliente_id!==empresaSeleccionada.id?' <span style="color:var(--text3);font-style:italic;">— en una subcuenta ligada</span>':''}</span>
       <button type="button" class="btn secondary small" onclick="vincularSugerencia('${s.numserie}')">Vincular esta serie</button>
     </div>
   `).join('');

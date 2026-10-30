@@ -9622,6 +9622,18 @@ function swCartera(sub){
     return true;
   });
 
+  // Jp, 2026-10-30 — "se me queda colapsado... me aparecen 0 cuentas, tengo
+  // que salir del módulo y volver a entrar": en "Mi cartera" (la pestaña por
+  // default) buscar una cuenta que no es tuya dejaba la vista en 0 y con
+  // todas las tarjetas en 0, sin pista de que la cuenta sí existe en
+  // "Todos los clientes". Ahora, si en una sub-pestaña restringida (Mi cartera /
+  // Activos / Sin seguimiento) la búsqueda por texto no encuentra nada pero SÍ
+  // hay coincidencias en toda la cartera, se cambia sola a "Todos los
+  // clientes" para mostrarlas.
+  if(q&&!filtradosBase.length&&sub!=='todos'){
+    const hayEnTodos=clientes.some(cl=>(cl.razon_social||'').toLowerCase().includes(q)||(cl.rfc||'').toLowerCase().includes(q)||(cl.num_cliente||'').toLowerCase().includes(q)||(cl.alias_nombres||[]).some(a=>(a||'').toLowerCase().includes(q)));
+    if(hayEnTodos){ swCartera('todos'); return; }
+  }
   renderCarteraStats(filtradosBase); // Jp, 2026-10-14: tarjetas de conteo sobre la lista base (sin el filtro de tipo) — quedan fijas al moverte entre ellas.
 
   // Filtro de tipo (tarjetas Aliado/Aspel/Eventual/Cursos, clic arriba) —
@@ -10301,9 +10313,42 @@ async function borrarSuscripcionCliente(suscId,clienteId){
   abrirFichaClienteModal(clienteId);
 }
 
+// Jp, 2026-10-30 — "que me pongas algún indicativo de que diga validada y
+// verificada por dirección": los vendedores pueden capturar/marcar una
+// suscripción como renovada a mano, pero solo cuenta como VERIFICADA cuando
+// aparece en un reporte de renovaciones de Aspel que Dirección cargó
+// (origen='carga_excel' con archivo_origen y mes_reportado). El resto, si ya
+// está marcada reclamada/renovada, queda como "sin verificar con reporte Aspel".
+function suscVerificadaBadgeHtml(s){
+  if(s.origen==='carga_excel'&&s.mes_reportado){
+    const mes=String(s.mes_reportado).slice(0,7);
+    return `<span class="pipe-badge" title="Aparece en el reporte de Aspel cargado por Dirección${s.archivo_origen?': '+s.archivo_origen:''}" style="font-size:9px;background:rgba(39,174,96,0.14);color:#1E8449;">✔ Verificada por Dirección · ${mes}</span>`;
+  }
+  if(['reclamada','renovada'].includes(s.estado)){
+    return `<span class="pipe-badge" title="Marcada manualmente; todavía no aparece en ningún reporte de Aspel cargado por Dirección" style="font-size:9px;background:rgba(245,166,35,0.16);color:#B9770E;">⏳ Sin verificar con reporte Aspel</span>`;
+  }
+  return '';
+}
+
 async function abrirFichaClienteModal(clienteId){
   const cl=(window._cartClientes||[]).find(c=>c.id===clienteId);
   if(!cl) return;
+  // Jp, 2026-10-30 — casos Fénix del Centro y Corredor Eje 4: la suscripción NOI
+  // se veía a la derecha pero "Sistemas y licencias" salía vacío. La lista de
+  // Cartera se carga una sola vez al entrar al módulo y puede quedar vieja
+  // respecto a lo que ya sincronizó el CRM; al abrir una ficha se vuelven a
+  // leer SIEMPRE los sistemas y suscripciones de esa cuenta, frescos.
+  try{
+    const [{data:sisFrescos},{data:susFrescas}]=await Promise.all([
+      sb.from('clientes_cartera_sistemas').select('*').eq('cliente_cartera_id',clienteId),
+      sb.from('suscripciones_cartera').select('*').eq('cliente_id',clienteId).order('fecha_proxima_renovacion'),
+    ]);
+    if(sisFrescos){
+      cl._sistemas=sisFrescos;
+      window._cartSistemasPorCliente=(window._cartSistemasPorCliente||[]).filter(x=>x.cliente_cartera_id!==clienteId).concat(sisFrescos);
+    }
+    if(susFrescas) cl._suscripciones=susFrescas;
+  }catch(e){ console.error('abrirFichaClienteModal: refresco de sistemas/suscripciones falló',e); }
   const vendedores=window._carteraVendedores||[];
   // Cargar subcuentas y sus suscripciones
   const subcuentas=(window._cartClientes||[]).filter(c=>c.cliente_padre_id===clienteId);
@@ -10322,6 +10367,7 @@ async function abrirFichaClienteModal(clienteId){
         ${s.tipo_producto==='diplomado'?`<span class="pipe-badge" style="font-size:9px;background:rgba(41,128,185,0.12);color:#2980B9;">DIPLOMADO</span>`:''}
         ${s.periodicidad?`<span style="font-size:10px;color:var(--text3);text-transform:capitalize;">${s.periodicidad}</span>`:''}
         ${s.monto?`<span style="font-size:11px;font-weight:600;color:var(--teal);">${fmt(s.monto)}</span>`:''}
+        ${suscVerificadaBadgeHtml(s)}
         ${s.sistema_id?`<span class="pipe-badge" title="Esta suscripción está ligada a su sistema en 'Sistemas y licencias' (datos del CRM)" style="font-size:9px;background:rgba(0,169,157,0.12);color:var(--teal);">🔗 Ligada con CRM</span>`:''}
         ${editable?`<span onclick="borrarSuscripcionCliente('${s.id}','${clienteId}')" title="Eliminar suscripción" style="margin-left:auto;font-size:10px;color:var(--text3);cursor:pointer;">🗑</span>`:''}
       </div>
@@ -25443,10 +25489,12 @@ async function parsearXmlIngreso(){
   if(document.getElementById('fiCliente')) document.getElementById('fiCliente').value=d.cliente||'';
   if(document.getElementById('fiConcepto')) document.getElementById('fiConcepto').value=d.concepto||'';
   if(document.getElementById('fiSubtotal')) document.getElementById('fiSubtotal').value=d.subtotal||0;
-  if(document.getElementById('fiDescuento')) document.getElementById('fiDescuento').value=0;
+  if(document.getElementById('fiDescuento')) document.getElementById('fiDescuento').value=d.descuento||0;
   calcIngTotales();
+  // Los importes que mandan son los del XML (IVA y Total reales), no el 16% recalculado.
   if(document.getElementById('fiIva')) document.getElementById('fiIva').value=(d.ivaTras||0).toFixed(2);
   if(document.getElementById('fiTotal')) document.getElementById('fiTotal').value=(d.total||0).toFixed(2);
+  if(!d.cuadra) alert(`⚠ Los importes del XML no cuadran: S.Final $${d.subtotalFinal.toFixed(2)} + IVA $${d.ivaTras.toFixed(2)}${d.ivaRet||d.isr?` − retenciones $${(d.ivaRet+d.isr).toFixed(2)}`:''} = $${d.totalCalculado.toFixed(2)}, pero el XML dice Total $${d.total.toFixed(2)} (diferencia $${d.diferenciaImportes.toFixed(2)}). Revísalos antes de guardar.`);
 }
 
 function calcIngTotales(){
@@ -25666,6 +25714,19 @@ async function guardarAliasClienteXML(nombreSistema,nombreXml){
   return true;
 }
 
+// Celdas de importes (Subtotal, Desc., S.Final, IVA, Total) de la vista previa
+// de XML masivo de Ingresos — resalta en rojo cuando no cuadran (Jp, 2026-10-30).
+function impTdsXml(d){
+  const f=n=>'$'+(n||0).toLocaleString('es-MX',{minimumFractionDigits:2});
+  const base='padding:4px 6px;text-align:right;font-family:\'JetBrains Mono\',monospace;';
+  const rojo=d.cuadra?'':'color:var(--red);font-weight:700;';
+  return `<td style="${base}">${f(d.subtotal)}</td>
+    <td style="${base}color:var(--red);">${d.descuento>0?f(d.descuento):''}</td>
+    <td style="${base}${rojo}">${f(d.subtotalFinal)}</td>
+    <td style="${base}${rojo}">${f(d.ivaTras)}</td>
+    <td style="${base}font-weight:700;${rojo}" title="${d.cuadra?'Importes cuadran':'NO CUADRA: S.Final + IVA'+(d.ivaRet||d.isr?' − retenciones':'')+' = '+f(d.totalCalculado)+' vs Total XML '+f(d.total)}">${f(d.total)}${d.cuadra?'':' ⚠'}</td>`;
+}
+
 async function previsualizarXMLsIng(){
   const files=Array.from(document.getElementById('xmlMasivoIng')?.files||[]);
   if(!files.length)return;
@@ -25731,6 +25792,7 @@ async function previsualizarXMLsIng(){
       <span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(39,174,96,0.12);color:#27AE60;">✅ ${nuevos} nuevo${nuevos!==1?'s':''}</span>
       ${dups>0?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(0,169,157,0.12);color:var(--teal);">🔗 ${dups} ya registrada${dups!==1?'s':''} — se adjuntará el XML</span>`:''}
       ${inconsistentes>0?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(232,64,64,0.12);color:var(--red);">🚨 ${inconsistentes} inconsistente${inconsistentes!==1?'s':''} — revisar</span>`:''}
+      ${(()=>{const nc=_xmlParsedIng.filter(d=>!d.cuadra).length;return nc?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(232,64,64,0.12);color:var(--red);">⚠ ${nc} con importes que NO cuadran (S.Final + IVA ≠ Total)</span>`:'';})()}
       ${nuevos>0?`<span style="padding:4px 10px;border-radius:12px;font-size:11px;font-weight:700;background:rgba(0,169,157,0.12);color:var(--teal);">🔗 ${ligadas} de ${nuevos} ligada${ligadas!==1?'s':''} a Cartera (comentario automático en la cuenta)</span>`:''}
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:11px;">
@@ -25739,6 +25801,10 @@ async function previsualizarXMLsIng(){
         <th style="padding:6px 8px;">Fecha</th>
         <th style="padding:6px 8px;">Folio</th>
         <th style="padding:6px 8px;text-align:left;">Cliente</th>
+        <th style="padding:6px 8px;text-align:right;">Subtotal</th>
+        <th style="padding:6px 8px;text-align:right;">Desc.</th>
+        <th style="padding:6px 8px;text-align:right;">S.Final</th>
+        <th style="padding:6px 8px;text-align:right;">IVA</th>
         <th style="padding:6px 8px;text-align:right;">Total</th>
         <th style="padding:6px 8px;">Vendedor</th>
         <th style="padding:6px 8px;">Rubro</th>
@@ -25759,7 +25825,7 @@ async function previsualizarXMLsIng(){
             <td style="padding:4px 6px;text-align:center;">${d.fecha}</td>
             <td style="padding:4px 6px;text-align:center;font-weight:700;color:var(--navy);">${d.folio||'—'}</td>
             <td style="padding:4px 6px;">${d.cliente||''}</td>
-            <td style="padding:4px 6px;text-align:right;font-weight:700;">$${d.total.toLocaleString('es-MX',{minimumFractionDigits:2})}</td>
+            ${impTdsXml(d)}
             <td colspan="4" style="padding:4px 6px;font-size:10px;color:${inconsist?'var(--red)':'var(--teal)'};font-style:italic;font-weight:${inconsist?'700':'400'};">${inconsist?'🚨 ya registrado pero NO coincide: '+detalle:'🔗 '+detalle}</td>
           </tr>`;
           }
@@ -25771,7 +25837,7 @@ async function previsualizarXMLsIng(){
             <input type="text" value="${(d.cliente||'').replace(/"/g,'&quot;')}" oninput="_xmlParsedIng[${i}].cliente=this.value;_xmlParsedIng[${i}]._clienteCarteraId='';_xmlParsedIng[${i}]._clienteCarteraNombre='';document.getElementById('xiLiga_${i}').style.display='none';" style="${INP2}">
             <div id="xiLiga_${i}" style="display:${d._clienteCarteraId?'block':'none'};font-size:9px;color:var(--teal);font-weight:600;margin-top:2px;">🔗 ${d._clienteCarteraNombre||''}</div>
           </td>
-          <td style="padding:4px 6px;text-align:right;font-weight:700;">$${d.total.toLocaleString('es-MX',{minimumFractionDigits:2})}</td>
+          ${impTdsXml(d)}
           <td style="padding:4px 6px;"><select onchange="_xmlParsedIng[${i}]._vendedor=this.value" style="${INP2}">${vendedores.map(v=>`<option value="${v}">${v||'-- Vendedor --'}</option>`).join('')}</select></td>
           <td style="padding:4px 6px;"><select onchange="_xmlParsedIng[${i}]._rubro=this.value" style="${INP2}"><option value="">-- Rubro --</option>${rubros.map(r=>`<option value="${r}">${r}</option>`).join('')}</select></td>
           <td style="padding:4px 6px;"><select onchange="_xmlParsedIng[${i}]._estatus=this.value" style="${INP2}"><option value="EMITIDA">EMITIDA</option><option value="PAGADA">PAGADA</option></select></td>
@@ -25831,8 +25897,8 @@ async function guardarXMLsMasivoIng(){
     const payload={
       anio:currentYear,mes:currentMonth,fecha:d.fecha||null,folio:d.folio||null,
       serie,cliente:d.cliente||null,vendedor,concepto:d.concepto||null,
-      rubro:d._rubro||null,subtotal_original:d.subtotal||0,descuento:0,
-      subtotal_final:d.subtotal||0,iva:d.ivaTras||0,total:d.total||0,
+      rubro:d._rubro||null,subtotal_original:d.subtotal||0,descuento:d.descuento||0,
+      subtotal_final:d.subtotalFinal??((d.subtotal||0)-(d.descuento||0)),iva:d.ivaTras||0,total:d.total||0,
       forma_pago:'TRANSFERENCIA',estatus,fecha_pago:d._fechaPago||null,
       cobrado,conciliado:false,
       cliente_cartera_id:d._clienteCarteraId||null,
@@ -27069,12 +27135,38 @@ function parsearCFDI(xmlStr){
     });
   }
 
+  // Jp, 2026-10-30 — importes completos del XML (Subtotal, Descuento,
+  // Subtotal final, IVA, Total). Antes la carga masiva ignoraba el Descuento
+  // (lo guardaba en 0 y dejaba Subtotal final = Subtotal) y no verificaba que
+  // los importes cuadraran, por eso varias facturas quedaban con S.Final/IVA
+  // en 0 o con importes que no sumaban al Total.
+  const num=v=>{const n=parseFloat(v);return Number.isFinite(n)?n:0;};
+  const subtotal=num(cfdi.getAttribute('SubTotal'));
+  let descuento=num(cfdi.getAttribute('Descuento'));
+  // Algunos XML traen el descuento solo por concepto y no en el Comprobante.
+  if(!descuento) descuento=conceptoNodos.reduce((a,c)=>a+num(c.getAttribute('Descuento')),0);
+  const total=num(cfdi.getAttribute('Total'));
+  // IVA trasladado: atributo del nodo raíz; si no viene, suma de los Traslado del raíz.
+  if(!ivaTras&&impRaiz){
+    Array.from(impRaiz.getElementsByTagName('*')).forEach(el=>{
+      if(el.localName==='Traslado'&&el.getAttribute('Impuesto')==='002') ivaTras+=num(el.getAttribute('Importe'));
+    });
+  }
+  ivaTras=num(ivaTras); ivaRet=num(ivaRet);
+  const subtotalFinal=Math.round((subtotal-descuento)*100)/100;
+  // Total esperado = S.Final + IVA trasladado - retenciones (IVA + ISR).
+  const totalCalculado=Math.round((subtotalFinal+ivaTras-ivaRet-isr)*100)/100;
+  const diferenciaImportes=Math.round((totalCalculado-total)*100)/100;
+  const cuadra=Math.abs(diferenciaImportes)<=1; // tolerancia de $1 por redondeo
+
   return {
     fecha:(cfdi.getAttribute('Fecha')||'').slice(0,10),
     folio:(cfdi.getAttribute('Serie')||'')+(cfdi.getAttribute('Folio')||''),
-    subtotal:parseFloat(cfdi.getAttribute('SubTotal')||0),
-    descuento:parseFloat(cfdi.getAttribute('Descuento')||0),
-    total:parseFloat(cfdi.getAttribute('Total')||0),
+    subtotal,
+    descuento,
+    subtotalFinal,
+    totalCalculado,diferenciaImportes,cuadra,
+    total,
     moneda:cfdi.getAttribute('Moneda')||'MXN',
     formaPago:cfdi.getAttribute('FormaPago')||'',
     metodoPago:cfdi.getAttribute('MetodoPago')||'',
