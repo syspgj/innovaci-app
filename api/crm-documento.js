@@ -324,13 +324,29 @@ async function verificarRelacionDocumento(sessionName, padreId, docId) {
 // directo a ese documento. Sin emojis (llegaban como "????").
 async function adjuntarAComentario(sessionName, { padreId, comentarioPadreId, nombre, docId, assignedUserId }) {
   const numId = String(docId || '').split('x').pop();
-  const enlace = `${String(VTIGER_BASE_URL).replace(/\/+$/, '')}/index.php?module=Documents&view=Detail&record=${numId}`;
-  const element = { commentcontent: `Archivo adjunto: ${nombre}\nVer documento en CRM: ${enlace}`, related_to: padreId, assigned_user_id: assignedUserId };
+  // Base fija del CRM (la misma que usa el front); VTIGER_BASE_URL no sirve para enlaces de navegador.
+  const enlace = `http://crminn.dynns.com/innova/index.php?module=Documents&view=Detail&record=${numId}`;
+  const linea = `Archivo adjunto: ${nombre}\nVer documento en CRM: ${enlace}`;
+  const notas = [];
+  // 1) Preferido: agregar el enlace AL MISMO comentario de bitácora (así se ve
+  //    directo en Comentarios, sin tener que abrir "Responder").
+  if (comentarioPadreId) {
+    try {
+      const g = await fetch(`${VTIGER_BASE_URL}/webservice.php?operation=retrieve&sessionName=${encodeURIComponent(sessionName)}&id=${encodeURIComponent(comentarioPadreId)}`).then((r) => r.json());
+      if (g.success && g.result) {
+        const el = { ...g.result, commentcontent: `${g.result.commentcontent || ''}\n\n${linea}` };
+        const u = await postVtigerRaw({ operation: 'update', sessionName, element: JSON.stringify(el) });
+        if (u.json && u.json.success) return { verificado: true, resumen: `comentario ${comentarioPadreId} actualizado con enlace al documento ${docId}` };
+        notas.push('update: ' + (u.json ? JSON.stringify(u.json.error || u.json) : `HTTP ${u.status} ${u.texto.slice(0, 100)}`));
+      } else notas.push('retrieve: ' + JSON.stringify(g.error || g));
+    } catch (e) { notas.push('update falló: ' + String(e?.message || e)); }
+  }
+  // 2) Respaldo: nueva respuesta con el enlace.
+  const element = { commentcontent: linea, related_to: padreId, assigned_user_id: assignedUserId };
   if (comentarioPadreId) element.parent_comments = comentarioPadreId;
   const r = await postVtigerRaw({ operation: 'create', sessionName, elementType: 'ModComments', element: JSON.stringify(element) });
   if (!(r.json && r.json.success)) throw new Error(`create ModComments: ${r.json ? JSON.stringify(r.json.error || r.json) : `HTTP ${r.status} ${r.texto.slice(0, 100)}`}`);
-  const id = r.json.result?.id;
-  return { verificado: !!id, resumen: `comentario ${id} con enlace al documento ${docId} (${enlace})` };
+  return { verificado: true, resumen: `respuesta ${r.json.result?.id} con enlace (${notas.join('; ') || 'sin comentario padre'})` };
 }
 
 async function actualizarFilaDocumento(id, cambios) {
