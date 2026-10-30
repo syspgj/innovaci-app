@@ -1483,8 +1483,17 @@ async function renderAcademiaEvaluaciones(){
     if(!totalPracticas) return null; // curso sin prácticas definidas, no aplica
     const marcadas=marcadasPorInscripcion[insc.id]||0;
     if(marcadas>=totalPracticas) return null; // ya evaluado completo, no es pendiente
-    const vencioEn=new Date(vig.fecha+'T00:00:00');
-    const horasVencido=Math.floor((ahora-vencioEn)/3600000);
+    // Jp, 2026-10-29 — "vencido" a nivel de día ya lo decide
+    // academiaVigenciaInfo/academiaVigenciaSimple (medianoche a medianoche,
+    // sin tocar), pero el "tiempo transcurrido" en horas de esta pantalla
+    // tomaba la medianoche del día de vencimiento como punto de partida
+    // (00:00), cuando el corte real que usa el equipo internamente es a las
+    // 17:00 de ese mismo día — eso generaba un desfase de hasta 17h de más
+    // en el reloj mostrado (ej. mostraba "1d 13h" cuando en realidad eran
+    // menos). Se corrige el punto de partida a 17:00, sin tocar el estado
+    // "vencido"/"por vencer" en sí.
+    const vencioEn=new Date(vig.fecha+'T17:00:00');
+    const horasVencido=Math.max(0,Math.floor((ahora-vencioEn)/3600000));
     return {insc,gen,marcadas,totalPracticas,horasVencido,fechaVenc:vig.fecha};
   }).filter(Boolean).sort((a,b)=>b.horasVencido-a.horasVencido);
 
@@ -10524,6 +10533,17 @@ async function abrirFichaClienteModal(clienteId){
         </div>`,
         'fcSeccionComentariosCrm'
       )}
+      ${seccion('🌐 Círculo Innovaci',
+        // Jp, 2026-10-30: "en cartera, en cuenta... se debe de agregar un
+        // campo, una sección donde se ponga las membresías... y los socios
+        // que están dados de alta con esa cuenta, para que cuando el
+        // vendedor o cualquiera de nosotros consulte las cuentas lo pueda
+        // validar". Solo lectura — el alta/edición de socios sigue
+        // viviendo en circulo-admin.html, esto es nada más visibilidad
+        // desde la ficha de la cuenta.
+        `<div id="fcCirculoBox" style="font-size:12px;color:var(--text3);">Cargando socios de Círculo Innovaci...</div>`,
+        'fcSeccionCirculo'
+      )}
       ${seccion('Actividades de seguimiento',
         // Jp, 2026-10-13: "cómo en cartera de cuentas, cuando los vendedores
         // le dan seguimiento a su cartera de cuentas, cómo registran
@@ -10552,6 +10572,41 @@ async function abrirFichaClienteModal(clienteId){
   cargarDocumentosAdjuntos('cuenta',clienteId,'docListCuenta_'+clienteId);
   fcCargarActividades(clienteId,cl.num_cliente);
   fcCargarEventosMasterclass(clienteId);
+  fcCargarCirculoInnovaci(clienteId);
+}
+
+// Jp, 2026-10-30 — visibilidad de Círculo Innovaci desde la ficha de la
+// Cuenta en Cartera (ver seccion('🌐 Círculo Innovaci', ...) arriba). Trae
+// TODOS los socios ligados a esta cuenta (circulo_membresias.cliente_cartera_id),
+// sin importar el estado, para que se vea también si alguno quedó
+// suspendido o cancelado — no solo los activos.
+const CIRCULO_ESTADO_COLOR={activa:'#27AE60',suspendida:'var(--gold)',cancelada:'var(--red)'};
+async function fcCargarCirculoInnovaci(clienteId){
+  const box=document.getElementById('fcCirculoBox');
+  if(!box) return;
+  const {data:socios,error}=await sb.from('circulo_membresias')
+    .select('nombre,email,especialidad,plan,estado,numserie_aspel,fecha_activacion,fecha_vencimiento')
+    .eq('cliente_cartera_id',clienteId)
+    .order('fecha_activacion',{ascending:false});
+  if(error){ box.innerHTML=`<div style="font-size:12px;color:var(--red);">No se pudieron cargar (${error.message}).</div>`; return; }
+  if(!socios||!socios.length){
+    box.innerHTML=`<div style="font-size:12px;color:var(--text3);font-style:italic;">Esta cuenta no tiene socios de Círculo Innovaci dados de alta.</div>`;
+    return;
+  }
+  const ac=(esp)=>esp==='NOI'?{c:'var(--gold)'}:esp==='SAE'?{c:'var(--red)'}:{c:'var(--teal)'};
+  box.innerHTML=`<div style="display:grid;gap:6px;">${socios.map(s=>`
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);font-size:12px;">
+      <div>
+        <div style="font-weight:600;color:var(--text);">${s.nombre||'—'} <span style="font-weight:400;color:var(--text3);">${s.email||''}</span></div>
+        <div style="font-size:10.5px;color:var(--text3);margin-top:2px;">
+          <span style="color:${ac(s.especialidad).c};font-weight:700;">${s.especialidad||''}</span>
+          · ${s.plan==='socio_pro'?'Socio Pro':'Socio'}
+          ${s.numserie_aspel?` · serie ${s.numserie_aspel}`:''}
+          ${s.fecha_vencimiento?` · vigente hasta ${fmtFecha(s.fecha_vencimiento)}`:''}
+        </div>
+      </div>
+      <span style="font-size:10px;font-weight:700;color:${CIRCULO_ESTADO_COLOR[s.estado]||'var(--text3)'};text-transform:uppercase;">${s.estado||'—'}</span>
+    </div>`).join('')}</div>`;
 }
 
 // Jp, 2026-10-21: "debería... que en cuenta se registre que asistió a la
