@@ -118,6 +118,18 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
     <div class="stats" id="statsWrap"></div>
   </div>
 
+  <!-- Jp, 2026-10-30 — chequeo continuo de vigencia: "en cuanto detecte que
+       no se actualizó la vigencia de alguna suscripción... se mande una
+       alerta en círculo, en el panel de administrador de círculo". Mismo
+       aviso que manda api/cron/circulo-suscripciones-vencidas-check.js por
+       Telegram, pero leído en vivo aquí (no depende de cuándo corrió el
+       cron por última vez) — solo informa, NO suspende nada solo. -->
+  <div class="card hidden" id="cardSuscripcionesRiesgo" style="border:1px solid var(--red)">
+    <h2 style="color:var(--red)">⚠️ Suscripciones sin renovar — socios en riesgo</h2>
+    <div class="sub" style="margin-bottom:14px">Socios de Círculo ligados a una suscripción Aspel que ya no aparece vigente o pagada en Cartera. Valídalo con el cliente/Suscripciones y, si ya no sigue vigente, suspende al socio desde la tabla de abajo.</div>
+    <div id="listaSuscripcionesRiesgo"></div>
+  </div>
+
   <div class="card">
     <h2>🧪 Laboratorio Virtual</h2>
     <div class="sub" style="margin-bottom:14px">Todo lo que necesitas controlar del beneficio de laboratorio en un solo lugar: lo ya asignado, lo que está por vencer, y las solicitudes nuevas por revisar.</div>
@@ -530,6 +542,51 @@ async function mostrarApp(){
   cargarSocios();
   cargarSolicitudes();
   cargarLaboratorioVirtualAsignados();
+  cargarSuscripcionesRiesgo();
+}
+
+// Jp, 2026-10-30 — mismo criterio exacto de "en riesgo" que usa
+// api/cron/circulo-suscripciones-vencidas-check.js (y que ya usan
+// validarSerie()/sugerirSuscripcionEmpresa() al dar de alta), pero leído en
+// vivo cada vez que se abre el panel — no depende de cuándo corrió el cron.
+function motivoRiesgoSuscripcion(sus, hoyISO) {
+  if (!sus) return 'no se encuentra esta serie en Cartera';
+  if (sus.alerta_posible_perdida) return 'con alerta de posible pérdida a otro distribuidor';
+  if (!sus.fecha_proxima_renovacion || sus.fecha_proxima_renovacion < hoyISO) return 'vencida — no se detectó su renovación';
+  if (!['reclamada', 'renovada'].includes(sus.estado)) return `sin pago registrado (estado: ${sus.estado || 'sin dato'})`;
+  return null;
+}
+async function cargarSuscripcionesRiesgo(){
+  const card=document.getElementById('cardSuscripcionesRiesgo');
+  const cont=document.getElementById('listaSuscripcionesRiesgo');
+  const {data:socios,error}=await sb.from('circulo_membresias')
+    .select('id,nombre,empresa,especialidad,plan,numserie_aspel,estado')
+    .eq('origen','vinculacion_aspel')
+    .neq('estado','cancelada')
+    .not('numserie_aspel','is',null);
+  if(error || !socios || !socios.length){ card.classList.add('hidden'); return; }
+
+  const series=[...new Set(socios.map(s=>s.numserie_aspel))];
+  const {data:suscripciones}=await sb.from('suscripciones_cartera')
+    .select('numserie,estado,fecha_proxima_renovacion,alerta_posible_perdida')
+    .in('numserie',series);
+  const susPorSerie={};
+  (suscripciones||[]).forEach(s=>{ susPorSerie[s.numserie]=s; });
+
+  const hoyISO=new Date().toISOString().slice(0,10);
+  const enRiesgo=socios.map(s=>{
+    const motivo=motivoRiesgoSuscripcion(susPorSerie[s.numserie_aspel],hoyISO);
+    return motivo?{...s,motivo}:null;
+  }).filter(Boolean);
+
+  if(!enRiesgo.length){ card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  cont.innerHTML=enRiesgo.map(s=>`
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:#fdecec;border:1px solid var(--red);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-top:8px">
+      <span><strong>${s.nombre}</strong>${s.empresa?` (${s.empresa})`:''} — ${s.especialidad}${s.plan==='socio_pro'?' Pro':''} · serie ${s.numserie_aspel}<br><span style="color:var(--red)">⚠ ${s.motivo}</span>${s.estado==='suspendida'?' · <strong>ya marcada como suspendida</strong>':''}</span>
+      <button type="button" class="btn secondary small" onclick="abrirEdicion('${s.id}')">Revisar socio</button>
+    </div>
+  `).join('');
 }
 
 async function crearMembresia(){
