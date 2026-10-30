@@ -263,36 +263,51 @@ async function cargarHistorialPreguntas(){
 }
 
 // ───────────────────────── Manual ─────────────────────────
+// Jp, 2026-10-28: "solo veo lo de Círculo" — esta función traía TODAS las
+// secciones de TODOS los manuales en una sola lista plana ordenada por
+// `orden` (una columna que arranca en 1 en CADA documento, así que se
+// entrelazaban: doc1-1, doc2-1, doc3-1, doc1-2...), y el encabezado del
+// índice usaba el título de un solo documento (el primero que regresara la
+// consulta) para TODA la lista — por eso siempre decía "Círculo Innovaci"
+// aunque debajo hubiera secciones de Mesa de Control y de Finanzas>Ingresos
+// mezcladas. Ahora se agrupa por documento_id y cada manual aparece con su
+// propio encabezado y su propio orden interno.
 async function cargarManual(){
-  const {data,error}=await sb.from('glosario_secciones').select('id,documento_id,orden,numero_seccion,titulo_seccion,contenido').order('orden');
+  const [{data:secciones,error},{data:docs}]=await Promise.all([
+    sb.from('glosario_secciones').select('id,documento_id,orden,numero_seccion,titulo_seccion,contenido').order('orden'),
+    sb.from('glosario_documentos').select('id,titulo').eq('activo',true).order('titulo'),
+  ]);
   const tocWrap=document.getElementById('tocWrap');
-  if(error || !data || !data.length){ tocWrap.innerHTML='<div class="vacio">Sin manuales cargados todavía.</div>'; return; }
-  seccionesManual=data;
-  const {data:docs}=await sb.from('glosario_documentos').select('id,titulo').eq('activo',true);
-  const tituloDoc = (docs && docs[0]) ? docs[0].titulo : 'Manual';
-  renderToc(tituloDoc, seccionesManual);
+  if(error || !secciones || !secciones.length){ tocWrap.innerHTML='<div class="vacio">Sin manuales cargados todavía.</div>'; return; }
+  seccionesManual=secciones;
+  window._docsManual=docs||[];
+  renderToc(seccionesManual);
 }
 
-function renderToc(tituloDoc, secciones){
+function renderToc(secciones){
   const tocWrap=document.getElementById('tocWrap');
-  tocWrap.innerHTML = `<div class="doc-titulo">${esc(tituloDoc)}</div>` + secciones.map(s=>`
-    <div class="toc-item${s.id===seccionActivaId?' active':''}" data-sid="${s.id}" onclick="mostrarSeccion('${s.id}')">
-      <span class="num">${esc(s.numero_seccion||'')}</span><span>${esc(s.titulo_seccion)}</span>
-    </div>
-  `).join('');
+  const docs=window._docsManual||[];
+  const porDoc={};
+  secciones.forEach(s=>{ (porDoc[s.documento_id]=porDoc[s.documento_id]||[]).push(s); });
+  const docsConSecciones=docs.filter(d=>porDoc[d.id]&&porDoc[d.id].length);
+  if(!docsConSecciones.length){ tocWrap.innerHTML='<div class="vacio">Sin resultados.</div>'; return; }
+  tocWrap.innerHTML = docsConSecciones.map(d=>{
+    const secs=(porDoc[d.id]||[]).slice().sort((a,b)=>(a.orden||0)-(b.orden||0));
+    return `<div class="doc-titulo">${esc(d.titulo)}</div>` + secs.map(s=>`
+      <div class="toc-item${s.id===seccionActivaId?' active':''}" data-sid="${s.id}" onclick="mostrarSeccion('${s.id}')">
+        <span class="num">${esc(s.numero_seccion||'')}</span><span>${esc(s.titulo_seccion)}</span>
+      </div>
+    `).join('');
+  }).join('');
 }
 
 function filtrarToc(){
   const q=document.getElementById('manualBuscar').value.trim().toLowerCase();
-  if(!q){
-    const {data:docs}=window._docsCache || {};
-    renderToc(document.querySelector('.doc-titulo')?.textContent || 'Manual', seccionesManual);
-    return;
-  }
+  if(!q){ renderToc(seccionesManual); return; }
   const filtradas=seccionesManual.filter(s=>
     (s.titulo_seccion||'').toLowerCase().includes(q) || (s.contenido||'').toLowerCase().includes(q)
   );
-  renderToc(document.querySelector('.doc-titulo')?.textContent || 'Manual', filtradas);
+  renderToc(filtradas);
 }
 
 function mostrarSeccion(id){
