@@ -8515,6 +8515,50 @@ async function sincronizarPipelinesDeProspectoConvertido(prospectoId,clienteCart
   }
 }
 
+// Jp, 2026-10-30 — "convertir un prospecto en cuenta... directamente en la
+// app... que se dé de alta en la app y que se replique en el CRM". Llamado
+// desde el botón "🏢 Convertir a cuenta" del modal de detalle de Prospectos
+// (abrirDetalle). Crea la Cuenta en Vtiger + la fila en clientes_cartera vía
+// /api/crm-crear-cuenta, liga el prospecto, migra a Oportunidad real del CRM
+// cualquier negociación de Proyección abierta que ya tuviera este prospecto
+// (sincronizarPipelinesDeProspectoConvertido, arriba), y refresca la ficha.
+async function convertirProspectoACuenta(prospectoId){
+  const p=(window._prospectos||[]).find(x=>x.id===prospectoId);
+  if(!p) return;
+  if(p.cliente_cartera_id){ alert('Este prospecto ya está convertido a cuenta.'); return; }
+  const nombreMostrar=p.empresa||`${p.nombre||''} ${p.apellidos||''}`.trim();
+  if(!confirm(`¿Convertir "${nombreMostrar}" en Cuenta?\n\nSe va a dar de alta como Cuenta nueva en el CRM (Vtiger) y en Cartera de cuentas de la App. Esta acción no se puede deshacer desde aquí.`)) return;
+  const btn=document.getElementById('btnConvertirCuenta');
+  if(btn){ btn.disabled=true; btn.textContent='Convirtiendo...'; }
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const res=await fetch('/api/crm-crear-cuenta',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body:JSON.stringify({prospecto_id:prospectoId,vendedor_usuario_id:currentUser.id}),
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){
+      alert('⚠️ No se pudo convertir a cuenta.\nDetalle: '+(j.error||res.status));
+      return;
+    }
+    p.cliente_cartera_id=j.cliente_cartera_id;
+    p._cuenta={id:j.cliente_cartera_id,razon_social:j.razon_social,num_cliente:j.num_cliente};
+    // Migra cualquier negociación de Proyección abierta de este prospecto a
+    // Oportunidad real del CRM, ahora que ya existe la cuenta.
+    await sincronizarPipelinesDeProspectoConvertido(prospectoId,j.cliente_cartera_id,j.razon_social);
+    alert(`✅ Cuenta creada: ${j.razon_social} (${j.num_cliente}).`);
+    document.getElementById('modalDetalle')?.remove();
+    await abrirDetalle(prospectoId);
+  }catch(e){
+    console.error('convertirProspectoACuenta error',e);
+    alert('⚠️ Error de conexión al intentar convertir a cuenta.');
+  }finally{
+    if(btn){ btn.disabled=false; btn.textContent='🏢 Convertir a cuenta'; }
+  }
+}
+
 // Jp, 2026-10-14: se llama cuando una negociación EXISTENTE (edición, no
 // alta) queda ligada a una cuenta real y todavía no tenía Oportunidad en el
 // CRM. Busca Oportunidades abiertas de esa cuenta que no estén ya ligadas a
@@ -17623,6 +17667,10 @@ async function abrirDetalle(id){
     <!-- FOOTER -->
     ${window._modalModoDirector
       ?`<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;gap:8px;position:sticky;bottom:0;background:var(--surface);">
+          ${!p.cliente_cartera_id?`<button id="btnConvertirCuenta" onclick="convertirProspectoACuenta('${p.id}')" title="Dar de alta este prospecto como Cuenta real en el CRM y en Cartera de cuentas"
+            style="background:#8E44AD;color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">
+            🏢 Convertir a cuenta
+          </button>`:''}
           <button onclick="document.getElementById('modalDetalle').remove();window._modalModoDirector=false;"
             style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
             Cerrar
@@ -17640,6 +17688,10 @@ async function abrirDetalle(id){
           ${(window._prospectosVCtx&&(p.vendedor_asignado===currentUser.id||!p.vendedor_asignado))?`<button onclick="agregarFilaPipeDesdeProspectoModal('${p.id}')" title="Abrir una negociación en Proyección ligada a este prospecto"
             style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">
             + Proyección
+          </button>`:''}
+          ${!p.cliente_cartera_id?`<button id="btnConvertirCuenta" onclick="convertirProspectoACuenta('${p.id}')" title="Dar de alta este prospecto como Cuenta real en el CRM y en Cartera de cuentas"
+            style="background:#8E44AD;color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">
+            🏢 Convertir a cuenta
           </button>`:''}
           <a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}" target="_blank"
             style="background:#25D366;color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;white-space:nowrap;">
