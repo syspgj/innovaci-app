@@ -6042,6 +6042,21 @@ async function renderCotizador(){
   window._cotizDescuentos=descuentos||[];
   if(necesitaCuentas&&cuentasExtra) window._cartClientes=cuentasExtra;
   if(necesitaProspectos&&prospectosExtra?.data) window._prospectos=prospectosExtra.data;
+  // Jp, 2026-10-31: 3er producto (TS Plus) — catálogo de licencias ya existente
+  // (productos_ts_plus + ts_plus_config) y servicios de implementación editables.
+  const [{data:ceTar},{data:ceCursos}]=await Promise.all([
+    sb.from('cotizador_cursos_tarifas').select('*'),
+    sb.from('cotizador_cursos_emp').select('*').eq('activo',true).order('orden'),
+  ]);
+  window._ceTarifas=ceTar||[]; window._ceCursos=ceCursos||[];
+  const [{data:tsRows},{data:tsCfg},{data:tsImpl}]=await Promise.all([
+    sb.from('productos_ts_plus').select('*').eq('activo',true).eq('seccion','licencias').eq('tipo','nueva').eq('categoria','remote_access').order('orden'),
+    sb.from('ts_plus_config').select('*').eq('id',1).maybeSingle(),
+    sb.from('cotizador_servicios_impl').select('*').eq('activo',true).order('orden'),
+  ]);
+  window._tsPlusRows=[...(window._tsPlusRows||[]).filter(r=>!(r.seccion==='licencias'&&r.tipo==='nueva'&&r.categoria==='remote_access')),...(tsRows||[])];
+  window._tsPlusConfig=tsCfg||{tipo_cambio:21,margen_pct:15};
+  window._tsImpl=tsImpl||[];
   cotizadorPintar();
 }
 function cotizadorDescuentoVigente(productoId,periodicidad){
@@ -6105,7 +6120,8 @@ function cotizadorPintar(){
   // muestran desde el primero que alcanza hacia los superiores (Jp, 2026-10-26:
   // "si necesita 3, se le muestra Empresarial, pero también se le puede
   // mostrar Corporativo" — para comparar, no solo el exacto).
-  const planesAplican=planesProducto.filter(p=>p.capacidad_cubierta==null||p.capacidad_cubierta>=n);
+  const esTS=producto.slug==='ts-plus', esCE=producto.slug==='curso-empresarial';
+  const planesAplican=(esTS||esCE)?[]:planesProducto.filter(p=>p.capacidad_cubierta==null||p.capacidad_cubierta>=n);
   // Jp, 2026-10-26 (4ta ronda): "no pude seleccionar qué paquete se iba a
   // cotizar" — antes se guardaba el primero que aplicaba sin preguntar. Ahora
   // hay botón "Elegir este plan" en cada tarjeta; si no hay nada elegido
@@ -6135,10 +6151,12 @@ function cotizadorPintar(){
       ${tabsProducto}
       <div style="font-size:12px;color:var(--text3);">${producto.nombre}</div>
     </div>
-    ${esDirector?`<button class="cartera-subtab" onclick="cotizadorAbrirDescuentos()">⚙️ Descuentos de distribuidor</button>`:''}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="cartera-subtab" onclick="propCirculoAbrir()">📘 PDF Círculo Innovaci</button>
+    ${esDirector?(esCE?`<button class="cartera-subtab" onclick="ceAbrirAdmin()">⚙️ Tarifas y cursos</button>`:esTS?`<button class="cartera-subtab" onclick="tsAbrirImplAdmin()">⚙️ Servicios de implementación</button>`:`<button class="cartera-subtab" onclick="cotizadorAbrirDescuentos()">⚙️ Descuentos de distribuidor</button>`):''}</div>
   </div>
 
-  <div class="card" style="padding:16px 18px;margin-bottom:16px;">
+  ${esTS?tsControlesHtml(producto):''}${esCE?ceControlesHtml(producto):''}
+  ${(esTS||esCE)?'':`<div class="card" style="padding:16px 18px;margin-bottom:16px;">
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;">
       <div>
         <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">${producto.etiqueta_capacidad||'¿Cuántas empresas (RFCs) necesita el cliente?'}</div>
@@ -6161,7 +6179,7 @@ function cotizadorPintar(){
   ${!planesAplican.length?`<div style="padding:20px;color:var(--text3);">Ningún plan cubre ${n} ${producto.unidad_capacidad||'RFC'}${n>1?'s':''} — revisa el número capturado.</div>`:`
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;margin-bottom:18px;">
     ${planesAplican.map(p=>cotizadorTarjetaPlan(p,producto)).join('')}
-  </div>`}
+  </div>`}`}
 
   <div class="card" style="padding:16px 18px;">
     <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:10px;">📎 Ligar esta cotización (opcional)</div>
@@ -6177,8 +6195,9 @@ function cotizadorPintar(){
     <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
       <button class="cartera-subtab" style="background:var(--navy);color:#fff;" onclick="cotizadorGuardar(false)">💾 Guardar cotización</button>
       <button class="cartera-subtab" onclick="cotizadorGuardar(true)">🎯 Guardar y crear oportunidad en Proyección</button>
+      <button class="cartera-subtab" style="background:var(--teal);color:#fff;" onclick="propGenerarActual()">📄 Propuesta PDF</button>
     </div>
-    <div style="font-size:10px;color:var(--text3);margin-top:6px;">Plan que se guarda: <b>${(planesAplican.find(p=>p.id===cotizPlanSeleccionado)||{}).nombre||'—'}</b> · Si no ligas a nadie, queda como cotización de consulta.</div>
+    <div style="font-size:10px;color:var(--text3);margin-top:6px;">Plan que se guarda: <b ${(esTS||esCE)?'data-ts-plan':''}>${esCE?((ceCalcular()||{}).titulo||'—'):esTS?((tsCalcular()||{}).titulo||'— elige una opción'):((planesAplican.find(p=>p.id===cotizPlanSeleccionado)||{}).nombre||'—')}</b> · Si no ligas a nadie, queda como cotización de consulta.</div>
   </div>
 
   <div class="card" style="padding:16px 18px;margin-top:16px;">
@@ -6201,7 +6220,7 @@ async function cotizadorCargarRecientes(){
   window._cotizRecientesData=data||[];
   if(!data||!data.length){cont.innerHTML='<div style="font-size:12px;color:var(--text3);">Todavía no hay cotizaciones guardadas.</div>';return;}
   cont.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:12px;">
-    <thead><tr style="background:var(--bg2,#f5f6f8);"><th style="text-align:left;padding:6px 8px;">Fecha</th><th style="text-align:left;padding:6px 8px;">Plan</th><th style="text-align:left;padding:6px 8px;">Periodo</th><th style="text-align:left;padding:6px 8px;">Ligada a</th>${esDirector?'<th style="text-align:left;padding:6px 8px;">Quién</th>':''}<th style="text-align:right;padding:6px 8px;">Total</th><th style="text-align:left;padding:6px 8px;">Seguimiento</th></tr></thead>
+    <thead><tr style="background:var(--bg2,#f5f6f8);"><th style="text-align:left;padding:6px 8px;">Fecha</th><th style="text-align:left;padding:6px 8px;">Plan</th><th style="text-align:left;padding:6px 8px;">Periodo</th><th style="text-align:left;padding:6px 8px;">Ligada a</th>${esDirector?'<th style="text-align:left;padding:6px 8px;">Quién</th>':''}<th style="text-align:right;padding:6px 8px;">Total</th><th style="text-align:left;padding:6px 8px;">Seguimiento</th><th style="text-align:left;padding:6px 8px;">Propuesta</th></tr></thead>
     <tbody>${data.map(r=>{
       const ligada=r.cliente_cartera_id||r.prospecto_app_id;
       const ligadaHtml=r.clientes_cartera?.razon_social?'💼 '+r.clientes_cartera.razon_social:(r.prospectos?.nombre?'🧲 '+r.prospectos.nombre:'<span style="color:var(--text3);">Sin ligar</span>');
@@ -6215,12 +6234,13 @@ async function cotizadorCargarRecientes(){
       }
       return `<tr style="border-top:1px solid var(--border);">
       <td style="padding:6px 8px;">${(r.created_at||'').slice(0,10)}</td>
-      <td style="padding:6px 8px;">${r.cotizador_planes?.nombre||'—'}</td>
-      <td style="padding:6px 8px;text-transform:capitalize;">${r.periodicidad}</td>
+      <td style="padding:6px 8px;">${r.cotizador_planes?.nombre||r.detalle?.titulo||'—'}</td>
+      <td style="padding:6px 8px;text-transform:capitalize;">${/^\d+a$/.test(r.periodicidad||'')?parseInt(r.periodicidad)+' año'+(parseInt(r.periodicidad)>1?'s':''):r.periodicidad}</td>
       <td id="cotizRecLigadaA_${r.id}" style="padding:6px 8px;position:relative;">${ligadaHtml}</td>
       ${esDirector?`<td style="padding:6px 8px;">${r.usuarios?.nombre||'—'}</td>`:''}
       <td style="padding:6px 8px;text-align:right;font-weight:700;">${fmt(r.precio_total_periodo)}</td>
       <td style="padding:6px 8px;">${accionHtml}</td>
+      <td style="padding:6px 8px;"><span onclick="propGenerarDeReciente('${r.id}')" style="cursor:pointer;color:var(--teal);font-weight:700;">📄 PDF</span></td>
     </tr>`;
     }).join('')}</tbody>
   </table>`;
@@ -6276,7 +6296,7 @@ async function cotizadorRecienteCrearOportunidad(cotizId){
   if(!r.cliente_cartera_id&&!r.prospecto_app_id){alert('Primero liga esta cotización a una cuenta o un prospecto.');return;}
   const periodoLabel=(r.periodicidad||'')[0]?.toUpperCase()+(r.periodicidad||'').slice(1);
   const nombreProducto=(window._cotizProductos||[]).find(p=>p.id===r.producto_id)?.nombre||'';
-  const productoTxt=`${nombreProducto} — ${r.cotizador_planes?.nombre||''} (${periodoLabel})`;
+  const productoTxt=r.detalle?.productoTxt?r.detalle.productoTxt:`${nombreProducto} — ${r.cotizador_planes?.nombre||''} (${periodoLabel})`;
   const montoTxt=parseFloat(r.precio_total_periodo||0);
   // Jp, 2026-10-27: Telemarketing ya tiene su propio módulo de Proyección
   // (perfil='telemarketing' en pipeline_vendedor) — se usa el mismo patrón
@@ -6342,6 +6362,506 @@ function cotizadorTarjetaPlan(plan,producto){
     </ul>
   </div>`;
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// COTIZADOR — TS Plus (Jp, 2026-10-31). El vendedor captura cuántas conexiones
+// remotas necesita → se muestra el plan de usuarios que las cubre en las 3
+// ediciones (Desktop / Web Mobile / Enterprise), con selector de años (1/2/3),
+// y puede sumar opcionalmente los servicios de implementación (INN606):
+// puesta a punto de servidor ($6,100) y de terminales ($900 c/u), más IVA.
+// Licencias: catálogo productos_ts_plus (USD × tipo de cambio × margen).
+// Implementación: cotizador_servicios_impl (editable por director).
+// ══════════════════════════════════════════════════════════════════════════════
+let tsAnios=1, tsEdicionSel=null, tsImplSel={}, tsTerminalesN=3;
+const TS_EDICIONES=[
+  {k:'Desktop',n:'Desktop',d:'Acceso remoto al escritorio del servidor, entrega de aplicaciones Windows e impresión remota.'},
+  {k:'Web Mobile',n:'Web Mobile',d:'Todo lo de Desktop, más Web Portal y cliente HTML5 para entrar desde el navegador.'},
+  {k:'Enterprise',n:'Enterprise',d:'Todo lo de Web Mobile, más Farm Manager y Gateway para manejar varios servidores con un solo acceso.'},
+];
+function tsTierNum(u){ return /unlimited/i.test(u||'')?99999:(parseInt(u)||0); }
+function tsTierLabel(u){ return /unlimited/i.test(u||'')?'usuarios ilimitados':(parseInt(u)+' usuarios'); }
+function tsTierParaN(n){
+  const rows=(window._tsPlusRows||[]).filter(r=>r.categoria==='remote_access'&&r.tipo==='nueva');
+  const tiers=[...new Set(rows.map(r=>r.usuarios))].sort((a,b)=>tsTierNum(a)-tsTierNum(b));
+  return tiers.find(t=>tsTierNum(t)>=n)||tiers[tiers.length-1]||null;
+}
+function tsImplLineas(){
+  const out=[];
+  (window._tsImpl||[]).forEach(sv=>{
+    if(!tsImplSel[sv.clave]) return;
+    const cant=sv.tipo_cobro==='por_unidad'?Math.max(1,parseInt(tsTerminalesN)||1):1;
+    const pu=parseFloat(sv.precio_sin_iva)||0;
+    out.push({clave:sv.clave,concepto:sv.nombre,cant,pu,importe:cant*pu});
+  });
+  return out;
+}
+// Calcula la opción elegida (o la de la edición pasada, para pintar fichas)
+function tsCalcular(edicion){
+  const ed=edicion||tsEdicionSel;
+  if(!ed) return null;
+  const n=parseInt(cotizEmpresas)||1;
+  const tier=tsTierParaN(n);
+  const row=(window._tsPlusRows||[]).find(r=>r.categoria==='remote_access'&&r.tipo==='nueva'&&r.edicion===ed&&r.usuarios===tier&&(r.anios||1)===tsAnios);
+  if(!row) return {error:'No hay precio de TS Plus '+ed+' para '+tsAnios+' año(s) en ese plan de usuarios.'};
+  const licencia=tsPlusMXN(parseFloat(row.precio)||0);
+  const impl=tsImplLineas();
+  const lineas=[{concepto:`TS Plus ${ed} Edition — ${tsTierLabel(tier)}, ${tsAnios} año${tsAnios>1?'s':''}`,cant:1,pu:licencia,importe:licencia},...impl];
+  const subtotal=lineas.reduce((a,l)=>a+l.importe,0);
+  const iva=cotizConIva?subtotal*COTIZ_IVA_PCT/100:0;
+  const cfg=window._tsPlusConfig||{};
+  return {error:null,edicion:ed,tier,anios:tsAnios,licencia,impl,lineas,subtotal,iva,total:subtotal+iva,
+    periodicidadDb:tsAnios+'a',periodoLabel:tsAnios+(tsAnios>1?' años':' año'),mensualRef:(subtotal+iva)/(12*tsAnios),
+    productoTxt:'TS Plus — '+`${ed} — ${tsTierLabel(tier)} · ${tsAnios} año${tsAnios>1?'s':''}`+(impl.length?' + implementación':''),
+    titulo:`${ed} — ${tsTierLabel(tier)} · ${tsAnios} año${tsAnios>1?'s':''}`,
+    detalle:{producto:'ts-plus',lineas,edicion:ed,usuarios:tier,anios:tsAnios,conexiones:n,precio_usd:parseFloat(row.precio)||0,
+      tipo_cambio:cfg.tipo_cambio,margen_pct:cfg.margen_pct,licencia_mxn:licencia,impl,subtotal_sin_iva:subtotal,iva_monto:iva,total:subtotal+iva,con_iva:!!cotizConIva,
+      titulo:`TS Plus ${ed} — ${tsTierLabel(tier)} · ${tsAnios} año${tsAnios>1?'s':''}`}};
+}
+function tsControlesHtml(producto){
+  const n=parseInt(cotizEmpresas)||1;
+  const impl=window._tsImpl||[];
+  return `<div class="card" style="padding:16px 18px;margin-bottom:16px;">
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;">
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">${producto.etiqueta_capacidad||'¿Cuántas conexiones remotas necesita?'}</div>
+        <input type="number" min="1" id="cotizInputEmpresas" value="${n}" style="width:100px;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;" oninput="cotizEmpresas=this.value;tsRepintarFichas();">
+      </div>
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Años de licencia</div>
+        <div style="display:flex;gap:6px;">
+          ${[1,2,3].map(a=>`<button class="cartera-subtab ${tsAnios===a?'active':''}" style="${tsAnios===a?'background:var(--navy);color:#fff;':''}" onclick="tsAnios=${a};cotizadorPintar();">${a} año${a>1?'s':''}</button>`).join('')}
+        </div>
+      </div>
+      <div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
+          <input type="checkbox" ${cotizConIva?'checked':''} onchange="cotizConIva=this.checked;cotizadorPintar();"> Mostrar con IVA (16%)
+        </label>
+      </div>
+    </div>
+    <div style="margin-top:14px;padding:12px 14px;background:var(--bg2,#f5f6f8);border-radius:8px;">
+      <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:6px;">🛠 ¿Deseas agregar a la propuesta los servicios de implementación?</div>
+      ${impl.map(sv=>`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;margin-bottom:5px;">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" ${tsImplSel[sv.clave]?'checked':''} onchange="tsImplSel['${sv.clave}']=this.checked;tsRepintarFichas();"> <b>${sv.nombre}</b></label>
+        <span style="color:var(--text3);">${sv.tipo_cobro==='por_unidad'?fmt(sv.precio_sin_iva)+' por '+(sv.unidad_label||'unidad'):fmt(sv.precio_sin_iva)} + IVA</span>
+        ${sv.tipo_cobro==='por_unidad'?`<span style="color:var(--text3);">· cantidad:</span><input type="number" min="1" value="${tsTerminalesN}" style="width:64px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;font-size:12px;" oninput="tsTerminalesN=this.value;tsRepintarFichas();">`:''}
+      </div>`).join('')||'<div style="font-size:11px;color:var(--text3);">Sin servicios de implementación configurados.</div>'}
+    </div>
+  </div>
+  <div id="tsFichas" style="margin-bottom:18px;">${tsFichasHtml()}</div>`;
+}
+function tsRepintarFichas(){
+  const el=document.getElementById('tsFichas'); if(el) el.innerHTML=tsFichasHtml();
+  const lb=document.querySelector('#mainContent [data-ts-plan]'); // etiqueta de plan guardado
+  if(lb){ const c=tsCalcular(); lb.textContent=(c&&c.titulo)||'— elige una opción'; }
+}
+function tsFichasHtml(){
+  const n=parseInt(cotizEmpresas)||1;
+  const tier=tsTierParaN(n);
+  if(!tier) return '<div style="padding:20px;color:var(--text3);">No hay licencias TS Plus cargadas en el catálogo.</div>';
+  if(!tsEdicionSel||!TS_EDICIONES.some(e=>e.k===tsEdicionSel)) tsEdicionSel=TS_EDICIONES[0].k;
+  return `<div style="font-size:12px;color:var(--text2);margin-bottom:8px;">Para <b>${n}</b> conexión${n>1?'es':''} remota${n>1?'s':''} corresponde el plan de <b>${tsTierLabel(tier)}</b>. Elige la edición:</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;">
+  ${TS_EDICIONES.map(e=>{
+    const c=tsCalcular(e.k);
+    const sel=tsEdicionSel===e.k;
+    const borde=sel?'border:2px solid var(--navy);box-shadow:var(--shadow-md);':'';
+    if(c&&c.error) return `<div class="card" style="padding:16px;${borde}"><div style="font-weight:700;font-size:14px;">TS Plus ${e.n}</div><div style="font-size:11px;color:var(--text3);margin-top:6px;">${c.error}</div></div>`;
+    return `<div class="card" style="padding:16px;position:relative;${borde}">
+      ${sel?'<div style="background:var(--navy);color:#fff;font-size:10px;font-weight:700;text-align:center;padding:3px 0;border-radius:4px;margin:-16px -16px 10px -16px;">✓ OPCIÓN A COTIZAR</div>':''}
+      <div style="font-weight:700;font-size:14px;color:var(--text);">TS Plus ${e.n} Edition</div>
+      <div style="font-size:11px;color:var(--text3);margin:2px 0 10px;">${tsTierLabel(c.tier)} · ${c.anios} año${c.anios>1?'s':''} de licencia</div>
+      <div style="font-size:22px;font-weight:800;color:var(--navy);">${fmt(c.licencia*(cotizConIva?1+COTIZ_IVA_PCT/100:1))}<span style="font-size:11px;font-weight:600;color:var(--text3);"> licencia ${cotizConIva?'(con IVA)':'(sin IVA)'}</span></div>
+      <div style="font-size:11px;color:var(--text2);margin-top:6px;">${e.d}</div>
+      <div style="margin-top:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:8px;">
+        ${c.lineas.map(l=>`<div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--text2);margin-bottom:3px;"><span>${l.cant>1?l.cant+' × ':''}${l.concepto.replace(/^TS Plus .* Edition — .*$/,'Licencia TS Plus '+e.n)}</span><span>${fmt(l.importe)}</span></div>`).join('')}
+        <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;border-top:1px solid var(--border);padding-top:5px;margin-top:3px;"><span>Subtotal (sin IVA)</span><span>${fmt(c.subtotal)}</span></div>
+        ${cotizConIva?`<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-top:3px;"><span>IVA (16%)</span><span>${fmt(c.iva)}</span></div>`:''}
+        <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:800;color:var(--navy);border-top:1px solid var(--border);padding-top:5px;margin-top:4px;"><span>Total a pagar</span><span>${fmt(c.total)}</span></div>
+      </div>
+      <button onclick="tsEdicionSel='${e.k}';tsRepintarFichas();" style="width:100%;margin-top:10px;padding:8px;border-radius:var(--radsm);font-size:12px;font-weight:700;cursor:pointer;${sel?'background:var(--navy);color:#fff;border:1px solid var(--navy);':'background:#fff;color:var(--navy);border:1px solid var(--navy);'}">${sel?'✓ Esta es la opción a cotizar':'Elegir esta opción'}</button>
+    </div>`;
+  }).join('')}
+  </div>`;
+}
+// Panel (director/administración): precios de implementación editables
+function tsAbrirImplAdmin(){
+  const rows=window._tsImpl||[];
+  const html=`<div style="font-size:12px;color:var(--text3);margin-bottom:10px;">Precios sin IVA. Los cambios aplican a cotizaciones nuevas.</div>
+  ${rows.map(sv=>`<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+    <div style="flex:1;font-size:12px;"><b>${sv.nombre}</b><div style="font-size:10px;color:var(--text3);">${sv.tipo_cobro==='por_unidad'?'Por '+(sv.unidad_label||'unidad'):'Precio fijo'}</div></div>
+    <input type="number" step="0.01" min="0" id="tsImplPrecio_${sv.id}" value="${sv.precio_sin_iva}" style="width:120px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;text-align:right;">
+  </div>`).join('')}`;
+  mkModal('modalTsImpl','⚙️ Servicios de implementación — TS Plus',html,'tsGuardarImplAdmin','Guardar');
+}
+async function tsGuardarImplAdmin(){
+  for(const sv of (window._tsImpl||[])){
+    const v=parseFloat(document.getElementById('tsImplPrecio_'+sv.id)?.value);
+    if(isNaN(v)||v<0) continue;
+    if(v!==parseFloat(sv.precio_sin_iva)){
+      const {error}=await sb.from('cotizador_servicios_impl').update({precio_sin_iva:v,updated_at:new Date().toISOString()}).eq('id',sv.id);
+      if(error){alert('Error guardando: '+error.message);return;}
+    }
+  }
+  document.getElementById('modalTsImpl')?.remove();
+  renderCotizador();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// COTIZADOR — Cursos Empresariales (Jp, 2026-10-31). Réplica del Excel "Cálculo
+// para Cursos 2026": precio base (1 sesión, 4 h, 5 personas) + sesiones/horas/
+// personas adicionales + horas especiales + sábados/domingos + suscripción del
+// sistema (licencias) + viáticos (solo sitio) − % descuento + IVA. Tarifas y
+// cursos viven en cotizador_cursos_tarifas / cotizador_cursos_emp (editables).
+// La suscripción = costo de licencias (se resta de la base de comisión al facturar).
+// ══════════════════════════════════════════════════════════════════════════════
+let ceCursoClave=null, ceModalidad='linea', cePersonas=5, ceHoras=null, ceSesiones=null, ceHorasEsp=0, ceSab=0, ceDom=0,
+    ceUsuAdic=null, ceMeses=1, ceDcto=0, ceIda=null, ceRegreso=null, ceCursoPrev=null;
+function ceCurso(){ const l=window._ceCursos||[]; if(!ceCursoClave||!l.some(c=>c.clave===ceCursoClave)) ceCursoClave=l[0]?.clave||null; return l.find(c=>c.clave===ceCursoClave)||null; }
+function ceCalcular(){
+  const cu=ceCurso(); if(!cu) return {error:'No hay cursos configurados.'};
+  const tar=(window._ceTarifas||[]).find(t=>t.modalidad===ceModalidad); if(!tar) return {error:'Faltan tarifas.'};
+  if(ceCursoPrev!==cu.clave){ ceCursoPrev=cu.clave; ceHoras=null; ceSesiones=null; ceUsuAdic=null; }
+  const N=v=>parseFloat(v)||0, I=v=>Math.max(0,parseInt(v)||0);
+  const P=Math.max(1,I(cePersonas)), H=ceHoras==null?cu.horas:I(ceHoras), S=Math.max(1,ceSesiones==null?cu.sesiones:I(ceSesiones));
+  const uAdic=ceUsuAdic==null?Math.max(0,P-1):I(ceUsuAdic), meses=Math.max(1,I(ceMeses));
+  const ida=ceIda==null?N(tar.viaje_ida):N(ceIda), reg=ceRegreso==null?N(tar.viaje_regreso):N(ceRegreso);
+  const base=(ceModalidad==='linea'&&cu.precio_base_linea!=null)?N(cu.precio_base_linea):N(tar.precio_base);
+  const L=[];
+  const add=(concepto,cant,pu)=>{ if(cant>0&&pu>0) L.push({concepto,cant,pu,importe:cant*pu}); };
+  L.push({concepto:`Precio base (1 sesión, ${tar.horas_base} h, ${tar.personas_base} personas)`,cant:1,pu:base,importe:base});
+  add('Sesiones adicionales',Math.max(0,S-1),N(tar.sesion_adic));
+  add('Horas adicionales',Math.max(0,H-tar.horas_base),N(tar.hora_adic));
+  add('Personas adicionales',Math.max(0,P-tar.personas_base),N(tar.persona_adic));
+  add('Horas especiales (L-V 6-7 pm / 8-9 am)',I(ceHorasEsp),N(tar.hora_especial));
+  add('Sesiones en sábado',I(ceSab),N(tar.sabado));
+  add('Sesiones en domingo',I(ceDom),N(tar.domingo));
+  let susc=0;
+  if(N(cu.susc_base)>0){ const m=(N(cu.susc_base)+uAdic*N(cu.susc_adic))*meses; susc+=m;
+    L.push({concepto:`Suscripción ${cu.nombre.replace('Siigo Aspel ','')} — 1 + ${uAdic} usuario(s) adic. × ${meses} mes(es)`,cant:1,pu:m,importe:m,licencia:true}); }
+  if(N(cu.susc2_base)>0){ const m=(N(cu.susc2_base)+uAdic*N(cu.susc2_adic))*meses; susc+=m;
+    L.push({concepto:`Suscripción ${cu.susc2_nombre||''} — 1 + ${uAdic} usuario(s) adic. × ${meses} mes(es)`,cant:1,pu:m,importe:m,licencia:true}); }
+  if(ceModalidad==='sitio'){ const v=S*(ida+reg); if(v>0) L.push({concepto:`Viáticos (${S} sesiones × ida $${ida} + regreso $${reg})`,cant:1,pu:v,importe:v}); }
+  const subtotal=L.reduce((a,l)=>a+l.importe,0);
+  const dp=Math.min(100,Math.max(0,N(ceDcto))), descuento=subtotal*dp/100, sub2=subtotal-descuento;
+  const iva=cotizConIva?sub2*COTIZ_IVA_PCT/100:0, total=sub2+iva;
+  const modTxt=ceModalidad==='linea'?'En línea':'En sitio';
+  const titulo=`${cu.nombre} — ${modTxt} · ${P} personas, ${H} h, ${S} sesiones`;
+  return {error:null,titulo,lineas:L,subtotal,descuento,descPct:dp,iva,total,sub2,licencias:susc,P,H,S,
+    periodicidadDb:'curso',periodoLabel:modTxt,mensualRef:total,
+    productoTxt:'Curso Empresarial — '+titulo,
+    detalle:{producto:'curso-empresarial',curso:cu.clave,modalidad:ceModalidad,personas:P,horas:H,sesiones:S,usuarios_adic:uAdic,meses,
+      horas_especiales:I(ceHorasEsp),sabados:I(ceSab),domingos:I(ceDom),lineas:L,subtotal_sin_iva:subtotal,descuento_pct:dp,descuento:descuento,
+      iva_monto:iva,total,con_iva:!!cotizConIva,costo_licencias:susc,titulo:'Curso Empresarial — '+titulo,productoTxt:'Curso Empresarial — '+titulo}};
+}
+function ceControlesHtml(producto){
+  const cu=ceCurso(); const c=ceCalcular();
+  const inp=(label,id,val,extra='')=>`<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">${label}</div><input type="number" min="0" ${extra} value="${val}" style="width:92px;padding:7px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;" oninput="${id}=this.value;ceRepintar();"></div>`;
+  return `<div class="card" style="padding:16px 18px;margin-bottom:16px;">
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;">
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Curso</div>
+        <select onchange="ceCursoClave=this.value;cotizadorPintar();" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;">
+          ${(window._ceCursos||[]).map(x=>`<option value="${x.clave}" ${cu&&x.clave===cu.clave?'selected':''}>${x.nombre}</option>`).join('')}</select></div>
+      <div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Modalidad</div>
+        <div style="display:flex;gap:6px;">${[['linea','En línea'],['sitio','En sitio']].map(([k,n])=>`<button class="cartera-subtab ${ceModalidad===k?'active':''}" style="${ceModalidad===k?'background:var(--navy);color:#fff;':''}" onclick="ceModalidad='${k}';cotizadorPintar();">${n}</button>`).join('')}</div></div>
+      ${inp('Personas','cePersonas',cePersonas,'id="cotizInputEmpresas"')}
+      ${inp('Horas',  'ceHoras',  c.H??'')}
+      ${inp('Sesiones','ceSesiones',c.S??'')}
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;"><input type="checkbox" ${cotizConIva?'checked':''} onchange="cotizConIva=this.checked;cotizadorPintar();"> Con IVA (16%)</label>
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-top:12px;">
+      ${inp('Horas especiales','ceHorasEsp',ceHorasEsp)}
+      ${inp('Sesiones sábado','ceSab',ceSab)}
+      ${inp('Sesiones domingo','ceDom',ceDom)}
+      ${cu&&cu.susc_base>0?inp('Usuarios adic. (suscripción)','ceUsuAdic',c.error?'':(ceUsuAdic==null?Math.max(0,(parseInt(cePersonas)||1)-1):ceUsuAdic))+inp('Meses suscripción','ceMeses',ceMeses):''}
+      ${ceModalidad==='sitio'?inp('Viaje ida $','ceIda',c.error?'':(ceIda==null?(window._ceTarifas.find(t=>t.modalidad==='sitio')?.viaje_ida||0):ceIda))+inp('Viaje regreso $','ceRegreso',c.error?'':(ceRegreso==null?(window._ceTarifas.find(t=>t.modalidad==='sitio')?.viaje_regreso||0):ceRegreso)):''}
+      ${inp('% Descuento','ceDcto',ceDcto)}
+    </div>
+  </div>
+  <div id="ceResumen" style="margin-bottom:18px;">${ceResumenHtml()}</div>`;
+}
+function ceRepintar(){ const el=document.getElementById('ceResumen'); if(el) el.innerHTML=ceResumenHtml();
+  const lb=document.querySelector('#mainContent [data-ts-plan]'); if(lb){const c=ceCalcular(); lb.textContent=(c&&c.titulo)||'—';} }
+function ceResumenHtml(){
+  const c=ceCalcular(); if(c.error) return `<div style="padding:16px;color:#c0392b;">${c.error}</div>`;
+  return `<div class="card" style="padding:16px 18px;max-width:760px;">
+    <div style="font-size:14px;font-weight:700;color:var(--navy);margin-bottom:8px;">${c.titulo}</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="background:var(--bg2,#f5f6f8);"><th style="text-align:left;padding:6px 8px;">Concepto</th><th style="text-align:right;padding:6px 8px;">Cant.</th><th style="text-align:right;padding:6px 8px;">P. unit.</th><th style="text-align:right;padding:6px 8px;">Importe</th></tr></thead>
+      <tbody>${c.lineas.map(l=>`<tr style="border-top:1px solid var(--border);"><td style="padding:6px 8px;">${l.concepto}</td><td style="padding:6px 8px;text-align:right;">${l.cant}</td><td style="padding:6px 8px;text-align:right;">${fmt(l.pu)}</td><td style="padding:6px 8px;text-align:right;font-weight:600;">${fmt(l.importe)}</td></tr>`).join('')}</tbody>
+    </table>
+    <div style="margin-top:10px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:8px;max-width:340px;margin-left:auto;">
+      <div style="display:flex;justify-content:space-between;font-size:12px;"><span>Subtotal</span><span>${fmt(c.subtotal)}</span></div>
+      ${c.descPct>0?`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--teal);"><span>Descuento ${c.descPct}%</span><span>-${fmt(c.descuento)}</span></div>`:''}
+      ${cotizConIva?`<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);"><span>IVA (16%)</span><span>${fmt(c.iva)}</span></div>`:''}
+      <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:800;color:var(--navy);border-top:1px solid var(--border);padding-top:5px;margin-top:4px;"><span>Total</span><span>${fmt(c.total)}</span></div>
+    </div>
+    ${c.licencias>0?`<div style="font-size:10px;color:var(--text3);margin-top:8px;">Incluye ${fmt(c.licencias)} de suscripción (licencias) — al facturar, ese monto es el "costo de licencias" que no cuenta para comisión.</div>`:''}
+  </div>`;
+}
+function ceAbrirAdmin(){
+  const T=window._ceTarifas||[], C=window._ceCursos||[];
+  const campos=[['precio_base','Precio base'],['hora_adic','Hora adic.'],['sesion_adic','Sesión adic.'],['persona_adic','Persona adic.'],['hora_especial','Hora especial'],['sabado','Sábado'],['domingo','Domingo'],['viaje_ida','Viaje ida'],['viaje_regreso','Viaje regreso']];
+  const html=`<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Precios sin IVA. Aplican a cotizaciones nuevas.</div>
+  <div style="font-weight:700;font-size:12px;margin:6px 0;">Tarifas</div>
+  <table style="width:100%;font-size:11px;border-collapse:collapse;"><tr><th></th>${T.map(t=>`<th style="text-align:right;">${t.modalidad==='linea'?'En línea':'En sitio'}</th>`).join('')}</tr>
+  ${campos.map(([k,n])=>`<tr><td style="padding:3px 0;">${n}</td>${T.map(t=>`<td style="text-align:right;"><input type="number" id="ceT_${t.modalidad}_${k}" value="${t[k]}" style="width:90px;padding:4px 6px;text-align:right;border:1px solid var(--border);border-radius:6px;"></td>`).join('')}</tr>`).join('')}</table>
+  <div style="font-weight:700;font-size:12px;margin:14px 0 6px;">Cursos (horas, sesiones, suscripción base / usuario adic.)</div>
+  <table style="width:100%;font-size:11px;border-collapse:collapse;">${C.map(c=>`<tr><td style="padding:3px 0;">${c.nombre}</td>
+    ${[['horas',c.horas],['sesiones',c.sesiones],['susc_base',c.susc_base],['susc_adic',c.susc_adic]].map(([k,v])=>`<td><input type="number" id="ceC_${c.id}_${k}" value="${v}" style="width:70px;padding:4px 6px;text-align:right;border:1px solid var(--border);border-radius:6px;"></td>`).join('')}</tr>`).join('')}</table>`;
+  mkModal('modalCeAdmin','⚙️ Tarifas y cursos empresariales',html,'ceGuardarAdmin','Guardar','760px');
+}
+async function ceGuardarAdmin(){
+  for(const t of (window._ceTarifas||[])){
+    const upd={updated_at:new Date().toISOString()};
+    ['precio_base','hora_adic','sesion_adic','persona_adic','hora_especial','sabado','domingo','viaje_ida','viaje_regreso'].forEach(k=>{const v=parseFloat(document.getElementById(`ceT_${t.modalidad}_${k}`)?.value); if(!isNaN(v)) upd[k]=v;});
+    const {error}=await sb.from('cotizador_cursos_tarifas').update(upd).eq('modalidad',t.modalidad); if(error){alert('Error: '+error.message);return;}
+  }
+  for(const c of (window._ceCursos||[])){
+    const upd={updated_at:new Date().toISOString()};
+    ['horas','sesiones','susc_base','susc_adic'].forEach(k=>{const v=parseFloat(document.getElementById(`ceC_${c.id}_${k}`)?.value); if(!isNaN(v)) upd[k]=v;});
+    const {error}=await sb.from('cotizador_cursos_emp').update(upd).eq('id',c.id); if(error){alert('Error: '+error.message);return;}
+  }
+  document.getElementById('modalCeAdmin')?.remove(); renderCotizador();
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PROPUESTAS COMERCIALES EN PDF (Jp, 2026-10-31). Se genera una página A4 de
+// marca en una ventana nueva y se imprime ("Guardar como PDF"). Un solo motor
+// (propAbrir) para Siigo Fiscal, NOI Asistente, TS Plus, Curso Empresarial; el
+// texto de cada producto vive en PROP_CONTENIDO (editable aquí). Círculo
+// Innovaci tiene su propio folleto (propCirculoAbrir), sin cotización.
+// ══════════════════════════════════════════════════════════════════════════════
+const PROP_VIGENCIA_DIAS=15;
+const PROP_TALLER_NOI_ASISTENTE_FECHA='Fecha por confirmar — noviembre de 2026';
+const PROP_LOGO='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAA4AAAACDCAYAAADcSHVkAAAACXBIWXMAAAsSAAALEgHS3X78AAAgAElEQVR4nO2d6VobR9r3q6XWZ3iPwOQIIEcA+T4T4yyTmCzgZOJ4R9gmySSZMZ5n5pmFJAbvOyK2ie0sFkm+B45g4AgGjuCBzxKq96ruaqmXWrurN+n+X5cSI1V3V1dVd92/uu+qsjDGSKTa1OIwQmgSITSCEJoIJd1ACG2R/7fW5veEJwKBQCAQCAQCgUAgUGxZP/9KuGyMwWVbHpfhV3+3Izo/FwBrU4sE+BYQQtMKGdxHCDVJ+tbavPCCIGZZD9OKHKEfxKhUkUhl79EP+fcO1MPgqTa1SNrQsK/teH+ryGs7iA7soNba/Magl+kgynreHEOWNdxtP5XuvxGq+ArEsnr/rnT/HXkXyTqhMqqy8v2M713tKxPOH5bgJiXHdN57fWGAm6O2rJ9+riPL/95TqAdeHYiOQQjhV3/X13VjvfhlgvYhY/SriUh5WJF/eP/09ynOewG/+jvoUwZY1vqvY772NBxoW6J3pCuv7ex4n37sW0Syfv6VlFedfoYUDllHCC3xnjsmANamFslL7VKM/O1TCFyKcexAiMLehI/cxxQrMo42/aMBAIX9Iwp7Xvshn9GUbm7Xaz/k/wCF/aXKk596bahiddsR9nfGFb9hx4Q+FTDcpJ22047wq7/bQiVW5eH3pI+bDdxBAsiTpD/Wef/1RpnLKytZP/48hiz0H+bl4kCeuN7W8au/myxuaajL+vHnoF1ihewSFuTxvmKVWTDNrt8uoe8DiCDrM1nNX/xtiWGjSIhPDoSe/HZu6fsWnqjHrxGTF5YJm4WfswAAUjghFzicMK+rrbX5mYTn6BvVphYn6ct1IkVDXUW79IXbhLDdcol65P3tKK1BAxVt0jbUhEGFcqmy8v0IqlheOzochDXfrXBATwsMxefb97+LyjaSW3nwnDyP/w18aXEsFiW4QCIw3OxMv6ETETKwsn5cbwSjlhJ4/+RAfwQf/n2zrGVt/bDOt0vCbZlVFjwoVEkbTbPtvQ/AS1hOWc1f/DYKnyG4z5XggVOHQVT2voUl6+dfowOO+iLP2IQfAsMA2DQAf54GGgIp9HmfPI11kdZ9hjzAYMHkg76ZnAcORNqlbWgJYLCYqtx7Rrx7M7QtHQoYd0pAhzjfM8AwvrdwG1WsBjUAS9GOKg+eEyNjXJiIB4VIG0he6sy8Ac+XRNYP63vM/tZ8aO4unvx9NAS44LKeN2e6RrplBctJWBYJgJD1FT9sFPmmFJF3QWkBexBkvXC8fL2+BWnDGie9Me8gouBTqr7FL0Pw5ykAgV0ATBD2KdLcIIWDUoO9Th+IokIfS94LtwEhfvmrNrU4Q9uQ2LgsnsjLZQkGFPJX5dbTYVRBM93BA13o0wFDE95CFADDdWRZTTz5+0KHPVbuPydluxL5QcU40fUWIrTcOfZmXSd/gybr+3X9+ogfmruMj7xaivqwnjXHqF0yyQ7r9P5WADedtGbCRvep8b40aPO9iirrJydceAZZ3sC0QViL4x3Uu8Y6BcFShNTTsM8Xhk+7il/9neOccwCQzidix80n10v97hmoTS1O0AVzymaws7RNvTkw5yRD0cGDGY3JvUUWLAqVkyo31rzFuyYDI/wqHj0dMDThLRSeh4aJVpwBhSV85NVCDihU7j0Lepz0wS6Ujnv8bufYm6XzOGUp63mT7ZFNJzT3Jfzaq4V+t1nfvSBGej0QPaLjkdYBQlZ682GjZOpBoyzGe7/J+unnXt8i9LIbC+VMEwiJjbJEBxYK2bfQBV92UrIHXyGh1h4Amgz9DKtvQ0Gpp2ah6/ruL+3SB6QB3pz0pLnabhm1CiCYvirLTyacwQPL9x6vMA3XENBpgKEJb2Hke+Uw0lVUsRbw68Uyuit3n/XmnOkYx93vFS7SO/ZI54M3ISSOIetZMzonE2l6sKTHdP+1iV8/XMg5mZW1n4YRsrwopENenrsTfZigpdE2VSBPJ228sNFdZ0GLwwCCWcj68ecJOjDt9i3Kg1kKibMAQvk1VukCKYXqW6z1XxeQZTwq09MufvV3I5Z99N/sF6dZ/b9+ggjq8Wv0KfiFtUsNeHjZGtQAgF9YAIIpqPrNoxFkOXPnXM+Hr7PDSpDm+54Fhia8haI0+mGkpB3V8R8mC9GfVO4860XPKHuUvO+1jZb1zod/6ItVJ03LevqCPYVF2/unlP4YfuNwofrDypOfesvDWyyPQSCsMh4QstLnGzZKQbDYoeJllfXj+ohr51qSec4KN6jiHVQ9lzR97Gu4fUtBPILW+q87EcbQLR+xXiYASF4aV4yeNqpj/QAQNFR2qU9CPXVFXrYzMEcwmehKuzr7uPSbLtMQY/AqJ1D1q2+H6btomgtdnO+lYGjCW4hSDSPdxxZawm8fKcQebJXbT7eQ5V+kiVMeYcWDkJc6H/4BBlFCqnz3wjGWAptaGfX++drem4dV91bNRJXHP9JIJIu/CEfku+izzoXC4oeNOrYJnvw92CYGZP2w3utb/FKBOC3voMIBOsATxzsY/bkQoaF0v0S1aXnxoXC54tvgM01lcY3URIz22tTiEq2QQYQ/REcifiPhwtR7BdIU9Rxv0ZHqQYQ/RO99h66SC4qh6j9X66iDd1AHT6MORrofi/FxrL8DHP0Ezt3pfVhpw+kDv3XcD5b8fiA4dy/NkHWAL1We/LRD9zHMWw2n/LofzPn40iAU/DvwvfB4eG5Cqqz9NIkwPkTKx/I+qPfvaDlzyhcp1UlhQnArj34cqzz6cQNhtIIwOsRpL5x7ov/wpbVCH2F5eVIqW0Z5do9XSBs+dzfv3X+Suv/NevHLBt2KABRT1vfrdYTRDsKMyCR/PTArk/PssMSrU9H5ZOJeW5Kp4M9D1EbZsn7+Nc++Rf09z3tnyTVGPIDypayTa7O1Nl/KfYwGLNxTVbDhv4YM7q/Zb9qkXmXwaCio+r+NMdqORrleOhXPnBUd/Y/tLRSeJ7MwUrKy20zn3ddzGbGt3PqOPN//F8kXTzxvDBKM5vq8HZ2P3gIj16fKk58afG8F4pavkrcQRer0ZfzWZK4bTVdWfxhGljN9YFaz7TA9f/xjSxk2uu8uGvX7QkQHlEXW8+YYnUrA3m5K9loz6dHLNFxUciLL7Vuy9gZa678sIWSZ2vqBnjTyzT4AIEfUaF8wuP9GPwoMeImop6sxwB4/mfZpG4LFLQSq/u1hHVkWO1RfJQSUNddOAQBLFEa6jyxrpvP+67m0o8rN7xrIEszn1QZDoWH/Suf4WxDu5oY/UvjWBSHELWMBGG7jt4/kGs1UafzgDkhbjAHpsOGsFH4sSFvusNFtx3A/8mqusF4GWc+b0fmzsveVCSAsT7ioY6Pgw9ntSWmt/8LhsvjxnqxTVRSSDZzoXL8NgD+pSAPdgnA+tmjY8AuAP6FI2byoTS026KALyKfqXx8OV//6cAN10JVAeCUvjI0VDooVwjXLH0Y6hA46Lyor3y9VVr7Pvh3hcBioQlhn9ByqYaR9uap2LJGyCIeSqYZBMo8RhpHmuo5BZeX7BYTwbwi54a7SUMlwGfglS1v+sNFRhNGG9dPPsHcmR9az5rD1rElCiKOLJ2m9qxjnZ4Z4ap5DeK4E5xOmZf7g2CjW+q9L1vqvOdso8eM9WacCAAyJbu2wwXWFg8LyDHgIB6UicyRrU4tbMICgJeI92aCDLyACf5fuT9C5fuNRCEO+DwMMka/D5IGcCoDJPlgMhZbydSRgqDJ30P19FnXwRuXh95mGSXZOH91AGO8qz/UTQV5Y0WMmK7efwmAJYsCwIuTx64ddJxRwcgHAysPvhysPv3cNdZ4xrAK6vPtHGuXFAkIUKacoECIBVOjmOZJ3btohhNEV68efG3TzchCV9aw5QfeYG2fWQVg67yiWTAJcHCCUSQ0IiT23Ya3/mn7fosV38YEQANAn4oVACK2AxyaWZmtTixuD7sWhALMFAwixNEohcOA9ytU/36+jDvoNdfCQOoxJoFDFW6gCbBip5ScpGGIc11s4ig46W5V7z7KddtD1Agq9d2IwREpgOKS1SECfqrL6wxhCeFQINr26kYO3GAxXO1NHMp9jWnnwnNzjDkKYbahzjWERFAruXam8BPmQAKHQS4h41+ekVQZCPO14A3/8GQYXkbNlSh1h/BvCeEjteWH9bto7aAgIk55Lmh6PIoS3rPVfsutbeP2EgQMAAHurfG4M0J5saWl8kL041Hv8HxhASCTPozywYW7VL+81EMZXosDGADwRyKl6C1XAEJcujJSA82+VO0+za0csDxHPSFc1qPlgCKFtZCudOGDnl3r9ZD63tHL/OQlv/Q/1ZIWMbhnkMQxsZpuSQB6zrARpJUCI8gsbJQMFG9YP66VcjNCUrO9ekEEq31zyaP1In5PIbxreQVNAyJNpuGRfm9gov1nrv+RnoxiCwoEHQOqxymIhnEHR6CBCYG1qsU69xyAzWqEe+YGR/fndYfvzu02rg6e7QMQM75RAofJnIMJIVyq3nmYSnt45O7WDMF6XgofIUFf3Fo5Wbn432B4NjCcVvXdy8A6cN3L8bufd1zIFwMq9Zwvd/kQF3EwAoRCwGGWlA2NhIPTVRYZho67h/sP6wA0uVr57MVz57kXTQmjaWUaECw/+ulGAwbSBMCnApQGEvXQrVvOX4kx9igGFAw2AvsVeIFzPrIYGCQIpqLBXaAQl0fSgQKD92Z1hMncNdfBhf+cZMI5EUKjiLRzcMNLZyo21bNoR8RTpgF3wWIlRHTl+YL3klZXvZ3qeMUXIEwGRuH4yfQdV7j5ruPP9dOBHYOgqpxWVl6AtMvOlUQ8SIEwhbHTF+n5wILCy9tMw8X4iTPoWtwwsFPzIYTAjIOT+ZgjgmOeT3JNYs1bzl+LaKJJyGVgABPhLXQMBgRRQIHQ4PfU9BNqf3PY66NEAvGHEBDAWFCYCQxHI9U8Y6XTlevoQ2Dn3DjHe9wMdrj7YBcU/fnBXA+2u/qkBRLyyltdPZu+fyh0H/qaj+dKFH8YxUshjGNosA1IGecx8CdJKgBClEza6Yj1v9v3CdZUnBP7QBl0VNVS2vTrwAyEfGlIAQu1j0wDCxOeaNg6B6gAa/7yDugqoD/5grla66msIBPjLTH0Lgfb8LRf+Omi0C32q4JYEDJHCuZU+pQojna4sP0m9HVkINyyEkfNhGq00oRRUpGA4VLm+NnjhbA+ejyCMxwUenjiQxztms/P+G5nsc1u5/bSBEJ4WtoG48IM4bS0pEArzw2i7wjrg1Z//+ox3XeQ+VYEQzVrPm307uFh5/NNwxMnBKtdQ+Qu9g0mBMPKbYFBDeO3w7xoQx1Occ5kGNJZ47zQDGjgApHP+YGPu7NSXEEi3vQD4y059B4H2hVvDqOONzkqgj2e0xgTDAQ4jna5eeZxuO8JoiWVMWP4PDwxFBjjbsB48L6Dn/Yt8rwB2KmAYBLBM3jmVW09dzx/T0BPUvwzCQqdQgjxh+nBaTUDlAiErvSAfEiDUCBudtp41++4Zqjz+cRghL6pEAcyMA6HqNcO/GwTCpAAnej6C6Vbx5O+zbUOGgHCgANC34AuEfWarvoJAukIl7PGXvab7ar9JYlz6O+gAOAkMWp00GDEBbMDDSKer3zxaSKtaD+rv7iCMtlWN7h4YanoL3c945dqTTPc8zF0k9FUGdn7pgmHvs9+ZeTN1AKzc/I7h+VOHH347kcKPHNykkMcwkIXtVwKEqmkVykQjbHSl7yDQnYvMCPvUgTP2cQEYDB8XPpn2NcO/awAh9zcpwOkDYS/xKj6SBvypvNjiJ/c0aB7AJsBfbiIQ2Cz7PoF0jzpY7TM/zfbDFhH23E0y4u9OyufCkO9lrgt9quA2uGGkl6pffZteO8J4KZh/TgfNMUyVvIW94wdnQYu7zyYRRoecP1htHInAKST58amv/Fm58d2ME0miCnnM+wqnFaXn3DOr3BDjOB7ksa6hk5aV70i+NCDe/wfr3Ra5T7xiPX3RF3trVh792Aisaq/atsKK1IX/OPefqYaLyp5Z7WM57VP3PL002+nAn0KbFmZOdI6gBgYAqecAtnrIV4eoB7aUoh7MgdqaoKBaKbM32Z69UXc3J5YYNDpgyDOQIIxUBIYr1cVv02pHBB72nX/x8sw1XvkGNQcMBycMFKNJPaBQgPDA+QPHpRptULmxNokQXhHfDx9ohO1HNS2rzEKnEB7jv6hyWk1ADdeVML1CGXKA0MKoYX33otRRSpVvf6hHQonDkpRL7GP6Yv6gch62EULZ7ikpey/w8i84x0AAIITsFUqjZQzjo57LJswdLYw2yuhNts9dn3A3edc0YP1pTHoLIYx0o/rPVePt6OD8e3vBLSEYiXRARWxYH6ouP+4L74VIldtPh52BEx7YIJ6RpPhcBY/Z7nz4h63U7uXa2hjCqKEPSHIjXCsts8wEhrXKe0vpHiRpkSA/rOdJJa28TIYsjJqVtReljFKqrP4w4WzyrlK2fkV+0wQzQfsq3/xBxsBG9BwkvH8Cv/bqHuMs2YpXD8Ib7cnO/QZSFvUUlAk4yKgx6Xj26P95Ivc1TP9fNighYXxbrbX5MnnTGtSDWTbtIoR2fB+WvHaESuQlH6Le5NKM2Npnr3uDCIIXs8X5npXel9bf4Vm8NP6vOdfHlu+wbhqvDe0hbPXeSVbgmt5o6JiFrN77yJcv7M+X5fs/ZiSwOPfD/bfkWPK7H7B6v6fXjlwP0nTv+px0VuAYThrO8b3ym+y1rb6V6+mMGI6yQhUkYZW3W9ap9U2Va0/cheiwJei3cS+PKPzwhJ6b7nfh9i0og0haUfpuop5tYtH3QCQPzne0P8HDzpQb3j2wrqGTlpVvK5xE8t4MfO2kPUSfo2y9OwlVafzQ61t4ZWDR/wTff0Gptqk4x1mhVx1yQGqL9i0b9Mct/PZkAKysp80Jegoy13mE1s24qBm4FwglsEIJlMoh1C6R5Xj+8Ospw593fYXXGPM4v5h9vXvivgbAEqz4uU+Njw36YiVQpN2w6H2O0QdjoiRG/FJtanGjtTafyRLbSVSbWqwjhA4XPZ+0PTVpe9pprc3HCretTS2OhNpTUefNEm/yQmttPrUFPYwKY58HWQP0uPCgYPzqgKELfYF3UnvxpHYbcja199qP1XsfWYx8MaEwrLhg6C833nGuRqt/X1k6+OJYXe9OxTq4+P5WdfHbXdeojAF2fvHAsJeQrG5aP5h7N/9R6bQU3vdQZND5DTcVIIqeKL3BSewMSI/Ggh6ltFT+Ni8rA/+ATy/ttv9d0Dn+Vqy+uvLg+QQFwgn6Tui9A7kOirDhLbpnwQMUgSFW+sh5xytPflrovPNaOfoVRPsWiw4o8MAGI3k7SgMIvbaFnYHEJkLWRmfqiPJgFX57ktkHWc+aY3RQyLVRRECHwn2h6N3BvZ9t0obxG4eze8dqjF/oncP90rKP/nsjA2DYbK3NZz6iQkMNixb6SR8C1GitzacSYkKBcJJ+igwu2621+UJ7cKgH+T8FyApP+9RYSbM9jdC2NFNQGHwlLuxmJfv0NWJMXOpejvcSD3dMumnjndt9J1lWo/31yVTakP3ZncnuO8nyDchx7iEIhowR/vAfFuN33nHc79ErB19+YLQdVRe/JVB5hfmjqCPXrVtXcwfn3+vLza0rN78Lvod1n4lIOs4f7j9XO8ffSmVeZWX5CXkGXvDzEvA2RE/ATcv4kVUUke8iBvw27U+anRNvpzI4W3nwfNJnnwwFr69zDzHSCp+5SNqXO++8lloYsClVVr4P9i0oTt/ASSB7nFjtL3iMNyi9lGZZ+mBwhunwkd6HJIHlzvnLCv6sH3/W4zJdKPQO61cArE0tkuv9luU1Bdr3QV+mhiqFQfJQ1Asawni5yB4cEqpaUOghRvtC1mG0FAbr3BdtPiJlMRbHe56F7FNXqfHKAxnBd8gQ6LHTbyLLWmpfOZVZ6KD96e1hhCxi+C047yOuF08DDGVQKDp38HunHR385QNj7aj6b2d+4f8xr81THLihIH9w/r2+3BKicoNsleDbd1VqyIa/1wLDI52P3zb+TFSXHo/QSJ+hoAM+ZeiRp/Xsk4XOyaOZReRU7j8fpgNC9UgfGwuCY6bltyXnfdB59/XCetUrD793+5a4gGMSCIO/7SJkNRzwe/e1zMrPetocduwTt03x7RO98nLh783sPH/WD+sul4natvAEisn6EQAp9GwVAHh26WjaUhGMU7oYzkIBQfClIoaCkvDCyMha/soF/MKiz1idfooAgsuttXmjIXymZJ+8Gh1E0DNEON9rdOrBtKvkndRePp3r6Lb9yW0SDrbQ63804Y0qtreQfe7lg4UPjbaj6r9Wm04khlGvFff4lw8uvFd4r4WuKtfX9qLeIpTs+UHMst/tnHg7FYiuXnncs7UE4JYICFlf8dPuI8sJR13qnDqaq31Sue+EiS5wyycTryjTg7Xcee/1QvYryAHA57Rv0fXc6fQdnB/Zp9h3BhLeez3XSATr6Qtqn1j18IAL+wDuL9vIsjKFP+QHQOaPkX8onpTxVZ8CYN6GeyGMdJ4oCC4VyIOTS4iwSNTTtVWgMtqnbapQIV4+ECwCKL+cVhhsXNknrvZCAOOE04iO0wEK96tN0obaV88UKlzWnr896byPLN/AlKws4noLVc6N0CsHf/2jsTKq/ms1GvbHyULw+1jewtWDi+/31bYQletrM0p7r5p5fi53Th41HpFS/eaR2wbkXtzI3xEgFKTVACQyCFTvnJ4qlHercv/5JLVNgoPU2XtF/UD4Sue91ws3xaDy4Hk0vDyO5w4J+wzB95FrXHYGE94rjsfUevpihLYnOhWKCfmhg7r/cj1/f5jM/H6EABhJzP1Dqr7bBoIa7nkZo8RIv0zD0Qq7wiXNGymn5QJkh2i8gJt7F2nxoHVSX0WDP+S2pT0awvsSBYw8VajysT9eJsvWL3SXleYtXe8psHqz5rL1/vNFj9tHGB1rXz0zUTT4I2ovnmgijMcQxpeF21T4y9D0pvbBMjbajg4+nW46CyAIlx9XqkeVZfknq4vflnIZe67I4i+yZwdxnh/ec8f/GO+3q18/Gu4uKhNjiwXLacvBPSD5+Zdux0BWXnylc3pqpmjwR9T54x+C7wJPzOeDUdfCsomZNuX9IOPICZ/FaCHyLKjeZ1isNsk7JnoNsjjKy533Xl8oEvwhZwGZIzv47SNkUOGIa5/73wnC94i71UMO8NfNg05aXr1L1I/7AOYFXusU/BaKOhfJL2q4kxGkV6jHMm8tFGVfNzp/tAgrqZIBhbnW2vxk0dsUCeGlXty57gbY2atoAwk9L7su3PklPVZo0G4ijEba184UesuV9lcn99qLJxdQB72MOqTzlUAfrwzjbmqPA2lHq1/eM9uOMG5IgSSQXhMMexqii2v0hSpXn4wgTJd8VwG7SLkL4Ch6/GbnVCpz4IihPsQ2pgV1KXiuw1CoCEjLnbNTY50zU4VeMKvz0Vt7nY/eImX2MsJ4V7dsmEawclrm+3S0svpDscJACZRi7NtuRwHWeOURPbcOEF7uvP/GWOf9Nwoddo7fPkIG4Uac/rD3Lfs94Hn+3soJ/kLZE9aV9FjGgJBPfQWAORnuu3QVwskybGkQFl2UZowCbJ46REMJi6AiGMukXU0U0esnEs3vBH2J5qFCLChkH18iGz1PS1/iRsCQe9xc+8bZifaNs6XZGoCuQko2NF517s30pvbhjef5ULhkf37X5IAU9QBpAUlUMkPW/fRNCKiF0YwlNPZjPDeIe7x5799X344gjGelgzaBvBkHwn3H63f2ncLOZWOpc/ytLYQReY+uc+vaL5X2wYc8PhS6/1uge+3lrsrdZyPdBZFU2krkuwTewd413DY1/UZptsrAR4/s4aNHSN+yzL5f5wsy+Jg//PFkEgoR7jsPYNaNcZV6/Qo9oiYT9QZO0vDVPFXP2wtIPUh5L5KzTdtVKRdzoPmeyGlQ4RCdA5yrLBJGyBx9ExgffvEMEjUodDrn9s2zpdwSoP31yb321ydnUAfPcY3muGCIOL9HvYVDCGNjBvPBn2Z2qDdWB0hiAg0ar/5rtT9WA6Xhn/7wRwv1YD1SJvHLcb9zZsr8wB8rTA+x8iZ4H8SAHh8QblsIj3Vm3ymljdI5/tZe5/hbkwijy8rw70nYPrSBcAghc++DhGrw3//KnrskQEggaawz80Yp2xQ+eqRuIXTM8qbP9e7VDft8+0j+8Cd65iNpY0Ih7iMPYMbePxLidqy1Nj9ThnBPVdG5XMdyzMJQAbyAecPDOvX8lbpd+QYVVnO4fK4DCbU/LpFRxnGvg/EbrFbYaJGBoV9qxi2Bv4n2rXOlHpQial85tUTmLtJ7Eszdk4AhD/rk4Finm9qbkRcGmtRTxRsICB5fKm8PS9Urj4nh7w7GccohAIZYEwyD5Wh+24d/rxLvHzsKQAXyVNPyjX3HoD2Yfbd0kUlhdT5+awEhfEwIzLx3oyeVY/yFHU1Xr6x8n+sAdeXO04luSLQnnTaFEgKhO89/onPszVK3qc7RIwSinb6F9tHbFgn7PFoA+GNJBwiROhD2kwcwK8N9mxrohZ5TE1f0vvKEwNyM9wJ4/1bLMN9PR2SQJAcIHKL7FOYl913EMTakYCiDQj4YOuEr7dvn+mYbgPaVUwSaJtyFbHjQxwBDJIFCFW+haS/gF8ca3fmx8cGOb+wGjy9/GCjG7lxGoeEuA0MOFEaPNe8t97x/SFK3qpAnbBMRA9GxUw7q7/ZNX9L5+G3PaOeXKRK0Cw0PKuddTOZx5juw4lxfcO8oJSB0/7HaOfYmgb++aFOdqSMNhJy+ZZP0MZ0iwZ+M8USDQLzzMeq5LwAwQ++fB399t8+SXzlDYJ5ewDy9f6sUlvpOOUFgLm2o9uEVMuo/rm10JPcWEi/ZZPvObN+9m9pLp8lcoAmhUReBvpjewigY1u352wa9gKjJHZVVAzs2ACllnJsAACAASURBVESPH6r+o1HaxWCq3zgrZ05z6wUJAIpTjoIw0u3OuXeMPjfVfxLvH28OsP85lkChXzIg7KV3BoIO5voH/jx1TvggkFWmsvIRvTsQL33guHrl4fNcBqgrt5+OONsZSO89BhAiTvred6udD/7Qd/ZJZ+q1rc7UaxOdqew2q1eW7H0QVgwo7BcPYBbG3nY/hOapKmcIzPxFQwcR8vL+bfdDyJZIOUDgoZxWBGUPIshezhyjQzGMlCxvPdG+O1v6UC+enE3rsSwEjAMLAejTBsOhrifKhNzV+8R5DEv3Hnsqr8FGPJjCMlEoBxUwdIEwhWgevKAMeSIjXmQEsqHYDfs8/17f2imdkwQCvXeBqIw0ylQdCPPzAnpbCkkBTwMIe+cW3f9658P+g79Ci8duOkCIBPVKVXoApPv+HU75MvuDBH+eKATmsTBMHsZ7XgC2Oyhti0JglnsFZtqGah9cGVZa+dOTyLvRTaMEhpPtu/W+jkogal89Q0b/55w/dIz/uGCIur8biww4+PMHW90VcjlAkggMg4bf4er/Nsq5GExg7z9FDxmKAYbuxygAVv/RYL8HRIa5GSAkYdKTBxf6F/48dU4ebTirOZqAbMRKL3wnZw5DlZvfkTY1GQ/w/Oll8Oh93z3/dj+tKlweCerXL1Vbw1OoXfeDBzALw33g4M8TXRgmj9UcM3vpZDSIwBIZWOirOX8Kmsxw30myL+BYRtdCwo5S50WtB4ZzrXv10i/4oqr2tTNL3S0i4oCeLD1iQuEh+/zNCWM34awQy2kHvDzyjNzoucPHls54qy5+S5b+Hw0a6JK6igOG7vGrxufJOfCqULdx4EWcfvLg4vt9GwUQVufU0XpgZd24ZarvITxUufcs2/Bq7PSbjD1lw/chAzwNeMSu44Psy5jpvYJCCteZOSjsBwBM+0G83O9z/hQ0k8Nm8eMUzLJQXnNl6oPWtijsZlneWRrAdSm4+aVqvHqKnnu9db9eyq0eEokszBLeIDqpB1Ce1lw7wrgphZjIMZr301MZR++Dg7q69co7Jiw3vfHVP50QQZW6iQd5PGP+8sH8+wMzENSV6xXbTwjOcco/4+cK1yN56pVBXMCTpQf4y0vS95egnbLEOVepAbA2tTiZ8rytbeoBG2jlYLR7yuqaeYR/rvfrSrIyUejNKrQ4k466NvPNGPddpOLRC6RXMmD3Sz3HK4Ha18/udcOh4oIe4qXnwsakXb9hZPGHg0sf7nXnw+p6LcNi3X/AMMCHqn9bMee9zEJkzqXK86JVr8wy3T04/55RAKz+bWWsu3UFYtSNaBRfDnmh++x+Ng8+mR5IO6Vz+ugeQmSOrldOgvenrEz1yv9w5e6zTBaDqVxfG+l6xFE4T4kAT5T+srMRPygXWYyPuD/A/LoW9Btl9wCmDQh9vTCHjjI22j2lXv40RDDrxV8G1nj3RAdWtjO41BAdKEpbM8wXtIDzEoLhTOvB3MCOzrZvnCWLwnA2h1YBQ520TvohGoZlRliwmTPi5AOJDFX/sZF7Ks27pvqv1Rla1upg55eofKLHprH4ywwTRJh5lAAhYt0H08gb6L6kc3pqoxcW7hsE4dWDOSDMptwdj7I2oOrdazD9Zufjtwfe8ZGrGHVtFAqpAAD5IsvyD15IhVhLGYeCHspgDlcenefMoM4pDSmrss8CAPnXMAGGQW22Hs6ZD10rm5y5dKxQUK6nRAX0ROmNtaODhQ83unnn5jF0kAiAxMdOV//nYa4bWCvLv/qnX3pgF70a+3jzANj1TCuASCRvgrbIuw+ELx98Nj0w8/64ciGJEQoqqQcRVMmhMCMAxBPK+U8EhM4/B35wuhhiVK4CFDoS2hnB9lFaAKSj+kMpXgJGQEKi0JJ1uaQdvpR1eNRma20ejPeeVzmLrSFSBcDa9NdjJNROCe78ig+F0EETL+Ctc8H3kRTwFIw/MRiafle48zfjgx0SHh88rvB7Alb/0ejtockzvsPSrceeNg/mzS6YUv3rQzf8U5QfkSHvSaUNu9p1BkFAqHN2ioSCLnULR9YuJIa1IliNVm4/TXVgpXL1CVkHYZSbf618M56haNqlzom3YUAhb4nqUtB2db2EZfYApmm4k/lZ8BAwROetZbmUf2qGC11kZjSt83MExntQdRoSm6aGUvYk0zaKQx2uggEbFrcj72q1tXIe3k1U7VvnGu5S5ZwyVoc7FTAcss9cMxkG2hS2Dd38io8vw3SGXh516y0sXvn0jk/B+0e3rgh8lwBEmOcJlMHCwZ9mIJKEqnP2nQUyrzMI/CqgpOCt5YNVqgMrZIsfi9UmVPIeznekb4qcc7dz8ig4Pooq5vtB8g6RQCEAIFswqiZWli8JshpoWqNsWXv/VmFgISjqVc5iMZw0O2pJO2KBoQYUBk8BHXRYpEx0IUEHMILpjb0zDv76x53AFjvxwE7sLewdP1q9/CC7LVHiqLv4iyrY+YxfHhyzj90/+GQ6jXeO2zZEnsekINI7z+7B58cGchExoZx3Aeu5NQiEwU+6nnUS/okxshD9YAcKxUColm9WnwR9S1Gk1A8I6lQRCksJgBQI0vLc7MLcP7Fo+WQ5FzAtUMsaAOEFy1YWAy6p1HXt/a/JBr3j0pd1RCwolILhaqsB3r+w2ndmm4H3kQ7caYOh4XZEPFH8MEVGnnj5FoQ89o4prBew+veVyV74ZGywC907t76Nh+BXF+4PB/YulNUPM+9aIAKD1AxZGDcthPctXchDOmkD585mikoI8FwgVIBBdSDc7Zw+CgMKhRHjhadiY2hCYVk9gGk+dDA/S01Zwkw/ACB4/zii5ZL2XMDxlM7L9qrIDHauhGAIRh9P/pH/+HCnctyoffKqsYiEg//5qBlYvAJJYI6bL04bC56juPMAWQtq6IOd2vEYm3+OCAioGNzd9IK6lYPIPkJprGBafjmb+tMVdi3iOfN7z4QQFDtsdKhyYy0Vz3r1m0djgRVxPYXyoOUd5N8fDE4XSRoQlwQKAQCjAgBUUzODuVuejL9g6fy/LLd/AONdrNQNmpTmAaq/i3jGhNrB263V87AvE0+BzdUVjDi/hFDIhAzT7ajX9kX5jQuFvWRD1Uv3CzcH2VmhFOPDyp5wKcgLj98++GzG/HOE0ZgAEnoZUQVCsZewefDlBzD3jydndWD2cxCGQvZzpgRM/k9aodUT3DZtFgh3O2enYEChSOLWmVkoLCsApjaXAcI/1UTnbmUFy2l4b7KcD7NNV7wEcZRRWLH5gSNn5D/xOVRe3NBBC9S+V9+zEFr1wqJ6xg9jZB/pQCHTODfajiyMlywt6FEAIP7xRVyEys1TMrDjw1fw2LSeo16bUKkrnsEWuB8uEMIgtUAHc+/uOAtDeeKDmxwI1YA+HYeEN6jQ/VvwLCQDQuhbCicFoIsLhT6VFQDTCufKcnXLflBmHVEK3pssARC8f2pKuz2NmD8lHuO+qM2CIRh9MoVX1QyvgCaEQi1vodF3R/vvx3fI5sv+ULWuYRoHDJEQDMerf7mfwnOQQOGNroX3mDgMNB1jF+MxZQ8e4tyP1OBz0u4f/OUDeBfIJZ5bqwiEimGjaT1PY8y8du8hBhCy5w8CABZNXKBT6p9Cv/H7udIBIA3dS0vgpdFQxvvZma73LOf/QYetprTLyajhXnvvq+HeXqQcK8EMGG63vr0A80dlwnhDxdBjQaEmGKYxeNTgtRNtMBS1Off+CuMFdFYmdfbQ9BnpKs8L2xCXeQtXD744Zjx0svrlvZHuXK1AHpVDOvlAGE0PfYmK/INBnvTCbLlQyGib6TgkMB5VHlBA4feXAgy697TdmX0H+paiKlLXijaGJ+ZvvT/K6AFMEwAhrl5f66ZPyJFpoyvVDVx92qThsiCJaBhomvNKc/AiGwFDMPoU1Howt+dEcchCInmGnjoYmp877Bqs+9x2oQiGitBUpDDQ4MqkKjAXHwzTeY78HiChMabfJhltD6aoKOjgwnskDHRX6BlD8SCdBYSV5SdG7dLq4rf8OaWivPLuiw8I4P0romICnS4UlhEA0wzdAw+gvrLqkEyDf1YbwIPxrqc0n8Ehw+dL0CY5b2j212D0qYtdVvyQSF8adTC0P1oyGwb6j+N7LqAotQdBXpW8hYeqX97LfUXQ6iVn64RJNbDj1J06GO4efJlO6KSF0USvnBXaleyeeMe4/4Z3gbrcslKFIVbawG9CIDRrn2A8LDT+w3nl5ZF3X700YJ8UUbIoFL/iQmFJ5wCm6bkBT42+soJmYy/YlMOIw4IOW0+plldtatFc6C9GI0rGp8YJOS9uGJhSFTGQdeokJhha6fRDodULlUNSxWDI9hYWwQtINn4fig12orqLHpuup6MLA94nBIQqRjrrnoLH7B5c/iOE66mKvDf1YCgJpJt1TDjn8553zMhX+KPZ1tx0u86COaBiitUXiPqAYPth/BbtR8ADCEqkDFdNNQltWQHgPqz+qa0yATO7HakYr+rabT26AANT6mI/b7p1IodC4/1Q+58fE4N1m5kvkTHgHcC7R/bnsP3F3azC4NkioajJwS4q9vHpASBZFZZjoHeBEDGgMJRWAUDAWNcRxlvCZ8ATs71oQ7rpZ2k4eH0/DBoDQhicLqqkYMcYHBS2cdZv5ZwDmG+nBWIp7eX7UcZ79pkSwJ++0jZyTBruegMJ8aAQjD4NtR7OkVDKfSG8+RUfClPqhyioKIGOxCAQgSGiAJaT6Eqk4+x70QI7FbjfPLj0YcrPkbqBzvUSMk4XOg8Y7Bo6+GR6I1CI6u0lDhCaDgEdEec1ARD2BPZJUaU6QIQYdRxo82IoLOs2EKBiqWxGalZeZOiwNdVam0+7LRVrAElujEAb0lfUsJF59AJpY8N6cuHQ8vWyzjwuGLr/q5vOvrIwrkvrQ/l+pd7CTMI/tQx0XxKNsFGIBNBVeGElR4pAGDCWpYMOhgGQTi9QhlcdIOymAwAsskR9lgTs+FAY/B1CQEEmlAkA1qYWTRnvWUEAdNjxlIVHudjKGjz6SarwJgo1ZKYPfFLph9r/PkHeGavsa2qGfgrz75zrkP2nO1luh+PPC2PxF8X6ULnf3vH7Bwsfpg2A4zy44xvofCNdEDYKBruunDBQGeSZAELDL+okeUXhdFxAgOiSokr+XpNHDTDrPDggWEYANL2SHyi5snqRlA3+ocOOp7J0TOns/xQUtCF9Rb2mqlCIlEEkvUEkxob2od+5HboUDKPXyjwMtPrFPQJ/0ZB+ruGdAAwzWYXZM7ZVDDCeka4WNgqKVzV6kIfV06cmQZuSgZ4iNB7Mvw8AWFQpe/sk70VJPwIhoCAQaJBkLlQnG4MAvMi6Uq0HXaMuzRF/n9qLJ8h2ELsxYE4OhtHzTNqf3sk0LNpCeEZ5U/vIffnSqIAhRkup31C4zEXlLbwnCRCCDNRRXMhTSGtSzDYleGeJ2g/33kGFVmxvn3roKAAgCJSeYISteEp3BVhdqAClUwm8+TqKh+deh85cQAFYsGFOHQx7Xww52zFkJPvzu2R1w8Ph/CbY1F4EhtsHf/1j+h50IdyFyltUV1KDHkJAtaXgXdUGKF5ao/kOt2mFtqR3P5tpFDfIkHTBLtxmIu8W9nEAgCBQSspgQRNQWQRgmKMwwxgyAIZpygNA0fV1Qj+F58LZLQbj3/ohYNxGP4qb2gvuKwPvn/+iSuWtYMSz7wW1//ExRAPoisxz85e7yLuaGAhN5lsF9BICIagcEr4j1L19rOMAAEEgECiWDJAAQKF5KZehBAxzVPvrk2TwaF2pfbCMQr05gaP2J7ez2RvVgU0Fo1WQXw0wzGD+X1K4Uw8btT+7Awvg6Sq8OifrOeENKvAAigeF5vOuCXoaQAgqtlLw9rGOAwAEgUCgRDLcy0JnnVyJqkQAhVnWB8ZN9jw3xXsTGYdRIzF1LyAFmEPyfAnqT3DvITBcPfjbR9l4zAzAnaIhD3sgaysGiMcNGzWabdH1NYBQ9EyBiisVsNP09kEIKAgEApnTvvhMRqAQRv31xfdmJYVCxOh8U1L7m1MNZx+zSFY4HboKGLKMRNdQTH81UAKZOrCq48WMfp/u1g+RzKtAhoLxHj5t5BiQdtUkBXHVsFGTUrm+Kuix2x30K0UWF+pDedbxEjKgEAAQBAKB4inGogwqb/WAYNRfX3rhjNpV4iirBTkasQwBGRiGhdGQffFWahBof3J7GCE8yTXAk4Bh9Dy77f89Ht0KJC1htMvMmzbcSb1V8C7QlbehuhyI1Osqq/BP4fUlaWTPGcawnVqh5dWfQuQHA+wgBBQEAoFKI+6bPZu5Wf0kYiibMM7EnW1G4YW4wfU4KgEUBwzZ95bmaqBk778hrqFqAgx7X2To/XMuuRP6Ow7c8cul90/w2ugK495+kyIDOmldpRkCygRSDe8g576qf1uBAYWiitn+wlAoadOeIAQUBAKByigMAKgtPBroBVWAQkcmzqGo9tJp4mncdu9DMrrLu1dVMETosH3hVjrtzb/6pzC/mqGf7HNlC4Cy/HHvTeWYwHHwLtBQ9fIDF5h1w+TkIM6uK7PaEA7YRPIfCwhhQKGoUnlXBtomo95F70sIAQWBQKBEyiLMbByqSF21974KGTUcC08VlPjKbk820XYGotDP4Dnk9+seazwM1J4nUInHY8KcTugn+ay3//lxttvvYLyjBBeR77XDRsFg11E4/NOT6HnhAiEDCuO/O+TiXdssEEJ7KqpUwo2Z79EwEIo9hQCAIBAIVGDV3lmEkX91KRo1icEwyz3Zms5iMDoGZ3wwND8P0L/4S7qhn+STzdYPwTz1gFPH28T8TQgZo9ncUJ8IEw+XKlwbAEKT8gYVuPmIAYQolBYWGCu+uPXNgHqkCoUAgCAQCJRMmITppNP/hzQBNaUonLSsOBQS/TozD2B7+fSesyWESlaTg+Ehe+6m2bmA2Jn/J8m7Rugn/1z77X+dyD78k3iDuQa4prcp8luwXOwLt+BdoCryLhC1MWH5xwgbNZt39gb23DyE0qi0KYyhLRVVSpAXEwp9fwAAgkAgUDwFvUDpGQbQUatrwnw9RE/WenQhSw8gclcDNRjuGTkmcE5jAGifvznZXYhDJU9co1YBDFEOc/+cvOA9qYEeTK/vJeyVCbwLFFT9y/1hJ3ye9ywwBx00gJBV12a1xcyPEhAqewcPVS8/gOiSIkqlLj2p1j0jPQAgCAQCxVBrbV7NC5QcRtJcnbFvVHv3qxFno3GezIHhZtZl1r56ZsPdboDxYxIwZGvart8wtULgjDCPqnUiNNzpJ4/FX7y66eYzjrdPCwjhXaAiAsq6HjxWu4oL8gl18LeP9iyM94XtKJwH7v0JnzloT0VUpK3x6lIGeeL0AIAgEAgUX9uxjtSDkaHaO4swX0OueMaMPhRmtwBMUO5iMMrQlMhbmHguoD13k2zHcThWHlXuMfjbdnvxRF714lzfANyxjwka96P23E3w2sgUDjtW8eCpQKH+uyLJPWxZGCELIWTFAT21dKnt/QmKL1Lf/o/4/edro2HIk6QHAASBQKD4Mmt08g3fOtSRVOaMGTGAZLvKZDdPuCE0PJWgSdlbmLwsWcZl0jzyj+WvlJqFwnNC48GdapmA10ag6hd3h7uDQTrtrPu9BhAizrnNaMN/fqv7wSaBcLR66T4MKBRNobrkAmHg3SKoexYUggcQBAKBEikbrwOE6ghVe9fZ/iH9VRLdTjSL7T8ial8/u4cQXu95IyRhQME8S9JEDIZR+9z1pF7nugZwxsmj/96zX/0zmLkttZCshCDiCgaDBLIQmrQwHlKDJN95dLy1TCA0LOxvU9F7SASEwXuD9lQ4cbzNHCCMB4UAgCAQCJREWcHAUG1qEcJ1ePJvNZCu9luPL+YZatiIGAT0hygYiqBDCbpiG4b27I0x8XxMBTBUyyM5brX99cmsF+UJ5cG3IrCoLnrpk4DIIXv2BiwGwxPxXqtCEtKoB1WQNHcfodVlxXlh3iv3PoNhoHTRHFBRFBlc8N4nClCIGFDIbAcQAgoCgUCxRReC2c+oBBegpqKqvfPVcGD+X7rGWS7eP0/tG2eJp2s38CUXlMLGg7a3cNI+ez2uYVjn50ugeN7CfFb/9Kl942zvPSCqCx4Qso7rfs8sE3gXMGT/6Q5ZBXicV7ZcIIwXihs8xrDa//x4p7vwE/OjAoRK3sEhhDF4AYskWZ3rQiFnPiEAIAgEAiVTVuFnh2pTizDyHxUxXoaEKeLACFu5AqAj7GwMrwBTvPtlQSETDIfiLKxjn7s+7MxTSxLuGUgv9Bbutq+cyr9OkHMfG9x7UQVCLDrG/xset89dh3dBWJiAsaBtewoDIdIJpfSfRzBQYeR+yP6fckOfmxcZ+PbS1atf3gMvYFHEey+rQKEkvR8GAQBBIBAombI0QPNd7KJgqr2zOJxoTpQ+GOY814wILwkBQpR/4f2ywDDWYjCTASCP59VTBcPcvX89UWNd5OXzxANC0fHR8gEvoE/2Z3cmmHv/OVIv20Rho6blDy3GoQuqQIE6EIIXsEgS1aUUCv31LoZCAEAQCARKpiyhYBTmAgZEYGhInx4kYp9ut/X4Yj4rgPrUvnmOhIZtcgGCB4YicQEMj9tnrumtEuibg8W9vtir5z+XrGqLA4B+z6y/TvRDb8XH9zRunwUvYFcEiFllHK9s5UCYcggoUXvxRJOZf02vjyIQXrK/uAsrghZBMg+0ChQiQXuhbQYAEAQCgRKotTa/l/Hm4Eu1qcWBD9eheyNO81PI6UFLua80GVAQfLi3yYJCbTBU9gzYZ66PMOdgCfPoT6MFhuvtpdO5A7mn9q1zeyRP3S940CEDD9nxwWML5AHNT/Ynt2dIWKwQivySlm2MsNG0hPG63POTAAiD5QLtqQgSQTtShUJ5GwAABIFAoOTKsuMcgkUgHMUs89hQWBjjqH3rHFkNdF+YdSH/CmAkWiQa8wBJGJnyedUZnQ2GRQJyT1GPjSfmfSYGwkP2mWsD/S6w528PB0LjdaAocgzjGVEMG01N/oEnZSNfcO+R+w2cc9z+/C6EghZBUsCTQaHcSwgACAKBQMmVtTE6O8gLwtTeWVwwu++flER2W09y3P6BKc6cM5kxyr3V0Be98x6yT11Tg0CyX6X6eQXAJwXD/fbVMwX0VvgW7eCBRyC5IhCKy+iSffpa0j0bSyzccFeylMEdOwxOCQh1Yd2kyECHN9gTyafEs++/d949R8Fhwf7TnQFuTwVQnPl+nPBeUXoAQBAIBEooGga6nnE5NgcxFJSGfl7K5mrdnrN4i+9gtBQ0CFmQlRAMez9I553apx1IjO79pwKcqvnt/VbIULX27VkSBroqBmAB2CqVEbNsmvbpawP3LrAv3iLbjRyOwp1qGUu8hIh3HIrWS0pqf3Nqz4VABa96Uu+g+yEw3bA/uzPw0wxykxDypACv7CUEAASBQCAzytooHSrGqpTZia76mcey/4UDjvadWeKR3Hb+4EJW6EeVsEy/emkO2yeviheIwDi6+IswfaL8FneuUhhORVCnBSsc8HD/PFToMklB9oVbYwijK+zywjHhLmnYaEoibcp/nbCBL4VBbSAchfmAOUpYZ/LQTml6KgBAEAgEMqDW2nx0k+70NV6bWhyIjtrxdrrLoov3/DOv1dYTx8NbPMmMNC4Yhr5Q8xZyw0Dtk1eHHU9MvPPq5ne7fe1MwcJxe2rfnSVtdFsdHBg3rAQrESA8bJ+6OhDzAe3zN0cQxhvpw51G2GiKontd7gbzxjPwjQHhYfvTOwCBeUgb9nztVAMKAQBBIBDInPIIFZyuTS0OwsT9pe68P5HxZl4FNoJwg9vJCw/jpWfBW9eYELWxmQTn1c1v8ffCxHjJyHwzLVhxPpfsU1f7epsY+/zNYRr54Jv3ZwLuVMuYc620hfGC2lwvA0DYPS+edlZYBWUrBXiTw54cHgEAQSAQyJwILOznUJ5X+nl/QOrlFGz5IOgwk2mz9WQ+j5BTJbXv1sn8oNUIbPDKQyRh+Tl/HLJPLLMXHhLBofy8YmMmqsKHPbfv1RsW8diogAPrPmVAyPmKfr9in+xPCLTnbnpRAKPicosDd0nDRtNVe+l0I7gYDGeulw4QBu6H+wyu9DMEVi8/KN7ehybCPBXSAQCCQCCQIdHFYPLyUKz0IwQqwZ9IycCw8CF1lueh5HX0AchKDIaR9mWfWB4jcJhSuGfYoFlt3zhbzHDcsDBasBDdL45+HKkCIRNSeEDIMNr7DALt+o1hJ+wT41Ex8CDGb0nhTqGOspDjWVaEAFb5ICHo+Y6JwMSKPd9/EFi9/IC8O7eqlx8Ua9VTVr1oAaFaegBAEAgEMqulnLyAiEJg8UPkFETm/NWmFpuJ4E8kuTFXaO+fp9a9+gbxNoVhIwocDINWHwyn7Y+Xg6sDEu9fID0L3hKCYe+H0sxJat2vE49NwAvIrCNR3agCIROc0Yp9oj/mBNqzN8a6nj9PPOBBknacCMAFnsUs5IQ/4/3gs6UADLxy0QsXXbEv3uqLvqV66f5w9dJ9sr3GNF31dKO6UCAIjOHNi+MlBAAEgUAgg8rZC4joHoGl3iKiNrU4Qlf7PJzphYOdZnmMZ/8qgT7jjQUcQegQgSHXmOguBkNhcNKXDxnAhcBQCpz+Q3fbN88VHsiDwguBG2OUjbhuEoeNXrJPLDfsE8ulfRfY565P0HcBe/6vJ5ZB3P0tBhAKr8UwqjNQ+9qZPe72L0IAMBAu6h42a1+81bQv3ipte6r+5f4IHUw47LvXIeJdLgwExoY9hXS+8wMAgkAgkHkt5bAiqF8EnDZqU4ul29C3NrVIgGLL7Ebv2tpsrRXf+9cT8YyFjFABjGl5C6NgWPddY7K7Cbcwe7y8hL4QewtLtyJh6/5cw10RlAEXnmRAiDSAkAkpjpdjww3VLZfsc9fJIMxv1ECPAXeq4MMqNw2PbJZyFxjaSgxLFwAAFRNJREFUZRv3gucoKRD2fj/stKeLt0rXnqp/vjeJMN7iDCa4EHjpfv73ZdQDyE8DAAgCgUCGRb2AeXuQSCf3n9rUYik8WTTkk4DzC7rHYZ4q1XyX1v25HYTROteT5xfHKOR6C1HEoBi1P1qiRhLZIF4AI3HAMPxDz3gp55L0OADMfLiIpOHXSwxIGXWM9o+XS7FasH32+oh99jrx0lwyC3cxwkZZxjSrrDNS+/rZPSc6QWLcmwfCQBrSnv5jX7hVivZU/fLecPXLe8Rz+oKCHu9+3XDQv+QMgaZgT3IuAEAQCARKQa21eWKwbhagbC/Vpha3alOL7BUcCyCf12+2ANlZbq3N7xQgH7rqARJ3FF8TDPlhpDP2R0sklGpcCjW6YMhOv96+PVvGOkGth3MbLpxrwgUzDRsKFSGFGLdX7I+Xt+yPOau55iz7zLVh+8w1st3BfxHG4+LyMgF3JsNGs1P7xlniWd6Ug4ICEIbvNVwu3LJ3fr9in7+5ZZ+/Wdi+xf7iruv1w7jXt4jvlww+5guBxjyA4jQAgCAQCJSeijJCSryBv5EVNen8ukKIQGltanGDev0OFSBPu2VY+ZOl1oO5prNMvEi6YMiHtxkLoXqCMFI9KCzB1g8SzQQWhtKGC3G9aIaNEu/Nb/bx5YZ9fLkw7wL79LUZhNFWwOvHAhZueZmCu5hho5kL17U9e5G8G/EOuu3p/M2Gs0F/QWR/fnfC/vwuGXx5YWF0yCLPiTrYuuGgf76XDwTGgT2kD44AgCAQCJSSWmvzxKt1uUDlS1bU/G/eIOgDv98QQuN55YOhOg3fLasMbAyv5C0k3qRZGYgYWo10v31ntpzhn1Sth3N7gY28w5LBhaxeFOqBcZ5phPB/7eNLuYGgferqsH3q2ox96hrx7q5EBoEit8sBQmZ5mYI7Rc9ixmrfPEdg+bK0XLiAoFG2akBI5pr+15672bDn8gNB+7M7E/af7pDtQn5zvMh+ORDofbAMCN1w0Bwg0AqXsS7cK4IjACAIBAKlqNbaPPEobResjD0Q3Mhq70A6x69em1rcKSD4Ea231ubL7mnirz5rAgrlYMi8RsLVSEsNf55aK+dJ3aw7f4qgwpMUCFnlxTlWHDY6TUIu7Y+WNuzjSzP28aXUV3i0T14ds09eJXOydhDCK8x9JJXKxPcH73gTcCc6hld/Gah969yCu8hQOJ/+MlEEORNA6MrpW+y5mxv23M1M+hb70zvD9qd36vand9y+hRWazgE9CRC6EPhlxhAYyBcnb5qwx0pnZ3pTIBAINJgiHeF/CnjnBMLG6eIrGzTUbsPUHDjqZSTz+yYy39JBT7tlW/iFpdbDuZ3asW+2AyuoWhb/AJ7tKjgkeIzvj8AxFid9MAnrMl3bs/dNXwCgI3cj/R1khRY5CkMEq87C5WixfsOh3/j1EL4ERo7RTN4HK/ZHS+vOu8BCG+27dSPvAvvE1Qn6LphEls/TF7kvHPrel9FwsbDaFu94ZnmFzsuCOa+ghOWfHwQ6CzFh0rdwHlpReQbPEz5QcB5fmfLeB6Q9Wda4PXcz0Le0r5wy054+uT1G+xW3b+nWoejlFcljpH6tUDrszQn88t7Ewd8+2jKRd6n87Ynkj5O34L+4b9OQeukAAEEgEChlkVDQ2tTiHELoSkHLeogCmgNptanFXbooyxbtvJFoWwS65yDpkL3/e51z3qt5qmqm5KGffi3RcDpXPOM0CzDkQaHgGqFsbbfu1bMxujJQq3F+rzbzDdk647fgTYeuLQKRbhpGfq3wb4J6EAOh8y4g2bA/Wtrvvgcs4rEjH2uvfXc2Ui90X0jPW0Ke/xHnbyu0pQvLSI/k3fs+5LXxJ1axeVWAUgfueECYk9q3Z8miPnMI4VDfYhAIfRAS4xy9vsWykD13M9K3tK+c4vYtdM/BaN9iWZy+JdTmTQChRbeI+OLuxMHfj6f/PuqEY+fD6t0TA1h9Ej8gAIAgEAiUgVpr80t0Jc4ie8I8HaIfktdLyIW8QmQsBc2Va88/qZoUAsXwbQoMTXoLo9fgh7SWVK3G+Y3azDeXveeKWa5Muy2Bl1AI53ygoZcY8iIFelnABAzZ52H9KYI6L7FS3kPHJwFC0fFCuFaoh4zVvjO7ZB9fDvUtKo2KU5Ziz57EOyi4lpug17dYlvMM2HM3+dkMly/XWysBWRUgtBjet94phiyENsjiMu3/TRkCA6GqLA84v4EG704MhTAHEAQCgbLTTAHnAw6yyLy/voKM1sp5sk9YkzuHSSbdOU7MeSaya3DmrkRPUPY5mUy1GufJ3K1VblmplGWSeYSIUf6sRKHjNVcb5V8/8j0jsVLeQ8eLFofhHSs6XqUsc54H6MsI2ZNzm3l/4efMu0fEuqcYC8Ho1Af32WfkR+la3nEq89/C7VTw/mJdm4aD2p/fTXdOoPD+sesh7Cik855b74OC8wkBAEEgECgj0TDD4JLwoLy03Q/z/jiKQq3IIJeJaVxITsAzqpSPwaut+/V+CctlCNcdg10GHkixHFXqRwnKBIv9hL5WXG2Ub2wL8xX6QinvjGNlZSs6XgSUcZ+llNS+W9+zyBxTjPe5IM6qHxEsicpBC9L852HlhQlbnLYRAwjD50Ghc4naWPTaTjio/ac76UEg6/64dceBwsh5gvdnwSqgIBAIlK3o1hCF3Th3QEQAfKKP5v0F1GqcJ0vE70oNU67hpyhTYMhW/yz+wlBr9QLx1E7QBYiokkALK00CLyHL6A4nYtSlFAhFBrcwX4zESnmXwIxSmWC943MSmS9rYTRpeVGZXrlLAUfRe8YrA9H5wuUZ5xxxgZD3HMiuKS0vd3XQ1CBQeH+8fHGAsMNPAwAIAoFAGYtC4DEo91zU1/DXE14KGloc44h5KM8AVL10YijcbT2Y66d5mUy1vnUgcNLZwJ9ZzgJjOSyVukoChIHfOEDIOH5gwkYLotb9Otn8/BiKbCWgAzhxgNBXdjrnEtWD6Dysuom0cV5bMgKELgR+lgIEOgBHP7HrR+4lBAAEgUCgHNRam28ABGYuD/76ZmVJgRgeNL8xYwgMVaXnLexr759frW8veBEBvbBwbhmz6k8HWsJpFOpDCcrCQMgx0Ps6bLQ4at2vNxDGx8L3YQYI/bBlAOR49SA6T7jtctuE7Fq850CQ92DbdCHwU8MQyLqHjggK43kJAQBBIBAoJwEEZqpBgj8vxJC/0EhAAuNXdizPWFIVGwwHBgARDwL9EpatYWhJ4iVkGZvhRIy20hdhowVT68Fcw/ME8uBACwi7xRHHOxgTCFH4PIrn4NZpDCDktY1eWQ0hhM0uViXLYxgKxfnjngsAEAQCgXIUQGAmGij486lnmGhDmt8QzBQM11sr541sFl0mORCI8UQ3HFQkYbkKjL6wVOomCRAGfuMAIeP4vggbLYBaD+eoJ1ANhHorRfrSicpZBapUyo4FN3G9g6w88epTBHq89h+93r4Txm1S/vN3IU/Rs6cROgoACAKBQDkLIDBVDSr8EahoBhcZCSkWpPmNQkNgGFRfbv2gotaji1sI4QmE8C6zbEXilimrvjjnU2kLLI+tznnCxigrUejrUoSNFlStlfOhcFCWZy+hd1AEX9zy9LfJmOfitWvZeZj1GcM76Ky4iiba/z5htm9hPWNePgKhoApQKAgdBQAEgUCgAsgHgbBFhDkNLPx1hVFD20blGVKqB8WHwn3HYB1gORCI0Vhwv1BFgBPVIetHlfOptIEkXkKW0RpOxGiLhQsbLbDoM9XrW4SAJvAOxgVCGejFBTmV87DqSdc7yAZCp29pLxqGP8RavZPzjIWhUAbeISgEAASBQKCCiEIgfy4QSEfEgB4ZaPhzRObTcQxZXePVCBQKwXCg4c9T6/FFd4sI/xzOQFlpAFzoEK3zsc6pUv9JgDDwGwcIGccXJmy0oHI9gSgaYiz12GkAob9A4gCcSSD0MmHEOxhJRzbcH2l/dTKdvoXlAZRs6RC5xzAUMu4JABAEAoEKJAosI0EPAEhTq4Ox1YNcrUcXyXy6TSH9mYbC+GAIAEhFILD1+OIMQuhy90tlgEvqJWTVjyIQMtMwjFWd83CBkG+wZx42WgK5+4PiEQownPvVAEJfUWS33YSiZ0/lHPGAcNUJ+/z6ZHp9CzOPHCBUhUJG6KhdjmYLAoFAgyMKLmO1qcUlhNAsVL2W5lpr80slym8WImA1zr4Ox3rFFvt7zteqpxUcv91aPT/g3tqoWo8vLtTe/WqDzo0cCiQIl7HF+BGHfhTVn6nzCc/jpQklshiJeOeJwKr/Gpb/azKINowQOsS6RC8LvhN2rxFK7P8zkq+SEKC3OjDpW6a/DvUtnPv11xMpQFbZhw4K1yQO1xHv3aLScDySD7dD3XNZnPYsOo9lzbWvnEq/b/EDbSRrzIeAfsV6Jllt000AHkAQCAQqqFpr83WE0BEICVUSMfZeBviLqvXoYiOy2bjUZuW4ZLij9IriHwv1xlHr8UWyufcIwmhdmFBYLxwPiOnzsc6p0lbMh40uuwvqoB3e8UbDRkum1uqFOsLoSO+9IAgX5NWRzHvmlXPp5g/6Icz5EI/py5nAX6CcGfchDO1UCB31nR8AEAQCgQqs1tp8k4aEbkI9cbU88Iu9yBUNr9QGOQH9JYNCYoQO7OqfKmo9ubjXenJxEmE0F4F5kZQBrm/CRsmqt6+07s/VW/fn9jILGy2hnFWCMe1btGCJV0f6QBgAPdG7JEm4qOx8kboMnGPZCflcPp1d39JBey60CUI6w0DIXRWUHzqaFQAO/DwMEAgEiisSEtpam5+AVUIjco29tfk6zPeTSm1+nYDxtA9SP1ez9e0FqD8FtZ5cXEIIE6O95w3UqSthWkWAS+N8Kvcg9xISY32s9WBuQ3x+Bsyx8qC12mg51Xp0Ya/17YUJul9gNEogLSBEURhMf/6gL7/yc+0ijF5pXz1Tb189ne27CeMtvhdP4b6Fq4J2v9slAJgF1cKoLAgEAiUUXSV0hC5yMsgiEHy5tTZPVvmMGnugiFqPne0FtmPbqsbAkPk1LP6iodaTedcbiPArzp6BMpARSVinBoBQ5Xysc+oB4SbC+OXWw7l66+HcnvJ5ZEDIOJ4bNlpyuWHizgIxq8nDKSP1wyhLuXcwMRCGrylqf73PPsL4cvvamZH2tTO59C0WRjvO/XfcD9MT2IVCBS8hGwq3CABmcYMQ2gECgUAGRL2BZHXAlwc0LJTA71hrbX6hAHkpm9w5LNogJ1ByKNxtPboAEB9DrSfzG60n8yO9yABORejWkTLAJfUSYsY5FYHQTUMiAI61Vs5PtFYUFxASlQUXCPllaQmWDymbuivPYvQywiQsVNHLJgyn9MpNwzsYFwhZdajsHXTSkRU+x9rXz+bbt2C84c9/9/47IihEulC4UaHzS9IMKdqFeRkgEAhkVuS9SsNCXxkQECTg9xKB39ba/I5CelBEmD8YyzWSYkjvXLD4S0K1nsw36CIxlx0PRleCCjAChL4fsw0b9cBvhG5yLrhWyBDWyQ8LUHhA2Eci0QKtxxfJnoGvuCAogCpeOZkMFw0DIeLMH1QBVDYMEfB7qX3z7Ez75tnc+5bWg7kdfrmzoVDoJWQDY8ObA5jmCxhGaUEgECglkRDIPgdBAD9DIqGDCOFVLes/fTCECCEDopEBC06IOEbH6BymUF0JKjIJELKukU7YKAlhPtZqnB9pNSTgx71WAiAM/CYIG+0TtZ5c3Gg9ISCIeyCIQvefRrhoOF3kdx8MJgsXJeGuL7VvnZtp3zpXrL4F44UeyHnhm7zywMGyCEOh/3l0gXC1ffvcnrcPIAHAGW+vFIPapnNWQCAQCJSi6Fy4idrU4ggdeJuM7BtWHu3SRUsaAH3GRcp1OnhSngErCG5jHaIfC7feenwR6teg6GJIzrNTm1qcdGw7jA4HriDcJ8xifx05LiTOabo/YMaP6udbRRZqtFZjhApz8+X9zrjRyIaBjPMKtmPrN5FQ42jfYoX6FllBK6QL7LWI2WkE51Dcf7Dbt7TvzBb23dNaOb9Rm/56E1mWb/9WxrNk8RuixXiWsYVJhADZXsrdCJ68MOiL4j8G879PoRIEAoFAGYkC00xtanGYQuAMfxPwwmmdQh94hVISMeZqU4u73QFfIbRpgqE+R8IAcYqiz1GTGu7eu2BUDHcCA13VxpemDRuyTCDcps4JsyvEqtxDGApVNqkfAAX7FhzqW9QgLfKVCPRYm9FrXCuUahUj3Gzfq5enb8HkmcU73YFc7zYD7TH0LLF+88lC1kzrft15njwPoDOfpDa1SCYSrxjK+gzM/QOBQKB8FPIEeAYgCRU9XKAq2acLkTmGKmzlkJmIYX3FuVgM55+2e4h9jf3Wk4sA+hmIGu6kzpciMOhJ5sFj/ZgECFnXcDe630DIarYeXTDjnXHggeNlYuUrLhAOkNh9Cw71LYyCtrzyjuEdRNpAuE/7Fbc9Uegpk8jAR+29rydoHznEfCYj4Cf6DR1rPegBsI18IuGatalFr2Ljhg7tw4a8IBAIVByFDMBhCoLkM5aDd3CTdmgbsIVDbmp2AZAn7RBPbZIE718OErwLJtSAUPCjftho713w+GKK7wKGUcwLQ1W5B97cwQGUvz2Ru6fRhBMI4TFkoXE28BkIF0URINynW84R4NtoPWTsBVlCtR5d2Kq9+9UEfWe7URuY1Xal4aHHwgsmBQAQ0ZCB2tTiGH056xoGZLI+bMgLAoFABRV9Pzf92/PUphY9GBzx/T/pnHASwrVHDTxiJGzBwGAxRIy22tTiurY32Ji30DkIVv/MWYJ3wQj9kH8PGwgb3aTvgi1k0XcB2ZcyC3EjDJXCUKW3BwrKCzsOtifs9Su0b7FCfYs2ENK+xer1LQ3FbUBKKPKs1N75agxhZ/7lrLviTbhoQu23F15LFu+pt1YvRMonAoCoR/QTFATrksUEdmkHv5DRZP05+kJKQzAZPZ6yCuMx9YCD16HYaqRYR/CMM0Q9cZEypx6CsdDXE75/74WfS/DqlUZ1YyuAxwDD1hNY/KWIEj2/1Cbs2V/isNGd1pNCLODU60/UwlDDP6g4sKAtc8RrT8G+pVvAtG9xCtjXt7i/t74d3P1CW08ukvKo16YWl7pchn0gHYTCfYStpjOfXrDHqoUVXdk0znck9PUOrNAGAoFAIBAIBAKBQNmoC9GBAQprr/VEwbuOEPr/h02wT//mHnQAAAAASUVORK5CYII=';
+const PROP_POR_QUE=[
+  ['Distribuidor autorizado Siigo Aspel','Compras con quien conoce el sistema y lo implementa todos los días.'],
+  ['Capacitación incluida en el camino','Academia Innovaci: cursos 24/7, cursos en vivo, talleres y diplomados.'],
+  ['Soporte técnico especializado','Asesores que te acompañan en la instalación, configuración y uso.'],
+  ['Una comunidad que te actualiza','Masterclasses, tutoriales gratuitos y Círculo Innovaci para seguir aprendiendo.'],
+];
+const PROP_CONTENIDO={
+  'siigo-fiscal':{
+    lema:'Revisión fiscal con los CFDI de tu SAT, en un solo lugar',
+    queIncluye:['Sincronización diaria de CFDI emitidos y recibidos con los visores del SAT.','Consulta de periodos anteriores, hasta cinco años.','Revisión de IVA e ISR base flujo, con acceso a los comprobantes que forman cada cifra.','Detección de CFDI y movimientos que requieren atención antes de declaraciones o de responder una carta invitación.','Consulta de proveedores relacionados con EFOS (art. 69-B) y espacio para documentar evidencias.','Apoyo para preparar la DIOT y exportar a Excel y TXT.','Funciona con tu operación, sin depender de un facturador específico.'],
+    bloqueTitulo:'🎓 Al adquirirlo con Innovaci, incluyes el Taller Siigo Fiscal',
+    bloque:['Taller Siigo Fiscal 24/7, con las grabaciones de sus dos sesiones.','Manual y materiales disponibles en Academia Innovaci.','Explicaciones sobre CFDI, IVA, ISR, EFOS, validaciones y DIOT.','Acceso a próximos cursos o sesiones de actualización de Siigo Fiscal para clientes.','Orientación para elegir el plan adecuado a tu despacho o empresa.'],
+    para:'Ideal para contadores, despachos con varios contribuyentes, responsables fiscales y PyMEs que quieren entender mejor sus CFDI.'},
+  'noi-asistente':{
+    lema:'Control de asistencia e incidencias, listo para tu nómina',
+    queIncluye:['Registra entradas, salidas y jornadas de cada colaborador; identifica retardos y faltas.','Gestiona vacaciones, permisos e incapacidades, con autorización o rechazo de solicitudes.','Horarios en una o varias oficinas, con control de horas extra dobles y triples.','Convierte un celular o tableta en reloj checador (huella, reconocimiento facial o NIP).','App móvil para Android e iOS para que tus colaboradores soliciten permisos y justifiquen.','Geolocalización: ubicación de las asistencias en tiempo real.','Reportes de asistencia y de horas laboradas por trabajador.','Integrado con Siigo NOI, las incidencias y horas extra pasan al cálculo de nómina.'],
+    bloqueTitulo:'🎓 Al adquirirlo con Innovaci, incluyes el Taller de NOI Asistente',
+    bloque:['Taller de NOI Asistente impartido por Innovaci.','Cubre el uso del sistema: registro de asistencia, incidencias y su integración con NOI.','Fecha: '+PROP_TALLER_NOI_ASISTENTE_FECHA+'.'],
+    para:'Ideal para empresas que quieren controlar la asistencia de su personal y llegar a la nómina con las incidencias ya capturadas.'},
+  'ts-plus':{
+    lema:'Tus sistemas Windows, disponibles desde cualquier lugar',
+    queIncluye:['Acceso remoto al escritorio del servidor y entrega de aplicaciones Windows.','Impresión remota.','Una alternativa ágil para que tu equipo trabaje a distancia con tus sistemas (por ejemplo, Siigo Aspel).','Licencia para un servidor, con el número de usuarios de la opción elegida.','Actualizaciones y soporte durante la vigencia de la licencia.'],
+    edicion:{
+      'Desktop':'Edición Desktop: acceso remoto al escritorio, entrega de aplicaciones Windows e impresión remota.',
+      'Web Mobile':'Edición Web Mobile: todo lo de Desktop, más Web Portal y cliente HTML5 para conectarse desde el navegador.',
+      'Enterprise':'Edición Enterprise: todo lo de Web Mobile, más Farm Manager y Gateway para administrar varios servidores con un solo acceso.'},
+    para:'Ideal para empresas con servidor que necesitan que su equipo se conecte de forma remota y segura a sus sistemas.'},
+  'curso-empresarial':{
+    lema:'Capacitación a la medida de tu equipo',
+    queIncluye:['Curso impartido por instructores de Innovaci, con sesiones calendarizadas contigo.','Duración, sesiones y número de personas según tu necesidad.','Modalidad en línea o en sitio, según prefieras.','Suscripción al sistema durante el curso, cuando aplica.'],
+    para:'Ideal para empresas que quieren capacitar a su equipo en el sistema que ya usan.'},
+};
+const _pesc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const _pfmt=n=>'$'+Number(n||0).toLocaleString('es-MX',{minimumFractionDigits:2,maximumFractionDigits:2});
+function _propFechaLarga(d){ return d.toLocaleDateString('es-MX',{day:'numeric',month:'long',year:'numeric'}); }
+
+// Arma el objeto de propuesta desde lo que está en pantalla
+function propGenerarActual(){
+  const producto=(window._cotizProductos||[]).find(p=>p.slug===cotizProductoSlug); if(!producto) return;
+  const cliente=document.getElementById('cotizBuscarCuenta')?.value||'';
+  const base={slug:producto.slug,cliente,vendedor:userProfile?.nombre||'',vendedorEmail:userProfile?.email||'',fecha:new Date(),folio:'P-'+todayLocal().replace(/-/g,'')+'-'+String(Date.now()).slice(-4)};
+  if(producto.slug==='ts-plus'){
+    const c=tsCalcular(); if(!c||c.error){alert(c?.error||'Elige una opción de TS Plus.');return;}
+    return propAbrir({...base,titulo:'TS Plus '+c.edicion+' Edition',subtitulo:tsTierLabel(c.tier)+' · '+c.anios+' año'+(c.anios>1?'s':'')+' de licencia',
+      lineas:c.lineas,descuento:0,iva:c.iva,total:c.total,conIva:cotizConIva,tsEdicion:c.edicion,
+      resumen:[['Conexiones solicitadas',c.detalle.conexiones],['Plan de usuarios',tsTierLabel(c.tier)],['Vigencia de la licencia',c.anios+' año'+(c.anios>1?'s':'')]],
+      impl:c.impl.map(l=>({nombre:l.concepto,desc:((window._tsImpl||[]).find(x=>x.clave===l.clave)||{}).descripcion||''}))});
+  }
+  if(producto.slug==='curso-empresarial'){
+    const c=ceCalcular(); if(!c||c.error){alert(c?.error||'Completa el curso.');return;}
+    return propAbrir({...base,..._propCursoDeDetalle(c.detalle,c.iva,c.total,cotizConIva)});
+  }
+  const n=parseInt(cotizEmpresas)||1;
+  const planes=(window._cotizPlanes||[]).filter(p=>p.producto_id===producto.id&&(p.capacidad_cubierta==null||p.capacidad_cubierta>=n));
+  const plan=planes.find(p=>p.id===cotizPlanSeleccionado)||planes[0]; if(!plan){alert('Elige un plan primero.');return;}
+  const c=cotizadorCalcularPlan(plan,producto.id,cotizPeriodo,cotizConIva); if(!c) return;
+  propAbrir({...base,..._propPlanDeTotales(producto,plan,cotizPeriodo,c.totalPeriodo,cotizConIva,c.descPct)});
+}
+function _propPlanDeTotales(producto,plan,periodicidad,total,conIva,descPct){
+  const subtotal=conIva?total/(1+COTIZ_IVA_PCT/100):total;
+  const lista=descPct>0?subtotal/(1-descPct/100):subtotal;
+  const per=periodicidad?periodicidad[0].toUpperCase()+periodicidad.slice(1):'';
+  const unidad=producto.unidad_capacidad||'RFC';
+  const cap=plan.capacidad_cubierta==null?`${unidad}s ilimitados`:`Hasta ${plan.capacidad_cubierta} ${unidad}${plan.capacidad_cubierta>1?'s':''}`;
+  return {titulo:'Siigo '+producto.nombre.replace(/^Siigo\s*/,'')+' — Plan '+plan.nombre,subtitulo:per+' · '+cap+(plan.usuarios?(' · '+plan.usuarios+' usuario'+(plan.usuarios>1?'s':'')):''),
+    lineas:[{concepto:`${producto.nombre} — Plan ${plan.nombre} (${per})`,cant:1,pu:lista,importe:lista}],descuento:lista-subtotal,descuentoPct:descPct,
+    iva:conIva?total-subtotal:0,total,conIva,planBeneficios:plan.beneficios||[],
+    resumen:[['Plan',plan.nombre],['Capacidad',cap],['Periodicidad',per]]};
+}
+function _propCursoDeDetalle(d,iva,total,conIva){
+  const cu=(window._ceCursos||[]).find(x=>x.clave===d.curso)||{nombre:d.curso};
+  return {titulo:'Curso Empresarial — '+cu.nombre,subtitulo:(d.modalidad==='linea'?'En línea':'En sitio')+' · '+d.personas+' personas · '+d.horas+' horas · '+d.sesiones+' sesiones',
+    lineas:d.lineas||[],descuento:d.descuento||0,descuentoPct:d.descuento_pct||0,iva:iva||0,total,conIva,
+    resumen:[['Curso',cu.nombre],['Modalidad',d.modalidad==='linea'?'En línea':'En sitio'],['Personas',d.personas],['Duración',d.horas+' horas en '+d.sesiones+' sesiones']]};
+}
+function propGenerarDeReciente(id){
+  const r=(window._cotizRecientesData||[]).find(x=>x.id===id); if(!r){alert('Recarga la pestaña e intenta otra vez.');return;}
+  const producto=(window._cotizProductos||[]).find(p=>p.id===r.producto_id)||{slug:'',nombre:''};
+  const base={slug:producto.slug,cliente:r.clientes_cartera?.razon_social||r.prospectos?.nombre||'',vendedor:r.usuarios?.nombre||userProfile?.nombre||'',vendedorEmail:userProfile?.email||'',fecha:new Date(r.created_at),folio:'COT-'+String(r.id).slice(0,8).toUpperCase()};
+  const d=r.detalle;
+  if(producto.slug==='ts-plus'&&d){
+    const lineas=d.lineas||[{concepto:`TS Plus ${d.edicion} — ${d.usuarios}, ${d.anios} año(s)`,cant:1,pu:d.licencia_mxn,importe:d.licencia_mxn},...(d.impl||[])];
+    return propAbrir({...base,titulo:'TS Plus '+d.edicion+' Edition',subtitulo:tsTierLabel(d.usuarios)+' · '+d.anios+' año'+(d.anios>1?'s':'')+' de licencia',lineas,descuento:0,iva:d.iva_monto||0,total:d.total,conIva:d.con_iva,tsEdicion:d.edicion,
+      resumen:[['Conexiones solicitadas',d.conexiones],['Plan de usuarios',tsTierLabel(d.usuarios)],['Vigencia de la licencia',d.anios+' año'+(d.anios>1?'s':'')]],
+      impl:(d.impl||[]).map(l=>({nombre:l.concepto,desc:((window._tsImpl||[]).find(x=>x.clave===l.clave)||{}).descripcion||''}))});
+  }
+  if(producto.slug==='curso-empresarial'&&d) return propAbrir({...base,..._propCursoDeDetalle(d,d.iva_monto,d.total,d.con_iva)});
+  const plan=(window._cotizPlanes||[]).find(p=>p.id===r.plan_id); if(!plan){alert('Esta cotización no tiene plan asociado.');return;}
+  propAbrir({...base,..._propPlanDeTotales(producto,plan,r.periodicidad,parseFloat(r.precio_total_periodo),!!r.incluye_iva,parseFloat(r.descuento_pct_aplicado)||0)});
+}
+function _propCss(){ return `
+@page{size:A4;margin:0}
+*{box-sizing:border-box}
+body{margin:0;background:#e9edf2;font-family:'Inter','Segoe UI',Arial,sans-serif;color:#1d2b3a;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.bar{position:sticky;top:0;background:#0D2240;color:#fff;padding:10px 16px;display:flex;gap:12px;align-items:center;justify-content:space-between;font-size:13px;z-index:5}
+.bar button{background:#00A99D;color:#fff;border:0;border-radius:8px;padding:8px 16px;font-weight:700;cursor:pointer;font-size:13px}
+.page{width:210mm;min-height:296mm;margin:14px auto;background:#fff;padding:10mm 15mm 7mm;position:relative;box-shadow:0 4px 20px rgba(0,0,0,.15);display:flex;flex-direction:column}
+.keep{page-break-inside:avoid;break-inside:avoid}
+.top{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #00A99D;padding-bottom:9px}
+.top img{height:34px}
+.meta{text-align:right;font-size:10.5px;color:#5b6b7d;line-height:1.5}
+.meta b{color:#0D2240}
+.hero{background:linear-gradient(135deg,#0D2240 0%,#14407a 100%);color:#fff;border-radius:12px;padding:14px 22px;margin:11px 0 9px;position:relative;overflow:hidden}
+.hero:after{content:"";position:absolute;right:-40px;top:-40px;width:170px;height:170px;border-radius:50%;background:rgba(0,169,157,.35)}
+.hero small{letter-spacing:.14em;text-transform:uppercase;font-size:10px;color:#7fe3da;font-weight:700}
+.hero h1{margin:5px 0 4px;font-size:22px;line-height:1.2;position:relative;z-index:1}
+.hero p{margin:0;font-size:12.5px;color:#cfe0f3;position:relative;z-index:1}
+.para{display:flex;justify-content:space-between;gap:12px;font-size:11.5px;margin-bottom:10px}
+.para div{flex:1;background:#f4f7fa;border-radius:8px;padding:8px 12px}
+.para span{display:block;font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:#6b7c8e;font-weight:700}
+h2{font-size:13.5px;color:#0D2240;margin:11px 0 5px;display:flex;align-items:center;gap:8px}
+h2:before{content:"";width:5px;height:15px;background:#00A99D;border-radius:3px;display:inline-block}
+ul{margin:3px 0 0;padding-left:18px;font-size:11px;line-height:1.38}
+li{margin-bottom:1px}
+.lema{font-size:12.5px;color:#00877E;font-weight:700;margin:2px 0 6px}
+.res{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:6px 0}
+.res div{background:#f4f7fa;border-radius:8px;padding:7px 10px;font-size:11px}
+.res span{display:block;font-size:9px;text-transform:uppercase;letter-spacing:.07em;color:#6b7c8e;font-weight:700}
+table{width:100%;border-collapse:collapse;font-size:11px;margin-top:4px}
+th{background:#0D2240;color:#fff;text-align:left;padding:6px 8px;font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+td{padding:5px 8px;border-bottom:1px solid #e3e9ef;vertical-align:top}
+.r{text-align:right;white-space:nowrap}
+.tot{margin-left:auto;width:62%;margin-top:8px;font-size:11.5px}
+.tot div{display:flex;justify-content:space-between;padding:3px 8px}
+.tot .g{background:#00A99D;color:#fff;font-weight:800;font-size:14px;border-radius:8px;padding:8px 10px;margin-top:4px}
+.box{border:1.5px solid #00A99D;background:#effaf9;border-radius:10px;padding:10px 14px;margin-top:10px;page-break-inside:avoid}
+.box h3{margin:0 0 4px;font-size:12.5px;color:#00665f}
+.why{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:5px}
+.why div{background:#f4f7fa;border-radius:8px;padding:6px 8px;font-size:9.5px;line-height:1.35;page-break-inside:avoid}
+.why b{display:block;color:#0D2240;font-size:10.5px;margin-bottom:2px}
+.cond{font-size:9.5px;color:#6b7c8e;line-height:1.4;margin:8px 0 8px;border-top:1px solid #e3e9ef;padding-top:8px}
+.foot{margin-top:auto;display:flex;justify-content:space-between;font-size:9.5px;color:#6b7c8e;border-top:2px solid #00A99D;padding-top:4px}
+@media print{body{background:#fff}.bar{display:none}.page{margin:0;box-shadow:none;min-height:286mm;padding:7mm 15mm 3mm}}`; }
+function _propFoot(P){ return `<div class="foot"><span>Grupo Innovaci · innovaci.com.mx</span><span>${_pesc(P.vendedor||'')}${P.vendedorEmail?' · '+_pesc(P.vendedorEmail):''}</span></div>`; }
+function propAbrir(P){
+  const C=PROP_CONTENIDO[P.slug]||{queIncluye:[],para:''};
+  const vig=new Date(P.fecha.getTime()+PROP_VIGENCIA_DIAS*86400000);
+  const sumL=(P.lineas||[]).reduce((a,l)=>a+(l.importe||0),0);
+  const neto=sumL-(P.descuento||0);
+  const incl=[...(P.planBeneficios||[]),...C.queIncluye];
+  const edTxt=P.tsEdicion&&C.edicion?C.edicion[P.tsEdicion]:'';
+  const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Propuesta ${_pesc(P.titulo)} — ${_pesc(P.cliente||'Innovaci')}</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet"><style>${_propCss()}</style></head><body>
+<div class="bar"><span>Vista previa de la propuesta — para guardar en PDF elige <b>"Guardar como PDF"</b> como destino.</span><button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>
+<div class="page">
+  <div class="top"><img src="${PROP_LOGO}" alt="Innovaci"><div class="meta"><b>Propuesta comercial</b><br>Folio ${_pesc(P.folio)}<br>${_propFechaLarga(P.fecha)}<br>Vigencia hasta el ${_propFechaLarga(vig)}</div></div>
+  <div class="hero"><small>Propuesta comercial</small><h1>${_pesc(P.titulo)}</h1><p>${_pesc(P.subtitulo||'')}</p></div>
+  <div class="para"><div><span>Preparada para</span>${_pesc(P.cliente||'—')}</div><div><span>Preparada por</span>${_pesc(P.vendedor||'Grupo Innovaci')}</div></div>
+  ${C.lema?`<div class="lema">${_pesc(C.lema)}</div>`:''}
+  ${(P.resumen||[]).length>1?`<div class="res">${P.resumen.map(([k,v])=>`<div><span>${_pesc(k)}</span>${_pesc(v)}</div>`).join('')}</div>`:''}
+  ${edTxt?`<p style="font-size:11.5px;margin:6px 0 0;"><b>${_pesc(edTxt)}</b></p>`:''}
+  <h2>Qué incluye</h2><ul>${incl.map(b=>`<li>${_pesc(b)}</li>`).join('')}</ul>
+  ${C.para?`<p style="font-size:11.5px;color:#4a5b6d;margin:8px 0 0;">${_pesc(C.para)}</p>`:''}
+  ${C.bloque?`<div class="box"><h3>${_pesc(C.bloqueTitulo)}</h3><ul>${C.bloque.map(b=>`<li>${_pesc(b)}</li>`).join('')}</ul></div>`:''}
+  ${(P.impl||[]).length?`<div class="box"><h3>🛠 Servicios de implementación incluidos en esta propuesta</h3><ul>${P.impl.map(i=>`<li><b>${_pesc(i.nombre)}</b>${i.desc?' — '+_pesc(i.desc):''}</li>`).join('')}</ul></div>`:''}
+  <div class="keep">
+  <h2>Inversión</h2>
+  <table><thead><tr><th>Concepto</th><th class="r">Cant.</th><th class="r">P. unitario</th><th class="r">Importe</th></tr></thead><tbody>
+  ${(P.lineas||[]).map(l=>`<tr><td>${_pesc(l.concepto)}</td><td class="r">${l.cant}</td><td class="r">${_pfmt(l.pu)}</td><td class="r"><b>${_pfmt(l.importe)}</b></td></tr>`).join('')}
+  </tbody></table>
+  <div class="tot">
+    <div><span>Subtotal</span><span>${_pfmt(sumL)}</span></div>
+    ${P.descuento>0?`<div style="color:#00877E"><span>Descuento${P.descuentoPct?' ('+Number(P.descuentoPct).toFixed(P.descuentoPct%1?1:0)+'%)':''}</span><span>-${_pfmt(P.descuento)}</span></div><div><span>Subtotal con descuento</span><span>${_pfmt(neto)}</span></div>`:''}
+    <div><span>IVA (16%)</span><span>${P.conIva?_pfmt(P.iva):'No incluido'}</span></div>
+    <div class="g"><span>Total ${P.conIva?'(IVA incluido)':'(más IVA)'}</span><span>${_pfmt(P.conIva?P.total:neto)}</span></div>
+  </div></div>
+  <div class="keep"><h2>¿Por qué con Grupo Innovaci?</h2>
+  <div class="why">${PROP_POR_QUE.map(([t,d])=>`<div><b>${_pesc(t)}</b>${_pesc(d)}</div>`).join('')}</div></div>
+  <div class="keep"><h2>Siguientes pasos</h2>
+  <ul><li>Confirma esta propuesta con tu asesor${P.vendedor?' ('+_pesc(P.vendedor)+')':''}.</li><li>Te enviamos los datos de pago y coordinamos la activación o el inicio del servicio; te acompañamos desde el primer día.</li></ul></div>
+  <div class="cond">Precios en pesos mexicanos (MXN). Propuesta vigente hasta el ${_propFechaLarga(vig)}; sujeta a disponibilidad y a validación de requisitos técnicos cuando aplique. ${P.conIva?'Los importes incluyen IVA.':'Los importes no incluyen IVA.'}</div>
+  ${_propFoot(P)}
+</div></body></html>`;
+  const w=window.open('','_blank'); if(!w){alert('El navegador bloqueó la ventana. Permite ventanas emergentes para este sitio e intenta otra vez.');return;}
+  w.document.open(); w.document.write(html); w.document.close();
+}
+
+// ── Folleto Círculo Innovaci (sin cotización) — para Telemarketing/Ventas ─────
+const CIRC_FIN_FUNDADOR='2026-11-12';
+const CIRC_PLANES={
+  socio:{n:'Socio NOI',fund:3499,reg:5999,color:'#0D2240',
+    items:['Acceso a la Academia NOI: cursos y diplomados','Talleres y masterclasses','Examen escrito y constancia de finalización','2 beneficios de acompañante al año','Soporte preferencial: $649 (30 min) / $1,199 (60 min) + IVA']},
+  pro:{n:'Socio NOI Pro',fund:5999,reg:9999,color:'#00877E',
+    items:['Todo lo de Socio NOI','Laboratorio Virtual','Evaluación práctica y acreditación','2 sesiones académicas privadas de 30 min al año','NOI al Día','4 beneficios de acompañante al año','Soporte preferencial: $599 (30 min) / $1,099 (60 min) + IVA']},
+};
+function propCirculoAbrir(){
+  const html=`<div style="font-size:12px;color:var(--text3);margin-bottom:10px;">Genera el folleto de Círculo Innovaci para enviar a un prospecto o cliente.</div>
+  <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;">
+    <label><input type="checkbox" id="circSocio" checked> Socio NOI</label>
+    <label><input type="checkbox" id="circPro" checked> Socio NOI Pro</label>
+    <input type="text" id="circCliente" placeholder="Nombre del prospecto o empresa (opcional)" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+  </div>`;
+  mkModal('modalCirc','📘 Folleto Círculo Innovaci',html,'propCirculoGenerar','Generar PDF');
+}
+function propCirculoGenerar(){
+  const sel=[document.getElementById('circSocio')?.checked&&'socio',document.getElementById('circPro')?.checked&&'pro'].filter(Boolean);
+  if(!sel.length){alert('Elige al menos un plan.');return;}
+  const cliente=document.getElementById('circCliente')?.value||'';
+  document.getElementById('modalCirc')?.remove();
+  const hoy=new Date(), fund=todayLocal()<=CIRC_FIN_FUNDADOR;
+  const card=k=>{const p=CIRC_PLANES[k],pr=fund?p.fund:p.reg;return `<div class="pl" style="border-color:${p.color}"><div class="ph" style="background:${p.color}">${p.n}</div>
+    <div class="pp">${fund?`<s>${_pfmt(p.reg)}</s>`:''}<b>${_pfmt(pr)}</b><small>12 meses${fund?' · precio fundador':''}</small></div>
+    <ul>${p.items.map(i=>`<li>${_pesc(i)}</li>`).join('')}</ul></div>`;};
+  const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Círculo Innovaci — ${_pesc(cliente||'Folleto')}</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet"><style>${_propCss()}
+.pls{display:grid;grid-template-columns:repeat(${sel.length},1fr);gap:12px;margin-top:8px}
+.pl{border:2px solid;border-radius:12px;overflow:hidden;page-break-inside:avoid}
+.ph{color:#fff;padding:9px 12px;font-weight:800;font-size:14px}
+.pp{padding:10px 12px 0}.pp b{font-size:24px;color:#0D2240;display:block}.pp s{color:#8a98a8;font-size:12px}.pp small{color:#00877E;font-weight:700;font-size:10.5px}
+</style></head><body>
+<div class="bar"><span>Elige <b>"Guardar como PDF"</b> como destino.</span><button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>
+<div class="page">
+  <div class="top"><img src="${PROP_LOGO}" alt="Innovaci"><div class="meta"><b>Círculo Innovaci</b><br>${_propFechaLarga(hoy)}</div></div>
+  <div class="hero"><small>Membresía anual</small><h1>Círculo Innovaci NOI</h1><p>Aprende, practica y actualízate en Siigo Aspel NOI durante todo el año.</p></div>
+  ${cliente?`<div class="para"><div><span>Preparado para</span>${_pesc(cliente)}</div><div><span>Preparado por</span>${_pesc(userProfile?.nombre||'Grupo Innovaci')}</div></div>`:''}
+  ${fund?`<div class="box" style="margin-top:0"><h3>⏳ Precio fundador disponible hasta el 12 de noviembre de 2026</h3><p style="margin:0;font-size:11.5px;">Después de esa fecha aplica el precio regular.</p></div>`:''}
+  <h2>Elige tu membresía</h2>
+  <div class="pls">${sel.map(card).join('')}</div>
+  <h2>Cómo darte de alta</h2>
+  <ul><li><b>Compra directa</b> en innovaci.shop.</li><li><b>Vinculando tu suscripción Aspel NOI</b> semestral o anual vigente (las mensuales no califican); la activación requiere confirmación de Aspel.</li><li>Pasar de Socio a Pro: <b>${_pfmt(fund?2999:4999)}</b>${fund?' (precio fundador)':''}, sujeto a revisión previa de accesos.</li></ul>
+  <h2>Por qué con Grupo Innovaci</h2>
+  <div class="why">${PROP_POR_QUE.map(([t,d])=>`<div><b>${_pesc(t)}</b>${_pesc(d)}</div>`).join('')}</div>
+  <div class="cond">Vigencia de 12 meses a partir de la activación, que se realiza a más tardar el siguiente día hábil tras confirmar la compra. La membresía no incluye licencia comercial de NOI. El Laboratorio Virtual es de uso exclusivamente académico. Prioridad de soporte no significa atención inmediata. Más información: innovaci.com.mx/circulo-noi</div>
+  ${_propFoot({vendedor:userProfile?.nombre,vendedorEmail:userProfile?.email})}
+</div></body></html>`;
+  const w=window.open('','_blank'); if(!w){alert('El navegador bloqueó la ventana. Permite ventanas emergentes e intenta otra vez.');return;}
+  w.document.open(); w.document.write(html); w.document.close();
+}
 function cotizadorFiltrarCuentas(){
   const qRaw=(document.getElementById('cotizBuscarCuenta').value||'').trim();
   const q=qRaw.toLowerCase();
@@ -6391,14 +6911,17 @@ async function cotizadorGuardar(crearOportunidad){
   // Jp, 2026-10-26 (4ta ronda): se guarda el plan que el usuario eligió con
   // el botón "Elegir este plan" (cotizPlanSeleccionado), no automáticamente
   // el más chico que aplica.
-  const planPrincipal=planesAplican.find(p=>p.id===cotizPlanSeleccionado)||planesAplican[0];
+  const esEspecial=producto.slug==='ts-plus'||producto.slug==='curso-empresarial';
+  const ts=producto.slug==='ts-plus'?tsCalcular():(producto.slug==='curso-empresarial'?ceCalcular():null);
+  if(esEspecial&&(!ts||ts.error)){alert(ts?.error||'Completa la cotización primero.');return;}
+  const planPrincipal=ts?{id:null,nombre:ts.titulo}:(planesAplican.find(p=>p.id===cotizPlanSeleccionado)||planesAplican[0]);
   if(!planPrincipal){alert('Ningún plan cubre ese número de empresas.');return;}
-  const c=cotizadorCalcularPlan(planPrincipal,producto.id,cotizPeriodo,cotizConIva);
+  const c=ts?{descPct:ts.descPct||0,precioMensualFinal:ts.mensualRef,totalPeriodo:ts.total,ahorro:0}:cotizadorCalcularPlan(planPrincipal,producto.id,cotizPeriodo,cotizConIva);
   const notas=document.getElementById('cotizNotas')?.value||null;
   const payload={
-    producto_id:producto.id, plan_id:planPrincipal.id, periodicidad:cotizPeriodo,
-    num_empresas_solicitadas:n, incluye_iva:cotizConIva,
-    precio_mensual_base:parseFloat((window._cotizPrecios||[]).find(p=>p.plan_id===planPrincipal.id&&p.periodicidad===cotizPeriodo)?.precio_lista_mensual||0),
+    producto_id:producto.id, plan_id:planPrincipal.id, periodicidad:ts?ts.periodicidadDb:cotizPeriodo,
+    num_empresas_solicitadas:n, incluye_iva:cotizConIva, detalle:ts?ts.detalle:null,
+    precio_mensual_base:ts?ts.subtotal:parseFloat((window._cotizPrecios||[]).find(p=>p.plan_id===planPrincipal.id&&p.periodicidad===cotizPeriodo)?.precio_lista_mensual||0),
     descuento_pct_aplicado:c.descPct, precio_mensual_final:c.precioMensualFinal, precio_total_periodo:c.totalPeriodo,
     ahorro_total:c.ahorro, cliente_cartera_id:window._cotizCuentaId||null, prospecto_app_id:window._cotizProspectoId||null,
     usuario_id:currentUser?.id||null, notas,
@@ -6419,8 +6942,8 @@ async function cotizadorGuardar(crearOportunidad){
   // pipeline_vendedor_id de vuelta aquí — ver hook en _guardarFilaPipeInterno
   // (Vendedor) / guardarFilaPipeTele (Telemarketing, 2026-10-27).
   const nombreCliente=document.getElementById('cotizBuscarCuenta')?.value||'';
-  const periodoLabel=cotizPeriodo[0].toUpperCase()+cotizPeriodo.slice(1);
-  const productoTxt=`${producto.nombre} — ${planPrincipal.nombre} (${periodoLabel})`;
+  const periodoLabel=ts?ts.periodoLabel:cotizPeriodo[0].toUpperCase()+cotizPeriodo.slice(1);
+  const productoTxt=ts?ts.productoTxt:`${producto.nombre} — ${planPrincipal.nombre} (${periodoLabel})`;
   if(userProfile?.rol!=='vendedor'){
     window._cotizVinculandoId=data.id;
     await agregarFilaPipeTele({
