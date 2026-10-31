@@ -26132,20 +26132,43 @@ async function editarIngreso(id){
 // borrar el movimiento y volver a cargar el estado de cuenta. Candidatas: las
 // facturas con folio que NO están conciliadas todavía, ordenadas por qué tan
 // cerca está su total del monto del movimiento.
-function ligarMovFiltrarFacturas(movId){
+// Jp, 2026-10-30 — pagos parciales: una factura puede cubrirse con 2 o más
+// movimientos del banco ("INN556: el cliente hizo dos pagos"). Una factura ya
+// conciliada sigue apareciendo como candidata mientras tenga saldo por cubrir
+// (total − suma de lo ya ligado en conciliacion_ingresos_agrupada), y un nuevo
+// ligado no puede rebasar ese saldo.
+async function ligarMovCargarSumas(){
+  const {data}=await sb.from('conciliacion_ingresos_agrupada').select('factura_id,monto');
+  const m={};
+  (data||[]).forEach(r=>{ m[r.factura_id]=(m[r.factura_id]||0)+Number(r.monto||0); });
+  window._fiLigadoSumas=m;
+  return m;
+}
+async function ligarMovFiltrarFacturas(movId){
   const mov=(window._fiRows||[]).find(x=>x.id===movId);
   const sel=document.getElementById('eiiLigarFactura');
   if(!mov||!sel) return;
+  const sumas=window._fiLigadoSumas||await ligarMovCargarSumas();
+  const saldoDe=f=>Math.round(((f.total||0)-(sumas[f.id]||0))*100)/100;
   const q=(document.getElementById('eiiLigarBuscar')?.value||'').trim().toLowerCase();
   const cand=(window._fiRows||[])
-    .filter(f=>f.id!==movId&&f.folio&&!f.origen_banco&&f.estatus!=='CANCELADA'&&!f.conciliado)
+    .filter(f=>f.id!==movId&&f.folio&&!f.origen_banco&&f.estatus!=='CANCELADA')
+    .filter(f=>!f.conciliado||(sumas[f.id]>0&&saldoDe(f)>1)) // pendientes o con saldo por cubrir
     .filter(f=>!q||(f.folio||'').toLowerCase().includes(q)||(f.cliente||'').toLowerCase().includes(q))
-    .sort((a,b)=>Math.abs((a.total||0)-(mov.total||0))-Math.abs((b.total||0)-(mov.total||0)))
+    .sort((a,b)=>{
+      const sa=a.conciliado?saldoDe(a):(a.total||0), sb2=b.conciliado?saldoDe(b):(b.total||0);
+      return Math.abs(sa-(mov.total||0))-Math.abs(sb2-(mov.total||0));
+    })
     .slice(0,60);
   sel.innerHTML=cand.length
     ?cand.map(f=>{
-        const dif=Math.round(((f.total||0)-(mov.total||0))*100)/100;
-        return `<option value="${f.id}">${f.folio} · ${(f.cliente||'—').slice(0,34)} · ${fmt(f.total||0)}${Math.abs(dif)<=1?' ✅ mismo monto':' (dif '+fmt(dif)+')'}</option>`;
+        const parcial=f.conciliado&&sumas[f.id]>0;
+        const ref=parcial?saldoDe(f):(f.total||0);
+        const dif=Math.round((ref-(mov.total||0))*100)/100;
+        const etiqueta=parcial
+          ?` · saldo por cubrir ${fmt(ref)}${Math.abs(dif)<=1?' ✅ liquida':(dif<0?' ⛔ excede':'')}`
+          :`${Math.abs(dif)<=1?' ✅ mismo monto':' (dif '+fmt(dif)+')'}`;
+        return `<option value="${f.id}">${f.folio} · ${(f.cliente||'—').slice(0,30)} · ${fmt(f.total||0)}${etiqueta}</option>`;
       }).join('')
     :'<option value="">— sin facturas pendientes que coincidan —</option>';
 }
@@ -26156,10 +26179,23 @@ async function ligarMovimientoAFactura(movId){
   if(!mov||!facId){alert('Elige la factura a la que corresponde este movimiento.');return;}
   const fac=(window._fiRows||[]).find(x=>x.id===facId);
   if(!fac) return;
+  const sumas=await ligarMovCargarSumas(); // siempre fresco antes de validar
+  const yaLigado=Math.round((sumas[facId]||0)*100)/100;
+  const saldo=Math.round(((fac.total||0)-yaLigado)*100)/100;
+  const monto=Math.round((mov.total||0)*100)/100;
+  if(monto>saldo+1){
+    alert(`No se puede ligar: este movimiento (${fmt(monto)}) rebasa el saldo por cubrir de ${fac.folio} (${fmt(Math.max(saldo,0))}; la factura es de ${fmt(fac.total||0)} y ya hay ${fmt(yaLigado)} ligados).`);
+    return;
+  }
+  const quedaria=Math.round((saldo-monto)*100)/100;
   const dif=Math.round(((fac.total||0)-(mov.total||0))*100)/100;
-  if(!confirm(`¿Ligar este movimiento del banco (${fmt(mov.total||0)}) a la factura ${fac.folio} — ${fac.cliente||''} (${fmt(fac.total||0)})?\n\n• La factura queda PAGADA y conciliada${mov.fecha_pago?' con fecha de pago '+mov.fecha_pago:''}.\n• Este movimiento se elimina de Ingresos (queda guardado como ya ligado).${Math.abs(dif)>1?'\n\n⚠ Los montos NO coinciden (diferencia '+fmt(dif)+').':''}`)) return;
+  const parcialAhora=quedaria>1;
+  if(!confirm(`¿Ligar este movimiento del banco (${fmt(monto)}) a la factura ${fac.folio} — ${fac.cliente||''} (${fmt(fac.total||0)})?\n\n`+
+    (yaLigado>0?`• Ya tiene ${fmt(yaLigado)} ligados; con este quedan ${fmt(yaLigado+monto)} de ${fmt(fac.total||0)}.\n`:'')+
+    (parcialAhora?`• ⚠ Pago PARCIAL: aún faltarían ${fmt(quedaria)} por cubrir (podrás ligar otro movimiento después).\n`:`• La factura queda PAGADA y conciliada${mov.fecha_pago?' con fecha de pago '+mov.fecha_pago:''}.\n`)+
+    `• Este movimiento se elimina de Ingresos (queda guardado como ya ligado).${(!yaLigado&&Math.abs(dif)>1&&!parcialAhora)?'\n\n⚠ Los montos NO coinciden (diferencia '+fmt(dif)+').':''}`)) return;
   const fp=mov.fecha_pago||fac.fecha_pago||null;
-  const dia=fp?String(parseInt(String(fp).slice(8,10),10)):null;
+  const dia=mov.fecha_pago?String(parseInt(String(mov.fecha_pago).slice(8,10),10)):(fp?String(parseInt(String(fp).slice(8,10),10)):null);
   // 1) Trazabilidad: es lo que hace que el próximo estado de cuenta reconozca
   //    este depósito como ya ligado (cruce por día + monto).
   const {error:errT}=await sb.from('conciliacion_ingresos_agrupada').insert({
@@ -26169,19 +26205,20 @@ async function ligarMovimientoAFactura(movId){
     concepto_banco:(mov.concepto||mov.cliente||'').slice(0,120),
   });
   if(errT){alert('No se pudo guardar el ligado: '+errT.message);return;}
-  // 2) La factura queda pagada y conciliada.
+  // 2) La factura queda pagada y conciliada (la fecha de pago es la del último pago).
   const cambios={cobrado:true,conciliado:true,estatus:'PAGADA'};
-  if(fp) cambios.fecha_pago=fp;
+  if(fp&&(!fac.fecha_pago||String(fp)>String(fac.fecha_pago))) cambios.fecha_pago=fp;
   const {error:errF}=await sb.from('fact_ingresos').update(cambios).eq('id',facId);
   if(errF){alert('No se pudo actualizar la factura: '+errF.message);return;}
   Object.assign(fac,cambios);
+  window._fiLigadoSumas=null;
   // 3) Se quita el movimiento duplicado.
   const {error:errD}=await sb.from('fact_ingresos').delete().eq('id',movId);
   if(errD){alert('La factura quedó ligada, pero no se pudo eliminar el movimiento: '+errD.message+'\nElimínalo con la ✕.');}
   else window._fiRows=(window._fiRows||[]).filter(x=>x.id!==movId);
   document.getElementById('modalIngEdit')?.remove();
   renderIngresosTabla();
-  alert(`✅ Movimiento ligado a ${fac.folio}.`);
+  alert(`✅ Movimiento ligado a ${fac.folio}.`+(parcialAhora?` Faltan ${fmt(quedaria)} por cubrir.`:' Factura cubierta completa.'));
 }
 
 // Jp, 2026-10-30 — "Validar contra XML" en Editar factura: el XML sirve para
