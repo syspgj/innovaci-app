@@ -572,13 +572,16 @@ const FINANZAS_CATEGORIA={
 async function calcVentasRealesFinanzas(vendFiltroFact, anio, mes){
   const out={svc:0, aspel:0, it:0, dip:0, cursos247:0, cursos_vivo:0, circulo:0};
   if(!vendFiltroFact) return out;
-  const {data}=await sb.from('fact_ingresos').select('rubro,total,subtotal_original,descuento,vendedor,cobrado')
+  const {data}=await sb.from('fact_ingresos').select('rubro,total,subtotal_original,descuento,costo_licencias,vendedor,cobrado')
     .eq('anio',anio).eq('mes',mes).eq('cobrado',true)
     .ilike('vendedor','%'+vendFiltroFact+'%');
   (data||[]).forEach(r=>{
     const cat=FINANZAS_CATEGORIA[(r.rubro||'').toUpperCase()];
     if(!cat) return;
-    const base=(r.subtotal_original||0)-(r.descuento||0);
+    // Jp, 2026-10-30 — el costo de licencias incluido en un CURSO EMPRESARIAL no
+    // cuenta como venta por servicio: se resta de la base de comisiones, pero
+    // NO del valor de la factura (fact_ingresos.total/subtotal siguen intactos).
+    const base=Math.max(0,(r.subtotal_original||0)-(r.descuento||0)-(r.costo_licencias||0));
     out[cat]+=base;
   });
   return out;
@@ -590,13 +593,16 @@ async function calcVentasRealesFinanzas(vendFiltroFact, anio, mes){
 async function calcVentasRealesFinanzasDia(vendFiltroFact, fecha){
   const out={svc:0, aspel:0, it:0, cursos247:0, cursos_vivo:0, circulo:0, ventasSvcNum:0, cursos247Num:0};
   if(!vendFiltroFact) return out;
-  const {data}=await sb.from('fact_ingresos').select('rubro,total,subtotal_original,descuento,vendedor,cobrado')
+  const {data}=await sb.from('fact_ingresos').select('rubro,total,subtotal_original,descuento,costo_licencias,vendedor,cobrado')
     .eq('fecha',fecha).eq('cobrado',true)
     .ilike('vendedor','%'+vendFiltroFact+'%');
   (data||[]).forEach(r=>{
     const cat=FINANZAS_CATEGORIA[(r.rubro||'').toUpperCase()];
     if(!cat) return;
-    const base=(r.subtotal_original||0)-(r.descuento||0);
+    // Jp, 2026-10-30 — el costo de licencias incluido en un CURSO EMPRESARIAL no
+    // cuenta como venta por servicio: se resta de la base de comisiones, pero
+    // NO del valor de la factura (fact_ingresos.total/subtotal siguen intactos).
+    const base=Math.max(0,(r.subtotal_original||0)-(r.descuento||0)-(r.costo_licencias||0));
     out[cat]+=base;
     if(cat==='svc') out.ventasSvcNum++;
     if(cat==='cursos247') out.cursos247Num++;
@@ -24601,7 +24607,7 @@ function renderIngresosTabla(){
             ${r.serie?`<span style="background:${r.serie==='GBE'?'rgba(232,64,64,0.1)':'rgba(0,169,157,0.1)'};color:${r.serie==='GBE'?'var(--red)':'var(--teal)'};padding:1px 5px;border-radius:4px;font-size:10px;font-weight:600;">${r.serie}</span> `:''}
             ${r.origen_banco?`<span title="Dado de alta desde conciliación bancaria — completar datos" style="background:rgba(139,92,246,0.15);color:#8B5CF6;padding:1px 5px;border-radius:4px;font-size:10px;font-weight:600;">🏦</span> `:''}
             ${r.pago_via_tienda?`<span title="Marcado como pago vía tienda en línea">🛍️</span> `:''}
-            <span style="text-decoration:underline;text-decoration-style:dotted;color:var(--navy);">${r.folio||'(sin folio)'}</span>
+            <span style="text-decoration:underline;text-decoration-style:dotted;color:var(--navy);">${r.folio||'(sin folio)'}</span>${fiBadgeDivision(r)}
           </td>
           <td style="padding:4px 6px;max-width:150px;"><span contenteditable="true" onblur="editarFactIng('${r.id}','cliente',this.textContent.trim())" style="${ce}font-weight:500;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.cliente||''}</span></td>
           <td style="padding:4px 6px;"><span contenteditable="true" onblur="editarFactIng('${r.id}','vendedor',this.textContent.trim())" style="${ce}color:var(--text3);white-space:nowrap;">${r.vendedor||''}</span></td>
@@ -25268,6 +25274,8 @@ function fiToggleAlumnoBlock(p='fi'){
   if(bloque) bloque.style.display=fiRubroNecesitaAlumno(r)?'block':'none';
   const bloqueCirc=document.getElementById(p+'CirculoBloque');
   if(bloqueCirc) bloqueCirc.style.display=fiRubroEsCirculo(r)?'block':'none';
+  const bloqueLic=document.getElementById(p+'LicenciasBloque');
+  if(bloqueLic) bloqueLic.style.display=(String(r||'').toUpperCase().trim()==='CURSO EMPRESARIAL')?'block':'none';
 }
 
 async function fiSugerirAlumno(p='fi'){
@@ -25409,6 +25417,11 @@ async function fiSugerirSocioCirculo(p='fi'){
 }
 function fiCirculoHtml(p='fi'){
   return `
+    <div id="${p}LicenciasBloque" style="display:none;margin-bottom:10px;padding:10px 12px;background:rgba(245,166,35,0.07);border:1px dashed #F5A623;border-radius:8px;">
+      <div style="font-size:11px;font-weight:700;color:#B9770E;margin-bottom:4px;">🧾 Costo de licencias incluido en el curso (no se desglosa al cliente)</div>
+      <input id="${p}CostoLicencias" type="number" min="0" step="0.01" placeholder="0.00" style="width:160px;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;">
+      <div style="font-size:10px;color:var(--text3);margin-top:4px;">Se resta de las <b>ventas por servicio</b> del vendedor y de su comisión. <b>No</b> cambia el valor de la factura.</div>
+    </div>
     <div id="${p}CirculoBloque" style="display:none;margin-bottom:10px;padding:10px 12px;background:rgba(0,169,157,0.05);border:1px dashed var(--teal);border-radius:8px;">
       <div style="font-size:11px;color:var(--text3);margin-bottom:4px;font-weight:500;">Socio de Círculo Innovaci — compra directa (solo lo esencial; fechas/plan/especialidad se completan después en Círculo Innovaci)</div>
       <div style="position:relative;">
@@ -25681,6 +25694,7 @@ async function guardarFactIngreso(){
   const {data:newRow,error}=await sb.from('fact_ingresos').insert({
     anio:currentYear,mes:currentMonth,fecha,folio,serie,cliente,vendedor,concepto,rubro,
     subtotal_original,descuento,subtotal_final,iva,total,forma_pago,estatus,fecha_pago,cobrado,conciliado:false,
+    costo_licencias:(String(rubro||'').toUpperCase().trim()==='CURSO EMPRESARIAL')?(Math.max(0,parseFloat(document.getElementById('fiCostoLicencias')?.value)||0)):0,
     cliente_cartera_id,academia_participante_id
   }).select().single();
   if(error){alert('Error: '+error.message);return;}
@@ -25786,6 +25800,9 @@ async function previsualizarXMLsIng(){
     const txt=await file.text();
     const d=parsearCFDI(txt);
     d._file=file.name; d._xmlText=txt; d._rubro=''; d._vendedor=''; d._fechaPago=''; d._estatus='EMITIDA'; d._existe=false;
+    // Varias partidas: se ofrece dividir en un renglón por partida (por defecto sí).
+    d._partidas=((d.conceptos||[]).filter(c=>(Number(c.importe)||0)>0).length>1)?cfdiPartidas(d):null;
+    d._dividir=!!d._partidas;
     _xmlParsedIng.push(d);
   }
   await asegurarAliasClientesXML();
@@ -25889,7 +25906,7 @@ async function previsualizarXMLsIng(){
           <td style="padding:4px 6px;"><select onchange="_xmlParsedIng[${i}]._rubro=this.value" style="${INP2}"><option value="">-- Rubro --</option>${rubros.map(r=>`<option value="${r}">${r}</option>`).join('')}</select></td>
           <td style="padding:4px 6px;"><select onchange="_xmlParsedIng[${i}]._estatus=this.value" style="${INP2}"><option value="EMITIDA">EMITIDA</option><option value="PAGADA">PAGADA</option></select></td>
           <td style="padding:4px 6px;"><input type="date" onchange="_xmlParsedIng[${i}]._fechaPago=this.value" style="${INP2}"></td>
-        </tr>`;
+        </tr>${xmlPartidasMasivoHtml(d,i)}`;
         }).join('')}
       </tbody>
     </table>
@@ -25950,6 +25967,31 @@ async function guardarXMLsMasivoIng(){
       cobrado,conciliado:false,
       cliente_cartera_id:d._clienteCarteraId||null,
     };
+    if(d._dividir&&d._partidas&&d._partidas.length>1){
+      const n=d._partidas.length;
+      const filas=d._partidas.map((p,idx)=>({...payload,rubro:p.rubro||null,concepto:p.descripcion||payload.concepto,
+        subtotal_original:Math.round((p.sub+p.desc)*100)/100,descuento:p.desc,subtotal_final:p.sub,iva:p.iva,total:p.total,
+        xml_mismatch_descartado:idx===0,
+        notas:'[DIVIDIDA] Parte '+(idx+1)+'/'+n+' de '+(d.folio||'')}));
+      const {data:rowsIns,error:errDiv}=await sb.from('fact_ingresos').insert(filas).select();
+      if(errDiv||!rowsIns?.length){err++;continue;}
+      ok++;
+      rowsIns.sort((a,b)=>String(a.notas).localeCompare(String(b.notas),undefined,{numeric:true}));
+      const principal=rowsIns[0];
+      fiComentarNuevaFacturaEnCuenta(payload.cliente_cartera_id,principal);
+      if(d._xmlText){
+        const path=await subirXMLStorage(d._xmlText,'ingresos',d.folio);
+        if(path) await sb.from('fact_ingresos').update({xml_path:path}).eq('id',principal.id);
+      }
+      if(serie==='GBE'){
+        for(const rw of rowsIns){
+          if(!(rw.subtotal_final>0)) continue;
+          const ret=parseFloat((rw.subtotal_final*0.025).toFixed(2));
+          await sb.from('gb_retenciones').insert({fact_ingreso_id:rw.id,anio:currentYear,mes:currentMonth,monto_factura:rw.subtotal_final,retencion_pct:2.50,monto_retencion:ret,monto_transferir:parseFloat((rw.subtotal_final-ret).toFixed(2)),transferido:false});
+        }
+      }
+      continue;
+    }
     const {data:newRow,error}=await sb.from('fact_ingresos').insert(payload).select().single();
     if(error){err++;continue;}
     ok++;
@@ -26127,6 +26169,7 @@ async function editarIngreso(id){
     </div>
     <input type="hidden" id="eiiId" value="${id}">`;
   mkModal('modalIngEdit','Editar factura — '+( r.folio||r.cliente||''),html,'guardarEdicionIngreso',undefined,true);
+  { const cl=document.getElementById('eiiCostoLicencias'); if(cl) cl.value=r.costo_licencias>0?r.costo_licencias:''; }
   fiToggleAlumnoBlock('eii');
   if(r.origen_banco||!r.folio) ligarMovFiltrarFacturas(id);
 }
@@ -26229,9 +26272,9 @@ async function ligarMovimientoAFactura(movId){
 // Caso INN606: una factura con partidas de rubros distintos (Cloud / IT /
 // Servicio por Evento). fact_ingresos guarda UN rubro por renglón, así que la
 // factura se reparte en varios renglones con el MISMO folio, uno por rubro,
-// cuyos importes suman exactamente la factura original. El renglón original
-// conserva el XML, el vínculo con el banco y el alumno; los nuevos llevan la
-// marca [DIVIDIDA] en notas (para que el aviso de folio duplicado no salte).
+// cuyos importes suman exactamente la factura original. El renglón PRINCIPAL
+// (Parte 1) conserva el XML, el vínculo con el banco y el alumno; los demás
+// llevan la marca [DIVIDIDA] en notas ("Parte i/n de FOLIO").
 function dividirRepartir(total,pesos){
   const suma=pesos.reduce((a,b)=>a+b,0)||1;
   const out=[]; let acum=0;
@@ -26241,25 +26284,70 @@ function dividirRepartir(total,pesos){
   });
   return out;
 }
-function dividirIngresoAbrir(id){
+// Distintivo en la tabla de Ingresos: ★ PRINCIPAL (parte 1) o ↳ parte i/n.
+function fiBadgeDivision(r){
+  const m=String(r.notas||'').match(/\[DIVIDIDA\] Parte (\d+)\/(\d+)/);
+  if(!m) return '';
+  if(m[1]==='1') return `<span title="Partida principal de una factura dividida por rubro: conserva el XML y el vínculo con el banco. Las otras ${(+m[2])-1} parte(s) son divisiones de esta misma factura." style="background:var(--navy);color:#fff;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;margin-left:4px;white-space:nowrap;">★ PRINCIPAL 1/${m[2]}</span>`;
+  return `<span title="División de la factura (parte ${m[1]} de ${m[2]}). El XML y el banco están en la partida principal." style="background:rgba(139,92,246,0.14);color:#7C3AED;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;margin-left:4px;white-space:nowrap;">↳ parte ${m[1]}/${m[2]}</span>`;
+}
+// Sugerencia de rubro por descripción de la partida del XML (solo si el rubro
+// existe en el catálogo; siempre se puede cambiar a mano).
+function sugerirRubroPartida(desc){
+  const norm=t=>(t||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().trim();
+  const rubros=window._rubrosIng||[];
+  const hallar=nom=>rubros.find(x=>norm(x)===norm(nom))||'';
+  const d=norm(desc);
+  const reglas=[
+    [/CLOUD|INNOXL/,'CLOUD'],
+    [/PUESTA A PUNTO|IMPLEMENTA|INSTALACION|CONFIGURACION|MIGRACION|GENERACION Y CARGA/,'SERVICIO POR EVENTO'],
+    [/TIMBRE/,'TIMBRES'],
+    [/MEMBRESIA/,'MEMBRESIA'],
+    [/RESGUARDO/,'POLIZA RESGUARDO'],
+    [/POLIZA/,'POLIZA ASPEL'],
+    [/TS PLUS|SIIGO|LICENCIA|SOFTWARE/,'SOFTWARE'],
+  ];
+  for(const [re,nom] of reglas){ if(re.test(d)){ const h=hallar(nom); if(h) return h; } }
+  return '';
+}
+// Partidas del XML con su subtotal, descuento, IVA y total (el IVA/total se
+// reparten en proporción al subtotal final; la última absorbe el redondeo).
+function cfdiPartidas(d){
+  const cs=(d.conceptos||[]).filter(c=>(Number(c.importe)||0)>0);
+  const imp=cs.map(c=>Number(c.importe)||0);
+  const hayDesc=cs.some(c=>(Number(c.descuento)||0)>0);
+  const descs=hayDesc?cs.map(c=>Number(c.descuento)||0):dividirRepartir(d.descuento||0,imp);
+  const subs=imp.map((v,i)=>Math.round((v-descs[i])*100)/100);
+  const dif=Math.round(((d.subtotalFinal||0)-subs.reduce((a,b)=>a+b,0))*100)/100;
+  if(subs.length&&Math.abs(dif)<=0.05) subs[subs.length-1]=Math.round((subs[subs.length-1]+dif)*100)/100;
+  const ivas=dividirRepartir(d.ivaTras||0,subs);
+  const totales=dividirRepartir(d.total||0,subs);
+  return cs.map((c,i)=>({descripcion:c.descripcion||'',sub:subs[i],desc:descs[i],iva:ivas[i],total:totales[i],rubro:sugerirRubroPartida(c.descripcion)}));
+}
+const _fmtMx=n=>'$'+(Number(n)||0).toLocaleString('es-MX',{minimumFractionDigits:2});
+
+// opciones (opcional): {partidas, ref, xmlText} — viene de un XML con varias
+// partidas; ref = importes de la factura según el XML.
+function dividirIngresoAbrir(id,opciones){
   const r=(window._fiRows||[]).find(x=>x.id===id);
   if(!r) return;
   window._divIngId=id;
-  const opts=(window._rubrosIng||[]).map(o=>`<option value="${o}">${o}</option>`).join('');
-  window._divIngOpts=opts;
-  const INP2='padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;';
-  const f=n=>'$'+(Number(n)||0).toLocaleString('es-MX',{minimumFractionDigits:2});
+  window._divIngRef=opciones?.ref||null;
+  window._divIngXmlText=opciones?.xmlText||null;
+  const ref=window._divIngRef||{subtotal_final:r.subtotal_final,iva:r.iva,total:r.total,descuento:r.descuento};
+  window._divIngOpts=(window._rubrosIng||[]).map(o=>`<option value="${o}">${o}</option>`).join('');
+  const f=_fmtMx;
   const html=`
     <div style="font-size:12px;margin-bottom:10px;">Factura <b>${r.folio}</b> — ${r.cliente||''}<br>
-      Subtotal final <b>${f(r.subtotal_final)}</b> · IVA ${f(r.iva)} · Total <b>${f(r.total)}</b> · rubro actual: <b>${r.rubro||'—'}</b></div>
+      Subtotal final <b>${f(ref.subtotal_final)}</b> · IVA ${f(ref.iva)} · Total <b>${f(ref.total)}</b>${opciones?.ref?' <span style="color:var(--teal);font-weight:600;">(según el XML)</span>':` · rubro actual: <b>${r.rubro||'—'}</b>`}</div>
     ${r.estatus!=='PAGADA'?'<div style="background:rgba(245,166,35,0.12);border-radius:6px;padding:8px 10px;font-size:11px;margin-bottom:10px;">⚠ Esta factura aún no está PAGADA. Conviene dividirla ya pagada/conciliada: si la divides antes, el pago del banco tendría que ligarse a uno solo de los renglones.</div>':''}
-    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Captura cada parte con su rubro y su <b>subtotal</b> (sin IVA). Deben sumar ${f(r.subtotal_final)}. El IVA${r.descuento>0?', el descuento':''} y el total se reparten en proporción.</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Cada parte lleva su rubro y su <b>subtotal</b> (sin IVA). Deben sumar ${f(ref.subtotal_final)}. El IVA${ref.descuento>0?', el descuento':''} y el total se reparten en proporción.</div>
     <div id="divIngFilas"></div>
     <button type="button" onclick="dividirIngresoAgregarFila()" style="background:none;border:1px dashed var(--teal);color:var(--teal);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;margin:6px 0;">+ Agregar parte</button>
     <div id="divIngResumen" style="font-size:12px;font-weight:700;margin-top:6px;"></div>`;
   mkModal('modalDividirIng','✂ Dividir por rubro — '+r.folio,html,'dividirIngresoGuardar','Dividir factura',true);
-  dividirIngresoAgregarFila(r.rubro||'',r.concepto||'',r.subtotal_final||0);
-  dividirIngresoAgregarFila('','','');
+  if(opciones?.partidas?.length) opciones.partidas.forEach(p=>dividirIngresoAgregarFila(p.rubro,p.descripcion,p.sub));
+  else { dividirIngresoAgregarFila(r.rubro||'',r.concepto||'',r.subtotal_final||0); dividirIngresoAgregarFila('','',''); }
 }
 function dividirIngresoAgregarFila(rubro,concepto,sub){
   const cont=document.getElementById('divIngFilas');
@@ -26289,42 +26377,47 @@ function dividirIngresoResumen(){
   const r=(window._fiRows||[]).find(x=>x.id===window._divIngId);
   const out=document.getElementById('divIngResumen');
   if(!r||!out) return;
+  const ref=window._divIngRef||r;
   const suma=Math.round(dividirIngresoLeer().reduce((a,p)=>a+p.sub,0)*100)/100;
-  const falta=Math.round(((r.subtotal_final||0)-suma)*100)/100;
-  const f=n=>'$'+(Number(n)||0).toLocaleString('es-MX',{minimumFractionDigits:2});
+  const falta=Math.round(((ref.subtotal_final||0)-suma)*100)/100;
   out.innerHTML=Math.abs(falta)<=0.02
-    ?`<span style="color:#27AE60;">✅ Suma ${f(suma)} — cuadra con la factura.</span>`
-    :`<span style="color:var(--red);">Suma ${f(suma)} — ${falta>0?'faltan':'sobran'} ${f(Math.abs(falta))}</span>`;
+    ?`<span style="color:#27AE60;">✅ Suma ${_fmtMx(suma)} — cuadra con la factura.</span>`
+    :`<span style="color:var(--red);">Suma ${_fmtMx(suma)} — ${falta>0?'faltan':'sobran'} ${_fmtMx(Math.abs(falta))}</span>`;
 }
 async function dividirIngresoGuardar(){
   const id=window._divIngId;
   const r=(window._fiRows||[]).find(x=>x.id===id);
   if(!r) return;
+  const ref=window._divIngRef||{subtotal_final:r.subtotal_final,iva:r.iva,total:r.total,descuento:r.descuento};
   const partes=dividirIngresoLeer().filter(p=>p.sub>0||p.rubro||p.concepto);
   if(partes.length<2){alert('Captura al menos 2 partes.');return;}
   if(partes.some(p=>!p.rubro||!(p.sub>0))){alert('Cada parte necesita rubro y un subtotal mayor a cero.');return;}
   const suma=Math.round(partes.reduce((a,p)=>a+p.sub,0)*100)/100;
-  if(Math.abs(suma-(r.subtotal_final||0))>0.02){alert('Los subtotales deben sumar exactamente '+(r.subtotal_final||0)+' (llevas '+suma+').');return;}
+  if(Math.abs(suma-(ref.subtotal_final||0))>0.02){alert('Los subtotales deben sumar exactamente '+(ref.subtotal_final||0)+' (llevas '+suma+').');return;}
   const pesos=partes.map(p=>p.sub);
-  const ivas=dividirRepartir(r.iva||0,pesos);
-  const totales=dividirRepartir(r.total||0,pesos);
-  const descs=dividirRepartir(r.descuento||0,pesos);
-  const f=n=>'$'+(Number(n)||0).toLocaleString('es-MX',{minimumFractionDigits:2});
+  const ivas=dividirRepartir(ref.iva||0,pesos);
+  const totales=dividirRepartir(ref.total||0,pesos);
+  const descs=dividirRepartir(ref.descuento||0,pesos);
+  const f=_fmtMx;
   const resumen=partes.map((p,i)=>`• ${p.rubro}: subtotal ${f(p.sub)} · IVA ${f(ivas[i])} · total ${f(totales[i])}`).join('\n');
-  if(!confirm(`Se dividirá ${r.folio} en ${partes.length} renglones (mismo folio):\n\n${resumen}\n\nEl total sigue siendo ${f(r.total)}. El XML, el vínculo con el banco y el alumno se quedan en el primer renglón. ¿Continuar?`)) return;
+  if(!confirm(`Se dividirá ${r.folio} en ${partes.length} renglones (mismo folio):\n\n${resumen}\n\nEl total sigue siendo ${f(ref.total)}. El XML, el vínculo con el banco y el alumno se quedan en la partida principal (la primera). ¿Continuar?`)) return;
   const marca=' [DIVIDIDA]';
   const base={anio:r.anio,mes:r.mes,fecha:r.fecha,folio:r.folio,serie:r.serie||null,cliente:r.cliente,cliente_cartera_id:r.cliente_cartera_id||null,vendedor:r.vendedor||null,
     forma_pago:r.forma_pago||null,estatus:r.estatus,complemento_pago:r.complemento_pago||null,cobrado:!!r.cobrado,conciliado:!!r.conciliado,fecha_pago:r.fecha_pago||null,
     pago_via_tienda:!!r.pago_via_tienda,origen_banco:false};
   const nuevos=partes.slice(1).map((p,k)=>{const i=k+1;return {...base,rubro:p.rubro,concepto:p.concepto||r.concepto||null,
     subtotal_original:Math.round((p.sub+descs[i])*100)/100,descuento:descs[i],subtotal_final:p.sub,iva:ivas[i],total:totales[i],
-    notas:((r.notas||'')+marca+' Parte '+(i+1)+'/'+partes.length+' de '+r.folio).trim()};});
+    notas:((r.notas||'').replace(/\s*\[DIVIDIDA\].*$/,'')+marca+' Parte '+(i+1)+'/'+partes.length+' de '+r.folio).trim()};});
   const {data:ins,error:errI}=await sb.from('fact_ingresos').insert(nuevos).select();
   if(errI){alert('No se pudo crear los renglones nuevos: '+errI.message);return;}
   const p0=partes[0];
   const cambios={rubro:p0.rubro,concepto:p0.concepto||r.concepto||null,subtotal_original:Math.round((p0.sub+descs[0])*100)/100,descuento:descs[0],
     subtotal_final:p0.sub,iva:ivas[0],total:totales[0],xml_mismatch_descartado:true,
-    notas:((r.notas||'')+marca+' Parte 1/'+partes.length+' de '+r.folio).trim()};
+    notas:((r.notas||'').replace(/\s*\[DIVIDIDA\].*$/,'')+marca+' Parte 1/'+partes.length+' de '+r.folio).trim()};
+  if(window._divIngXmlText&&!r.xml_path){
+    const path=await subirXMLStorage(window._divIngXmlText,'ingresos',r.folio);
+    if(path) cambios.xml_path=path;
+  }
   const {error:errU}=await sb.from('fact_ingresos').update(cambios).eq('id',id);
   if(errU){
     await sb.from('fact_ingresos').delete().in('id',(ins||[]).map(x=>x.id)); // deshacer
@@ -26336,6 +26429,39 @@ async function dividirIngresoGuardar(){
   document.getElementById('modalIngEdit')?.remove();
   renderIngresosTabla();
   alert(`✅ ${r.folio} dividida en ${partes.length} renglones.`);
+}
+// Desde Editar factura con un XML cargado/guardado que trae varias partidas.
+function dividirDesdeXmlEdicion(){
+  const id=document.getElementById('eiiId')?.value;
+  const d=window._eiiXmlParsed||window._divIngXmlD;
+  if(!id||!d){alert('Primero carga el XML.');return;}
+  const partidas=cfdiPartidas(d);
+  if(partidas.length<2){alert('Este XML trae una sola partida.');return;}
+  dividirIngresoAbrir(id,{partidas,ref:{subtotal_final:d.subtotalFinal,iva:d.ivaTras,total:d.total,descuento:d.descuento},xmlText:window._eiiXmlText||null});
+}
+function xmlBannerPartidas(d,esDividida){
+  const ps=(d.conceptos||[]).filter(c=>(Number(c.importe)||0)>0);
+  if(ps.length<2||esDividida) return '';
+  return `<div style="margin-top:8px;padding:8px 10px;background:rgba(139,92,246,0.08);border:1px solid #8B5CF6;border-radius:8px;font-size:11px;">
+    📑 <b>Este XML trae ${ps.length} partidas:</b><br>${ps.map(c=>`• ${c.descripcion} — ${_fmtMx(c.importe)}`).join('<br>')}
+    <div style="margin-top:6px;"><button type="button" onclick="dividirDesdeXmlEdicion()" style="background:#8B5CF6;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">✂ Dividir según las partidas del XML</button>
+    <span style="color:var(--text3);margin-left:6px;">o guarda normal para dejarla como una sola.</span></div></div>`;
+}
+// Bloque de partidas dentro de la previsualización de XML masivo.
+function xmlPartidasMasivoHtml(d,i){
+  if(!d._partidas) return '';
+  const INP2='padding:3px 5px;border:1px solid var(--border);border-radius:4px;font-size:11px;';
+  const opts=(window._rubrosIng||[]);
+  return `<tr style="background:rgba(139,92,246,0.06);border-bottom:1px solid var(--border);"><td colspan="13" style="padding:6px 10px;">
+    <label style="font-size:11px;font-weight:700;color:#7C3AED;cursor:pointer;"><input type="checkbox" ${d._dividir?'checked':''} onchange="_xmlParsedIng[${i}]._dividir=this.checked;document.getElementById('xiPart_${i}').style.display=this.checked?'block':'none'"> ✂ ${d.folio}: este XML trae ${d._partidas.length} partidas — dividir en un renglón por partida (cada una con su rubro)</label>
+    <div id="xiPart_${i}" style="display:${d._dividir?'block':'none'};margin-top:6px;">
+      ${d._partidas.map((p,j)=>`<div style="display:grid;grid-template-columns:2fr 0.9fr 0.9fr 1.3fr;gap:6px;align-items:center;margin-bottom:3px;font-size:11px;">
+        <span title="${(p.descripcion||'').replace(/"/g,'&quot;')}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${p.descripcion}</span>
+        <span style="text-align:right;font-family:'JetBrains Mono',monospace;">${_fmtMx(p.sub)}</span>
+        <span style="text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text3);">total ${_fmtMx(p.total)}</span>
+        <select onchange="_xmlParsedIng[${i}]._partidas[${j}].rubro=this.value" style="${INP2}"><option value="">-- Rubro --</option>${opts.map(o=>`<option value="${o}" ${p.rubro===o?'selected':''}>${o}</option>`).join('')}</select>
+      </div>`).join('')}
+    </div></td></tr>`;
 }
 
 // Jp, 2026-10-30 — "Validar contra XML" en Editar factura: el XML sirve para
@@ -26356,7 +26482,24 @@ async function validarIngresoContraXml(id){
     xmlText=await data.text();
   }
   if(!xmlText){out.innerHTML='<div style="color:var(--red);font-size:11px;">Esta factura no tiene XML — carga uno arriba para validar.</div>';return;}
-  const d=parsearCFDI(xmlText);
+  let d=parsearCFDI(xmlText);
+  const dCompleto=d;
+  window._divIngXmlD=dCompleto;
+  // Partidas: si esta fila es una parte de una factura dividida, se valida
+  // contra SU partida (no contra la factura completa); el concepto sale de la
+  // descripción de la partida.
+  const partesXml=(d.conceptos||[]).filter(c=>(Number(c.importe)||0)>0);
+  const mDiv=String(row?.notas||'').match(/\[DIVIDIDA\] Parte (\d+)\/(\d+)/);
+  let conceptoXml=partesXml.length===1?(partesXml[0].descripcion||''):(d.concepto||'');
+  if(partesXml.length>1&&mDiv){
+    const pp=cfdiPartidas(dCompleto);
+    const pr=(+mDiv[2]===pp.length)?pp[(+mDiv[1])-1]:pp.reduce((best,x)=>Math.abs(x.sub-(row.subtotal_final||0))<Math.abs(best.sub-(row.subtotal_final||0))?x:best,pp[0]);
+    d={...d,subtotal:Math.round((pr.sub+pr.desc)*100)/100,descuento:pr.desc,subtotalFinal:pr.sub,ivaTras:pr.iva,total:pr.total,cuadra:true,ivaRet:0,isr:0};
+    conceptoXml=pr.descripcion;
+  }else if(partesXml.length>1){
+    conceptoXml=partesXml.map(c=>c.descripcion).join(' + ').slice(0,250);
+  }
+  d.conceptoXml=conceptoXml;
   window._eiiValidacionXml=d;
   const val=elId=>parseFloat(document.getElementById(elId)?.value)||0;
   const cap={sub:val('eiiSubOrig'),desc:val('eiiDescuento'),sf:val('eiiSubFin'),iva:val('eiiIva'),total:val('eiiTotal')};
@@ -26377,10 +26520,15 @@ async function validarIngresoContraXml(id){
       <td style="padding:4px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${f(b)}</td>
       <td style="padding:4px 8px;text-align:center;">${ok?'✅':'❌'}</td></tr>`;
   }).join('');
-  const todoOk=filas.every(([,a,b])=>Math.abs(a-b)<=0.01);
+  const todoOkNum=filas.every(([,a,b])=>Math.abs(a-b)<=0.01);
+  const normTxt=t=>(t||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/\s+/g,' ').trim();
+  const capConcepto=document.getElementById('eiiConcepto')?.value||'';
+  const conceptoIgual=!conceptoXml||normTxt(capConcepto)===normTxt(conceptoXml);
+  const todoOk=todoOkNum&&conceptoIgual;
   const avisosExtra=[];
   const folioCap=document.getElementById('eiiFolio')?.value.trim()||'';
   if(d.folio&&folioCap&&d.folio.toUpperCase()!==folioCap.toUpperCase()) avisosExtra.push(`Folio capturado "${folioCap}" ≠ XML "${d.folio}"`);
+  if(mDiv) avisosExtra.push(`Esta fila es la parte ${mDiv[1]}/${mDiv[2]} de una factura dividida: se compara contra su partida del XML`);
   if(!d.cuadra) avisosExtra.push(`El propio XML no cuadra: S.Final + IVA${d.ivaRet||d.isr?' − retenciones':''} = ${f(d.totalCalculado)} vs Total ${f(d.total)} (diferencia ${f(d.diferenciaImportes)})`);
   out.innerHTML=`<div style="border:1px solid ${todoOk?'#27AE60':'var(--red)'};border-radius:8px;padding:10px 12px;background:${todoOk?'rgba(39,174,96,0.06)':'rgba(232,64,64,0.04)'};">
     <div style="font-size:12px;font-weight:700;color:${todoOk?'#1E8449':'var(--red)'};margin-bottom:6px;">${todoOk?'✅ Los importes capturados coinciden con el XML':'❌ Hay diferencias entre lo capturado y el XML'}</div>
@@ -26388,7 +26536,9 @@ async function validarIngresoContraXml(id){
       <thead><tr style="background:var(--navy);color:#fff;"><th style="padding:4px 8px;text-align:left;">Campo</th><th style="padding:4px 8px;text-align:right;">Capturado</th><th style="padding:4px 8px;text-align:right;">XML</th><th></th></tr></thead>
       <tbody>${filasHtml}</tbody>
     </table>
+    <div style="font-size:11px;margin-top:6px;${conceptoIgual?'':'background:rgba(232,64,64,0.07);'}padding:3px 6px;border-radius:4px;">${conceptoIgual?'✅':'❌'} <b>Concepto en XML:</b> ${conceptoXml||'—'}${conceptoIgual?'':`<br><span style="color:var(--text3);">Capturado: ${capConcepto||'(vacío)'}</span>`}</div>
     ${avisosExtra.length?`<div style="font-size:11px;color:var(--red);margin-top:6px;">${avisosExtra.map(a=>'⚠ '+a).join('<br>')}</div>`:''}
+    ${mDiv?'':xmlBannerPartidas(dCompleto,false)}
     ${todoOk?'':`<button type="button" onclick="aplicarValoresXmlEnEdicion()" style="margin-top:8px;background:#27AE60;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Aplicar valores del XML al formulario</button> <span style="font-size:10px;color:var(--text3);">(no se guarda hasta dar "Guardar")</span>`}
   </div>`;
 }
@@ -26402,8 +26552,9 @@ function aplicarValoresXmlEnEdicion(){
   set('eiiSubFin',(Math.round((d.subtotal-d.descuento)*100)/100).toFixed(2));
   set('eiiIva',d.ivaTras);
   set('eiiTotal',d.total);
+  if(d.conceptoXml) set('eiiConcepto',d.conceptoXml);
   const out=document.getElementById('eiiValidacionXml');
-  if(out) out.innerHTML='<div style="font-size:11px;color:#1E8449;font-weight:600;">✅ Valores del XML aplicados al formulario — revisa y da "Guardar".</div>';
+  if(out) out.innerHTML='<div style="font-size:11px;color:#1E8449;font-weight:600;">✅ Valores del XML (importes y concepto) aplicados al formulario — revisa y da "Guardar".</div>';
 }
 
 async function guardarEdicionIngreso(){
@@ -26451,6 +26602,7 @@ async function guardarEdicionIngreso(){
     subtotal_original:parseFloat(document.getElementById('eiiSubOrig')?.value)||0,
     descuento:parseFloat(document.getElementById('eiiDescuento')?.value)||0,
     subtotal_final:parseFloat(document.getElementById('eiiSubFin')?.value)||0,
+    costo_licencias:(String(document.getElementById('eiiRubro')?.value||'').toUpperCase().trim()==='CURSO EMPRESARIAL')?(Math.max(0,parseFloat(document.getElementById('eiiCostoLicencias')?.value)||0)):0,
     iva:parseFloat(document.getElementById('eiiIva')?.value)||0,
     total:parseFloat(document.getElementById('eiiTotal')?.value)||0,
     forma_pago:document.getElementById('eiiFormaPago')?.value||null,
@@ -26535,6 +26687,14 @@ async function editarIngresoParsearXml(){
   const setIfEmpty=(elId,val)=>{ const el=document.getElementById(elId); if(el && !el.value?.trim() && val) el.value=val; };
   setIfEmpty('eiiFolio',d.folio);
   setIfEmpty('eiiConcepto',d.concepto);
+  window._divIngXmlD=d;
+  {
+    const rowAct=(window._fiRows||[]).find(x=>x.id===document.getElementById('eiiId')?.value);
+    const esDiv=/\[DIVIDIDA\]/.test(rowAct?.notas||'');
+    const ban=xmlBannerPartidas(d,esDiv);
+    const outV=document.getElementById('eiiValidacionXml');
+    if(outV&&ban) outV.innerHTML=ban;
+  }
   setIfEmpty('eiiSubOrig',d.subtotal||'');
   setIfEmpty('eiiDescuento',d.descuento||'');
   setIfEmpty('eiiSubFin',d.subtotalFinal||'');
@@ -27453,7 +27613,8 @@ function parsearCFDI(xmlStr){
     unidad:c.getAttribute('Unidad')||c.getAttribute('ClaveUnidad')||'',
     descripcion:c.getAttribute('Descripcion')||'',
     valorUnitario:parseFloat(c.getAttribute('ValorUnitario')||0),
-    importe:parseFloat(c.getAttribute('Importe')||0)
+    importe:parseFloat(c.getAttribute('Importe')||0),
+    descuento:parseFloat(c.getAttribute('Descuento')||0)||0
   }));
 
   // ── Impuestos: solo del nodo raíz (hijo directo de Comprobante), NO de Conceptos
