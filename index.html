@@ -14419,6 +14419,90 @@ async function renderDirectorResumen(){
   ]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>fmt(c.parsed.y)}}},scales:{x:{ticks:{color:'#8BA0B8',font:{size:10}},grid:{display:false}},y:{ticks:{color:'#8BA0B8',font:{size:10},callback:v=>fmtK(v)},grid:{color:'rgba(13,34,64,0.05)'}}}}});
 }
 
+// Jp, 2026-10-31 — "Reporte de servicios desglosado": qué facturas componen lo que se le
+// contempla a cada vendedor para comisión (misma regla que calcVentasRealesFinanzas:
+// cobrado=true, categoría por FINANZAS_CATEGORIA, base = subtotal − descuento − costo licencias).
+// Incluye Círculo Innovaci por separado (con su bono 5% y candados) y, aparte, lo que NO suma.
+const _DESG_CATS=[
+  {k:'svc',n:'Servicios'},{k:'aspel',n:'Aspel (Sistema + Timbres)'},{k:'it',n:'IT (Cloud/Software/Hardware)'},
+  {k:'cursos_vivo',n:'Cursos en vivo / Diplomados'},{k:'cursos247',n:'Cursos 24/7'}
+];
+let _desgLast=null;
+async function verDesgloseComisionVendedor(uid,nombre,email){
+  const u={id:uid,nombre,email};
+  const filtro=u?vendedorFactIngresosFiltro(u):null;
+  const esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  if(!filtro){ alert('Este vendedor no tiene filtro de facturación asignado'); return; }
+  const {data,error}=await sb.from('fact_ingresos')
+    .select('id,fecha,folio,cliente,rubro,total,subtotal_original,descuento,costo_licencias,cobrado,vendedor,notas')
+    .eq('anio',currentYear).eq('mes',currentMonth).ilike('vendedor','%'+filtro+'%')
+    .order('fecha',{ascending:true});
+  if(error){ alert('Error: '+error.message); return; }
+  const rows=data||[];
+  const grupos={}; _DESG_CATS.concat([{k:'circulo',n:'Círculo Innovaci'}]).forEach(c=>grupos[c.k]=[]);
+  const pend=[], fuera=[];
+  rows.forEach(r=>{
+    const cat=FINANZAS_CATEGORIA[(r.rubro||'').toUpperCase()];
+    const base=Math.max(0,(r.subtotal_original||0)-(r.descuento||0)-(r.costo_licencias||0));
+    const x={...r,base,cat};
+    if(!cat) fuera.push(x);
+    else if(!r.cobrado) pend.push(x);
+    else grupos[cat].push(x);
+  });
+  const sum=a=>a.reduce((s,r)=>s+r.base,0);
+  const th='padding:6px 8px;text-align:left;font-size:10px;text-transform:uppercase;color:var(--text3);border-bottom:1px solid var(--border);white-space:nowrap;';
+  const td='padding:6px 8px;font-size:12px;border-bottom:1px solid var(--border);';
+  const num='font-family:\'JetBrains Mono\',monospace;text-align:right;white-space:nowrap;';
+  const tabla=(arr,conCat)=>arr.length?`<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;"><thead><tr>
+      <th style="${th}">Fecha</th><th style="${th}">Folio</th><th style="${th}">Cliente</th><th style="${th}">Rubro</th>
+      <th style="${th}text-align:right;">Subtotal</th><th style="${th}text-align:right;">Desc.</th><th style="${th}text-align:right;">Lic.</th><th style="${th}text-align:right;">Base comisión</th>
+      </tr></thead><tbody>${arr.map(r=>`<tr>
+      <td style="${td}white-space:nowrap;">${esc(fmtFecha(r.fecha)||'')}</td>
+      <td style="${td}font-weight:600;">${esc(r.folio)}${r.notas&&/DIVIDIDA/i.test(r.notas)?' <span style="font-size:9px;background:#EEF;padding:1px 5px;border-radius:8px;">dividida</span>':''}</td>
+      <td style="${td}">${esc(r.cliente)}</td><td style="${td}font-size:11px;">${esc(r.rubro||'(sin rubro)')}</td>
+      <td style="${td}${num}">${fmt(r.subtotal_original||0)}</td>
+      <td style="${td}${num}">${r.descuento?'-'+fmt(r.descuento):'—'}</td>
+      <td style="${td}${num}">${r.costo_licencias?'-'+fmt(r.costo_licencias):'—'}</td>
+      <td style="${td}${num}font-weight:700;">${fmt(r.base)}</td></tr>`).join('')}</tbody></table></div>`
+    :'<div style="font-size:12px;color:var(--text3);padding:6px 0;">Sin facturas.</div>';
+  const bloque=(titulo,arr,color)=>`<div style="margin-top:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid ${color};padding-bottom:4px;margin-bottom:4px;">
+      <div style="font-size:13px;font-weight:700;color:var(--navy);">${titulo} <span style="font-weight:400;color:var(--text3);font-size:11px;">(${arr.length})</span></div>
+      <div style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:14px;color:${color};">${fmt(sum(arr))}</div></div>${tabla(arr)}</div>`;
+  // Candados del bono Círculo (igual que "Mi mes")
+  const metaKey=(u.email||'').toLowerCase().includes('dulce')?'meta_dulce':'meta_manuel';
+  const svcM=kpiConfig.find(k=>k.kpi_key==='svc');
+  const svcMeta=svcM?(svcM[metaKey]||80000):80000;
+  const svcReal=sum(grupos.svc);
+  const bonoC=calcBonoCirculoInnovaci(sum(grupos.circulo),deptoAlcanzado,svcReal>=svcMeta);
+  const resumen=_DESG_CATS.map(c=>`<div style="background:var(--surf2);border-radius:10px;padding:8px 12px;min-width:130px;">
+    <div style="font-size:10px;color:var(--text3);text-transform:uppercase;">${c.n}</div>
+    <div style="font-family:'JetBrains Mono',monospace;font-weight:700;font-size:14px;">${fmt(sum(grupos[c.k]))}</div></div>`).join('');
+  const html=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px;">Mes ${currentMonth}/${currentYear} · solo facturas <b>cobradas</b> con rubro que comisiona. Base = subtotal − descuento − costo de licencias. Los totales coinciden con la tarjeta del vendedor.</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;">${resumen}</div>
+    ${_DESG_CATS.map(c=>bloque(c.n,grupos[c.k],'var(--teal)')).join('')}
+    <div style="margin-top:22px;padding:12px;border:2px solid #7B5EA7;border-radius:12px;background:#FAF7FF;">
+      <div style="font-size:13px;font-weight:700;color:#5B3F8F;">⭕ Círculo Innovaci (se contempla por aparte)</div>
+      ${tabla(grupos.circulo)}
+      <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:12px;">
+        <span>Facturado cobrado: <b>${fmt(sum(grupos.circulo))}</b> × 5%</span>
+        <span>Bono: <b style="font-size:15px;color:${bonoC.aplica?'#27AE60':'#C0392B'};">${fmt(bonoC.monto)}</b></span></div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">${bonoC.aplica?'✓ ':'🔒 '}${esc(bonoC.motivo)} · Servicios: ${fmt(svcReal)} de meta ${fmt(svcMeta)} · Depto ${deptoAlcanzado?'alcanzó':'no alcanza'} su meta.</div>
+    </div>
+    ${pend.length?bloque('⏳ Aún NO cobradas (no suman todavía)',pend,'#F5A623'):''}
+    ${fuera.length?bloque('🚫 Rubros que no comisionan (no suman)',fuera,'#999'):''}`;
+  _desgLast={nombre,rows:[...Object.values(grupos).flat(),...pend,...fuera]};
+  mkModal('modalDesglose','🧾 Servicios desglosados — '+esc(nombre),html,'descargarDesgloseCSV','⬇ Descargar CSV','1100px');
+}
+function descargarDesgloseCSV(){
+  if(!_desgLast) return;
+  const q=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+  const lines=[['Fecha','Folio','Cliente','Rubro','Categoría','Subtotal','Descuento','Costo licencias','Base comisión','Cobrada'].map(q).join(',')];
+  _desgLast.rows.forEach(r=>lines.push([r.fecha,r.folio,r.cliente,r.rubro,r.cat||'NO COMISIONA',r.subtotal_original||0,r.descuento||0,r.costo_licencias||0,r.base,r.cobrado?'sí':'no'].map(q).join(',')));
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob(['﻿'+lines.join('\n')],{type:'text/csv;charset=utf-8'}));
+  a.download='desglose_comision_'+_desgLast.nombre.replace(/\s+/g,'_')+'.csv'; a.click();
+}
 async function renderDirectorVendedores(){
   const mc=document.getElementById('mainContent');
   mc.classList.remove('full-width');
@@ -14529,6 +14613,10 @@ async function renderDirectorVendedores(){
           style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
           📊 Reporte anual
         </button>
+        ${ventasRealesUV?`<button onclick="verDesgloseComisionVendedor(this.dataset.uid,this.dataset.unm,this.dataset.em)" data-uid="${u.id}" data-unm="${u.nombre}" data-em="${u.email}"
+          style="flex:1;background:#7B5EA7;color:#fff;border:none;border-radius:var(--radsm);padding:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
+          🧾 Servicios desglosados
+        </button>`:''}
       </div>
     </div>`;
   }).join('')}</div>
