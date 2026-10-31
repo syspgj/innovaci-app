@@ -26085,6 +26085,10 @@ async function editarIngreso(id){
       <button type="button" onclick="validarIngresoContraXml('${id}')" style="background:var(--teal);border:none;color:#fff;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">✔ Validar contra XML</button>
     </div>
     <div id="eiiValidacionXml" style="margin-bottom:12px;"></div>
+    ${(r.folio&&!r.origen_banco&&r.estatus!=='CANCELADA')?`<div style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <button type="button" onclick="dividirIngresoAbrir('${id}')" style="background:#fff;border:1px solid var(--navy);color:var(--navy);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;">✂ Dividir por rubro</button>
+      <span style="font-size:10px;color:var(--text3);">Para facturas con partidas de rubros distintos (ej. Cloud + IT + Servicio por Evento).</span>
+    </div>`:''}
     ${(r.origen_banco||!r.folio)?`<div style="background:rgba(139,92,246,0.07);border:1px solid #8B5CF6;border-radius:8px;padding:10px 12px;margin-bottom:12px;">
       <div style="font-size:12px;font-weight:700;color:#8B5CF6;margin-bottom:4px;">🔗 Ligar este movimiento a una factura</div>
       <div style="font-size:10px;color:var(--text3);margin-bottom:6px;">Si este cobro del banco corresponde a una factura que ya existe, elígela: la factura queda PAGADA y conciliada con este movimiento, y este registro desaparece (queda guardado que ese depósito ya está ligado, para que el próximo estado de cuenta no lo vuelva a marcar como faltante).</div>
@@ -26221,6 +26225,119 @@ async function ligarMovimientoAFactura(movId){
   alert(`✅ Movimiento ligado a ${fac.folio}.`+(parcialAhora?` Faltan ${fmt(quedaria)} por cubrir.`:' Factura cubierta completa.'));
 }
 
+// ─── Jp, 2026-10-30 — Dividir una factura por rubro ───────────────────────
+// Caso INN606: una factura con partidas de rubros distintos (Cloud / IT /
+// Servicio por Evento). fact_ingresos guarda UN rubro por renglón, así que la
+// factura se reparte en varios renglones con el MISMO folio, uno por rubro,
+// cuyos importes suman exactamente la factura original. El renglón original
+// conserva el XML, el vínculo con el banco y el alumno; los nuevos llevan la
+// marca [DIVIDIDA] en notas (para que el aviso de folio duplicado no salte).
+function dividirRepartir(total,pesos){
+  const suma=pesos.reduce((a,b)=>a+b,0)||1;
+  const out=[]; let acum=0;
+  pesos.forEach((w,i)=>{
+    if(i===pesos.length-1){ out.push(Math.round((total-acum)*100)/100); }
+    else { const v=Math.round(total*w/suma*100)/100; out.push(v); acum+=v; }
+  });
+  return out;
+}
+function dividirIngresoAbrir(id){
+  const r=(window._fiRows||[]).find(x=>x.id===id);
+  if(!r) return;
+  window._divIngId=id;
+  const opts=(window._rubrosIng||[]).map(o=>`<option value="${o}">${o}</option>`).join('');
+  window._divIngOpts=opts;
+  const INP2='padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;';
+  const f=n=>'$'+(Number(n)||0).toLocaleString('es-MX',{minimumFractionDigits:2});
+  const html=`
+    <div style="font-size:12px;margin-bottom:10px;">Factura <b>${r.folio}</b> — ${r.cliente||''}<br>
+      Subtotal final <b>${f(r.subtotal_final)}</b> · IVA ${f(r.iva)} · Total <b>${f(r.total)}</b> · rubro actual: <b>${r.rubro||'—'}</b></div>
+    ${r.estatus!=='PAGADA'?'<div style="background:rgba(245,166,35,0.12);border-radius:6px;padding:8px 10px;font-size:11px;margin-bottom:10px;">⚠ Esta factura aún no está PAGADA. Conviene dividirla ya pagada/conciliada: si la divides antes, el pago del banco tendría que ligarse a uno solo de los renglones.</div>':''}
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Captura cada parte con su rubro y su <b>subtotal</b> (sin IVA). Deben sumar ${f(r.subtotal_final)}. El IVA${r.descuento>0?', el descuento':''} y el total se reparten en proporción.</div>
+    <div id="divIngFilas"></div>
+    <button type="button" onclick="dividirIngresoAgregarFila()" style="background:none;border:1px dashed var(--teal);color:var(--teal);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;margin:6px 0;">+ Agregar parte</button>
+    <div id="divIngResumen" style="font-size:12px;font-weight:700;margin-top:6px;"></div>`;
+  mkModal('modalDividirIng','✂ Dividir por rubro — '+r.folio,html,'dividirIngresoGuardar','Dividir factura',true);
+  dividirIngresoAgregarFila(r.rubro||'',r.concepto||'',r.subtotal_final||0);
+  dividirIngresoAgregarFila('','','');
+}
+function dividirIngresoAgregarFila(rubro,concepto,sub){
+  const cont=document.getElementById('divIngFilas');
+  if(!cont) return;
+  const INP2='padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;';
+  const d=document.createElement('div');
+  d.className='divIngFila';
+  d.style.cssText='display:grid;grid-template-columns:1.1fr 2fr 1fr auto;gap:6px;margin-bottom:6px;align-items:center;';
+  d.innerHTML=`<select class="divRubro" style="${INP2}"><option value="">-- Rubro --</option>${window._divIngOpts||''}</select>
+    <input class="divConcepto" type="text" placeholder="Concepto / partidas" style="${INP2}">
+    <input class="divSub" type="number" min="0" step="0.01" placeholder="Subtotal" oninput="dividirIngresoResumen()" style="${INP2}">
+    <button type="button" onclick="this.closest('.divIngFila').remove();dividirIngresoResumen()" title="Quitar" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:14px;">✕</button>`;
+  cont.appendChild(d);
+  if(rubro){ const sel=d.querySelector('.divRubro'); if(![...sel.options].some(o=>o.value===rubro)) sel.add(new Option(rubro,rubro)); sel.value=rubro; }
+  d.querySelector('.divConcepto').value=concepto||'';
+  d.querySelector('.divSub').value=sub===''||sub==null?'':sub;
+  dividirIngresoResumen();
+}
+function dividirIngresoLeer(){
+  return [...document.querySelectorAll('#divIngFilas .divIngFila')].map(el=>({
+    rubro:el.querySelector('.divRubro').value,
+    concepto:el.querySelector('.divConcepto').value.trim(),
+    sub:Math.round((parseFloat(el.querySelector('.divSub').value)||0)*100)/100,
+  }));
+}
+function dividirIngresoResumen(){
+  const r=(window._fiRows||[]).find(x=>x.id===window._divIngId);
+  const out=document.getElementById('divIngResumen');
+  if(!r||!out) return;
+  const suma=Math.round(dividirIngresoLeer().reduce((a,p)=>a+p.sub,0)*100)/100;
+  const falta=Math.round(((r.subtotal_final||0)-suma)*100)/100;
+  const f=n=>'$'+(Number(n)||0).toLocaleString('es-MX',{minimumFractionDigits:2});
+  out.innerHTML=Math.abs(falta)<=0.02
+    ?`<span style="color:#27AE60;">✅ Suma ${f(suma)} — cuadra con la factura.</span>`
+    :`<span style="color:var(--red);">Suma ${f(suma)} — ${falta>0?'faltan':'sobran'} ${f(Math.abs(falta))}</span>`;
+}
+async function dividirIngresoGuardar(){
+  const id=window._divIngId;
+  const r=(window._fiRows||[]).find(x=>x.id===id);
+  if(!r) return;
+  const partes=dividirIngresoLeer().filter(p=>p.sub>0||p.rubro||p.concepto);
+  if(partes.length<2){alert('Captura al menos 2 partes.');return;}
+  if(partes.some(p=>!p.rubro||!(p.sub>0))){alert('Cada parte necesita rubro y un subtotal mayor a cero.');return;}
+  const suma=Math.round(partes.reduce((a,p)=>a+p.sub,0)*100)/100;
+  if(Math.abs(suma-(r.subtotal_final||0))>0.02){alert('Los subtotales deben sumar exactamente '+(r.subtotal_final||0)+' (llevas '+suma+').');return;}
+  const pesos=partes.map(p=>p.sub);
+  const ivas=dividirRepartir(r.iva||0,pesos);
+  const totales=dividirRepartir(r.total||0,pesos);
+  const descs=dividirRepartir(r.descuento||0,pesos);
+  const f=n=>'$'+(Number(n)||0).toLocaleString('es-MX',{minimumFractionDigits:2});
+  const resumen=partes.map((p,i)=>`• ${p.rubro}: subtotal ${f(p.sub)} · IVA ${f(ivas[i])} · total ${f(totales[i])}`).join('\n');
+  if(!confirm(`Se dividirá ${r.folio} en ${partes.length} renglones (mismo folio):\n\n${resumen}\n\nEl total sigue siendo ${f(r.total)}. El XML, el vínculo con el banco y el alumno se quedan en el primer renglón. ¿Continuar?`)) return;
+  const marca=' [DIVIDIDA]';
+  const base={anio:r.anio,mes:r.mes,fecha:r.fecha,folio:r.folio,serie:r.serie||null,cliente:r.cliente,cliente_cartera_id:r.cliente_cartera_id||null,vendedor:r.vendedor||null,
+    forma_pago:r.forma_pago||null,estatus:r.estatus,complemento_pago:r.complemento_pago||null,cobrado:!!r.cobrado,conciliado:!!r.conciliado,fecha_pago:r.fecha_pago||null,
+    pago_via_tienda:!!r.pago_via_tienda,origen_banco:false};
+  const nuevos=partes.slice(1).map((p,k)=>{const i=k+1;return {...base,rubro:p.rubro,concepto:p.concepto||r.concepto||null,
+    subtotal_original:Math.round((p.sub+descs[i])*100)/100,descuento:descs[i],subtotal_final:p.sub,iva:ivas[i],total:totales[i],
+    notas:((r.notas||'')+marca+' Parte '+(i+1)+'/'+partes.length+' de '+r.folio).trim()};});
+  const {data:ins,error:errI}=await sb.from('fact_ingresos').insert(nuevos).select();
+  if(errI){alert('No se pudo crear los renglones nuevos: '+errI.message);return;}
+  const p0=partes[0];
+  const cambios={rubro:p0.rubro,concepto:p0.concepto||r.concepto||null,subtotal_original:Math.round((p0.sub+descs[0])*100)/100,descuento:descs[0],
+    subtotal_final:p0.sub,iva:ivas[0],total:totales[0],xml_mismatch_descartado:true,
+    notas:((r.notas||'')+marca+' Parte 1/'+partes.length+' de '+r.folio).trim()};
+  const {error:errU}=await sb.from('fact_ingresos').update(cambios).eq('id',id);
+  if(errU){
+    await sb.from('fact_ingresos').delete().in('id',(ins||[]).map(x=>x.id)); // deshacer
+    alert('No se pudo actualizar el renglón original (se deshizo la división): '+errU.message);return;
+  }
+  Object.assign(r,cambios);
+  window._fiRows=(window._fiRows||[]).concat(ins||[]);
+  document.getElementById('modalDividirIng')?.remove();
+  document.getElementById('modalIngEdit')?.remove();
+  renderIngresosTabla();
+  alert(`✅ ${r.folio} dividida en ${partes.length} renglones.`);
+}
+
 // Jp, 2026-10-30 — "Validar contra XML" en Editar factura: el XML sirve para
 // verificar que quien capturó no haya omitido o cambiado un número. El XML
 // trae Subtotal, Descuento, IVA y Total (NO trae "Subtotal final" — ese se
@@ -26299,8 +26416,8 @@ async function guardarEdicionIngreso(){
   // en Nueva factura.
   const folioEdit=document.getElementById('eiiFolio')?.value.trim()||null;
   if(folioEdit){
-    const {data:folioDup}=await sb.from('fact_ingresos').select('id,cliente,rubro,fecha,estatus').eq('folio',folioEdit).neq('id',id).limit(1).maybeSingle();
-    if(folioDup){
+    const {data:folioDup}=await sb.from('fact_ingresos').select('id,cliente,rubro,fecha,estatus,notas').eq('folio',folioEdit).neq('id',id).limit(1).maybeSingle();
+    if(folioDup && !String(folioDup.notas||'').includes('[DIVIDIDA]')){
       if(!confirm('El folio "'+folioEdit+'" ya existe en otra factura:\n\n• '+(folioDup.cliente||'(sin cliente)')+' — '+(folioDup.rubro||'(sin rubro)')+' — '+(folioDup.fecha||'')+' ('+(folioDup.estatus||'')+')\n\n¿Seguro que quieres dejar el mismo folio en ambas?')) return;
     }
   }
