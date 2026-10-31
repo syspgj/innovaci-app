@@ -25424,7 +25424,7 @@ async function renderEgresosTabla(){
 
   let rows=fe.filter(r=>{
     const t=(texto||'').toLowerCase();
-    const tMatch=!t||(r.proveedor||'').toLowerCase().includes(t)||(r.concepto||'').toLowerCase().includes(t)||(r.folio||'').toLowerCase().includes(t);
+    const tMatch=!t||(r.proveedor||'').toLowerCase().includes(t)||(r.concepto||'').toLowerCase().includes(t)||(r.concepto_banco||'').toLowerCase().includes(t)||(r.folio||'').toLowerCase().includes(t);
     // Filtro por estado (desde tarjetas clickeables)
     let eMatch=true;
     if(estado==='facturado') eMatch=!!r.tiene_factura;
@@ -25587,7 +25587,7 @@ async function renderEgresosTabla(){
         <td style="padding:4px 6px;text-align:center;"><input type="checkbox" class="feRowCheck" value="${r.id}" onchange="actualizarSeleccionEgresos()" style="cursor:pointer;width:14px;height:14px;"></td>
         <td style="padding:4px 6px;min-width:90px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','fecha_pago',this.textContent.trim())" style="${ce}white-space:nowrap;">${r.fecha_pago||''}</span></td>
         <td style="padding:4px 6px;max-width:130px;cursor:pointer;" onclick="editarEgresoModal('${r.id}')"><span style="font-weight:500;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:underline;text-decoration-style:dotted;color:var(--navy);">${r.iva_acreditado_mes_anterior?'<span title="IVA ya acreditado en mes anterior" style="margin-right:3px;">🔁</span>':''}${r.proveedor||'(sin proveedor)'}</span></td>
-        <td style="padding:4px 6px;max-width:150px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','concepto',this.textContent.trim())" style="${ce}color:var(--text3);font-size:10px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.concepto||''}</span></td>
+        <td style="padding:4px 6px;max-width:150px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','concepto',this.textContent.trim())" style="${ce}color:var(--text3);font-size:10px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.concepto||''}</span>${r.concepto_banco&&r.concepto_banco!==r.concepto?`<span title="${String(r.concepto_banco).replace(/"/g,'&quot;').replace(/</g,'&lt;')}" style="display:block;font-size:9px;color:#8a98a8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🏦 ${String(r.concepto_banco).replace(/\s+/g,' ').replace(/</g,'&lt;').slice(0,60)}</span>`:''}</td>
         <td style="padding:4px 6px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','rubro',this.textContent.trim())" style="display:inline-block;padding:1px 6px;border-radius:8px;background:rgba(0,0,0,0.06);font-size:10px;cursor:text;min-width:30px;outline:none;">${r.rubro||'—'}</span></td>
         <td style="padding:4px 6px;min-width:80px;"><span contenteditable="true" onblur="editarFactEgreso('${r.id}','folio',this.textContent.trim())" style="${ce}font-family:'JetBrains Mono',monospace;font-size:10px;">${r.folio||''}</span></td>
         <td style="padding:4px 6px;text-align:right;min-width:80px;"><span contenteditable="true" onblur="editarFactEgresoNum('${r.id}','subtotal',this.textContent)" style="${num}">${r.subtotal>0?fmt(r.subtotal):''}</span></td>
@@ -25628,6 +25628,9 @@ async function editarFactEgreso(id,campo,valor){
   await sb.from('fact_egresos').update(payload).eq('id',id);
   const row=(window._feRows||[]).find(r=>r.id===id);
   if(row) row[campo]=valor;
+  if(row&&(campo==='rubro'||campo==='proveedor')&&(row.concepto_banco||EG_BANCO_RE.test(row.concepto||''))){
+    try{ await egAprenderUno(row.concepto_banco||row.concepto,row.proveedor,row.rubro); }catch(e){}
+  }
 }
 
 async function editarFactEgresoNum(id,campo,texto){
@@ -27761,6 +27764,10 @@ async function procesarExcelBanco(){
 
   // Rubros disponibles para el dropdown
   const rubrosDisp=window._rubrosEg||['GASTOS OPERATIVOS','NOMINA','IMPUESTOS','CLOUD','SOFTWARE','SUSCRIPCIONES','COMISIONES','TRANSPORTE','GASTOS GENERALES','PROVEEDOR GB','POR CLASIFICAR'];
+  // Aprendizaje de patrones: clasifica solo lo que ya conoce (Jp, 2026-10-31)
+  await egCargarReglas();
+  enBancoNoSistema.forEach(m=>{ m._pred=egPredecir(m.concepto); });
+  const nPred=enBancoNoSistema.filter(m=>m._pred).length;
 
   resumen.innerHTML=`
     <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
@@ -27792,6 +27799,8 @@ async function procesarExcelBanco(){
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
       <div style="font-size:12px;font-weight:700;color:#b45309;">⚠️ En banco pero NO registrados (${enBancoNoSistema.length})</div>
       <div style="display:flex;gap:6px;align-items:center;">
+        ${nPred?`<span style="font-size:10px;color:#15803d;font-weight:700;">🧠 ${nPred} clasificados por patrón</span>`:''}
+        <button onclick="egAprenderHistorial().then(()=>procesarExcelBanco())" title="Reaprende los patrones de todo el historial de egresos" style="background:none;border:1px solid var(--border);border-radius:5px;padding:4px 8px;font-size:10px;cursor:pointer;">🧠 Reaprender del historial</button>
         <label style="font-size:10px;color:var(--text3);cursor:pointer;"><input type="checkbox" id="concSelectAll" onclick="document.querySelectorAll('.concCheck').forEach(c=>c.checked=this.checked)" style="vertical-align:middle;"> Seleccionar todos</label>
         <button onclick="anadirMovsBanco()" style="background:#27AE60;color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">➕ Añadir seleccionados</button>
         <button onclick="abrirAgruparFactura()" style="background:#8B5CF6;color:#fff;border:none;border-radius:5px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Agrupar en factura</button>
@@ -27803,16 +27812,19 @@ async function procesarExcelBanco(){
         <th style="padding:6px 8px;text-align:center;">Día</th>
         <th style="padding:6px 8px;text-align:right;">Monto</th>
         <th style="padding:6px 8px;text-align:left;">Concepto (banco)</th>
+        <th style="padding:6px 8px;text-align:left;">Proveedor</th>
         <th style="padding:6px 8px;text-align:left;">Rubro a asignar</th>
       </tr></thead>
       <tbody>${enBancoNoSistema.map((m,idx)=>`<tr style="border-bottom:1px solid var(--border);">
         <td style="padding:5px 8px;text-align:center;"><input type="checkbox" class="concCheck" data-idx="${idx}" style="cursor:pointer;"></td>
         <td style="padding:5px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${m.dia}</td>
         <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--red);">${fmt(m.cargo)}</td>
-        <td style="padding:5px 8px;color:var(--text2);font-size:10px;">${m.concepto.slice(0,50)}</td>
-        <td style="padding:5px 8px;"><select class="concRubro" data-idx="${idx}" style="font-size:10px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;width:100%;">
+        <td style="padding:5px 8px;color:var(--text2);font-size:10px;">${m.concepto.slice(0,50)}${m._pred?`<div style="font-size:9px;color:${m._pred.auto?'#15803d':'#b45309'};font-weight:700;">${m._pred.auto?'🧠 aprendido':'💡 sugerido'} (${m._pred.clave.replace(/^(\w+):.*/,'$1')}, ${m._pred.confirmaciones}×)</div>`:''}</td>
+        <td style="padding:5px 8px;"><input class="concProv" data-idx="${idx}" type="text" value="${m._pred&&m._pred.proveedor?String(m._pred.proveedor).replace(/"/g,'&quot;'):''}" placeholder="(opcional)" style="font-size:10px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;width:130px;"></td>
+        <td style="padding:5px 8px;"><select class="concRubro" data-idx="${idx}" style="font-size:10px;padding:3px 6px;border:1px solid ${m._pred?(m._pred.auto?'#27AE60':'#F5A623'):'var(--border)'};border-radius:4px;width:100%;">
           <option value="POR CLASIFICAR">POR CLASIFICAR</option>
-          ${rubrosDisp.filter(r=>r!=='POR CLASIFICAR').map(r=>`<option value="${r}">${r}</option>`).join('')}
+          ${rubrosDisp.filter(r=>r!=='POR CLASIFICAR').map(r=>`<option value="${r}" ${m._pred&&m._pred.rubro===r?'selected':''}>${r}</option>`).join('')}
+          ${m._pred&&!rubrosDisp.includes(m._pred.rubro)?`<option value="${m._pred.rubro}" selected>${m._pred.rubro}</option>`:''}
         </select></td>
       </tr>`).join('')}</tbody>
     </table>`:'<div style="padding:16px;text-align:center;color:#27AE60;font-weight:600;">✅ Todos los movimientos del banco están registrados. Nada pendiente.</div>'}
@@ -27836,6 +27848,7 @@ async function anadirMovsBanco(){
     const idx=parseInt(chk.dataset.idx);
     const mov=faltantes[idx];
     const rubroSel=document.querySelector(`.concRubro[data-idx="${idx}"]`)?.value||'POR CLASIFICAR';
+    const provSel=(document.querySelector(`.concProv[data-idx="${idx}"]`)?.value||'').trim();
     // Reconstruir fecha del mes actual con el día del banco
     const dia=String(mov.dia).padStart(2,'0');
     const fecha=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${dia}`;
@@ -27843,8 +27856,9 @@ async function anadirMovsBanco(){
       anio:currentYear, mes:currentMonth,
       fecha_pago:fecha,
       folio:null,
-      proveedor:mov.concepto.slice(0,60),
+      proveedor:provSel||mov.concepto.slice(0,60),
       concepto:mov.concepto.slice(0,120),
+      concepto_banco:mov.concepto.slice(0,400),
       rubro:rubroSel,
       subtotal:mov.cargo, iva_retenido:0, iva_trasladado:0, isr:0,
       total:mov.cargo,
@@ -27856,6 +27870,8 @@ async function anadirMovsBanco(){
   if(!confirm(`¿Añadir ${nuevos.length} movimiento(s) al registro de egresos?\n\nSe registrarán con el rubro asignado, marcados como conciliados y sin factura. Podrás editarlos después para agregar folio/IVA.`))return;
   const {data:insertados,error}=await sb.from('fact_egresos').insert(nuevos).select();
   if(error){alert('Error al añadir: '+error.message);return;}
+  // Aprender de lo que acabas de confirmar (solo rubros ya clasificados)
+  try{ for(const n of nuevos){ await egAprenderUno(n.concepto_banco,n.proveedor,n.rubro); } }catch(e){}
   // Agregar al cache local de egresos para que el re-cruce los reconozca
   if(insertados) window._feRows=[...(window._feRows||[]),...insertados];
   // Re-procesar la conciliación con el Excel que sigue cargado (el faltante baja en vivo)
@@ -28118,9 +28134,13 @@ async function guardarXMLsMasivo(){
         tiene_factura:true
       };
       if(d._rubro) payload.rubro=d._rubro;
+      // Conservar el concepto del banco antes de que el XML reemplace "concepto" (Jp, 2026-10-31)
+      const rowPrev=(window._feRows||[]).find(x=>String(x.id)===String(d._vincularId));
+      if(rowPrev&&!rowPrev.concepto_banco&&rowPrev.concepto&&EG_BANCO_RE.test(rowPrev.concepto)&&rowPrev.concepto!==d.concepto) payload.concepto_banco=rowPrev.concepto;
       const {error}=await sb.from('fact_egresos').update(payload).eq('id',d._vincularId);
       if(error){err++;continue;}
       vinculados++;
+      try{ await egAprenderUno(payload.concepto_banco||rowPrev?.concepto_banco||(rowPrev&&EG_BANCO_RE.test(rowPrev.concepto||'')?rowPrev.concepto:null),d.proveedor,payload.rubro||rowPrev?.rubro); }catch(e){}
       if(d._xmlText){
         const path=await subirXMLStorage(d._xmlText,'egresos',d.folio);
         if(path) await sb.from('fact_egresos').update({xml_path:path}).eq('id',d._vincularId);
@@ -28464,6 +28484,89 @@ async function guardarFactEgreso(){
 }
 
 // ─── MODAL EDICIÓN EGRESO ─────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+// EGRESOS — aprendizaje de patrones del estado de cuenta + "Concepto del banco"
+// (Jp, 2026-10-31). El concepto del banco (SPEI/PAGO CUENTA DE TERCERO/SAT/IMSS…)
+// se guarda aparte en fact_egresos.concepto_banco y NUNCA lo reemplaza el XML
+// (el XML solo cambia "concepto"). De cada movimiento se extraen claves
+// estables (BNET, etiqueta final tipo NOM/GB/HH/DEVOLUCION, SAT/IMSS, cuenta
+// destino cuando se repite) y se aprende clave → proveedor + rubro
+// (egresos_reglas_banco). Nota: el número de 10 dígitos tras "/" suele CAMBIAR
+// en cada SPEI, por eso no se usa como única clave.
+// ══════════════════════════════════════════════════════════════════════════════
+const EG_BANCO_RE=/^(SPEI|PAGO CUENTA|SAT\/|IMSS\/|TRASPASO|CARGO|COMPRA|PAGO TARJETA|DEPOSITO|COMISION)/i;
+function egBancoClaves(txt){
+  const c=String(txt||'').replace(/\s+/g,' ').trim(); if(!c) return [];
+  const k=[]; let m;
+  const bnet=(m=c.match(/BNET ?(\d{6,})/i))?m[1]:null;
+  let tag=null;
+  if((m=c.match(/BNET ?\d+\s+([A-Za-zÁÉÍÓÚÑ]{2,})/i))) tag=m[1];
+  else if((m=c.match(/\/\s*\d{6,}\s+\d{3}\s?\d{6,7}([A-Za-zÁÉÍÓÚÑ]{2,})/))) tag=m[1];
+  if(tag) tag=tag.toUpperCase();
+  if((m=c.match(/\/\s*(\d{8,})/))) k.push('cta:'+m[1]);            // más específica
+  if(bnet&&tag) k.push('bt:'+bnet+'|'+tag);
+  if(tag) k.push('tag:'+tag);
+  if(bnet) k.push('bnet:'+bnet);
+  if((m=c.match(/^(SAT|IMSS)\b/i))) k.push('pref:'+m[1].toUpperCase());
+  return k;
+}
+function _egProvReal(p){ return !!p && !EG_BANCO_RE.test(String(p).trim()) && String(p).trim().length>1; }
+async function egCargarReglas(forzar){
+  if(window._egReglas&&!forzar) return window._egReglas;
+  const {data}=await sb.from('egresos_reglas_banco').select('*');
+  const map={}; (data||[]).forEach(r=>map[r.clave]=r);
+  window._egReglas=map;
+  // Primera vez (sin reglas): aprender del historial ya clasificado
+  if(!(data||[]).length&&(window._feRows||[]).length) await egAprenderHistorial(true);
+  return window._egReglas;
+}
+async function egAprenderHistorial(silencioso){
+  const tally={};
+  (window._feRows||[]).forEach(r=>{
+    const cb=r.concepto_banco||(EG_BANCO_RE.test(r.concepto||'')?r.concepto:null);
+    if(!cb||!r.rubro||r.rubro==='POR CLASIFICAR') return;
+    egBancoClaves(cb).forEach(key=>{
+      const t=tally[key]=tally[key]||{rub:{},prov:{},n:0}; t.n++;
+      t.rub[r.rubro]=(t.rub[r.rubro]||0)+1;
+      const pv=_egProvReal(r.proveedor)?r.proveedor:'';
+      t.prov[pv]=(t.prov[pv]||0)+1;
+    });
+  });
+  const rows=Object.entries(tally).map(([clave,t])=>{
+    const [rub,rn]=Object.entries(t.rub).sort((a,b)=>b[1]-a[1])[0];
+    const pvs=Object.entries(t.prov).sort((a,b)=>b[1]-a[1])[0];
+    const provUnico=pvs&&pvs[0]&&pvs[1]===t.n?pvs[0]:null;   // solo si TODOS coinciden
+    return {clave,rubro:rub,proveedor:provUnico,confirmaciones:rn,conflictos:t.n-rn,updated_at:new Date().toISOString()};
+  });
+  if(rows.length){ const {error}=await sb.from('egresos_reglas_banco').upsert(rows,{onConflict:'clave'}); if(error&&!silencioso) alert('Error: '+error.message); }
+  window._egReglas={}; rows.forEach(r=>window._egReglas[r.clave]=r);
+  if(!silencioso) alert('🧠 Aprendí '+rows.length+' patrones del historial de egresos.');
+  return rows.length;
+}
+// Devuelve {rubro,proveedor,clave,confirmaciones,auto} o null. auto = ya probada (2+ veces, sin conflictos)
+function egPredecir(concBanco){
+  const R=window._egReglas||{};
+  for(const key of egBancoClaves(concBanco)){
+    const r=R[key]; if(!r||!r.rubro) continue;
+    if((r.conflictos||0)>(r.confirmaciones||0)) continue;
+    return {rubro:r.rubro,proveedor:r.proveedor||null,clave:key,confirmaciones:r.confirmaciones,auto:(r.confirmaciones>=2&&!(r.conflictos>0))};
+  }
+  return null;
+}
+async function egAprenderUno(concBanco,proveedor,rubro){
+  if(!concBanco||!rubro||rubro==='POR CLASIFICAR') return;
+  const R=window._egReglas=window._egReglas||{};
+  const pv=_egProvReal(proveedor)?proveedor:null, up=[];
+  egBancoClaves(concBanco).forEach(key=>{
+    const r=R[key];
+    let n;
+    if(!r) n={clave:key,rubro,proveedor:pv,confirmaciones:1,conflictos:0};
+    else if(r.rubro===rubro) n={...r,confirmaciones:(r.confirmaciones||0)+1,proveedor:(r.proveedor===pv?pv:(r.proveedor&&pv?null:(r.proveedor||pv)))};
+    else n={...r,rubro,proveedor:pv,confirmaciones:1,conflictos:(r.conflictos||0)+1};
+    n.updated_at=new Date().toISOString(); R[key]=n; up.push(n);
+  });
+  if(up.length) await sb.from('egresos_reglas_banco').upsert(up,{onConflict:'clave'});
+}
 async function editarEgresoModal(id){
   const r=(window._feRows||[]).find(x=>x.id===id);
   if(!r)return;
@@ -28509,6 +28612,8 @@ async function editarEgresoModal(id){
       <input id="eeProvNuevo" type="text" placeholder="Nombre del nuevo proveedor..." style="${INP}margin-top:4px;display:none;">
       <input id="eeProv" type="hidden" value="${provActual}">`)}</div>
     <div style="margin-bottom:10px;">${fld('Concepto',inp('eeConcepto','text','',r.concepto||''))}</div>
+    ${(r.concepto_banco&&r.concepto_banco!==r.concepto)?`<div style="margin-bottom:10px;padding:7px 10px;background:#f4f7fa;border-radius:8px;font-size:11px;color:var(--text2);"><span style="font-size:9px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;display:block;">🏦 Concepto del banco (no cambia con el XML)</span>${String(r.concepto_banco).replace(/</g,'&lt;')}</div>`:''}
+    ${(()=>{ const pr=(r.rubro==='POR CLASIFICAR'||!r.rubro)?egPredecir(r.concepto_banco||(EG_BANCO_RE.test(r.concepto||'')?r.concepto:'')):null; return pr?`<div style="margin-bottom:10px;padding:7px 10px;background:#fffbea;border:1px solid #F5A623;border-radius:8px;font-size:11px;"><b>💡 Sugerido por el patrón del banco:</b> ${pr.rubro}${pr.proveedor?' · '+pr.proveedor:''} <button type="button" onclick="document.getElementById('eeRubro').value='${pr.rubro.replace(/'/g,"\\'")}';${pr.proveedor?`(function(){const s=document.getElementById('eeProvSel');const h=document.getElementById('eeProv');const v='${String(pr.proveedor).replace(/'/g,"\\'")}';let o=Array.from(s.options).find(x=>x.value===v);if(!o){o=new Option(v,v);s.add(o);}s.value=v;h.value=v;})();`:''}this.parentNode.remove();" style="margin-left:8px;padding:3px 10px;border:1px solid #F5A623;background:#fff;border-radius:6px;cursor:pointer;font-size:11px;font-weight:700;">Aplicar</button></div>`:''; })()}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Rubro',`<select id="eeRubro" style="${INP}">${rubros.map(rb=>`<option value="${rb}" ${r.rubro===rb?'selected':''}>${rb}</option>`).join('')}${!rubros.includes(r.rubro||'')?`<option value="${r.rubro||''}" selected>${r.rubro||'OTRO'}</option>`:''}</select>`)}
       ${fld('Estatus',sel('eeStatus',['PAGADO','PENDIENTE','CANCELADO'],r.status||'PAGADO'))}
@@ -28623,8 +28728,12 @@ async function guardarEdicionEgreso(yaSiguiente=false){
     total:parseFloat(document.getElementById('eeTotal')?.value)||0,
     fecha_pago:document.getElementById('eeFechaPago')?.value||null,
   };
+  // Concepto del banco: si el movimiento aún no lo tenía y el concepto actual es del banco, se conserva antes de que el XML lo reemplace.
+  const rowPrev=(window._feRows||[]).find(r=>String(r.id)===String(id));
+  if(rowPrev&&!rowPrev.concepto_banco&&rowPrev.concepto&&EG_BANCO_RE.test(rowPrev.concepto)&&payload.concepto!==rowPrev.concepto) payload.concepto_banco=rowPrev.concepto;
   const {error}=await sb.from('fact_egresos').update(payload).eq('id',id);
   if(error){alert('Error: '+error.message);return false;}
+  try{ await egAprenderUno(payload.concepto_banco||rowPrev?.concepto_banco||(rowPrev&&EG_BANCO_RE.test(rowPrev.concepto||'')?rowPrev.concepto:null),payload.proveedor,payload.rubro); }catch(e){}
   if(window._eeXmlText){
     const path=await subirXMLStorage(window._eeXmlText,'egresos',payload.folio);
     if(path){await sb.from('fact_egresos').update({xml_path:path}).eq('id',id);payload.xml_path=path;}
