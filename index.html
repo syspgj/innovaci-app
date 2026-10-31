@@ -8120,7 +8120,7 @@ function modalPipeHTML(r,hoy){
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;gap:10px;">
       <div>
         <div style="font-size:15px;font-weight:700;color:var(--text);">${r?'Editar':'Nueva'} negociación <span style="font-weight:500;color:var(--text3);">(Oportunidad)</span></div>
-        ${v.oportunidades_crm?.crm_folio?`<div style="font-size:11px;color:var(--teal);font-weight:700;margin-top:2px;">📡 ${v.oportunidades_crm.crm_folio}</div>`:''}
+        ${v.oportunidades_crm?.crm_folio?`<div style="font-size:11px;color:var(--teal);font-weight:700;margin-top:2px;">📡 ${v.oportunidades_crm.crm_folio}${v.oportunidades_crm.crm_potentialid?` · <a href="${CRM_BASE_URL_FE}/index.php?module=Potentials&view=Detail&record=${String(v.oportunidades_crm.crm_potentialid).split('x').pop()}" target="_blank" rel="noopener" style="color:var(--teal);text-decoration:underline;">Ver detalle completo en CRM ↗</a>`:''}</div>`:''}
       </div>
       <button onclick="pipeIntentarCerrarModal()" title="Cerrar" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);line-height:1;padding:0;">✕</button>
     </div>
@@ -9979,6 +9979,50 @@ function toggleFichaProyecto(id){
 // formato "<moduleid>x<entityid>" (ej. "31x146425") — el link de detalle de
 // Vtiger solo necesita el entityid (lo que sigue a la "x").
 const CRM_BASE_URL_FE='http://crminn.dynns.com/innova';
+// Jp, 2026-10-30 — botones "Abrir en CRM": se abre la pestaña de inmediato (para
+// que el navegador no la bloquee) y se rellena cuando llega el id del CRM.
+async function abrirCuentaEnCrm(numCliente){
+  const w=window.open('about:blank','_blank');
+  try{
+    const {data,error}=await sb.rpc('crm_cuenta_record_id',{p_num:numCliente});
+    const id=data?String(data).split('x').pop():null;
+    if(error||!id) throw new Error(error?.message||'Esta cuenta aún no está en el espejo del CRM — sincroniza CRM y vuelve a intentar.');
+    const url=`${CRM_BASE_URL_FE}/index.php?module=Accounts&view=Detail&record=${id}`;
+    if(w) w.location.href=url; else window.location.href=url;
+  }catch(e){ if(w) w.close(); alert('No se pudo abrir en CRM: '+(e.message||e)); }
+}
+async function abrirProyectoCrmDePoliza(polizaId){
+  // La póliza no guarda el id del proyecto del CRM (su "POL####" no es el PROJ####),
+  // así que se busca entre los proyectos de la misma cuenta el que mejor coincide
+  // con el tipo de póliza y la fecha de inicio; si no hay, se abre la cuenta.
+  const w=window.open('about:blank','_blank');
+  try{
+    const {data:pol}=await sb.from('clientes_polizas').select('cliente_cartera_id,fecha_inicio,polizas_catalogo(nombre)').eq('id',polizaId).single();
+    if(!pol?.cliente_cartera_id) throw new Error('La póliza no está ligada a una cuenta de Cartera.');
+    const {data:proys}=await sb.from('proyectos_crm').select('crm_projectid,nombre_proyecto,tipo_proyecto,fecha_creacion_crm').eq('cliente_cartera_id',pol.cliente_cartera_id).not('crm_projectid','is',null);
+    const norm=t=>(t||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+    const palabras=norm(pol.polizas_catalogo?.nombre).split(/[^a-z0-9]+/).filter(x=>x.length>3&&!['poliza','2026','2025'].includes(x));
+    const ini=pol.fecha_inicio?new Date(pol.fecha_inicio).getTime():null;
+    let mejor=null,mejorPts=-1;
+    (proys||[]).forEach(j=>{
+      const txt=norm(j.nombre_proyecto+' '+(j.tipo_proyecto||''));
+      let pts=0;
+      if(/poliza|resguardo/.test(txt)) pts+=2;
+      palabras.forEach(pw=>{ if(txt.includes(pw)) pts+=3; });
+      if(ini&&j.fecha_creacion_crm){ const d=Math.abs(new Date(j.fecha_creacion_crm).getTime()-ini)/86400000; pts+=Math.max(0,2-d/60); }
+      if(pts>mejorPts){mejorPts=pts;mejor=j;}
+    });
+    let url=null;
+    if(mejor&&mejorPts>=2) url=`${CRM_BASE_URL_FE}/index.php?module=Project&view=Detail&record=${String(mejor.crm_projectid).split('x').pop()}`;
+    if(!url){
+      const {data:cl}=await sb.from('clientes_cartera').select('num_cliente').eq('id',pol.cliente_cartera_id).single();
+      const {data:rid}=await sb.rpc('crm_cuenta_record_id',{p_num:cl?.num_cliente});
+      if(!rid) throw new Error('No se encontró el proyecto ni la cuenta en el CRM.');
+      url=`${CRM_BASE_URL_FE}/index.php?module=Accounts&view=Detail&record=${String(rid).split('x').pop()}`;
+    }
+    if(w) w.location.href=url; else window.location.href=url;
+  }catch(e){ if(w) w.close(); alert('No se pudo abrir en CRM: '+(e.message||e)); }
+}
 function linkProyectoEnCRM(p){
   if(!p.crm_projectid) return null;
   const entityId=p.crm_projectid.split('x').pop();
@@ -10503,6 +10547,7 @@ async function abrirFichaClienteModal(clienteId){
       <div style="font-size:12px;color:rgba(255,255,255,0.7);margin-top:2px;">${cl.rfc||'Sin RFC'} · <strong style="color:#fff;font-weight:700;">${cl.tipo_cliente?carteraTipoClienteLabel(cl.tipo_cliente):'Sin tipo'}</strong>${cl.rating?' · Rating: '+cl.rating:''}</div>
     </div>
     ${cl._mejorProyecto?.nivel_prioridad?(()=>{const cod=cl._mejorProyecto.nivel_prioridad;const col=POLIZA_NIVEL_COLOR[cod]||'#fff';return `<span title="Proyecto activo: ${cl._mejorProyecto.nombre_proyecto||cl._mejorProyecto.tipo_proyecto||''}" style="flex-shrink:0;background:${col};color:#fff;border-radius:var(--radpill);padding:6px 14px;font-size:12px;font-weight:700;">🛡 Prioridad ${cod} · ${POLIZA_NIVEL_ETIQUETA[cod]||''}</span>`;})():''}
+    <button type="button" onclick="abrirCuentaEnCrm('${(cl.num_cliente||'').replace(/'/g,'')}')" style="background:#1D5FA8;color:#fff;border:none;border-radius:var(--radsm);padding:9px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;align-self:center;">🔗 Abrir en CRM ↗</button>
   </div>
   <div id="fichaClienteMsg" style="font-size:12px;color:var(--red);margin-bottom:10px;"></div>
   <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:16px;align-items:start;">
@@ -19884,6 +19929,7 @@ async function sincronizarProspectosPendientesCrm(){
 // el set completo de filas (todos los vendedores), no solo currentUser.
 async function renderDirectorProyeccion(){
   const mc=document.getElementById('mainContent');
+  mc.classList.add('full-width'); // Jp, 2026-10-30 — la tabla del director se cortaba a 1100px (columnas Objeción/Siguiente paso fuera de pantalla).
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando proyección...</div>';
   const {data:vendedores}=await sb.from('usuarios').select('id,nombre,email').eq('rol','vendedor').eq('activo',true).order('nombre');
   const vends=vendedores||[];
@@ -19996,7 +20042,7 @@ async function renderDirectorProyeccion(){
         const vencido=r.fecha_siguiente_paso&&r.fecha_siguiente_paso<hoyStr;
         const sigPaso=r.siguiente_paso?`<div style="font-weight:600;${vencido?'color:var(--red);':''}">${r.siguiente_paso}</div>${r.fecha_siguiente_paso?`<div style="font-size:10px;color:${vencido?'var(--red)':'var(--text3)'};">${vencido?'⚠️ ':''}${r.fecha_siguiente_paso}</div>`:''}`:'<span style="color:var(--text3);">—</span>';
         const badge=r.oportunidad_crm_id?` <span title="Sincronizado desde una Oportunidad abierta del CRM" style="background:rgba(0,169,157,0.14);color:var(--teal);border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;margin-left:4px;white-space:nowrap;">📡 CRM</span>`:(r.cliente_cartera_id?` <span title="Ligada a una cuenta real de Cartera" style="background:rgba(29,95,168,0.12);color:#1D5FA8;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;margin-left:4px;white-space:nowrap;">🔗 cuenta</span>`:'');
-        return `<tr>
+        return `<tr style="cursor:pointer;" title="Clic para ver el detalle" onclick="editarFilaPipe('${r.id}')">
           <td style="font-size:11px;color:var(--teal);font-weight:600;">${vend?vend.nombre.split(' ')[0]:'—'}</td>
           <td style="font-size:11px;color:var(--text3);">${r.tipo_servicio||'—'}</td>
           <td style="font-weight:500;font-size:12px;">${r.producto||'—'}</td>
@@ -21512,6 +21558,7 @@ async function abrirDetallePoliza(id){
       </div>
       <span style="padding:3px 10px;border-radius:10px;font-size:11px;font-weight:700;background:${est.color}22;color:${est.color};">${est.label}</span>
     </div>
+    <div style="margin-bottom:12px;"><button type="button" onclick="abrirProyectoCrmDePoliza('${id}')" style="background:#1D5FA8;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">🔗 Ver proyecto completo en CRM ↗</button></div>
     ${c.estatus==='CERRADA'?`<div style="margin-bottom:12px;padding:8px 12px;background:rgba(100,116,139,0.1);border-radius:6px;font-size:11px;display:flex;justify-content:space-between;align-items:center;gap:10px;">
       <span>📁 Esta póliza está cerrada — se ve aquí y en "🗂 Histórico de pólizas", ya no en la lista principal de "📋 Pólizas".</span>
       <button onclick="reabrirPoliza('${id}')" style="background:#fff;border:1px solid var(--border);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">↺ Reabrir</button>
