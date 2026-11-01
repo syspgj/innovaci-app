@@ -5659,7 +5659,7 @@ function buildVendorUI(){
   // Fila 2 (consulta/referencia): Cartera, Proyección, Histórico, Promociones, Reglas de comisión
   const _tabsBottom=[];
   if(esVendedor)_tabsBottom.push({l:'💼 Cartera',v:'cartera'},{l:'🧲 Prospectos',v:'prospectosV'},{l:'📁 Proyectos',v:'proyectos'},{l:'📋 Suscripciones',v:'suscripciones'});
-  _tabsBottom.push({l:'Proyección',v:'proyeccion'},{l:'🧮 Cotizador',v:'cotizador'},{l:'Histórico',v:'historico'},{l:'🏷 Promociones',v:'promos'},{l:'📜 Reglas de comisión',v:'reglas'},{l:'🖥 Servidores',v:'servidores'},{l:'🔑 Licencias TS Plus',v:'tsplus'});
+  _tabsBottom.push({l:'🧾 Solicitar factura',v:'factura'},{l:'Proyección',v:'proyeccion'},{l:'🧮 Cotizador',v:'cotizador'},{l:'Histórico',v:'historico'},{l:'🏷 Promociones',v:'promos'},{l:'📜 Reglas de comisión',v:'reglas'},{l:'🖥 Servidores',v:'servidores'},{l:'🔑 Licencias TS Plus',v:'tsplus'});
   if(_tabsBottom.length){
     _t2.style.display='flex';
     _t2.innerHTML='';
@@ -5697,6 +5697,7 @@ function swV(id){
   else if(id==='cotizador')renderCotizador();
   else if(id==='promos')renderVistaPromociones();
   else if(id==='reglas')renderReglasComision();
+  else if(id==='factura')renderSolFacturaVendedor();
   else if(id==='servidores')renderCatalogoServidores();
   else if(id==='tsplus')renderCatalogoTSPlus();
   else renderHistorico();
@@ -5714,6 +5715,7 @@ async function renderVendor(){
   else if(currentVendTab==='cotizador')renderCotizador();
   else if(currentVendTab==='historico')renderHistorico();
   else if(currentVendTab==='promos')renderVistaPromociones();
+  else if(currentVendTab==='factura')renderSolFacturaVendedor();
   else if(currentVendTab==='servidores')renderCatalogoServidores();
   else if(currentVendTab==='tsplus')renderCatalogoTSPlus();
   else renderVendorMiMes();
@@ -23829,6 +23831,7 @@ const FIN_TABS=[
   {id:'impuestos', label:'🏛 Impuestos'},
   {id:'flujo',     label:'📊 Flujo de efectivo'},
   {id:'balance',   label:'📈 Balance anual'},
+  {id:'facturacion',label:'🧾 Facturación'},
 ];
 
 function renderFinanzas(){
@@ -23869,6 +23872,7 @@ function dispatchFinTab(id){
   else if(id==='impuestos') renderFinImpuestos();
   else if(id==='flujo')     renderFinFlujo();
   else if(id==='balance')   renderFinBalance();
+  else if(id==='facturacion') renderSolFacturaGestion(finCont());
 }
 
 // ─── SHARED HELPERS ──────────────────────────────────────────────────────────
@@ -29328,16 +29332,487 @@ async function renderFinBalance(){
 }
 
 // ─── ADMIN UI (Alejandra) ─────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+// SOLICITUDES DE FACTURA (Jp, 2026-11-01) — reemplaza el flujo de Telegram
+// "INN - Facturación - Validación de pagos" que atendía Alejandra.
+//   Vendedor  → llena la solicitud (cliente, datos fiscales, cotización SAE,
+//               monto/fecha/hora del pago y comprobante).
+//   Dirección → sube la captura de la app del banco; la app lee los
+//               movimientos y propone el casado (monto + fecha + hora).
+//               Jp SIEMPRE confirma; dudas/diferencias quedan para revisión.
+//   Administración → bandeja "Por facturar": datos listos para capturar en
+//               SAE, registra folio/XML y el vendedor ve el resultado.
+// Estados: solicitada → pago_validado → cerrada
+//          pendiente_pago (liberar pago) → facturada → cerrada (al validar pago)
+// ════════════════════════════════════════════════════════════════════════════
+const SOL_FORMAS=['Transferencia','Efectivo','Cheque','Tarjeta de crédito/débito','Por definir'];
+const SOL_METODOS=['PUE','PPD'];
+const SOL_USOS=['Gastos en general','Adquisición de mercancías','Pagos','Por definir','Sin efectos fiscales'];
+const SOL_REGIMENES=['Régimen General de Ley Personas Morales','Personas Morales con Fines no Lucrativos','Sueldos y Salarios','Actividades Empresariales y Profesionales (Persona Física)','Régimen Simplificado de Confianza (RESICO)','Arrendamiento','Sin obligaciones fiscales','Otro'];
+const SOL_ESTADOS={
+  solicitada:{l:'Por validar pago',c:'#B45309',bg:'rgba(245,166,35,.15)'},
+  pendiente_pago:{l:'Facturar sin pago (liberar pago)',c:'#7C3AED',bg:'rgba(139,92,246,.12)'},
+  pago_validado:{l:'Pago validado · por facturar',c:'#0F766E',bg:'rgba(0,169,157,.14)'},
+  facturada:{l:'Facturada · falta validar pago',c:'#1B4D6E',bg:'rgba(27,77,110,.12)'},
+  cerrada:{l:'Cerrada',c:'#2E7D32',bg:'rgba(46,125,50,.12)'},
+  cancelada:{l:'Cancelada',c:'#888',bg:'rgba(0,0,0,.07)'},
+};
+let _solFiltro='pendientes';
+let _solRows=[];
+let _solMovs=[];
+let _solContenedor=null;
+
+function solEsc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function solChip(estado){const e=SOL_ESTADOS[estado]||{l:estado,c:'#555',bg:'#eee'};return `<span style="font-size:11px;font-weight:700;padding:3px 9px;border-radius:12px;background:${e.bg};color:${e.c};white-space:nowrap;">${solEsc(e.l)}</span>`;}
+function solSelect(id,opts,valor){return `<select id="${id}" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">${opts.map(o=>`<option value="${solEsc(o)}"${o===valor?' selected':''}>${solEsc(o)}</option>`).join('')}</select>`;}
+function solFld(label,inner,ayuda){return `<div style="margin-bottom:10px;"><div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:3px;">${label}</div>${inner}${ayuda?`<div style="font-size:10px;color:var(--text3);margin-top:2px;">${ayuda}</div>`:''}</div>`;}
+const SOL_INPUT_STYLE="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;";
+function solModal(html,ancho){
+  solCerrarModal();
+  const d=document.createElement('div');
+  d.id='solModal';
+  d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:30px 12px;';
+  d.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px 22px;width:100%;max-width:${ancho||560}px;box-shadow:0 10px 40px rgba(0,0,0,.25);">${html}</div>`;
+  document.body.appendChild(d);
+}
+function solCerrarModal(){document.getElementById('solModal')?.remove();}
+async function solSubirArchivo(file,solId,etiqueta,bucket){
+  const ext=(file.name.split('.').pop()||'bin').replace(/[^a-zA-Z0-9]/g,'').slice(0,5)||'bin';
+  const path=`solicitudes-factura/${solId}/${etiqueta}_${Date.now()}.${ext}`;
+  const {error}=await sb.storage.from(bucket||'crm-documentos').upload(path,file,{upsert:false});
+  if(error) throw error;
+  return path;
+}
+async function solVerArchivo(path,bucket){
+  const {data,error}=await sb.storage.from(bucket||'crm-documentos').createSignedUrl(path,300);
+  if(error||!data?.signedUrl){alert('No se pudo abrir el archivo: '+(error?.message||''));return;}
+  window.open(data.signedUrl,'_blank');
+}
+function solDiasEntre(a,b){
+  const pa=String(a||'').split('-').map(Number),pb=String(b||'').split('-').map(Number);
+  if(pa.length<3||pb.length<3||pa.some(isNaN)||pb.some(isNaN)) return 999;
+  return Math.round((Date.UTC(pa[0],pa[1]-1,pa[2])-Date.UTC(pb[0],pb[1]-1,pb[2]))/86400000);
+}
+function solMinutos(h){const m=/^(\d{1,2}):(\d{2})/.exec(h||'');return m?(+m[1])*60+(+m[2]):null;}
+function solFecha(f){if(!f)return '';const p=String(f).slice(0,10).split('-');return p.length===3?`${p[2]}/${p[1]}/${p[0]}`:f;}
+
+// ─── VISTA DEL VENDEDOR ──────────────────────────────────────────────────────
+async function renderSolFacturaVendedor(){
+  const mc=document.getElementById('mainContent');
+  mc.classList.remove('full-width');
+  window._sfCliente=null;
+  mc.innerHTML=`
+  <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px;">🧾 Solicitar factura</div>
+  <div style="font-size:12px;color:var(--text3);margin-bottom:14px;">Llena esta solicitud en lugar de escribir en Telegram. Dirección valida el pago y Administración emite la factura; aquí ves en qué va.</div>
+  <div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:18px;">
+    ${solFld('Cliente (busca por nombre o número)',`<input id="sfCliente" oninput="solClienteBuscarDeb()" placeholder="Ej. GEL KLEEN o 1511" style="${SOL_INPUT_STYLE}"><div id="sfClienteMatches" style="margin-top:6px;"></div>`)}
+    <div id="sfClienteSel" style="font-size:12px;margin-bottom:10px;"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+      ${solFld('Tipo de solicitud',`<select id="sfTipo" onchange="solTipoCambio()" style="${SOL_INPUT_STYLE}"><option value="con_pago">Con pago (ya pagó)</option><option value="liberar_pago">Para liberar pago (aún no paga)</option></select>`)}
+      ${solFld('Cotización de SAE',`<input id="sfCotiz" placeholder="C-INN13309" style="${SOL_INPUT_STYLE}">`)}
+      ${solFld('Forma de pago',solSelect('sfForma',SOL_FORMAS,'Transferencia'))}
+      ${solFld('Método de pago',solSelect('sfMetodo',SOL_METODOS,'PUE'))}
+      ${solFld('Uso de CFDI',solSelect('sfUso',SOL_USOS,'Gastos en general'))}
+      ${solFld('Régimen fiscal del cliente',solSelect('sfReg',SOL_REGIMENES,SOL_REGIMENES[0]))}
+      ${solFld('RFC del cliente',`<input id="sfRfc" style="${SOL_INPUT_STYLE}text-transform:uppercase;">`)}
+      ${solFld('Total a facturar (con IVA)',`<input id="sfTotal" type="number" step="0.01" placeholder="0.00" style="${SOL_INPUT_STYLE}">`)}
+    </div>
+    ${solFld('Concepto / curso o servicio',`<input id="sfConcepto" placeholder="Ej. CURSO EMPRESARIAL SIIGO ASPEL BANCO 6.0" style="${SOL_INPUT_STYLE}">`)}
+    ${solFld('Liga de la oportunidad en el CRM',`<input id="sfCrm" placeholder="http://crminn.dynns.com/..." style="${SOL_INPUT_STYLE}">`)}
+    <div id="sfBloquePago" style="background:#f8fafb;border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;">
+      <div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:8px;">💵 Datos del pago del cliente</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 12px;">
+        ${solFld('Monto depositado',`<input id="sfPagoMonto" type="number" step="0.01" style="${SOL_INPUT_STYLE}">`)}
+        ${solFld('Fecha del pago',`<input id="sfPagoFecha" type="date" style="${SOL_INPUT_STYLE}">`)}
+        ${solFld('Hora (si aparece)',`<input id="sfPagoHora" type="time" style="${SOL_INPUT_STYLE}">`)}
+      </div>
+      ${solFld('Comprobante de pago (imagen o PDF)',`<input id="sfComprobante" type="file" accept="image/*,.pdf" style="font-size:12px;">`)}
+    </div>
+    <div id="sfBloqueEsperado" style="display:none;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:12px 14px;margin-bottom:10px;">
+      ${solFld('Fecha en que pagará el cliente',`<input id="sfEsperada" type="date" style="${SOL_INPUT_STYLE}">`,'Cuando pague, adjunta el comprobante desde tu lista de solicitudes.')}
+    </div>
+    ${solFld('Cotización en PDF (opcional)',`<input id="sfCotizPdf" type="file" accept=".pdf,image/*" style="font-size:12px;">`)}
+    <details style="margin-bottom:12px;"><summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--teal);">🎓 Datos del asistente (si es curso 24/7 o Academia)</summary>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;margin-top:8px;">
+        ${solFld('Nombre del asistente',`<input id="sfAsNombre" style="${SOL_INPUT_STYLE}">`)}
+        ${solFld('Correo',`<input id="sfAsCorreo" type="email" style="${SOL_INPUT_STYLE}">`)}
+        ${solFld('Teléfono / WhatsApp',`<input id="sfAsTel" style="${SOL_INPUT_STYLE}">`)}
+        ${solFld('Curso / sistema',`<input id="sfAsCurso" style="${SOL_INPUT_STYLE}">`)}
+      </div>
+    </details>
+    ${solFld('Notas para facturación (opcional)',`<input id="sfNotas" style="${SOL_INPUT_STYLE}">`)}
+    <button id="sfEnviar" onclick="solEnviar()" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">Enviar solicitud</button>
+    <span id="sfMsg" style="font-size:12px;margin-left:10px;"></span>
+  </div>
+  <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px;">Mis solicitudes</div>
+  <div id="sfLista"><div class="loading"><div class="spinner"></div> Cargando...</div></div>`;
+  solCargarListaVendedor();
+}
+function solTipoCambio(){
+  const t=document.getElementById('sfTipo').value;
+  document.getElementById('sfBloquePago').style.display=t==='con_pago'?'block':'none';
+  document.getElementById('sfBloqueEsperado').style.display=t==='liberar_pago'?'block':'none';
+}
+let _solBuscarTimer=null;
+function solClienteBuscarDeb(){clearTimeout(_solBuscarTimer);_solBuscarTimer=setTimeout(solClienteBuscar,350);}
+async function solClienteBuscar(){
+  const t=document.getElementById('sfCliente')?.value?.trim();
+  const cont=document.getElementById('sfClienteMatches');
+  if(!cont) return;
+  if(!t){cont.innerHTML='';return;}
+  const limpio=t.replace(/[%,()]/g,' ');
+  const {data,error}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente,rfc,link_crm').or(`razon_social.ilike.%${limpio}%,num_cliente.ilike.%${limpio}%`).limit(8);
+  if(error){cont.innerHTML=`<div style="font-size:11px;color:#c0392b;">${solEsc(error.message)}</div>`;return;}
+  window._solMatches=data||[];
+  cont.innerHTML=(data||[]).length?(data||[]).map((m,i)=>`<div onclick="solClienteElegir(${i})" style="cursor:pointer;padding:6px 9px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:4px;background:#f8fafb;">${solEsc(m.razon_social)}${m.num_cliente?` · #${solEsc(m.num_cliente)}`:''}${m.rfc?` · ${solEsc(m.rfc)}`:''}</div>`).join(''):'<div style="font-size:11px;color:var(--text3);">Sin coincidencias en Cartera. Puedes enviar con el nombre escrito, pero conviene que el cliente exista en Cartera.</div>';
+}
+async function solClienteElegir(i){
+  const m=(window._solMatches||[])[i];
+  if(!m) return;
+  window._sfCliente=m;
+  document.getElementById('sfCliente').value=m.razon_social||'';
+  document.getElementById('sfClienteMatches').innerHTML='';
+  document.getElementById('sfClienteSel').innerHTML=`✅ Ligado a la cuenta <b>${solEsc(m.razon_social)}</b>${m.num_cliente?` (#${solEsc(m.num_cliente)})`:''}`;
+  if(m.rfc) document.getElementById('sfRfc').value=m.rfc;
+  // Reutiliza los datos fiscales de la última solicitud de este cliente
+  const {data:ult}=await sb.from('solicitudes_factura').select('forma_pago,metodo_pago,uso_cfdi,regimen,rfc').eq('cliente_cartera_id',m.id).order('created_at',{ascending:false}).limit(1);
+  const u=ult?.[0];
+  if(u){
+    const set=(id,v)=>{const el=document.getElementById(id);if(el&&v)el.value=v;};
+    set('sfForma',u.forma_pago);set('sfMetodo',u.metodo_pago);set('sfUso',u.uso_cfdi);set('sfReg',u.regimen);
+    if(u.rfc&&!m.rfc) set('sfRfc',u.rfc);
+    document.getElementById('sfClienteSel').innerHTML+=`<div style="font-size:11px;color:var(--text3);">Se precargaron los datos fiscales de su última factura. Verifícalos.</div>`;
+  }
+}
+async function solEnviar(){
+  const msg=document.getElementById('sfMsg');
+  const v=id=>document.getElementById(id)?.value?.trim()||'';
+  const tipo=v('sfTipo');
+  const cli=window._sfCliente;
+  const nombre=cli?.razon_social||v('sfCliente');
+  const total=parseFloat(v('sfTotal'));
+  const err=m=>{msg.style.color='#c0392b';msg.textContent=m;};
+  if(!nombre) return err('Falta el cliente.');
+  if(!v('sfCotiz')) return err('Falta el número de cotización de SAE.');
+  if(!v('sfConcepto')) return err('Falta el concepto.');
+  if(!(total>0)) return err('Falta el total a facturar.');
+  if(!v('sfRfc')) return err('Falta el RFC del cliente.');
+  let pagoMonto=null,pagoFecha=null,file=null;
+  if(tipo==='con_pago'){
+    pagoMonto=parseFloat(v('sfPagoMonto'));pagoFecha=v('sfPagoFecha');
+    file=document.getElementById('sfComprobante').files[0];
+    if(!(pagoMonto>0)||!pagoFecha) return err('Captura el monto y la fecha del pago.');
+    if(!file) return err('Adjunta el comprobante de pago.');
+    if(Math.abs(pagoMonto-total)>0.5&&!confirm(`El monto depositado (${fmt(pagoMonto)}) es distinto al total a facturar (${fmt(total)}). ¿Enviar de todos modos?`)) return;
+  } else if(!v('sfEsperada')){
+    return err('Indica la fecha en que pagará el cliente.');
+  }
+  const btn=document.getElementById('sfEnviar');btn.disabled=true;msg.style.color='var(--teal)';msg.textContent='Enviando...';
+  try{
+    const id=(crypto.randomUUID?crypto.randomUUID():null);
+    const solId=id||undefined;
+    let compPath=null,cotPath=null;
+    const fid=id||('tmp'+Date.now());
+    if(file) compPath=await solSubirArchivo(file,fid,'comprobante');
+    const cf=document.getElementById('sfCotizPdf').files[0];
+    if(cf) cotPath=await solSubirArchivo(cf,fid,'cotizacion');
+    const asN=v('sfAsNombre');
+    const row={
+      vendedor_id:userProfile?.id||currentUser.id,vendedor_nombre:userProfile?.nombre||'',
+      cliente_cartera_id:cli?.id||null,num_cliente:cli?.num_cliente||null,cliente_nombre:nombre,rfc:v('sfRfc').toUpperCase(),
+      tipo,forma_pago:v('sfForma'),metodo_pago:v('sfMetodo'),uso_cfdi:v('sfUso'),regimen:v('sfReg'),
+      cotizacion_sae:v('sfCotiz'),concepto:v('sfConcepto'),monto_total:total,
+      pago_monto:pagoMonto,pago_fecha:pagoFecha||null,pago_hora:v('sfPagoHora')||null,fecha_pago_esperada:tipo==='liberar_pago'?v('sfEsperada'):null,
+      comprobante_path:compPath,cotizacion_pdf_path:cotPath,crm_link:v('sfCrm')||null,notas:v('sfNotas')||null,
+      asistente:asN?{nombre:asN,correo:v('sfAsCorreo'),telefono:v('sfAsTel'),curso:v('sfAsCurso')}:null,
+      estado:tipo==='con_pago'?'solicitada':'pendiente_pago',
+    };
+    if(solId) row.id=solId;
+    const {error}=await sb.from('solicitudes_factura').insert(row);
+    if(error) throw error;
+    renderSolFacturaVendedor();
+    setTimeout(()=>{const m=document.getElementById('sfMsg');if(m){m.style.color='var(--teal)';m.textContent='✅ Solicitud enviada.';}},150);
+  }catch(e){
+    btn.disabled=false;err('No se pudo enviar: '+(e?.message||e));
+  }
+}
+async function solCargarListaVendedor(){
+  const cont=document.getElementById('sfLista');
+  const {data,error}=await sb.from('solicitudes_factura').select('*').eq('vendedor_id',userProfile?.id||currentUser.id).order('created_at',{ascending:false}).limit(60);
+  if(error){cont.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(error.message)}</div>`;return;}
+  _solRows=data||[];
+  if(!_solRows.length){cont.innerHTML='<div style="font-size:12px;color:var(--text3);">Aún no has enviado solicitudes.</div>';return;}
+  cont.innerHTML=_solRows.map(r=>solTarjeta(r,'vendedor')).join('');
+}
+
+// ─── TARJETA (compartida) ────────────────────────────────────────────────────
+function solTarjeta(r,modo){
+  const esDir=modo==='director',esAdm=modo==='admin',esVend=modo==='vendedor';
+  const puedeFacturar=(esDir||esAdm)&&(r.estado==='pago_validado'||r.estado==='pendiente_pago');
+  const puedeValidar=esDir&&!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada');
+  const puedeCancelar=(esDir||(esVend&&r.vendedor_id===(userProfile?.id||currentUser.id)))&&(r.estado==='solicitada'||r.estado==='pendiente_pago');
+  const faltaComprobante=esVend&&r.estado==='facturada'&&!r.pago_validado;
+  const btn=(txt,fn,color)=>`<button onclick="${fn}" style="background:${color||'#fff'};color:${color?'#fff':'var(--text2)'};border:1px solid ${color||'var(--border)'};border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${txt}</button>`;
+  const fact=r.factura_folio?`<div style="font-size:12px;margin-top:6px;">🧾 Factura <b>${solEsc((r.factura_serie||'')+(r.factura_folio||''))}</b>${r.facturada_at?` · ${solFecha(r.facturada_at)}`:''}${r.facturada_por?` · ${solEsc(r.facturada_por)}`:''}</div>`:'';
+  const pago=r.tipo==='con_pago'
+    ?`<div style="font-size:12px;color:var(--text2);">💵 Pago: ${fmt(r.pago_monto)} · ${solFecha(r.pago_fecha)}${r.pago_hora?' '+solEsc(r.pago_hora):''}${r.pago_validado?` · ✅ validado${r.pago_validado_por?' por '+solEsc(r.pago_validado_por):''}`:''}</div>`
+    :`<div style="font-size:12px;color:var(--text2);">⏳ Liberar pago · pagará ${solFecha(r.fecha_pago_esperada)}${r.pago_monto?` · comprobante: ${fmt(r.pago_monto)} ${solFecha(r.pago_fecha)}`:''}${r.pago_validado?' · ✅ pago validado':''}</div>`;
+  const faltaCrm=(r.estado==='facturada'||r.estado==='cerrada')&&!r.comentario_crm_hecho;
+  return `<div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:13px 16px;margin-bottom:10px;">
+    <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start;">
+      <div style="font-size:13px;font-weight:700;color:var(--navy);">${solEsc(r.cliente_nombre)}${r.num_cliente?` <span style="font-weight:400;color:var(--text3);">#${solEsc(r.num_cliente)}</span>`:''}</div>
+      ${solChip(r.estado)}
+    </div>
+    <div style="font-size:12px;color:var(--text2);margin-top:3px;">${solEsc(r.concepto)} · <b>${fmt(r.monto_total)}</b> · ${solEsc(r.cotizacion_sae)}${!esVend?` · 👤 ${solEsc(r.vendedor_nombre)}`:''} · ${solFecha(r.created_at)}</div>
+    <div style="font-size:11px;color:var(--text3);margin-top:2px;">${solEsc(r.rfc)} · ${solEsc(r.forma_pago)} · ${solEsc(r.metodo_pago)} · ${solEsc(r.uso_cfdi)} · ${solEsc(r.regimen)}</div>
+    ${pago}${fact}
+    ${r.pago_nota?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">Nota de validación: ${solEsc(r.pago_nota)}</div>`:''}
+    ${r.asistente?`<div style="font-size:11px;color:var(--teal);margin-top:3px;">🎓 Asistente: ${solEsc(r.asistente.nombre)} · ${solEsc(r.asistente.correo)} · ${solEsc(r.asistente.telefono)} · ${solEsc(r.asistente.curso)}</div>`:''}
+    ${r.notas?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">📝 ${solEsc(r.notas)}</div>`:''}
+    ${faltaCrm&&esVend?`<div style="font-size:11px;color:#B45309;margin-top:4px;">⚠️ Falta tu comentario en el CRM. <label style="cursor:pointer;"><input type="checkbox" onchange="solMarcarCrm('${r.id}',this.checked)"> Ya lo dejé</label></div>`:''}
+    ${faltaCrm&&!esVend?`<div style="font-size:11px;color:#B45309;margin-top:4px;">⚠️ El vendedor aún no marca su comentario en el CRM.</div>`:''}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;">
+      ${r.comprobante_path?btn('📎 Comprobante',`solVerArchivo('${solEsc(r.comprobante_path)}')`):''}
+      ${r.cotizacion_pdf_path?btn('📄 Cotización',`solVerArchivo('${solEsc(r.cotizacion_pdf_path)}')`):''}
+      ${r.crm_link?`<a href="${solEsc(r.crm_link)}" target="_blank" rel="noopener" style="border:1px solid var(--border);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:var(--text2);text-decoration:none;">🔗 CRM</a>`:''}
+      ${(esDir||esAdm)?btn('📋 Copiar datos',`solCopiarDatos('${r.id}')`):''}
+      ${puedeValidar?btn('✅ Validar pago',`solValidarModal('${r.id}')`,'var(--teal)'):''}
+      ${puedeFacturar?btn('🧾 Registrar factura',`solFacturarModal('${r.id}')`,'#1B4D6E'):''}
+      ${faltaComprobante?btn('📎 Adjuntar comprobante de pago',`solComprobanteModal('${r.id}')`,'#7C3AED'):''}
+      ${puedeCancelar?btn('Cancelar',`solCancelar('${r.id}')`):''}
+    </div>
+  </div>`;
+}
+async function solMarcarCrm(id,val){
+  await sb.from('solicitudes_factura').update({comentario_crm_hecho:!!val}).eq('id',id);
+  solRefrescar();
+}
+function solRefrescar(){
+  const rol=userProfile?.rol;
+  if(rol==='director'||rol==='administracion'){ if(_solContenedor) renderSolFacturaGestion(_solContenedor); }
+  else renderSolFacturaVendedor();
+}
+async function solCancelar(id){
+  if(!confirm('¿Cancelar esta solicitud?')) return;
+  const {error}=await sb.from('solicitudes_factura').update({estado:'cancelada'}).eq('id',id);
+  if(error) return alert('No se pudo cancelar: '+error.message);
+  solRefrescar();
+}
+function solCopiarDatos(id){
+  const r=_solRows.find(x=>x.id===id);if(!r) return;
+  const t=[`Cliente: ${r.num_cliente?r.num_cliente+' ':''}${r.cliente_nombre}`,`RFC: ${r.rfc}`,`Forma de pago: ${r.forma_pago}`,`Método de pago: ${r.metodo_pago}`,`Uso de CFDI: ${r.uso_cfdi}`,`Régimen: ${r.regimen}`,`Cotización SAE: ${r.cotizacion_sae}`,`Concepto: ${r.concepto}`,`Total: ${fmt(r.monto_total)}`,r.notas?`Notas: ${r.notas}`:''].filter(Boolean).join('\n');
+  (navigator.clipboard?.writeText(t)||Promise.reject()).then(()=>alert('Datos copiados.')).catch(()=>prompt('Copia los datos:',t));
+}
+function solComprobanteModal(id){
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:10px;">📎 Comprobante de pago</div>
+    ${solFld('Monto depositado','<input id="scMonto" type="number" step="0.01" style="'+SOL_INPUT_STYLE+'">')}
+    ${solFld('Fecha del pago','<input id="scFecha" type="date" style="'+SOL_INPUT_STYLE+'">')}
+    ${solFld('Hora (si aparece)','<input id="scHora" type="time" style="'+SOL_INPUT_STYLE+'">')}
+    ${solFld('Comprobante','<input id="scFile" type="file" accept="image/*,.pdf" style="font-size:12px;">')}
+    <div style="display:flex;gap:8px;margin-top:6px;"><button onclick="solComprobanteGuardar('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:12px;cursor:pointer;">Cerrar</button></div>`,420);
+}
+async function solComprobanteGuardar(id){
+  const monto=parseFloat(document.getElementById('scMonto').value),fecha=document.getElementById('scFecha').value,f=document.getElementById('scFile').files[0];
+  if(!(monto>0)||!fecha||!f) return alert('Captura monto, fecha y adjunta el comprobante.');
+  try{
+    const path=await solSubirArchivo(f,id,'comprobante');
+    const {error}=await sb.from('solicitudes_factura').update({pago_monto:monto,pago_fecha:fecha,pago_hora:document.getElementById('scHora').value||null,comprobante_path:path}).eq('id',id);
+    if(error) throw error;
+    solCerrarModal();solRefrescar();
+  }catch(e){alert('No se pudo guardar: '+(e?.message||e));}
+}
+
+// ─── VISTA DIRECCIÓN / ADMINISTRACIÓN ────────────────────────────────────────
+async function renderSolFacturaGestion(el){
+  _solContenedor=el||document.getElementById('mainContent');
+  const cont=_solContenedor;
+  const esDir=userProfile?.rol==='director';
+  cont.innerHTML='<div class="loading"><div class="spinner"></div> Cargando solicitudes...</div>';
+  const {data,error}=await sb.from('solicitudes_factura').select('*').order('created_at',{ascending:false}).limit(250);
+  if(error){cont.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(error.message)}</div>`;return;}
+  _solRows=data||[];
+  const por={validar:_solRows.filter(r=>!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada')),
+    facturar:_solRows.filter(r=>r.estado==='pago_validado'||r.estado==='pendiente_pago'),
+    pendientes:_solRows.filter(r=>['solicitada','pendiente_pago','pago_validado','facturada'].includes(r.estado)),
+    todas:_solRows};
+  const filtros=esDir
+    ?[['pendientes','Todas las abiertas'],['validar','Por validar pago'],['facturar','Por facturar'],['todas','Historial']]
+    :[['facturar','Por facturar'],['pendientes','Todas las abiertas'],['todas','Historial']];
+  if(!filtros.some(f=>f[0]===_solFiltro)) _solFiltro=filtros[0][0];
+  const lista=por[_solFiltro]||[];
+  cont.innerHTML=`
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+    <div style="font-size:15px;font-weight:600;color:var(--text);">🧾 Facturación — solicitudes</div>
+    ${esDir?`<div><input id="solCapturaInput" type="file" accept="image/*" onchange="solLeerCaptura(this)" style="display:none;"><button onclick="document.getElementById('solCapturaInput').click()" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">📷 Subir captura del banco</button> <span id="solCapturaEstado" style="font-size:11px;color:var(--text3);"></span></div>`:''}
+  </div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+    ${filtros.map(([k,l])=>`<button onclick="_solFiltro='${k}';renderSolFacturaGestion(_solContenedor)" style="padding:6px 13px;border-radius:16px;border:1px solid ${_solFiltro===k?'var(--teal)':'var(--border)'};background:${_solFiltro===k?'var(--teal)':'#fff'};color:${_solFiltro===k?'#fff':'var(--text2)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${l} (${(por[k]||[]).length})</button>`).join('')}
+  </div>
+  <div>${lista.length?lista.map(r=>solTarjeta(r,esDir?'director':'admin')).join(''):'<div style="font-size:12px;color:var(--text3);padding:20px;text-align:center;">No hay solicitudes en esta vista.</div>'}</div>`;
+}
+
+// ─── LECTURA DE LA CAPTURA DEL BANCO Y CASADO ────────────────────────────────
+async function solLeerCaptura(input){
+  const file=input.files?.[0];input.value='';
+  if(!file) return;
+  const est=document.getElementById('solCapturaEstado');
+  if(est){est.textContent='Leyendo captura...';est.style.color='var(--teal)';}
+  try{
+    const b64=await new Promise((ok,ko)=>{const rd=new FileReader();rd.onload=()=>ok(String(rd.result).split(',')[1]||'');rd.onerror=ko;rd.readAsDataURL(file);});
+    const {data:sess}=await sb.auth.getSession();
+    const resp=await fetch('/api/solicitud-leer-captura',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({imagenBase64:b64,mediaType:file.type||'image/png'})});
+    let data={};try{data=await resp.json();}catch(e){}
+    if(!resp.ok||!data.ok){if(est){est.textContent='No se pudo leer: '+(data.error||resp.status);est.style.color='#c0392b';}return;}
+    _solMovs=data.movimientos||[];
+    if(est){est.textContent=`${_solMovs.length} movimientos leídos.`;est.style.color='var(--text3)';}
+    solMostrarCasado();
+  }catch(e){if(est){est.textContent='Error: '+(e?.message||e);est.style.color='#c0392b';}}
+}
+function solClaveMov(m){return `${m.fecha}|${Number(m.monto).toFixed(2)}|${m.hora||''}`;}
+function solCasar(){
+  // Cuántas veces ya se usó cada movimiento (por pagos validados antes)
+  const usados={};
+  _solRows.filter(r=>r.pago_validado&&r.pago_movimiento).forEach(r=>{const k=solClaveMov(r.pago_movimiento);usados[k]=(usados[k]||0)+1;});
+  const total={};_solMovs.forEach(m=>{const k=solClaveMov(m);total[k]=(total[k]||0)+1;});
+  const disponible=m=>(total[solClaveMov(m)]||0)-(usados[solClaveMov(m)]||0)>0;
+  const pend=_solRows.filter(r=>!r.pago_validado&&r.pago_monto>0&&(r.estado==='solicitada'||r.estado==='facturada'));
+  const res=pend.map(r=>{
+    const monto=Number(r.pago_monto);
+    const conFecha=m=>Math.abs(solDiasEntre(m.fecha,r.pago_fecha))<=1;
+    let exactos=_solMovs.filter(m=>Math.abs(m.monto-monto)<0.01&&conFecha(m)&&disponible(m));
+    // Con hora en ambos lados se descartan los que están a más de 3 h
+    if(exactos.length>1&&r.pago_hora){
+      const h=solMinutos(r.pago_hora);
+      const cerca=exactos.filter(m=>{const hm=solMinutos(m.hora);return hm!=null&&h!=null&&Math.abs(hm-h)<=180;});
+      if(cerca.length) exactos=cerca;
+    }
+    let tipo,cands=exactos;
+    if(exactos.length===1) tipo='coincide';
+    else if(exactos.length>1) tipo='varios';
+    else{
+      const dif=_solMovs.filter(m=>conFecha(m)&&Math.abs(m.monto-monto)<=50&&Math.abs(m.monto-monto)>=0.01&&disponible(m));
+      const fechaDist=_solMovs.filter(m=>Math.abs(m.monto-monto)<0.01&&!conFecha(m)&&disponible(m));
+      if(dif.length){tipo='diferencia';cands=dif;}
+      else if(fechaDist.length){tipo='fecha';cands=fechaDist;}
+      else{tipo='ninguno';cands=[];}
+    }
+    return {r,tipo,cands};
+  });
+  // Un mismo movimiento no puede ser "coincide" de dos solicitudes a la vez
+  const reclam={};
+  res.filter(x=>x.tipo==='coincide').forEach(x=>{const k=solClaveMov(x.cands[0]);(reclam[k]=reclam[k]||[]).push(x);});
+  Object.values(reclam).forEach(g=>{
+    const k=solClaveMov(g[0].cands[0]);
+    const libres=(total[k]||0)-(usados[k]||0);
+    if(g.length>libres) g.forEach(x=>{x.tipo='varios';});
+  });
+  return res;
+}
+function solMostrarCasado(){
+  const res=solCasar();
+  window._solCasado=res;
+  const etiqueta={coincide:['✅ Coincide','#2E7D32'],varios:['⚠️ Hay varios parecidos','#B45309'],diferencia:['⚠️ Diferencia de pesos','#B45309'],fecha:['⚠️ Monto igual, fecha distinta','#B45309'],ninguno:['❌ No encontrado','#c0392b']};
+  const movTxt=m=>`${solFecha(m.fecha)}${m.hora?' '+m.hora:''} · <b>${fmt(m.monto)}</b> · ${solEsc(m.descripcion||'')}${m.banco_origen?' ('+solEsc(m.banco_origen)+')':''}`;
+  const filas=res.length?res.map((x,i)=>{
+    const [l,c]=etiqueta[x.tipo];
+    const botones=x.cands.map((m,j)=>`<button onclick="solConfirmarCasado(${i},${j})" style="margin:4px 6px 0 0;background:${x.tipo==='coincide'?'var(--teal)':'#fff'};color:${x.tipo==='coincide'?'#fff':'var(--text2)'};border:1px solid ${x.tipo==='coincide'?'var(--teal)':'var(--border)'};border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;cursor:pointer;">${x.tipo==='coincide'?'Confirmar pago':'Es este'}</button><span style="font-size:11px;color:var(--text2);">${movTxt(m)}</span><br>`).join('');
+    const nota=x.tipo==='diferencia'||x.tipo==='fecha'||x.tipo==='ninguno'?'<div style="font-size:11px;color:var(--text3);margin-top:3px;">Queda para revisión manual (puedes validarla desde su tarjeta, por ejemplo con el estado de cuenta).</div>':'';
+    return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;"><div style="font-size:12px;font-weight:700;color:var(--navy);">${solEsc(x.r.cliente_nombre)} · ${fmt(x.r.pago_monto)} · ${solFecha(x.r.pago_fecha)}${x.r.pago_hora?' '+solEsc(x.r.pago_hora):''}</div><span style="font-size:11px;font-weight:700;color:${c};">${l}</span></div>
+      <div style="font-size:11px;color:var(--text3);">${solEsc(x.r.vendedor_nombre)} · ${solEsc(x.r.cotizacion_sae)}</div>
+      ${botones}${nota}</div>`;}).join(''):'<div style="font-size:12px;color:var(--text3);">No hay solicitudes con pago por validar.</div>';
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">📷 Casado con la captura del banco</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">${_solMovs.length} movimientos leídos de la imagen. Revisa que la lectura sea correcta; nada se valida hasta que confirmes.</div>
+    <details style="margin-bottom:12px;"><summary style="cursor:pointer;font-size:12px;color:var(--teal);font-weight:600;">Ver movimientos leídos</summary><div style="font-size:11px;margin-top:6px;">${_solMovs.map(m=>`<div>${movTxt(m)}</div>`).join('')||'Ninguno'}</div></details>
+    ${filas}
+    <div style="text-align:right;"><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:12px;cursor:pointer;">Cerrar</button></div>`,680);
+}
+async function solConfirmarCasado(i,j){
+  const x=(window._solCasado||[])[i];if(!x) return;
+  const m=x.cands[j];if(!m) return;
+  await solValidarPago(x.r.id,m,`Casado con captura del banco: ${m.descripcion||''}`.trim(),true);
+}
+async function solValidarPago(id,mov,nota,desdeCasado){
+  const r=_solRows.find(z=>z.id===id);if(!r) return;
+  const upd={pago_validado:true,pago_validado_at:new Date().toISOString(),pago_validado_por:userProfile?.nombre||'Dirección',pago_nota:nota||null,pago_movimiento:mov||null,estado:r.factura_folio?'cerrada':(r.estado==='facturada'?'cerrada':'pago_validado')};
+  const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
+  if(error) return alert('No se pudo validar: '+error.message);
+  Object.assign(r,upd);
+  if(desdeCasado){solMostrarCasadoTrasValidar();}
+  else{solCerrarModal();solRefrescar();}
+}
+function solMostrarCasadoTrasValidar(){
+  // Recalcula el casado (los movimientos ya consumidos desaparecen) y refresca el fondo
+  solMostrarCasado();
+  if(_solContenedor) renderSolFacturaGestion(_solContenedor).then(()=>{});
+}
+function solValidarModal(id){
+  const r=_solRows.find(z=>z.id===id);if(!r) return;
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:6px;">✅ Validar pago manualmente</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(r.cliente_nombre)} · ${fmt(r.pago_monto||r.monto_total)}</div>
+    ${solFld('Nota (cómo lo verificaste)','<input id="svNota" placeholder="Ej. visto en estado de cuenta, SPEI 15/10" style="'+SOL_INPUT_STYLE+'">')}
+    <div style="display:flex;gap:8px;"><button onclick="solValidarPago('${id}',null,document.getElementById('svNota').value)" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Marcar pago validado</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:12px;cursor:pointer;">Cerrar</button></div>`,440);
+}
+
+// ─── REGISTRAR FACTURA (Administración) ──────────────────────────────────────
+function solParseXML(txt){
+  const d=new DOMParser().parseFromString(txt,'application/xml');
+  if(d.getElementsByTagName('parsererror').length) return null;
+  const q=n=>d.getElementsByTagName(n)[0];
+  const c=q('cfdi:Comprobante')||d.documentElement;
+  return {serie:c.getAttribute('Serie')||'',folio:c.getAttribute('Folio')||'',total:parseFloat(c.getAttribute('Total')),fecha:c.getAttribute('Fecha')||'',rfcReceptor:q('cfdi:Receptor')?.getAttribute('Rfc')||'',uuid:q('tfd:TimbreFiscalDigital')?.getAttribute('UUID')||''};
+}
+function solFacturarModal(id){
+  const r=_solRows.find(z=>z.id===id);if(!r) return;
+  window._solXml=null;window._solXmlFile=null;
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">🧾 Registrar factura</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">${solEsc(r.cliente_nombre)} · ${solEsc(r.concepto)} · <b>${fmt(r.monto_total)}</b></div>
+    ${solFld('XML de la factura (recomendado)','<input id="sfxXml" type="file" accept=".xml" onchange="solFacturarLeerXml(\''+id+'\',this)" style="font-size:12px;">','Se llenan serie, folio y UUID, y se verifica total y RFC.')}
+    <div id="sfxAviso" style="font-size:12px;margin-bottom:8px;"></div>
+    <div style="display:grid;grid-template-columns:1fr 2fr;gap:0 12px;">
+      ${solFld('Serie','<input id="sfxSerie" value="INN" style="'+SOL_INPUT_STYLE+'">')}
+      ${solFld('Folio','<input id="sfxFolio" placeholder="591" style="'+SOL_INPUT_STYLE+'">')}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:4px;"><button onclick="solFacturarGuardar('${id}')" style="background:#1B4D6E;color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar factura</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:12px;cursor:pointer;">Cerrar</button></div>`,500);
+}
+async function solFacturarLeerXml(id,input){
+  const r=_solRows.find(z=>z.id===id);const f=input.files?.[0];if(!r||!f) return;
+  const x=solParseXML(await f.text());
+  const av=document.getElementById('sfxAviso');
+  if(!x){av.innerHTML='<span style="color:#c0392b;">No pude leer ese XML.</span>';return;}
+  window._solXml=x;window._solXmlFile=f;
+  if(x.serie) document.getElementById('sfxSerie').value=x.serie;
+  if(x.folio) document.getElementById('sfxFolio').value=x.folio;
+  const av2=[];
+  if(isFinite(x.total)&&Math.abs(x.total-r.monto_total)>0.5) av2.push(`⚠️ El total del XML (${fmt(x.total)}) no coincide con la solicitud (${fmt(r.monto_total)}).`);
+  if(x.rfcReceptor&&r.rfc&&x.rfcReceptor.toUpperCase()!==r.rfc.toUpperCase()) av2.push(`⚠️ El RFC del XML (${solEsc(x.rfcReceptor)}) no coincide con el de la solicitud (${solEsc(r.rfc)}).`);
+  av.innerHTML=av2.length?`<span style="color:#B45309;">${av2.join('<br>')}</span>`:'<span style="color:#2E7D32;">✅ XML leído: total y RFC coinciden.</span>';
+}
+async function solFacturarGuardar(id){
+  const r=_solRows.find(z=>z.id===id);if(!r) return;
+  const serie=document.getElementById('sfxSerie').value.trim(),folio=document.getElementById('sfxFolio').value.trim();
+  if(!folio) return alert('Falta el folio de la factura.');
+  try{
+    if(window._solXmlFile){await sb.storage.from('facturas-xml').upload(`solicitudes/${id}.xml`,window._solXmlFile,{upsert:true});}
+    const upd={factura_serie:serie,factura_folio:folio,factura_uuid:window._solXml?.uuid||null,facturada_at:new Date().toISOString(),facturada_por:userProfile?.nombre||'Administración',estado:r.pago_validado?'cerrada':'facturada'};
+    const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
+    if(error) throw error;
+    solCerrarModal();solRefrescar();
+    if(window._solXmlFile) setTimeout(()=>alert('Factura registrada. Para que cuente en Finanzas, el XML se sigue cargando en Finanzas › Ingresos (XML masivo).'),200);
+  }catch(e){alert('No se pudo guardar: '+(e?.message||e));}
+}
+
 function buildAdminUI(){
   // Usar el mismo patrón que buildDirectorUI y buildVendorUI:
   // solo rellenar #tabsBar, el topbar ya está en el HTML base
   const _t2=document.getElementById('tabsBar2');
   if(_t2){_t2.style.display='none';_t2.innerHTML='';}
   document.getElementById('tabsBar').innerHTML=`
-    <div class="tab active" id="tabAdminFin" onclick="swAdminTab('finanzas')">💰 Finanzas</div>
+    <div class="tab active" id="tabAdminFac" onclick="swAdminTab('facturacion')">🧾 Facturación</div>
+    <div class="tab" id="tabAdminFin" onclick="swAdminTab('finanzas')">💰 Finanzas</div>
     <div class="tab" id="tabAdminVend" onclick="swAdminTab('vendedores')">📊 Resumen Vendedores</div>
     <div class="tab" id="tabAdminAcademia" onclick="swAdminTab('academia')">🎓 Academia</div>`;
-  currentAdminMainTab='finanzas';
+  currentAdminMainTab='facturacion';
   renderAdminActual();
 }
 
@@ -29345,7 +29820,7 @@ let currentAdminMainTab='finanzas';
 function swAdminTab(id){
   currentAdminMainTab=id;
   document.querySelectorAll('#tabsBar .tab').forEach(t=>t.classList.remove('active'));
-  document.getElementById(id==='finanzas'?'tabAdminFin':id==='vendedores'?'tabAdminVend':'tabAdminAcademia')?.classList.add('active');
+  document.getElementById(id==='facturacion'?'tabAdminFac':id==='finanzas'?'tabAdminFin':id==='vendedores'?'tabAdminVend':'tabAdminAcademia')?.classList.add('active');
   renderAdminActual();
 }
 function renderAdminActual(){
@@ -29357,7 +29832,10 @@ function renderAdminActual(){
   const t2=document.getElementById('tabsBar2');
   if(t2){t2.style.display='none';t2.innerHTML='';}
   mc.innerHTML='';
-  if(currentAdminMainTab==='vendedores'){
+  if(currentAdminMainTab==='facturacion'){
+    mc.classList.remove('full-width');
+    renderSolFacturaGestion(mc);
+  } else if(currentAdminMainTab==='vendedores'){
     renderAdminDashVendedores();
   } else {
     currentFinTab='admin';
