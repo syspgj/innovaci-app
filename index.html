@@ -8583,11 +8583,12 @@ function filaPipe(r){
     <td style="padding:7px 10px;text-align:center;"><span class="pipe-badge" style="color:${probColor};background:${probColor}14;">${r.probabilidad||0}%</span></td>
     <td style="padding:7px 10px;text-align:center;color:var(--text3);">${fechaPrevCelda}</td>
     <td style="padding:7px 10px;text-align:center;"><span class="pipe-badge" style="color:${estColor};background:${estColor}14;white-space:nowrap;">${r.estatus||'—'}</span></td>
-    <td style="padding:7px 10px;color:var(--text3);font-size:11px;max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.objecion||''}</td>
+    <td title="${solEsc(r.motivo_estatus&&PIPE_ESTATUS_MOTIVO[r.estatus]?r.motivo_estatus+(r.respuesta_direccion?' | Dirección: '+r.respuesta_direccion:''):(r.objecion||''))}" style="padding:7px 10px;color:var(--text3);font-size:11px;max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.motivo_estatus&&PIPE_ESTATUS_MOTIVO[r.estatus]?`<b style="color:var(--text2);">${solEsc(r.motivo_estatus)}</b>${r.respuesta_direccion?' 💬':''}`:(r.objecion||'')}</td>
     <td style="padding:7px 10px;text-align:center;color:var(--text3);font-size:11px;white-space:nowrap;">${creada}</td>
     <td style="padding:7px 10px;text-align:center;font-size:11px;white-space:nowrap;">${folioCrm?`<span style="color:var(--teal);font-weight:600;">${folioCrm}</span>`:'<span style="color:var(--text3);">—</span>'}</td>
     <td style="padding:7px 10px;text-align:center;font-size:11px;max-width:150px;">${sigPaso}</td>
     <td style="padding:7px 10px;text-align:center;">
+      ${r.estatus==='Cerrada-Ganada'?`<button onclick="pipeIrAFacturar('${r.id}')" title="Mandar a facturación" style="background:none;border:1px solid var(--teal);border-radius:var(--radsm);padding:3px 8px;font-size:11px;cursor:pointer;color:var(--teal);margin-right:4px;">🧾</button>`:''}
       <button onclick="editarFilaPipe('${r.id}')" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:3px 8px;font-size:11px;cursor:pointer;color:var(--text2);">✏️</button>
       <button onclick="eliminarFilaPipe('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);border-radius:var(--radsm);padding:3px 8px;font-size:11px;cursor:pointer;color:var(--red);margin-left:4px;">✕</button>
     </td>
@@ -8709,6 +8710,7 @@ function modalPipeHTML(r,hoy){
           ${ESTATUS_PIPE.map(e=>`<option ${(v.estatus||'Negociación o Revisión con Cliente')===e?'selected':''}>${e}</option>`).join('')}
         </select>
       </div>
+      ${v.motivo_estatus&&PIPE_ESTATUS_MOTIVO[v.estatus]?`<div style="grid-column:1/-1;background:#FFF8EC;border:1px solid #F5A623;border-radius:8px;padding:8px 12px;font-size:12px;color:var(--text2);"><b>${PIPE_ESTATUS_MOTIVO[v.estatus].emoji} Motivo registrado:</b> ${solEsc(v.motivo_estatus)}${v.respuesta_direccion?`<div style="color:var(--teal);margin-top:4px;"><b>💬 Respuesta de Dirección:</b> ${solEsc(v.respuesta_direccion)}</div>`:''}</div>`:''}
     </div>
     ${r&&r.id?`<div id="pipeActividadesBox" style="grid-column:1/-1;margin-top:18px;border-top:1px solid var(--border);padding-top:14px;">
       <div style="font-size:12px;color:var(--text3);">Cargando bitácora de seguimiento...</div>
@@ -8872,6 +8874,17 @@ async function _guardarFilaPipeInterno(irASiguiente){
     // no sobrescribir en silencio el valor histórico que ya tuviera la fila.
   };
   if(prospectoAppId) payload.prospecto_app_id=prospectoAppId;
+  // Motivo obligatorio (Cerrada-Perdida / Pausada / Valoración con Dirección)
+  const orig0=window._pipeEditOriginal;
+  let motivoInfo=null;
+  if(PIPE_ESTATUS_MOTIVO[payload.estatus]&&(!id||!orig0||orig0.estatus!==payload.estatus)){
+    motivoInfo=await pipePedirMotivo(payload.estatus,payload.cliente);
+    if(!motivoInfo) return; // canceló: no se guarda el cambio de estatus
+    payload.motivo_estatus=motivoInfo.texto;
+    payload.motivo_estatus_at=new Date().toISOString();
+    payload.respuesta_direccion=null;
+  }
+  let filaIdGuardada=id||null;
   let error;
   if(id){
     ({error}=await sb.from('pipeline_vendedor').update(payload).eq('id',id));
@@ -8908,6 +8921,7 @@ async function _guardarFilaPipeInterno(irASiguiente){
   } else {
     const {data:nuevaFila,error:errIns}=await sb.from('pipeline_vendedor').insert(payload).select().single();
     error=errIns;
+    if(nuevaFila) filaIdGuardada=nuevaFila.id;
     // Fase 4: fila NUEVA ligada a una cuenta real -> crear la Oportunidad
     // correspondiente en el CRM (nunca para texto libre, solo con cuenta).
     if(!error&&cuentaId&&nuevaFila){
@@ -8947,6 +8961,8 @@ async function _guardarFilaPipeInterno(irASiguiente){
   }
   if(error){alert('Error: '+error.message);return;}
   window._pipeEditOriginal=null;
+  if(motivoInfo&&filaIdGuardada) await pipeRegistrarMotivo(filaIdGuardada,payload.estatus,motivoInfo.texto);
+  const ganadaNueva=payload.estatus==='Cerrada-Ganada'&&(!orig0||orig0.estatus!=='Cerrada-Ganada');
   // "Guardar y siguiente" — Jp, 2026-10-13: para que el vendedor pueda ir
   // revisando negociación por negociación sin tener que reentrar a cada una
   // manualmente. Avanza sobre el orden en que están pintadas en la tabla
@@ -8955,8 +8971,120 @@ async function _guardarFilaPipeInterno(irASiguiente){
   const siguienteId=irASiguiente&&id?pipeSiguienteIdEnLista(id):null;
   document.getElementById('modalPipe')?.remove();
   await renderProyeccion();
+  if(ganadaNueva){ const fueAFact=await pipeOfrecerFacturar(filaIdGuardada); if(fueAFact) return; }
   if(siguienteId) editarFilaPipe(siguienteId);
   else if(irASiguiente) alert('✅ Guardado. No hay más negociaciones en esta vista para seguir revisando.');
+}
+
+
+// ── Motivo obligatorio al cambiar estatus (Jp, 2026-11-01) ───────────────────
+// "Cuando le pongo cerrada-perdida debe darme apertura para colocar el motivo
+// ... o pausada por cliente ... y cuando es valoración con Dirección debe
+// aparecerme en mi dashboard con el porqué". El motivo se guarda en la fila
+// (motivo_estatus), en la bitácora y como comentario en el CRM.
+const PIPE_ESTATUS_MOTIVO={
+  'Cerrada-Perdida':{emoji:'⛔',titulo:'¿Por qué se perdió?',ayuda:'Dirección necesita conocer la razón principal.',chips:['Precio','Compró con la competencia','Sin presupuesto','Sin respuesta del cliente','Ya no lo necesita','Otro'],ph:'Explica con detalle qué pasó...'},
+  'Pausada por Cliente':{emoji:'⏸',titulo:'¿Por qué se pausó?',ayuda:'Indica qué espera el cliente y cuándo se retoma.',chips:['Sin presupuesto por ahora','Esperan autorización','Reprogramaron / más adelante','Sin respuesta del cliente','Otro'],ph:'¿Qué esperan y cuándo se retoma?'},
+  'Valoración con Dirección':{emoji:'⚖️',titulo:'¿Qué debe revisar Dirección?',ayuda:'Esta negociación aparecerá en el dashboard del director.',chips:['Descuento adicional','Precio especial','Condiciones de pago','Alcance / servicio a medida','Otro'],ph:'Detalla qué solicita el cliente y qué necesitas que se decida...'},
+};
+function pipePedirMotivo(estatus,cliente){
+  const cfg=PIPE_ESTATUS_MOTIVO[estatus];
+  return new Promise(resolve=>{
+    document.getElementById('pipeMotivoModal')?.remove();
+    const d=document.createElement('div');
+    d.id='pipeMotivoModal';
+    d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10050;display:flex;align-items:center;justify-content:center;padding:16px;';
+    d.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px 22px;width:100%;max-width:480px;box-shadow:0 10px 40px rgba(0,0,0,.3);">
+      <div style="font-size:15px;font-weight:700;color:var(--navy);">${cfg.emoji} ${cfg.titulo}</div>
+      <div style="font-size:12px;color:var(--text3);margin:3px 0 10px;">${solEsc(cliente||'')} → <b>${solEsc(estatus)}</b>. ${cfg.ayuda}</div>
+      <div id="pmChips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">${cfg.chips.map((c,i)=>`<span data-i="${i}" onclick="this.classList.toggle('on');this.style.background=this.classList.contains('on')?'var(--teal)':'#fff';this.style.color=this.classList.contains('on')?'#fff':'var(--text2)';" style="cursor:pointer;padding:5px 11px;border:1px solid var(--border);border-radius:14px;font-size:11px;font-weight:600;">${solEsc(c)}</span>`).join('')}</div>
+      <textarea id="pmTexto" rows="4" placeholder="${solEsc(cfg.ph)}" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'Inter',sans-serif;"></textarea>
+      <div id="pmErr" style="font-size:11px;color:#c0392b;min-height:16px;margin-top:2px;"></div>
+      <div style="display:flex;gap:8px;margin-top:6px;">
+        <button id="pmOk" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:8px;padding:9px;font-weight:700;font-size:13px;cursor:pointer;">Guardar motivo</button>
+        <button id="pmNo" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:9px 16px;font-size:13px;cursor:pointer;">Cancelar</button>
+      </div></div>`;
+    document.body.appendChild(d);
+    document.getElementById('pmNo').onclick=()=>{d.remove();resolve(null);};
+    document.getElementById('pmOk').onclick=()=>{
+      const sel=[...d.querySelectorAll('#pmChips .on')].map(e=>cfg.chips[+e.dataset.i]);
+      const txt=document.getElementById('pmTexto').value.trim();
+      if(txt.length<8){document.getElementById('pmErr').textContent='Escribe el motivo con un poco más de detalle (mínimo una frase).';return;}
+      d.remove();
+      resolve({texto:(sel.length?sel.join(', ')+': ':'')+txt});
+    };
+  });
+}
+async function pipeComentarioCrmLibre(pipelineId,contenido,vendedorId){
+  try{
+    const {data:fila}=await sb.from('pipeline_vendedor').select('oportunidad_crm_id').eq('id',pipelineId).single();
+    if(!fila?.oportunidad_crm_id) return null;
+    const {data:o}=await sb.from('oportunidades_crm').select('crm_potentialid').eq('id',fila.oportunidad_crm_id).single();
+    if(!o?.crm_potentialid) return null;
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/crm-agregar-comentario',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({crm_potentialid:o.crm_potentialid,comentario:contenido,vendedor_usuario_id:vendedorId||currentUser.id})});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){console.error('CRM comentario libre failed',j);return null;}
+    return j.id||null;
+  }catch(e){console.error('CRM comentario libre error',e);return null;}
+}
+async function pipeRegistrarMotivo(pid,estatus,texto){
+  try{
+    const cfg=PIPE_ESTATUS_MOTIVO[estatus]||{emoji:''};
+    const crmId=await pipeComentarioCrmLibre(pid,`[Proyección] ${cfg.emoji} ${estatus} · Motivo: ${texto}`);
+    await sb.from('pipeline_actividades').insert({pipeline_vendedor_id:pid,usuario_id:currentUser.id,tipo_actividad:'seguimiento',fecha_programada:todayLocal(),completada:true,fecha_completada:new Date().toISOString(),resultado:estatus,nota:texto,crm_comment_id:crmId});
+  }catch(e){console.error('registrar motivo',e);}
+}
+function pipeIrAFacturar(pid){
+  window._solPrefill={pipeline_id:pid};
+  if(typeof swV==='function') swV('factura');
+}
+async function pipeOfrecerFacturar(pid){
+  if(!pid) return false;
+  if(!confirm('🎉 Negociación ganada.\n\n¿Quieres mandarla a facturación ahora? Se abrirá la solicitud con los datos de Proyección ya cargados.')) return false;
+  pipeIrAFacturar(pid);
+  return true;
+}
+// Tarjeta del dashboard del director: negociaciones en "Valoración con Dirección"
+async function dirPintarValoraciones(){
+  const mc=document.getElementById('mainContent');
+  if(!mc||userProfile?.rol!=='director') return;
+  document.getElementById('dirValoracionesBox')?.remove();
+  const {data,error}=await sb.from('pipeline_vendedor').select('id,usuario_id,cliente,producto,monto_total,motivo_estatus,motivo_estatus_at,respuesta_direccion,updated_at').eq('estatus','Valoración con Dirección').order('updated_at',{ascending:false});
+  if(error||!data?.length) return;
+  const {data:us}=await sb.from('usuarios').select('id,nombre');
+  const nom={};(us||[]).forEach(u=>{nom[u.id]=u.nombre;});
+  window._dirValoraciones=data;
+  const html=`<div id="dirValoracionesBox" style="background:#FFF8EC;border:1px solid #F5A623;border-radius:12px;padding:14px 18px;margin-bottom:18px;">
+    <div style="font-size:14px;font-weight:700;color:#B45309;margin-bottom:8px;">⚖️ Oportunidades por valorar (${data.length})</div>
+    ${data.map(r=>`<div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;"><div style="font-size:13px;font-weight:700;color:var(--navy);">${solEsc(r.cliente)} <span style="font-weight:400;color:var(--text3);">· ${solEsc(r.producto)} · ${fmt(r.monto_total)}</span></div><div style="font-size:11px;color:var(--text3);">👤 ${solEsc(nom[r.usuario_id]||'')} · ${solFecha(r.motivo_estatus_at||r.updated_at)}</div></div>
+      <div style="font-size:12px;color:var(--text2);margin-top:4px;">${r.motivo_estatus?solEsc(r.motivo_estatus):'<i style="color:var(--text3);">El vendedor no dejó motivo.</i>'}</div>
+      ${r.respuesta_direccion?`<div style="font-size:12px;color:var(--teal);margin-top:4px;">💬 Tu respuesta: ${solEsc(r.respuesta_direccion)}</div>`:''}
+      <div style="margin-top:6px;"><button onclick="dirResponderValoracion('${r.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">💬 ${r.respuesta_direccion?'Editar respuesta':'Responder'}</button></div>
+    </div>`).join('')}</div>`;
+  mc.insertAdjacentHTML('afterbegin',html);
+}
+function dirResponderValoracion(id){
+  const r=(window._dirValoraciones||[]).find(x=>x.id===id);if(!r) return;
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">💬 Respuesta de Dirección</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">${solEsc(r.cliente)} · ${solEsc(r.producto)}</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:8px;">Solicitud: ${solEsc(r.motivo_estatus||'—')}</div>
+    <textarea id="drvTexto" rows="4" style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'Inter',sans-serif;">${solEsc(r.respuesta_direccion||'')}</textarea>
+    <div style="display:flex;gap:8px;margin-top:10px;"><button onclick="dirGuardarRespuesta('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar respuesta</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:12px;cursor:pointer;">Cerrar</button></div>`,480);
+}
+async function dirGuardarRespuesta(id){
+  const r=(window._dirValoraciones||[]).find(x=>x.id===id);
+  const t=document.getElementById('drvTexto').value.trim();
+  if(!r||!t) return alert('Escribe la respuesta.');
+  const {error}=await sb.from('pipeline_vendedor').update({respuesta_direccion:t}).eq('id',id);
+  if(error) return alert('No se pudo guardar: '+error.message);
+  try{
+    const crmId=await pipeComentarioCrmLibre(id,`[Proyección] ⚖️ Respuesta de Dirección: ${t}`,r.usuario_id);
+    await sb.from('pipeline_actividades').insert({pipeline_vendedor_id:id,usuario_id:currentUser.id,tipo_actividad:'seguimiento',fecha_programada:todayLocal(),completada:true,fecha_completada:new Date().toISOString(),resultado:'Respuesta de Dirección',nota:t,crm_comment_id:crmId});
+  }catch(e){console.error(e);}
+  solCerrarModal();
+  dirPintarValoraciones();
 }
 
 function pipeSiguienteIdEnLista(idActual){
@@ -14638,6 +14766,10 @@ function getTotals(regs,userId){
 }
 
 async function renderDirectorResumen(){
+  await renderDirectorResumenBase();
+  dirPintarValoraciones();
+}
+async function renderDirectorResumenBase(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando datos del equipo...</div>';
   const users=await loadDirectorData();
@@ -20671,7 +20803,7 @@ async function renderDirectorProyeccion(){
           <td style="font-size:11px;color:var(--text3);">${r.probabilidad||50}%</td>
           <td style="font-size:11px;color:var(--text3);">${r.fecha_prevista||'—'}</td>
           <td><span class="pipe-badge" style="color:${col};background:${col.startsWith('#')?col+'14':'rgba(139,160,184,0.14)'};white-space:nowrap;">${r.estatus||'—'}</span></td>
-          <td style="font-size:11px;color:var(--text3);max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.objecion||''}</td>
+          <td title="${solEsc(r.motivo_estatus&&PIPE_ESTATUS_MOTIVO[r.estatus]?r.motivo_estatus+(r.respuesta_direccion?' | Dirección: '+r.respuesta_direccion:''):(r.objecion||''))}" style="font-size:11px;color:var(--text3);max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${r.motivo_estatus&&PIPE_ESTATUS_MOTIVO[r.estatus]?`<b style="color:var(--text2);">${solEsc(r.motivo_estatus)}</b>${r.respuesta_direccion?' 💬':''}`:(r.objecion||'')}</td>
           <td style="text-align:center;font-size:11px;color:var(--text3);white-space:nowrap;">${creada}</td>
           <td style="text-align:center;font-size:11px;white-space:nowrap;">${folioCrm?`<span style="color:var(--teal);font-weight:600;">${folioCrm}</span>`:'<span style="color:var(--text3);">—</span>'}</td>
           <td style="text-align:center;font-size:11px;max-width:150px;">${sigPaso}</td>
@@ -29400,13 +29532,14 @@ function solFecha(f){if(!f)return '';const p=String(f).slice(0,10).split('-');re
 async function renderSolFacturaVendedor(){
   const mc=document.getElementById('mainContent');
   mc.classList.remove('full-width');
-  window._sfCliente=null;
+  window._sfCliente=null;window._sfPipe=null;
   mc.innerHTML=`
   <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px;">🧾 Solicitar factura</div>
   <div style="font-size:12px;color:var(--text3);margin-bottom:14px;">Llena esta solicitud en lugar de escribir en Telegram. Dirección valida el pago y Administración emite la factura; aquí ves en qué va.</div>
   <div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:18px;">
     ${solFld('Cliente (busca por nombre o número)',`<input id="sfCliente" oninput="solClienteBuscarDeb()" placeholder="Ej. GEL KLEEN o 1511" style="${SOL_INPUT_STYLE}"><div id="sfClienteMatches" style="margin-top:6px;"></div>`)}
     <div id="sfClienteSel" style="font-size:12px;margin-bottom:10px;"></div>
+    <div id="sfPipeBox" style="display:none;margin-bottom:10px;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
       ${solFld('Tipo de solicitud',`<select id="sfTipo" onchange="solTipoCambio()" style="${SOL_INPUT_STYLE}"><option value="con_pago">Con pago (ya pagó)</option><option value="liberar_pago">Para liberar pago (aún no paga)</option></select>`)}
       ${solFld('Cotización de SAE',`<input id="sfCotiz" placeholder="C-INN13309" style="${SOL_INPUT_STYLE}">`)}
@@ -29431,13 +29564,13 @@ async function renderSolFacturaVendedor(){
     <div id="sfBloqueEsperado" style="display:none;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:12px 14px;margin-bottom:10px;">
       ${solFld('Fecha en que pagará el cliente',`<input id="sfEsperada" type="date" style="${SOL_INPUT_STYLE}">`,'Cuando pague, adjunta el comprobante desde tu lista de solicitudes.')}
     </div>
-    ${solFld('Cotización en PDF (opcional)',`<input id="sfCotizPdf" type="file" accept=".pdf,image/*" style="font-size:12px;">`)}
+    ${solFld('Cotización en PDF (opcional)',`<input id="sfCotizPdf" type="file" accept=".pdf,image/*" onchange="solLeerCotizacion(this)" style="font-size:12px;"><div id="sfCotizEstado" style="font-size:11px;margin-top:3px;"></div>`,'Si la subes, la app intenta leer el folio y el total; siempre revísalos.')}
     <details style="margin-bottom:12px;"><summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--teal);">🎓 Datos del asistente (si es curso 24/7 o Academia)</summary>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;margin-top:8px;">
         ${solFld('Nombre del asistente',`<input id="sfAsNombre" style="${SOL_INPUT_STYLE}">`)}
         ${solFld('Correo',`<input id="sfAsCorreo" type="email" style="${SOL_INPUT_STYLE}">`)}
         ${solFld('Teléfono / WhatsApp',`<input id="sfAsTel" style="${SOL_INPUT_STYLE}">`)}
-        ${solFld('Curso / sistema',`<input id="sfAsCurso" style="${SOL_INPUT_STYLE}">`)}
+        ${solFld('Curso (generación)',`<select id="sfAsCurso" style="${SOL_INPUT_STYLE}"><option value="">Cargando generaciones...</option></select>`)}
       </div>
     </details>
     ${solFld('Notas para facturación (opcional)',`<input id="sfNotas" style="${SOL_INPUT_STYLE}">`)}
@@ -29447,6 +29580,55 @@ async function renderSolFacturaVendedor(){
   <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px;">Mis solicitudes</div>
   <div id="sfLista"><div class="loading"><div class="spinner"></div> Cargando...</div></div>`;
   solCargarListaVendedor();
+  solCargarGeneraciones();
+  solAplicarPrefill();
+}
+async function solCargarGeneraciones(){
+  const sel=document.getElementById('sfAsCurso');if(!sel) return;
+  const {data}=await sb.from('academia_generaciones').select('id,clave,fecha_inicio,fecha_fin,archivado_manual,curso:curso_id(nombre)').order('fecha_inicio',{ascending:false}).limit(120);
+  const hoy=new Date();hoy.setDate(hoy.getDate()-10);const lim=hoy.toISOString().slice(0,10);
+  const vig=(data||[]).filter(g=>!g.archivado_manual&&(!g.fecha_fin||g.fecha_fin>=lim));
+  window._solGens=vig;
+  sel.innerHTML='<option value="">— selecciona la generación —</option>'+vig.map(g=>`<option value="${g.id}">${solEsc(g.clave||'')} · ${solEsc(g.curso?.nombre||'')}${g.fecha_inicio?' · inicia '+solFecha(g.fecha_inicio):''}</option>`).join('');
+}
+async function solLeerCotizacion(input){
+  const f=input.files?.[0];const est=document.getElementById('sfCotizEstado');
+  if(!f||!est) return;
+  est.style.color='var(--teal)';est.textContent='Leyendo cotización...';
+  try{
+    const b64=await new Promise((ok,ko)=>{const rd=new FileReader();rd.onload=()=>ok(String(rd.result).split(',')[1]||'');rd.onerror=ko;rd.readAsDataURL(f);});
+    const {data:sess}=await sb.auth.getSession();
+    const resp=await fetch('/api/solicitud-leer-cotizacion',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({archivoBase64:b64,mediaType:f.type||'application/pdf'})});
+    let d={};try{d=await resp.json();}catch(e){}
+    if(!resp.ok||!d.ok){est.style.color='#c0392b';est.textContent='No se pudo leer ('+(d.error||resp.status)+'). Captura el folio a mano.';return;}
+    const x=d.datos||{};const partes=[];
+    if(x.folio){document.getElementById('sfCotiz').value=x.folio;partes.push('folio '+x.folio);}
+    if(x.total&&!parseFloat(document.getElementById('sfTotal').value)){document.getElementById('sfTotal').value=x.total;partes.push('total '+fmt(x.total));}
+    if(x.concepto&&!document.getElementById('sfConcepto').value.trim()){document.getElementById('sfConcepto').value=x.concepto;partes.push('concepto');}
+    est.style.color='var(--text2)';
+    est.textContent=partes.length?'✅ Leí: '+partes.join(', ')+'. Verifícalo antes de enviar.':'No encontré datos claros; captúralos a mano.';
+  }catch(e){est.style.color='#c0392b';est.textContent='Error al leer: '+(e?.message||e);}
+}
+// Prefill desde Proyección (negociación Cerrada-Ganada → "mandar a facturación")
+async function solAplicarPrefill(){
+  const p=window._solPrefill;window._solPrefill=null;
+  if(!p?.pipeline_id) return;
+  const {data:n}=await sb.from('pipeline_vendedor').select('*, oportunidades_crm(crm_folio,crm_potentialid)').eq('id',p.pipeline_id).single();
+  if(!n) return;
+  if(n.cliente_cartera_id){
+    const {data:c}=await sb.from('clientes_cartera').select('*').eq('id',n.cliente_cartera_id).single();
+    if(c){window._solMatches=[c];await solClienteElegir(0);}
+  } else document.getElementById('sfCliente').value=n.cliente||'';
+  solAplicarNegociacion(n);
+}
+function solAplicarNegociacion(n){
+  window._sfPipe=n;
+  const set=(id,v)=>{const el=document.getElementById(id);if(el&&v!=null&&v!=='')el.value=v;};
+  set('sfConcepto',n.producto);set('sfTotal',n.monto_total);
+  const pid=n.oportunidades_crm?.crm_potentialid;
+  if(pid) set('sfCrm',`${CRM_BASE_URL_FE}/index.php?module=Potentials&view=Detail&record=${String(pid).split('x').pop()}&app=SALES`);
+  const box=document.getElementById('sfPipeBox');
+  if(box){box.style.display='block';box.innerHTML=`<div style="font-size:12px;background:#eef6f6;border:1px solid #b9dede;border-radius:8px;padding:8px 12px;">📊 Ligada a la negociación de Proyección: <b>${solEsc(n.producto||'')}</b> · ${fmt(n.monto_total)} · ${solEsc(n.estatus||'')}${n.oportunidades_crm?.crm_folio?` · CRM ${solEsc(n.oportunidades_crm.crm_folio)}`:' · <span style="color:#B45309;">sin oportunidad en el CRM (no se dejará comentario allá)</span>'} <span onclick="window._sfPipe=null;document.getElementById('sfPipeBox').style.display='none';" style="cursor:pointer;text-decoration:underline;color:var(--text3);margin-left:6px;">desligar</span></div>`;}
 }
 function solTipoCambio(){
   const t=document.getElementById('sfTipo').value;
@@ -29461,7 +29643,7 @@ async function solClienteBuscar(){
   if(!cont) return;
   if(!t){cont.innerHTML='';return;}
   const limpio=t.replace(/[%,()]/g,' ');
-  const {data,error}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente,rfc,link_crm').or(`razon_social.ilike.%${limpio}%,num_cliente.ilike.%${limpio}%`).limit(8);
+  const {data,error}=await sb.from('clientes_cartera').select('*').or(`razon_social.ilike.%${limpio}%,num_cliente.ilike.%${limpio}%`).limit(8);
   if(error){cont.innerHTML=`<div style="font-size:11px;color:#c0392b;">${solEsc(error.message)}</div>`;return;}
   window._solMatches=data||[];
   cont.innerHTML=(data||[]).length?(data||[]).map((m,i)=>`<div onclick="solClienteElegir(${i})" style="cursor:pointer;padding:6px 9px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:4px;background:#f8fafb;">${solEsc(m.razon_social)}${m.num_cliente?` · #${solEsc(m.num_cliente)}`:''}${m.rfc?` · ${solEsc(m.rfc)}`:''}</div>`).join(''):'<div style="font-size:11px;color:var(--text3);">Sin coincidencias en Cartera. Puedes enviar con el nombre escrito, pero conviene que el cliente exista en Cartera.</div>';
@@ -29474,15 +29656,35 @@ async function solClienteElegir(i){
   document.getElementById('sfClienteMatches').innerHTML='';
   document.getElementById('sfClienteSel').innerHTML=`✅ Ligado a la cuenta <b>${solEsc(m.razon_social)}</b>${m.num_cliente?` (#${solEsc(m.num_cliente)})`:''}`;
   if(m.rfc) document.getElementById('sfRfc').value=m.rfc;
-  // Reutiliza los datos fiscales de la última solicitud de este cliente
+  const setc=(id,v)=>{const el=document.getElementById(id);if(el&&v)el.value=v;};
+  setc('sfForma',m.forma_pago_pref);setc('sfMetodo',m.metodo_pago_pref);setc('sfUso',m.uso_cfdi);setc('sfReg',m.regimen_fiscal);
+  // Negociaciones de Proyección de este vendedor con esta cuenta
+  try{
+    const {data:negs}=await sb.from('pipeline_vendedor').select('*, oportunidades_crm(crm_folio,crm_potentialid)').eq('cliente_cartera_id',m.id).eq('usuario_id',currentUser.id).order('updated_at',{ascending:false}).limit(12);
+    window._solNegs=negs||[];
+    const box=document.getElementById('sfPipeBox');
+    if(box&&!window._sfPipe&&(negs||[]).length){
+      box.style.display='block';
+      box.innerHTML=`<div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:3px;">Ligar a una negociación de Proyección (precarga concepto, monto y liga del CRM)</div><select onchange="solElegirNegociacion(this.value)" style="${SOL_INPUT_STYLE}"><option value="">— sin ligar —</option>${negs.map(n=>`<option value="${n.id}">${solEsc(n.estatus||'')} · ${solEsc(n.producto||'')} · ${fmt(n.monto_total)}</option>`).join('')}</select>`;
+    }
+  }catch(e){console.error(e);}
+  // Reutiliza los datos fiscales de la última solicitud de este cliente (si la cuenta no los tiene)
   const {data:ult}=await sb.from('solicitudes_factura').select('forma_pago,metodo_pago,uso_cfdi,regimen,rfc').eq('cliente_cartera_id',m.id).order('created_at',{ascending:false}).limit(1);
   const u=ult?.[0];
   if(u){
     const set=(id,v)=>{const el=document.getElementById(id);if(el&&v)el.value=v;};
-    set('sfForma',u.forma_pago);set('sfMetodo',u.metodo_pago);set('sfUso',u.uso_cfdi);set('sfReg',u.regimen);
+    if(!m.forma_pago_pref) set('sfForma',u.forma_pago);
+    if(!m.metodo_pago_pref) set('sfMetodo',u.metodo_pago);
+    if(!m.uso_cfdi) set('sfUso',u.uso_cfdi);
+    if(!m.regimen_fiscal) set('sfReg',u.regimen);
     if(u.rfc&&!m.rfc) set('sfRfc',u.rfc);
     document.getElementById('sfClienteSel').innerHTML+=`<div style="font-size:11px;color:var(--text3);">Se precargaron los datos fiscales de su última factura. Verifícalos.</div>`;
   }
+}
+function solElegirNegociacion(id){
+  const n=(window._solNegs||[]).find(x=>x.id===id);
+  if(!n){window._sfPipe=null;return;}
+  solAplicarNegociacion(n);
 }
 async function solEnviar(){
   const msg=document.getElementById('sfMsg');
@@ -29517,6 +29719,9 @@ async function solEnviar(){
     const cf=document.getElementById('sfCotizPdf').files[0];
     if(cf) cotPath=await solSubirArchivo(cf,fid,'cotizacion');
     const asN=v('sfAsNombre');
+    const genSel=document.getElementById('sfAsCurso');
+    const genId=genSel?.value||null;
+    const genTxt=genId?genSel.options[genSel.selectedIndex].text:'';
     const row={
       vendedor_id:userProfile?.id||currentUser.id,vendedor_nombre:userProfile?.nombre||'',
       cliente_cartera_id:cli?.id||null,num_cliente:cli?.num_cliente||null,cliente_nombre:nombre,rfc:v('sfRfc').toUpperCase(),
@@ -29524,14 +29729,29 @@ async function solEnviar(){
       cotizacion_sae:v('sfCotiz'),concepto:v('sfConcepto'),monto_total:total,
       pago_monto:pagoMonto,pago_fecha:pagoFecha||null,pago_hora:v('sfPagoHora')||null,fecha_pago_esperada:tipo==='liberar_pago'?v('sfEsperada'):null,
       comprobante_path:compPath,cotizacion_pdf_path:cotPath,crm_link:v('sfCrm')||null,notas:v('sfNotas')||null,
-      asistente:asN?{nombre:asN,correo:v('sfAsCorreo'),telefono:v('sfAsTel'),curso:v('sfAsCurso')}:null,
+      asistente:asN?{nombre:asN,correo:v('sfAsCorreo'),telefono:v('sfAsTel'),curso:genTxt}:null,
+      generacion_id:genId||null,pipeline_vendedor_id:window._sfPipe?.id||null,
       estado:tipo==='con_pago'?'solicitada':'pendiente_pago',
     };
     if(solId) row.id=solId;
     const {error}=await sb.from('solicitudes_factura').insert(row);
     if(error) throw error;
+    // Datos fiscales nuevos → se guardan en la cuenta (solo si ahí estaban vacíos)
+    if(cli){
+      const upd={};const f=(k,val)=>{if(val&&!cli[k]) upd[k]=val;};
+      f('rfc',row.rfc);f('regimen_fiscal',row.regimen);f('uso_cfdi',row.uso_cfdi);f('forma_pago_pref',row.forma_pago);f('metodo_pago_pref',row.metodo_pago);
+      if(Object.keys(upd).length){const {error:eu}=await sb.from('clientes_cartera').update(upd).eq('id',cli.id);if(eu) console.error('actualizar cuenta',eu);}
+    }
+    // Comentario en el CRM, en la oportunidad ligada a la negociación
+    let crmOk=false;
+    if(row.pipeline_vendedor_id&&solId){
+      const txt=`[Facturación] Solicitud de factura enviada · Cotización ${row.cotizacion_sae} · ${row.concepto} · Total ${fmt(row.monto_total)} · ${row.metodo_pago}/${row.forma_pago} · Uso CFDI: ${row.uso_cfdi} · RFC ${row.rfc} · ${tipo==='con_pago'?`Pago ${fmt(row.pago_monto)} el ${solFecha(row.pago_fecha)}`:`Liberar pago, pagará ${solFecha(row.fecha_pago_esperada)}`}`;
+      const cid=await pipeComentarioCrmLibre(row.pipeline_vendedor_id,txt,row.vendedor_id);
+      if(cid){crmOk=true;await sb.from('solicitudes_factura').update({comentario_crm_hecho:true,crm_comment_id:String(cid)}).eq('id',solId);}
+    }
+    window._sfPipe=null;
     renderSolFacturaVendedor();
-    setTimeout(()=>{const m=document.getElementById('sfMsg');if(m){m.style.color='var(--teal)';m.textContent='✅ Solicitud enviada.';}},150);
+    setTimeout(()=>{const m=document.getElementById('sfMsg');if(m){m.style.color='var(--teal)';m.textContent='✅ Solicitud enviada.'+(crmOk?' Se dejó el comentario en el CRM.':(row.pipeline_vendedor_id?' (No se pudo dejar el comentario en el CRM.)':' (Sin negociación ligada: no se dejó comentario en el CRM.)'));}},150);
   }catch(e){
     btn.disabled=false;err('No se pudo enviar: '+(e?.message||e));
   }
@@ -29738,6 +29958,7 @@ async function solValidarPago(id,mov,nota,desdeCasado){
   const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
   if(error) return alert('No se pudo validar: '+error.message);
   Object.assign(r,upd);
+  if(r.pipeline_vendedor_id) pipeComentarioCrmLibre(r.pipeline_vendedor_id,`[Facturación] Pago validado · ${fmt(r.pago_monto||r.monto_total)}${r.factura_folio?' · factura '+(r.factura_serie||'')+r.factura_folio:''}`,r.vendedor_id);
   if(desdeCasado){solMostrarCasadoTrasValidar();}
   else{solCerrarModal();solRefrescar();}
 }
@@ -29797,6 +30018,7 @@ async function solFacturarGuardar(id){
     const upd={factura_serie:serie,factura_folio:folio,factura_uuid:window._solXml?.uuid||null,facturada_at:new Date().toISOString(),facturada_por:userProfile?.nombre||'Administración',estado:r.pago_validado?'cerrada':'facturada'};
     const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
     if(error) throw error;
+    if(r.pipeline_vendedor_id) pipeComentarioCrmLibre(r.pipeline_vendedor_id,`[Facturación] Factura ${serie}${folio} emitida · ${fmt(r.monto_total)}${r.pago_validado?' · pago validado':' · pago pendiente de validar'}`,r.vendedor_id);
     solCerrarModal();solRefrescar();
     if(window._solXmlFile) setTimeout(()=>alert('Factura registrada. Para que cuente en Finanzas, el XML se sigue cargando en Finanzas › Ingresos (XML masivo).'),200);
   }catch(e){alert('No se pudo guardar: '+(e?.message||e));}
