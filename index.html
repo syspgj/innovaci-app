@@ -1089,6 +1089,7 @@ async function initApp(user){
   else if(userProfile.rol==='asesor') buildAsesorUI();
   else buildVendorUI();
   try{ mostrarNovedades(); }catch(e){ console.error('novedades',e); }
+  try{ mostrarAvisoTimbres(); }catch(e){ console.error('timbres',e); }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -24004,6 +24005,7 @@ const FIN_TABS=[
   {id:'flujo',     label:'📊 Flujo de efectivo'},
   {id:'balance',   label:'📈 Balance anual'},
   {id:'facturacion',label:'🧾 Facturación'},
+  {id:'timbres',label:'🎟 Timbres'},
 ];
 
 function renderFinanzas(){
@@ -24045,6 +24047,7 @@ function dispatchFinTab(id){
   else if(id==='flujo')     renderFinFlujo();
   else if(id==='balance')   renderFinBalance();
   else if(id==='facturacion') renderSolFacturaGestion(finCont());
+  else if(id==='timbres') renderFinTimbres();
 }
 
 // ─── SHARED HELPERS ──────────────────────────────────────────────────────────
@@ -29805,6 +29808,7 @@ async function solCargarListaVendedor(){
   const {data,error}=await sb.from('solicitudes_factura').select('*').eq('vendedor_id',userProfile?.id||currentUser.id).order('created_at',{ascending:false}).limit(60);
   if(error){cont.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(error.message)}</div>`;return;}
   _solRows=data||[];
+  await timCargarDeSolicitudes(_solRows.filter(r=>r.timbres_estado==='asignados').map(r=>r.id));
   if(!_solRows.length){cont.innerHTML='<div style="font-size:12px;color:var(--text3);">Aún no has enviado solicitudes.</div>';return;}
   cont.innerHTML=_solRows.map(r=>solTarjeta(r,'vendedor')).join('');
 }
@@ -29830,6 +29834,7 @@ function solTarjeta(r,modo){
     <div style="font-size:12px;color:var(--text2);margin-top:3px;">${solEsc(r.concepto)} · <b>${fmt(r.monto_total)}</b> · ${solEsc(r.cotizacion_sae)}${!esVend?` · 👤 ${solEsc(r.vendedor_nombre)}`:''} · ${solFecha(r.created_at)}</div>
     <div style="font-size:11px;color:var(--text3);margin-top:2px;">${solEsc(r.rfc)} · ${solEsc(r.forma_pago)} · ${solEsc(r.metodo_pago)} · ${solEsc(r.uso_cfdi)} · ${solEsc(r.regimen)}</div>
     ${pago}${fact}
+    ${timTarjetaHtml(r,esDir,esVend)}
     ${r.pago_nota?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">Nota de validación: ${solEsc(r.pago_nota)}</div>`:''}
     ${r.asistente?`<div style="font-size:11px;color:var(--teal);margin-top:3px;">🎓 Asistente: ${solEsc(r.asistente.nombre)} · ${solEsc(r.asistente.correo)} · ${solEsc(r.asistente.telefono)} · ${solEsc(r.asistente.curso)}</div>`:''}
     ${r.notas?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">📝 ${solEsc(r.notas)}</div>`:''}
@@ -29895,6 +29900,7 @@ async function renderSolFacturaGestion(el){
   const {data,error}=await sb.from('solicitudes_factura').select('*').order('created_at',{ascending:false}).limit(250);
   if(error){cont.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(error.message)}</div>`;return;}
   _solRows=data||[];
+  await timCargarDeSolicitudes(_solRows.filter(r=>r.timbres_estado==='asignados').map(r=>r.id));
   const por={validar:_solRows.filter(r=>!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada')),
     facturar:_solRows.filter(r=>r.estado==='pago_validado'||r.estado==='pendiente_pago'),
     pendientes:_solRows.filter(r=>['solicitada','pendiente_pago','pago_validado','facturada'].includes(r.estado)),
@@ -30003,8 +30009,14 @@ async function solValidarPago(id,mov,nota,desdeCasado){
   if(error) return alert('No se pudo validar: '+error.message);
   Object.assign(r,upd);
   if(r.pipeline_vendedor_id) pipeComentarioCrmLibre(r.pipeline_vendedor_id,`[Facturación] Pago validado · ${fmt(r.pago_monto||r.monto_total)}${r.factura_folio?' · factura '+(r.factura_serie||'')+r.factura_folio:''}`,r.vendedor_id);
+  // Timbres: si el concepto es de timbres, se asigna solo un paquete disponible de esa cantidad.
+  let msgTim=null;
+  if(!r.timbres_estado&&timCantidadDeConcepto(r.concepto)){
+    try{msgTim=timMensajeResultado(r,await timAsignar(r));}catch(e){msgTim='No se pudieron asignar los timbres: '+(e?.message||e);}
+  }
   if(desdeCasado){solMostrarCasadoTrasValidar();}
   else{solCerrarModal();solRefrescar();}
+  if(msgTim) setTimeout(()=>alert(msgTim),250);
 }
 function solMostrarCasadoTrasValidar(){
   // Recalcula el casado (los movimientos ya consumidos desaparecen) y refresca el fondo
@@ -30123,6 +30135,294 @@ function mostrarNovedades(){
   </div>`).join('');
   const tabs=document.getElementById('tabsBar');
   if(tabs&&tabs.parentNode) tabs.parentNode.insertBefore(cont,tabs);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TIMBRES (Jp, 2026-11-02)
+// Paquetes de timbres que Jp compra en el portal de la marca. Viven en
+// `timbres_paquetes` (Finanzas › Timbres). Al validar el pago de una solicitud
+// cuyo concepto es de timbres, se asigna solo un paquete disponible de esa
+// cantidad (el más antiguo), queda ligado a la solicitud y se avisa al vendedor
+// en la app y por correo (/api/timbres-avisar-vendedor). Si no hay paquete de
+// esa cantidad queda "pendiente" y se reintenta al dar de alta paquetes.
+// ════════════════════════════════════════════════════════════════════════════
+let _timFiltro='disponible', _timRows=[], _solTimbres={}, _timImport=[];
+function timCantidadDeConcepto(txt){
+  const t=String(txt||'');
+  if(!/timbr/i.test(t)) return null;
+  const m=t.match(/(\d[\d,\.]*)\s*timbres/i)||t.match(/PQ\s*(\d[\d,\.]*)/i);
+  if(!m) return null;
+  const n=parseInt(m[1].replace(/[,\.]/g,''),10);
+  return n>0?n:null;
+}
+function timFmtN(n){return Number(n||0).toLocaleString('es-MX');}
+async function timCargarDeSolicitudes(ids){
+  _solTimbres={};
+  if(!ids||!ids.length) return;
+  const {data}=await sb.from('timbres_paquetes').select('id,clave,cantidad,solicitud_id').in('solicitud_id',ids);
+  (data||[]).forEach(p=>{(_solTimbres[p.solicitud_id]=_solTimbres[p.solicitud_id]||[]).push(p);});
+}
+function timCopiar(txt){
+  (navigator.clipboard?.writeText(txt)||Promise.reject()).then(()=>{}).catch(()=>prompt('Copia la clave:',txt));
+}
+// Bloque que se agrega a la tarjeta de la solicitud (vendedor, Dirección y Administración)
+function timTarjetaHtml(r,esDir,esVend){
+  const n=r.timbres_cantidad||timCantidadDeConcepto(r.concepto);
+  const caja=(color,bg,html)=>`<div style="background:${bg};border:1px solid ${color};border-radius:8px;padding:7px 10px;margin-top:7px;font-size:12px;">${html}</div>`;
+  if(r.timbres_estado==='asignados'){
+    const ps=_solTimbres[r.id]||[];
+    const claves=ps.map(p=>`<span style="display:inline-flex;align-items:center;gap:5px;margin:2px 8px 2px 0;"><span style="font-family:'JetBrains Mono',monospace;font-weight:700;">${solEsc(p.clave)}</span> <span style="color:var(--text3);">(${timFmtN(p.cantidad)})</span><button onclick="timCopiar('${solEsc(p.clave)}')" style="border:1px solid var(--border);background:#fff;border-radius:5px;font-size:10px;padding:1px 6px;cursor:pointer;">Copiar</button></span>`).join('');
+    return caja('#9fd3d0','#eef6f6',`🎟 <b>Timbres asignados${n?' ('+timFmtN(n)+')':''}:</b> ${claves||'—'}${esDir?` <button onclick="timAsignarManualModal('${r.id}')" style="border:1px solid var(--border);background:#fff;border-radius:5px;font-size:10px;padding:1px 6px;cursor:pointer;">+ otro paquete</button>`:''}`);
+  }
+  if(r.timbres_estado==='pendiente'){
+    return caja('#F5A623','#FFF8EC',esVend
+      ?`⏳ <b>Timbres por asignar${n?' ('+timFmtN(n)+')':''}:</b> Dirección los asignará en cuanto haya un paquete disponible; te llegará el aviso.`
+      :`⚠️ <b>No había un paquete de ${n?timFmtN(n)+' ':''}timbres disponible.</b> Quedó pendiente.${esDir?` <button onclick="timAsignarManualModal('${r.id}')" style="border:1px solid var(--border);background:#fff;border-radius:5px;font-size:10px;padding:2px 8px;cursor:pointer;font-weight:600;">Asignar paquete</button>`:''}`);
+  }
+  if(esDir&&r.pago_validado&&n&&r.estado!=='cancelada'){
+    return caja('#cfd8dc','#f7f9fa',`🎟 Solicitud de ${timFmtN(n)} timbres con pago validado. <button onclick="timAsignarSolicitudBtn('${r.id}')" style="border:1px solid var(--teal);background:var(--teal);color:#fff;border-radius:5px;font-size:11px;padding:3px 10px;cursor:pointer;font-weight:700;">Asignar timbres</button>`);
+  }
+  return '';
+}
+async function timAvisarVendedor(solId){
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const resp=await fetch('/api/timbres-avisar-vendedor',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solicitud_id:solId})});
+    let d={};try{d=await resp.json();}catch(e){}
+    return (resp.ok&&d.ok)?{ok:true}:{ok:false,error:d.error||('HTTP '+resp.status)};
+  }catch(e){return {ok:false,error:String(e?.message||e)};}
+}
+// Asigna a la solicitud `r` un paquete: el indicado (paq) o el disponible más antiguo de su cantidad.
+async function timAsignar(r,paq){
+  let n=r.timbres_cantidad||timCantidadDeConcepto(r.concepto);
+  let cands=[];
+  if(paq){cands=[paq];n=n||paq.cantidad;}
+  else{
+    if(!n) return {estado:'sin_cantidad'};
+    const {data}=await sb.from('timbres_paquetes').select('id,clave,cantidad').eq('estatus','disponible').eq('cantidad',n).order('fecha_compra',{ascending:true}).order('created_at',{ascending:true}).limit(8);
+    cands=data||[];
+  }
+  let got=null;
+  for(const c of cands){
+    const {data:upd,error}=await sb.from('timbres_paquetes').update({estatus:'asignado',solicitud_id:r.id,asignado_at:new Date().toISOString(),asignado_por:userProfile?.nombre||'Dirección'}).eq('id',c.id).eq('estatus','disponible').select('id,clave,cantidad');
+    if(!error&&upd&&upd.length){got=upd[0];break;}
+  }
+  if(!got){
+    const patch={timbres_cantidad:n,timbres_estado:'pendiente',timbres_visto:false};
+    await sb.from('solicitudes_factura').update(patch).eq('id',r.id);
+    Object.assign(r,patch);
+    return {estado:'pendiente',n};
+  }
+  const patch={timbres_cantidad:n,timbres_estado:'asignados',timbres_visto:false};
+  const {error:e2}=await sb.from('solicitudes_factura').update(patch).eq('id',r.id);
+  if(e2) return {estado:'error',error:e2.message};
+  Object.assign(r,patch);
+  (_solTimbres[r.id]=_solTimbres[r.id]||[]).push(got);
+  if(r.pipeline_vendedor_id) pipeComentarioCrmLibre(r.pipeline_vendedor_id,`[Facturación] Timbres asignados: ${got.clave} (${timFmtN(got.cantidad)} timbres)`,r.vendedor_id);
+  const correo=await timAvisarVendedor(r.id);
+  return {estado:'asignados',clave:got.clave,correo};
+}
+function timMensajeResultado(r,res){
+  if(res.estado==='asignados') return `🎟 Timbres asignados a ${r.cliente_nombre}: ${res.clave}.\nSe le avisó a ${r.vendedor_nombre||'el vendedor'} en la app${res.correo?.ok?' y por correo':' (el correo no se pudo enviar: '+(res.correo?.error||'—')+')'}.`;
+  if(res.estado==='pendiente') return `⚠️ No hay un paquete disponible de ${timFmtN(res.n)} timbres. La solicitud de ${r.cliente_nombre} quedó pendiente de timbres; cuando des de alta uno se asignará.`;
+  if(res.estado==='sin_cantidad') return 'No pude leer la cantidad de timbres del concepto. Asigna el paquete manualmente.';
+  return 'No se pudieron asignar los timbres: '+(res.error||'error');
+}
+async function timAsignarSolicitudBtn(id){
+  const r=_solRows.find(x=>x.id===id);if(!r) return;
+  const res=await timAsignar(r);
+  alert(timMensajeResultado(r,res));
+  solRefrescar();
+}
+// Reintenta las solicitudes con timbres pendientes (tras dar de alta paquetes).
+async function timReintentarPendientes(){
+  const {data}=await sb.from('solicitudes_factura').select('*').eq('timbres_estado','pendiente').eq('pago_validado',true).order('created_at',{ascending:true});
+  const msgs=[];
+  for(const r of (data||[])){
+    const res=await timAsignar(r);
+    if(res.estado==='asignados') msgs.push(timMensajeResultado(r,res));
+  }
+  return msgs;
+}
+async function timAsignarManualModal(solId){
+  const r=_solRows.find(x=>x.id===solId);if(!r) return;
+  const {data}=await sb.from('timbres_paquetes').select('id,clave,cantidad,fecha_compra').eq('estatus','disponible').order('fecha_compra',{ascending:true});
+  const n=r.timbres_cantidad||timCantidadDeConcepto(r.concepto);
+  const ps=(data||[]).sort((a,b)=>(a.cantidad===n?0:1)-(b.cantidad===n?0:1));
+  window._timDisp=ps;
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">🎟 Asignar paquete de timbres</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">${solEsc(r.cliente_nombre)} · ${solEsc(r.concepto)}${n?` · pidió <b>${timFmtN(n)}</b>`:''}</div>
+    ${ps.length?`<select id="timPaqSel" style="${SOL_INPUT_STYLE}">${ps.map(p=>`<option value="${p.id}">${solEsc(p.clave)} · ${timFmtN(p.cantidad)} timbres${p.cantidad===n?' ✓ coincide':''}${p.fecha_compra?' · '+solFecha(p.fecha_compra):''}</option>`).join('')}</select>`:'<div style="font-size:12px;color:#B45309;">No hay paquetes disponibles. Da de alta uno en Finanzas › Timbres.</div>'}
+    <div style="display:flex;gap:8px;margin-top:12px;">${ps.length?`<button onclick="timAsignarManualOk('${solId}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Asignar</button>`:''}<button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`);
+}
+async function timAsignarManualOk(solId){
+  const r=_solRows.find(x=>x.id===solId);if(!r) return;
+  const id=document.getElementById('timPaqSel')?.value;
+  const p=(window._timDisp||[]).find(x=>x.id===id);if(!p) return;
+  const n=r.timbres_cantidad||timCantidadDeConcepto(r.concepto);
+  if(n&&p.cantidad!==n&&!confirm(`El paquete es de ${timFmtN(p.cantidad)} y la solicitud pide ${timFmtN(n)}. ¿Asignarlo de todos modos?`)) return;
+  const res=await timAsignar(r,p);
+  solCerrarModal();
+  alert(timMensajeResultado(r,res));
+  solRefrescar();
+}
+
+// ─── Aviso al vendedor al entrar a su dashboard ──────────────────────────────
+async function mostrarAvisoTimbres(){
+  document.getElementById('timbresBar')?.remove();
+  if(!userProfile||userProfile.rol!=='vendedor') return;
+  const {data:sols}=await sb.from('solicitudes_factura').select('id,cliente_nombre,timbres_cantidad').eq('vendedor_id',userProfile.id).eq('timbres_estado','asignados').eq('timbres_visto',false);
+  if(!sols||!sols.length) return;
+  await timCargarDeSolicitudes(sols.map(s=>s.id));
+  const cont=document.createElement('div');
+  cont.id='timbresBar';cont.style.cssText='padding:10px 24px 0;';
+  cont.innerHTML=sols.map(s=>`<div id="timBar_${s.id}" style="background:#eef6f6;border:1px solid #9fd3d0;border-left:4px solid var(--teal);border-radius:10px;padding:10px 14px;margin-bottom:8px;font-size:13px;color:var(--text);">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><span style="font-size:18px;">🎟</span>
+      <div style="flex:1;min-width:240px;"><b>Se te asignaron timbres${s.timbres_cantidad?' ('+timFmtN(s.timbres_cantidad)+')':''} para ${solEsc(s.cliente_nombre)}</b></div>
+      <button onclick="timBarEntendido('${s.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">Entendido</button></div>
+    <div style="margin-top:4px;">${(_solTimbres[s.id]||[]).map(p=>`<span style="display:inline-flex;align-items:center;gap:5px;margin:2px 10px 2px 0;"><span style="font-family:'JetBrains Mono',monospace;font-weight:700;">${solEsc(p.clave)}</span><span style="color:var(--text3);font-size:11px;">(${timFmtN(p.cantidad)})</span><button onclick="timCopiar('${solEsc(p.clave)}')" style="border:1px solid var(--border);background:#fff;border-radius:5px;font-size:10px;padding:1px 6px;cursor:pointer;">Copiar</button></span>`).join('')}</div>
+  </div>`).join('');
+  const tabs=document.getElementById('tabsBar');
+  if(tabs&&tabs.parentNode) tabs.parentNode.insertBefore(cont,tabs);
+}
+async function timBarEntendido(id){
+  await sb.from('solicitudes_factura').update({timbres_visto:true}).eq('id',id);
+  document.getElementById('timBar_'+id)?.remove();
+  const b=document.getElementById('timbresBar');if(b&&!b.children.length) b.remove();
+}
+
+// ─── Finanzas › Timbres ──────────────────────────────────────────────────────
+function timParsearTabla(txt){
+  const t=String(txt||'').replace(/\r/g,'');
+  const partes=t.split(/(?=D\d{10,})/).map(s=>s.trim()).filter(s=>/^D\d{10,}/.test(s));
+  const toIso=m=>{let y=+m[3];if(y<100)y+=2000;return `${y}-${String(m[2]).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;};
+  return partes.map(p=>{
+    const clave=p.match(/^D\d{10,}/)[0];
+    const resto=p.slice(clave.length);
+    const cant=resto.match(/(\d[\d,\.]*)\s*timbres/i);
+    const fechas=[...resto.matchAll(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/g)].map(toIso);
+    const estatus=/utilizad/i.test(resto)?'utilizada':'disponible';
+    let cliente='';const mi=resto.match(/(?:disponible|utilizada)\s*([\s\S]*)$/i);
+    if(mi) cliente=mi[1].replace(/\s+/g,' ').trim();
+    if(/^sin asignar$/i.test(cliente)) cliente='';
+    return {clave,cantidad:cant?parseInt(cant[1].replace(/[,\.]/g,''),10):null,fecha_compra:fechas[0]||null,fecha_activacion:fechas[1]||null,estatus,cliente_portal:cliente||null};
+  }).filter(x=>x.cantidad>0);
+}
+async function renderFinTimbres(){
+  finLoading();
+  const c=finCont();
+  const [{data:paqs,error},{data:pend}]=await Promise.all([
+    sb.from('timbres_paquetes').select('*').order('fecha_compra',{ascending:false}).limit(1500),
+    sb.from('solicitudes_factura').select('id,cliente_nombre,vendedor_nombre,concepto,timbres_cantidad,created_at').eq('timbres_estado','pendiente')]);
+  if(error){c.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(error.message)}</div>`;return;}
+  _timRows=paqs||[];
+  const ids=[...new Set(_timRows.filter(p=>p.solicitud_id).map(p=>p.solicitud_id))];
+  const sols={};
+  if(ids.length){const {data}=await sb.from('solicitudes_factura').select('id,cliente_nombre,vendedor_nombre').in('id',ids);(data||[]).forEach(s=>sols[s.id]=s);}
+  const disp=_timRows.filter(p=>p.estatus==='disponible'),asig=_timRows.filter(p=>p.estatus==='asignado'),util=_timRows.filter(p=>p.estatus==='utilizada');
+  const sum=a=>a.reduce((s,p)=>s+(p.cantidad||0),0);
+  const porCant={};disp.forEach(p=>{porCant[p.cantidad]=(porCant[p.cantidad]||0)+1;});
+  const chips=Object.keys(porCant).map(Number).sort((a,b)=>b-a).map(q=>`<span style="background:#eef6f6;border:1px solid #9fd3d0;border-radius:14px;padding:3px 11px;font-size:12px;font-weight:600;color:var(--navy);">${timFmtN(q)} × ${porCant[q]}</span>`).join(' ');
+  const lista=_timFiltro==='disponible'?disp:_timFiltro==='asignado'?asig:_timFiltro==='utilizada'?util:_timRows;
+  const kpi=(t,v,s,col)=>`<div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 16px;min-width:170px;"><div style="font-size:11px;color:var(--text3);">${t}</div><div style="font-size:22px;font-weight:800;color:${col||'var(--navy)'};">${v}</div><div style="font-size:11px;color:var(--text3);">${s}</div></div>`;
+  const estChip=e=>({disponible:['#E8F5E9','#2E7D32','Disponible'],asignado:['#FFF3E0','#B45309','Asignado'],utilizada:['#ECEFF1','#546E7A','Utilizada']}[e]||['#eee','#555',e]);
+  c.innerHTML=`
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+    <div style="font-size:15px;font-weight:600;color:var(--text);">🎟 Control de timbres</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button onclick="timImportarModal()" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">📋 Pegar tabla del portal</button>
+      <button onclick="timAltaModal()" style="background:#fff;color:var(--text2);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar paquete</button>
+    </div>
+  </div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+    ${kpi('Timbres disponibles',timFmtN(sum(disp)),disp.length+' paquetes','var(--teal)')}
+    ${kpi('Asignados a ventas',timFmtN(sum(asig)),asig.length+' paquetes','#B45309')}
+    ${kpi('Utilizados en el portal',timFmtN(sum(util)),util.length+' paquetes','#546E7A')}
+    ${kpi('Solicitudes pendientes',(pend||[]).length,'sin paquete de esa cantidad',(pend||[]).length?'#c0392b':'var(--navy)')}
+  </div>
+  ${chips?`<div style="margin-bottom:12px;font-size:12px;color:var(--text3);">Disponibles por cantidad: ${chips}</div>`:''}
+  ${(pend||[]).length?`<div style="background:#FFF8EC;border:1px solid #F5A623;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px;"><b>⚠️ Pendientes de timbres (pago validado, sin paquete):</b>${pend.map(s=>`<div style="margin-top:4px;">${solEsc(s.cliente_nombre)} · ${solEsc(s.concepto)} · 👤 ${solEsc(s.vendedor_nombre)}</div>`).join('')}<div style="margin-top:6px;color:var(--text3);">Al dar de alta un paquete de esa cantidad se asignan solos.</div></div>`:''}
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+    ${[['disponible','Disponibles'],['asignado','Asignados'],['utilizada','Utilizados'],['todos','Todos']].map(([k,l])=>`<button onclick="_timFiltro='${k}';renderFinTimbres()" style="padding:6px 13px;border-radius:16px;border:1px solid ${_timFiltro===k?'var(--teal)':'var(--border)'};background:${_timFiltro===k?'var(--teal)':'#fff'};color:${_timFiltro===k?'#fff':'var(--text2)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${l}</button>`).join('')}
+  </div>
+  <div style="background:#fff;border:1px solid var(--border);border-radius:10px;overflow-x:auto;">
+  <table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="background:#f4f7f9;color:var(--text3);text-align:left;"><th style="padding:8px 12px;">Clave</th><th style="padding:8px 12px;">Cantidad</th><th style="padding:8px 12px;">Compra</th><th style="padding:8px 12px;">Activación</th><th style="padding:8px 12px;">Estatus</th><th style="padding:8px 12px;">Cliente / solicitud</th><th style="padding:8px 12px;"></th></tr></thead>
+    <tbody>${lista.length?lista.map(p=>{const ec=estChip(p.estatus);const s=sols[p.solicitud_id];return `<tr style="border-top:1px solid var(--border);">
+      <td style="padding:7px 12px;font-family:'JetBrains Mono',monospace;">${solEsc(p.clave)}</td>
+      <td style="padding:7px 12px;font-weight:700;">${timFmtN(p.cantidad)}</td>
+      <td style="padding:7px 12px;">${p.fecha_compra?solFecha(p.fecha_compra):'—'}</td>
+      <td style="padding:7px 12px;">${p.fecha_activacion?solFecha(p.fecha_activacion):'—'}</td>
+      <td style="padding:7px 12px;"><span style="background:${ec[0]};color:${ec[1]};border-radius:10px;padding:2px 9px;font-weight:700;font-size:11px;">${ec[2]}</span></td>
+      <td style="padding:7px 12px;">${s?`${solEsc(s.cliente_nombre)} <span style="color:var(--text3);">· 👤 ${solEsc(s.vendedor_nombre)}</span>`:solEsc(p.cliente_portal||'—')}</td>
+      <td style="padding:7px 12px;white-space:nowrap;">${p.estatus==='asignado'?`<button onclick="timLiberar('${p.id}')" style="border:1px solid var(--border);background:#fff;border-radius:6px;font-size:11px;padding:3px 9px;cursor:pointer;">Liberar</button>`:''}${p.estatus==='disponible'?`<button onclick="timEliminar('${p.id}')" title="Eliminar" style="border:none;background:none;cursor:pointer;color:var(--text3);font-size:13px;">✕</button>`:''}</td></tr>`;}).join(''):'<tr><td colspan="7" style="padding:24px;text-align:center;color:var(--text3);">No hay paquetes en esta vista.</td></tr>'}</tbody>
+  </table></div>`;
+}
+async function timLiberar(id){
+  if(!confirm('¿Liberar este paquete? Vuelve a quedar disponible y se desliga de la solicitud.')) return;
+  const p=_timRows.find(x=>x.id===id);
+  const {error}=await sb.from('timbres_paquetes').update({estatus:'disponible',solicitud_id:null,asignado_at:null,asignado_por:null}).eq('id',id);
+  if(error) return alert('No se pudo liberar: '+error.message);
+  if(p?.solicitud_id){
+    const {data:rest}=await sb.from('timbres_paquetes').select('id').eq('solicitud_id',p.solicitud_id);
+    if(!rest||!rest.length) await sb.from('solicitudes_factura').update({timbres_estado:'pendiente',timbres_visto:false}).eq('id',p.solicitud_id);
+  }
+  renderFinTimbres();
+}
+async function timEliminar(id){
+  if(!confirm('¿Eliminar este paquete de la lista? (Solo se puede si está disponible.)')) return;
+  const {error}=await sb.from('timbres_paquetes').delete().eq('id',id).eq('estatus','disponible');
+  if(error) return alert('No se pudo eliminar: '+error.message);
+  renderFinTimbres();
+}
+function timAltaModal(){
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:10px;">+ Agregar paquete de timbres</div>
+    ${solFld('Clave','<input id="taClave" placeholder="D1894423116515" style="'+SOL_INPUT_STYLE+'">')}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 12px;">
+      ${solFld('Cantidad de timbres','<input id="taCant" type="number" min="1" placeholder="1000" style="'+SOL_INPUT_STYLE+'">')}
+      ${solFld('Fecha de compra','<input id="taFecha" type="date" value="'+todayLocal()+'" style="'+SOL_INPUT_STYLE+'">')}
+    </div>
+    <div style="display:flex;gap:8px;"><button onclick="timAltaGuardar()" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar</button><button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`);
+}
+async function timAltaGuardar(){
+  const clave=document.getElementById('taClave').value.trim(),cant=parseInt(document.getElementById('taCant').value,10),fecha=document.getElementById('taFecha').value||null;
+  if(!clave||!(cant>0)) return alert('Captura la clave y la cantidad.');
+  const {error}=await sb.from('timbres_paquetes').insert({clave,cantidad:cant,fecha_compra:fecha,estatus:'disponible'});
+  if(error) return alert(/duplicate|unique/i.test(error.message)?'Esa clave ya está dada de alta.':'No se pudo guardar: '+error.message);
+  solCerrarModal();
+  const msgs=await timReintentarPendientes();
+  renderFinTimbres();
+  if(msgs.length) setTimeout(()=>alert(msgs.join('\n\n')),200);
+}
+function timImportarModal(){
+  _timImport=[];
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">📋 Pegar tabla del portal</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">Copia la tabla de timbres del portal de la marca (Clave, Cantidad, Fecha, F. Activación, Estatus, Cliente) y pégala aquí. Revisas el resultado antes de importar.</div>
+    <textarea id="tiTexto" rows="8" oninput="timImportarVista()" placeholder="Pega aquí…" style="${SOL_INPUT_STYLE}font-family:'JetBrains Mono',monospace;font-size:11px;"></textarea>
+    <div id="tiVista" style="font-size:12px;margin:8px 0;max-height:240px;overflow-y:auto;"></div>
+    <div style="display:flex;gap:8px;"><button id="tiBtn" onclick="timImportarOk()" disabled style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;opacity:.5;">Importar</button><button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`);
+}
+function timImportarVista(){
+  _timImport=timParsearTabla(document.getElementById('tiTexto').value);
+  const ex={};_timRows.forEach(p=>ex[p.clave]=p);
+  let nuevos=0,act=0,igual=0;
+  _timImport.forEach(x=>{const e=ex[x.clave];if(!e) nuevos++;else if(x.estatus==='utilizada'&&e.estatus!=='utilizada') act++;else igual++;});
+  const v=document.getElementById('tiVista'),b=document.getElementById('tiBtn');
+  if(!_timImport.length){v.innerHTML='<span style="color:var(--text3);">No encuentro claves en el texto.</span>';b.disabled=true;b.style.opacity='.5';return;}
+  v.innerHTML=`<div style="margin-bottom:6px;"><b>${_timImport.length}</b> paquetes leídos · <span style="color:#2E7D32;">${nuevos} nuevos</span> · <span style="color:#B45309;">${act} pasan a utilizados</span> · ${igual} sin cambio</div>
+    <table style="width:100%;font-size:11px;border-collapse:collapse;">${_timImport.map(x=>`<tr style="border-top:1px solid var(--border);"><td style="padding:3px 6px;font-family:'JetBrains Mono',monospace;">${solEsc(x.clave)}</td><td style="padding:3px 6px;">${timFmtN(x.cantidad)}</td><td style="padding:3px 6px;">${x.fecha_compra?solFecha(x.fecha_compra):'—'}</td><td style="padding:3px 6px;">${x.estatus}</td><td style="padding:3px 6px;">${solEsc(x.cliente_portal||'')}</td></tr>`).join('')}</table>`;
+  b.disabled=false;b.style.opacity='1';
+}
+async function timImportarOk(){
+  const ex={};_timRows.forEach(p=>ex[p.clave]=p);
+  const nuevos=_timImport.filter(x=>!ex[x.clave]).map(x=>({clave:x.clave,cantidad:x.cantidad,fecha_compra:x.fecha_compra,fecha_activacion:x.fecha_activacion,estatus:x.estatus,cliente_portal:x.cliente_portal}));
+  const cambios=_timImport.filter(x=>ex[x.clave]&&x.estatus==='utilizada'&&ex[x.clave].estatus!=='utilizada');
+  if(nuevos.length){const {error}=await sb.from('timbres_paquetes').insert(nuevos);if(error) return alert('No se pudo importar: '+error.message);}
+  for(const x of cambios){await sb.from('timbres_paquetes').update({estatus:'utilizada',fecha_activacion:x.fecha_activacion,cliente_portal:x.cliente_portal}).eq('id',ex[x.clave].id);}
+  solCerrarModal();
+  const msgs=await timReintentarPendientes();
+  await renderFinTimbres();
+  setTimeout(()=>alert(`Importación lista: ${nuevos.length} nuevos, ${cambios.length} actualizados.`+(msgs.length?'\n\n'+msgs.join('\n\n'):'')),200);
 }
 
 function buildAdminUI(){
