@@ -16623,6 +16623,7 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
               <div>
                 <div style="font-weight:500;color:var(--text);">${ev.evento}${ev.sistema_relacionado?` <span style="font-size:10px;font-weight:700;color:var(--teal);background:rgba(0,169,157,0.1);border-radius:4px;padding:1px 6px;margin-left:4px;">${ev.sistema_relacionado}</span>`:''}</div>
                 ${ev.promocion?`<div style="font-size:10.5px;color:var(--text3);margin-top:2px;">🏷️ ${ev.promocion}</div>`:''}
+                ${ev.respuestas?Object.entries(ev.respuestas).map(([q,a])=>`<div style="font-size:10.5px;color:var(--text2);margin-top:3px;"><span style="color:var(--text3);">${solEsc(q)}:</span> <b>${solEsc(a)}</b></div>`).join(''):''}
               </div>
               <div style="color:var(--text3);white-space:nowrap;margin-left:8px;">${ev.fecha_evento||ev.fecha_registro||'—'}</div>
             </div>`).join('')}
@@ -18441,6 +18442,7 @@ async function abrirDetalle(id){
               <div>
                 <div style="font-weight:500;color:var(--text);">${ev.evento}${ev.sistema_relacionado?` <span style="font-size:10px;font-weight:700;color:var(--teal);background:rgba(0,169,157,0.1);border-radius:4px;padding:1px 6px;margin-left:4px;">${ev.sistema_relacionado}</span>`:''}</div>
                 ${ev.promocion?`<div style="font-size:10.5px;color:var(--text3);margin-top:2px;">🏷️ ${ev.promocion}</div>`:''}
+                ${ev.respuestas?Object.entries(ev.respuestas).map(([q,a])=>`<div style="font-size:10.5px;color:var(--text2);margin-top:3px;"><span style="color:var(--text3);">${solEsc(q)}:</span> <b>${solEsc(a)}</b></div>`).join(''):''}
               </div>
               <div style="color:var(--text3);white-space:nowrap;margin-left:8px;">${ev.fecha_evento||ev.fecha_registro||'—'}</div>
             </div>`).join('')}
@@ -20309,8 +20311,21 @@ function prospNormalizarHeader(h){
 // cómo se llamen exactamente (varían por campaña de Meta — ver sección 6 del
 // diseño: full_name/nombre_completo, email/correo_electronico,
 // phone_number/whatsapp_number/número_de_whatsapp).
+// Jp, 2026-11-02: preguntas de calificación del formulario (p.ej. "¿actualmente
+// utilizas aspel noi?"). Se reconocen por el signo ¿ / ? del encabezado, se
+// guardan por evento en prospecto_eventos.respuestas (jsonb) y NO participan en
+// la detección de nombre/correo/teléfono (una pregunta con la palabra "correo"
+// o "whatsapp" se confundía con la columna de contacto).
+function prospEsPregunta(h){const t=String(h||'').trim();return t.startsWith('¿')||t.endsWith('?')||t.includes('?_');}
+function prospLimpiarTexto(t){
+  let x=String(t||'').trim().replace(/^¿/,'').replace(/\?$/,'').replace(/,_/g,', ').replace(/_/g,' ').replace(/\s+/g,' ').trim();
+  return x?x.charAt(0).toUpperCase()+x.slice(1):'';
+}
+function prospDetectarPreguntas(headers){
+  const out=[];headers.forEach((h,i)=>{if(prospEsPregunta(h)) out.push({i,pregunta:prospLimpiarTexto(h)});});return out;
+}
 function prospDetectarColumnas(headers){
-  const norm=headers.map(prospNormalizarHeader);
+  const norm=headers.map(h=>prospEsPregunta(h)?'':prospNormalizarHeader(h));
   const find=(preds)=>{ for(let i=0;i<norm.length;i++){ if(preds(norm[i])) return i; } return -1; };
   // "nombre" por substring (no igualdad exacta) para cubrir variantes como
   // "Nombre y apellido", "Nombre completo", etc. — excluyendo las columnas
@@ -20431,6 +20446,7 @@ async function procesarPaste(){
     return;
   }
 
+  const preguntasCols=prospDetectarPreguntas(headers);
   let campaniaDetectada='';
   const parsed=[];
   for(const fila of filasDatos){
@@ -20443,7 +20459,9 @@ async function procesarPaste(){
     if(!nombre&&!email&&!telefono) continue;
     if(/test@meta\.com/i.test(email)) continue; // filas de prueba de Meta — sección 6 del diseño
     if(iCampania>=0&&fila[iCampania]) campaniaDetectada=fila[iCampania];
-    parsed.push({nombre:nombre||'Sin nombre',telefono,email,empresa:empresaFila||null,puesto:puestoFila||null,origen,interes,_fecha:iFecha>=0?fila[iFecha]:null,tipoEvento,sistemaRelacionado,fechaEvento,promocion});
+    const respuestas={};
+    preguntasCols.forEach(q=>{const v=prospLimpiarTexto(fila[q.i]);if(v) respuestas[q.pregunta]=v;});
+    parsed.push({nombre:nombre||'Sin nombre',telefono,email,empresa:empresaFila||null,puesto:puestoFila||null,respuestas:Object.keys(respuestas).length?respuestas:null,origen,interes,_fecha:iFecha>=0?fila[iFecha]:null,tipoEvento,sistemaRelacionado,fechaEvento,promocion});
   }
   if(!parsed.length){alert('No quedaron filas válidas después de filtrar vacías y de prueba.');return;}
 
@@ -20492,6 +20510,7 @@ async function procesarPaste(){
 
   const preview=document.getElementById('previewArea');
   preview.innerHTML=`
+  ${preguntasCols.length?`<div class="insight" style="margin-bottom:10px;">❓ Detecté ${preguntasCols.length} pregunta(s) del formulario que se guardarán con el evento y se verán en la ficha del prospecto:<br>${preguntasCols.map(q=>`• ${solEsc(q.pregunta)}`).join('<br>')}</div>`:''}
   ${!primeraEsEncabezado?`<div class="insight" style="margin-bottom:10px;border-color:var(--gold-b);background:var(--gold-bg);color:var(--gold);">⚠ No reconocí una fila de encabezados en lo que pegaste (la primera línea ya traía datos, no títulos de columna) — adiviné Nombre/Correo/Teléfono por el contenido de las filas. Revisa abajo que coincidan antes de subir; si algo quedó mal, agrega una fila de encabezados (Nombre, Correo, Teléfono) al inicio de lo que pegas y vuelve a previsualizar.</div>`:''}
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);overflow:hidden;">
     <div class="card-head">
@@ -20499,13 +20518,14 @@ async function procesarPaste(){
       <span class="badge bt">${nuevos} nuevos · ${existentesN} ya existen (solo se les agrega el evento)${dupesEnLote?` · ${dupesEnLote} repetidos dentro del mismo archivo (omitidos)`:''}</span>
     </div>
     <table class="daily" style="font-size:12px;max-height:420px;display:block;overflow-y:auto;">
-      <thead><tr><th>#</th><th>Nombre</th><th>Teléfono</th><th>Email</th><th>Empresa</th><th>Puesto</th><th>Acción</th></tr></thead>
+      <thead><tr><th>#</th><th>Nombre</th><th>Teléfono</th><th>Email</th><th>Empresa</th><th>Puesto</th>${preguntasCols.length?'<th>Respuestas</th>':''}<th>Acción</th></tr></thead>
       <tbody>
         ${deduped.map((p,i)=>`<tr><td style="color:var(--text3);">${i+1}</td><td style="font-weight:500;">${p.nombre}</td>
             <td style="font-family:'JetBrains Mono',monospace;font-size:11px;">${p.telefono||'—'}</td>
             <td style="font-size:11px;color:var(--text3);">${p.email||'—'}</td>
             <td style="font-size:11px;color:var(--text3);">${p.empresa||'—'}</td>
             <td style="font-size:11px;color:var(--text3);">${p.puesto||'—'}</td>
+            ${preguntasCols.length?`<td style="font-size:10px;color:var(--text2);max-width:260px;">${p.respuestas?Object.values(p.respuestas).map(v=>solEsc(v)).join(' · '):'—'}</td>`:''}
             <td>${p._match?`<span style="font-size:10px;font-weight:600;color:var(--gold);">Ya existe → agrega evento</span>`:`<span style="font-size:10px;font-weight:600;color:var(--teal);">Nuevo</span>`}</td>
           </tr>`).join('')}
       </tbody>
@@ -20544,7 +20564,7 @@ async function subirProspectos(){
       if(error) throw error;
       insertados=insertedData?.length||0;
       if(insertedData){
-        const eventosNuevos=insertedData.map((row,i)=>({prospecto_id:row.id,evento:nuevosRows[i].evento,fecha_registro:nuevosRows[i]._fecha||hoyStr,origen:nuevosRows[i].origen,tipo_evento:nuevosRows[i].tipoEvento,sistema_relacionado:nuevosRows[i].sistemaRelacionado,fecha_evento:nuevosRows[i].fechaEvento,promocion:nuevosRows[i].promocion}));
+        const eventosNuevos=insertedData.map((row,i)=>({prospecto_id:row.id,evento:nuevosRows[i].evento,fecha_registro:nuevosRows[i]._fecha||hoyStr,origen:nuevosRows[i].origen,tipo_evento:nuevosRows[i].tipoEvento,sistema_relacionado:nuevosRows[i].sistemaRelacionado,fecha_evento:nuevosRows[i].fechaEvento,promocion:nuevosRows[i].promocion,respuestas:nuevosRows[i].respuestas||null}));
         await sb.from('prospecto_eventos').insert(eventosNuevos);
       }
       // Jp, 2026-10-16: Fase 4 — TODOS los prospectos nuevos que suben por
@@ -20618,7 +20638,7 @@ async function subirProspectos(){
       // separado de "actualizar evento" — re-pegar la misma pestaña con más
       // datos (p.ej. ya con Sistema relacionado) hace exactamente eso.
       const idsExistentes=[...new Set(existentesRows.map(p=>p._match.id))];
-      const {data:eventosYa}=await sb.from('prospecto_eventos').select('id,prospecto_id,evento,sistema_relacionado,tipo_evento,fecha_evento,promocion,origen').in('prospecto_id',idsExistentes);
+      const {data:eventosYa}=await sb.from('prospecto_eventos').select('id,prospecto_id,evento,sistema_relacionado,tipo_evento,fecha_evento,promocion,origen,respuestas').in('prospecto_id',idsExistentes);
       const porClave={};
       (eventosYa||[]).forEach(e=>{ porClave[`${e.prospecto_id}::${e.evento}`]=e; });
 
@@ -20627,7 +20647,7 @@ async function subirProspectos(){
         const clave=`${p._match.id}::${p.evento}`;
         const existente=porClave[clave];
         if(!existente){
-          eventosNuevosRows.push({prospecto_id:p._match.id,evento:p.evento,fecha_registro:p._fecha||hoyStr,origen:p.origen,tipo_evento:p.tipoEvento,sistema_relacionado:p.sistemaRelacionado,fecha_evento:p.fechaEvento,promocion:p.promocion});
+          eventosNuevosRows.push({prospecto_id:p._match.id,evento:p.evento,fecha_registro:p._fecha||hoyStr,origen:p.origen,tipo_evento:p.tipoEvento,sistema_relacionado:p.sistemaRelacionado,fecha_evento:p.fechaEvento,promocion:p.promocion,respuestas:p.respuestas||null});
           continue;
         }
         const relleno={};
@@ -20636,6 +20656,7 @@ async function subirProspectos(){
         if(p.fechaEvento&&!existente.fecha_evento) relleno.fecha_evento=p.fechaEvento;
         if(p.promocion&&!existente.promocion) relleno.promocion=p.promocion;
         if(p.origen&&!existente.origen) relleno.origen=p.origen;
+        if(p.respuestas){const prev=existente.respuestas||{};const mezcla={...p.respuestas,...prev};if(Object.keys(mezcla).length>Object.keys(prev).length) relleno.respuestas=mezcla;}
         if(Object.keys(relleno).length){
           const {error}=await sb.from('prospecto_eventos').update(relleno).eq('id',existente.id);
           if(error) throw error;
