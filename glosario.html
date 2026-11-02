@@ -72,6 +72,9 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
 .manual-panel h3{font-size:17px;font-weight:800;margin-bottom:4px;}
 .manual-panel .num-badge{display:inline-block;font-size:11px;font-weight:700;color:var(--teal2);background:#eefaf9;padding:2px 9px;border-radius:99px;margin-bottom:10px;}
 .manual-panel .contenido{font-size:14px;line-height:1.65;white-space:pre-wrap;color:var(--navy);}
+.manual-panel .fig{margin:14px 0;white-space:normal;}
+.manual-panel .fig img{max-width:100%;height:auto;border:1px solid var(--border);border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.08);cursor:zoom-in;}
+.manual-panel .fig figcaption{font-size:12px;color:var(--text3);margin-top:5px;}
 .manual-buscador{margin-bottom:14px;}
 
 /* Términos */
@@ -282,6 +285,17 @@ async function cargarManual(){
   seccionesManual=secciones;
   window._docsManual=docs||[];
   renderToc(seccionesManual);
+  // Enlace directo: glosario.html?doc=<id del documento> abre su primera sección
+  // (lo usa el aviso de novedades de Innovaci OS).
+  const docParam=new URLSearchParams(location.search).get('doc');
+  if(docParam){
+    const primera=seccionesManual.filter(x=>x.documento_id===docParam).sort((a,b)=>(a.orden||0)-(b.orden||0))[0];
+    if(primera){
+      swTab('manual');
+      mostrarSeccion(primera.id);
+      document.querySelector('.toc-item.active')?.scrollIntoView({block:'nearest'});
+    }
+  }
 }
 
 function renderToc(secciones){
@@ -310,6 +324,16 @@ function filtrarToc(){
   renderToc(filtradas);
 }
 
+// Contenido con imágenes: ![texto](/glosario-img/archivo.png) se muestra como figura.
+// Solo se aceptan imágenes de la carpeta /glosario-img/ del propio sitio.
+function renderContenido(txt){
+  const partes=String(txt??'').split(/(!\[[^\]]*\]\(\/glosario-img\/[A-Za-z0-9_.\-]+\))/);
+  return partes.map(p=>{
+    const m=/^!\[([^\]]*)\]\((\/glosario-img\/[A-Za-z0-9_.\-]+)\)$/.exec(p);
+    if(m) return `<figure class="fig"><a href="${m[2]}" target="_blank" rel="noopener"><img src="${m[2]}" alt="${esc(m[1])}" loading="lazy"></a><figcaption>${esc(m[1])}</figcaption></figure>`;
+    return esc(p);
+  }).join('');
+}
 function mostrarSeccion(id){
   seccionActivaId=id;
   const s=seccionesManual.find(x=>x.id===id);
@@ -318,7 +342,7 @@ function mostrarSeccion(id){
   document.getElementById('manualPanel').innerHTML=`
     ${s.numero_seccion?`<div class="num-badge">Sección ${esc(s.numero_seccion)}</div>`:''}
     <h3>${esc(s.titulo_seccion)}</h3>
-    <div class="contenido" style="margin-top:14px">${esc(s.contenido)}</div>
+    <div class="contenido" style="margin-top:14px">${renderContenido(s.contenido)}</div>
   `;
 }
 
