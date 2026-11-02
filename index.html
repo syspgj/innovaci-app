@@ -24006,6 +24006,7 @@ const FIN_TABS=[
   {id:'balance',   label:'📈 Balance anual'},
   {id:'facturacion',label:'🧾 Facturación'},
   {id:'timbres',label:'🎟 Timbres'},
+  {id:'catalogo',label:'📦 Catálogo'},
 ];
 
 function renderFinanzas(){
@@ -24048,6 +24049,7 @@ function dispatchFinTab(id){
   else if(id==='balance')   renderFinBalance();
   else if(id==='facturacion') renderSolFacturaGestion(finCont());
   else if(id==='timbres') renderFinTimbres();
+  else if(id==='catalogo') renderFinCatalogo();
 }
 
 // ─── SHARED HELPERS ──────────────────────────────────────────────────────────
@@ -30317,6 +30319,196 @@ function timParsearTabla(txt){
   }).filter(x=>x.cantidad>0);
 }
 let _timOrden={c:'fecha_compra',asc:false}, _timBusca='', _timSols={};
+// ══════════════════════════════════════════════════════════════════════════════
+// CATÁLOGO MAESTRO DE PRODUCTOS Y SERVICIOS — Fase 1 (Jp, 2026-11-02)
+// Ítems + alias (conceptos como vienen en XML/ingresos). Base para cotizaciones,
+// facturación homologada y requisitos de mesa de control (fases siguientes).
+// ══════════════════════════════════════════════════════════════════════════════
+let _catItems=[],_catAlias=[],_catUso={},_catConceptos=[],_catVista='items',_catFam='',_catBusca='',_catSoloRev=false,_catOrden={c:'codigo',asc:true},_catBandBusca='';
+function catNorm(s){return String(s==null?'':s).toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\s+/g,' ').trim();}
+async function catPaginar(q){ // q: función (from,to)=>query
+  let all=[],from=0;
+  for(;;){const {data,error}=await q(from,from+999);if(error)throw error;all=all.concat(data||[]);if(!data||data.length<1000)break;from+=1000;}
+  return all;
+}
+async function renderFinCatalogo(){
+  finLoading();
+  const c=finCont();
+  try{
+    const [items,alias,ing]=await Promise.all([
+      catPaginar((a,b)=>sb.from('catalogo_items').select('*').order('codigo').range(a,b)),
+      catPaginar((a,b)=>sb.from('catalogo_alias').select('id,item_id,alias_norm,alias_original,ignorado').order('alias_norm').range(a,b)),
+      catPaginar((a,b)=>sb.from('fact_ingresos').select('concepto,rubro,total').not('concepto','is',null).order('id').range(a,b))]);
+    _catItems=items;_catAlias=alias;
+    const uso={};ing.forEach(r=>{const n=catNorm(r.concepto);if(!n)return;const u=uso[n]||(uso[n]={n:0,orig:r.concepto,rub:{},tot:0});u.n++;u.tot+=+r.total||0;if(r.rubro)u.rub[r.rubro]=(u.rub[r.rubro]||0)+1;});
+    _catUso=uso;
+    const al=new Set(alias.map(a=>a.alias_norm));
+    _catConceptos=Object.keys(uso).filter(n=>!al.has(n)).map(n=>({n,orig:uso[n].orig,usos:uso[n].n,prom:uso[n].tot/uso[n].n,rubro:Object.keys(uso[n].rub).sort((x,y)=>uso[n].rub[y]-uso[n].rub[x])[0]||''})).sort((a,b)=>b.usos-a.usos);
+  }catch(e){
+    c.innerHTML=`<div style="background:#FFF8EC;border:1px solid #F5A623;border-radius:10px;padding:14px;font-size:12px;">⚠️ No se pudo cargar el catálogo (${solEsc(e.message||e)}). Si es la primera vez, falta correr <b>sql_catalogo.sql</b> en Supabase.</div>`;return;
+  }
+  catPintar();
+}
+function catPintar(){
+  const c=finCont();if(!c)return;
+  const porRev=_catItems.filter(i=>!i.revisado).length;
+  const kpi=(t,v,col)=>`<div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 16px;min-width:140px;"><div style="font-size:11px;color:var(--text3);">${t}</div><div style="font-size:22px;font-weight:800;color:${col||'var(--navy)'};">${v}</div></div>`;
+  const tab=(k,l)=>`<button onclick="_catVista='${k}';catPintar()" style="padding:6px 14px;border-radius:16px;border:1px solid ${_catVista===k?'var(--teal)':'var(--border)'};background:${_catVista===k?'var(--teal)':'#fff'};color:${_catVista===k?'#fff':'var(--text2)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${l}</button>`;
+  c.innerHTML=`
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px;">
+    <div style="font-size:15px;font-weight:600;color:var(--text);">📦 Catálogo de productos y servicios</div>
+    <button onclick="catEditarModal(null)" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">+ Nuevo ítem</button>
+  </div>
+  <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">Cada ítem agrupa los distintos nombres con los que aparece en facturas/XML (alias). Revisa y confirma los agrupamientos; después se amarra a cotizaciones, facturación y mesa de control.</div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+    ${kpi('Ítems',_catItems.length)}${kpi('Por revisar',porRev,porRev?'#B45309':'#2E7D32')}${kpi('Alias agrupados',_catAlias.filter(a=>a.item_id).length)}${kpi('Conceptos por clasificar',_catConceptos.length,_catConceptos.length?'#c0392b':'#2E7D32')}
+  </div>
+  <div style="display:flex;gap:6px;margin-bottom:10px;">${tab('items','Ítems del catálogo')}${tab('bandeja','Por clasificar ('+_catConceptos.length+')')}</div>
+  <div id="catCuerpo"></div>`;
+  if(_catVista==='items') catPintarItems(); else catPintarBandeja();
+}
+function catAliasDe(id){return _catAlias.filter(a=>a.item_id===id);}
+function catUsosItem(id){return catAliasDe(id).reduce((s,a)=>s+((_catUso[a.alias_norm]||{}).n||0),0);}
+function catOrdenar(col){_catOrden=_catOrden.c===col?{c:col,asc:!_catOrden.asc}:{c:col,asc:true};catPintarTablaItems();}
+function catPintarItems(){
+  const fams=[...new Set(_catItems.map(i=>i.familia||'(sin familia)'))].sort();
+  document.getElementById('catCuerpo').innerHTML=`
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+    <select onchange="_catFam=this.value;catPintarTablaItems()" style="padding:7px 9px;border:1px solid var(--border);border-radius:8px;font-size:12px;"><option value="">Todas las familias</option>${fams.map(f=>`<option value="${solEsc(f)}" ${_catFam===f?'selected':''}>${solEsc(f)}</option>`).join('')}</select>
+    <input type="search" value="${solEsc(_catBusca)}" oninput="_catBusca=this.value;catPintarTablaItems()" placeholder="🔍 Buscar código, nombre o alias…" style="flex:1;min-width:220px;max-width:380px;padding:7px 11px;border:1px solid var(--border);border-radius:8px;font-size:12px;">
+    <label style="font-size:12px;color:var(--text2);display:flex;align-items:center;gap:5px;"><input type="checkbox" ${_catSoloRev?'checked':''} onchange="_catSoloRev=this.checked;catPintarTablaItems()"> Solo por revisar</label>
+    <span id="catConteo" style="font-size:11px;color:var(--text3);"></span>
+  </div>
+  <div id="catTabla" style="background:#fff;border:1px solid var(--border);border-radius:10px;overflow-x:auto;"></div>`;
+  catPintarTablaItems();
+}
+function catPintarTablaItems(){
+  const box=document.getElementById('catTabla');if(!box)return;
+  const q=catNorm(_catBusca);
+  let L=_catItems.map(i=>({...i,_al:catAliasDe(i.id),_uso:catUsosItem(i.id)}));
+  if(_catFam)L=L.filter(i=>(i.familia||'(sin familia)')===_catFam);
+  if(_catSoloRev)L=L.filter(i=>!i.revisado);
+  if(q)L=L.filter(i=>catNorm(i.codigo+' '+i.nombre).includes(q)||i._al.some(a=>a.alias_norm.includes(q)));
+  const {c,asc}=_catOrden,d=asc?1:-1;
+  const val=i=>c==='alias'?i._al.length:c==='uso'?i._uso:c==='precio'?(+i.precio_lista||0):String(i[c]||'').toLowerCase();
+  L.sort((a,b)=>{const x=val(a),y=val(b);return (x<y?-1:x>y?1:0)*d;});
+  const th=(k,l,al)=>`<th onclick="catOrdenar('${k}')" style="padding:8px 10px;text-align:${al||'left'};font-size:11px;color:var(--text2);cursor:pointer;white-space:nowrap;border-bottom:1px solid var(--border);background:#f8fafb;">${l}${_catOrden.c===k?(_catOrden.asc?' ▲':' ▼'):''}</th>`;
+  document.getElementById('catConteo').textContent=L.length+' de '+_catItems.length;
+  box.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr>${th('codigo','Código')}${th('nombre','Nombre')}${th('familia','Familia')}${th('rubro_ingreso','Rubro ingreso')}${th('alias','Alias','right')}${th('uso','Usos en ingresos','right')}${th('revisado','Estado')}<th style="border-bottom:1px solid var(--border);background:#f8fafb;"></th></tr></thead><tbody>
+  ${L.map(i=>`<tr style="border-bottom:1px solid #eef1f3;"><td style="padding:7px 10px;font-family:'JetBrains Mono',monospace;font-size:11px;">${solEsc(i.codigo)}</td><td style="padding:7px 10px;font-weight:600;">${solEsc(i.nombre)}${i.activo?'':' <span style="color:#999;font-weight:400;">(inactivo)</span>'}</td><td style="padding:7px 10px;">${solEsc(i.familia||'')}</td><td style="padding:7px 10px;">${solEsc(i.rubro_ingreso||'')}</td><td style="padding:7px 10px;text-align:right;">${i._al.length}</td><td style="padding:7px 10px;text-align:right;">${i._uso}</td><td style="padding:7px 10px;">${i.revisado?'<span style="background:#E8F5E9;color:#2E7D32;padding:2px 8px;border-radius:10px;font-size:11px;">Revisado</span>':'<span style="background:#FFF3E0;color:#B45309;padding:2px 8px;border-radius:10px;font-size:11px;">Por revisar</span>'}</td><td style="padding:7px 10px;text-align:right;"><button onclick="catEditarModal('${i.id}')" style="border:1px solid var(--border);background:#fff;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;">Abrir</button></td></tr>`).join('')||'<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--text3);">Sin resultados</td></tr>'}
+  </tbody></table>`;
+}
+function catEditarModal(id){
+  const it=id?_catItems.find(x=>x.id===id):{codigo:'',nombre:'',familia:'',tipo:'servicio',rubro_ingreso:'',activo:true,revisado:false};
+  if(!it)return;
+  const f=(k,l,ph,tipo)=>solFld(l,`<input id="cat_${k}" ${tipo==='number'?'type="number" step="0.01"':''} value="${solEsc(it[k]==null?'':it[k])}" placeholder="${ph||''}" style="${SOL_INPUT_STYLE}">`);
+  const ta=(k,l,ph)=>solFld(l,`<textarea id="cat_${k}" rows="2" placeholder="${ph||''}" style="${SOL_INPUT_STYLE}">${solEsc(it[k]||'')}</textarea>`);
+  const rubros=(window._rubrosIng||[]);
+  const al=id?catAliasDe(id):[];
+  const otros=_catItems.filter(x=>x.id!==id).sort((a,b)=>a.codigo.localeCompare(b.codigo));
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:10px;">${id?'Ítem '+solEsc(it.codigo):'Nuevo ítem'}</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:0 14px;">
+    ${f('codigo','Código','EJ: POL-ELITE')}${f('nombre','Nombre comercial')}${f('familia','Familia','Pólizas, Cloud, Timbres…')}
+    ${solFld('Tipo',`<select id="cat_tipo" style="${SOL_INPUT_STYLE}"><option value="servicio" ${it.tipo==='servicio'?'selected':''}>Servicio</option><option value="producto" ${it.tipo==='producto'?'selected':''}>Producto</option></select>`)}
+    ${solFld('Rubro de ingreso',`<select id="cat_rubro_ingreso" style="${SOL_INPUT_STYLE}"><option value="">—</option>${[...new Set([...rubros,it.rubro_ingreso].filter(Boolean))].map(r=>`<option ${it.rubro_ingreso===r?'selected':''}>${solEsc(r)}</option>`).join('')}</select>`)}
+    ${f('precio_lista','Precio de lista (sin IVA)','',  'number')}${f('clave_sae','Clave SAE')}${f('clave_sat','Clave SAT (ClaveProdServ)')}
+  </div>
+  ${ta('descripcion_comercial','Descripción comercial (para cotización)')}${ta('incluye','Qué incluye')}${ta('requisitos_cliente','Requisitos para el cliente')}${ta('validaciones_previas','Validaciones previas (mesa de control)')}
+  <div style="display:flex;gap:18px;margin-bottom:10px;font-size:12px;"><label><input type="checkbox" id="cat_activo" ${it.activo?'checked':''}> Activo</label><label><input type="checkbox" id="cat_revisado" ${it.revisado?'checked':''}> ✅ Revisado / confirmado</label></div>
+  ${id?`<div style="border-top:1px solid var(--border);padding-top:10px;margin-bottom:10px;"><div style="font-size:12px;font-weight:700;margin-bottom:6px;">Alias (${al.length}) — nombres con los que aparece en facturas</div>
+    <div style="max-height:180px;overflow-y:auto;font-size:11px;">${al.map(a=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px solid #f0f2f4;"><span>${solEsc(a.alias_original||a.alias_norm)} <span style="color:var(--text3);">· ${(_catUso[a.alias_norm]||{}).n||0} usos</span></span><button onclick="catQuitarAlias('${a.id}','${id}')" title="Regresar a por clasificar" style="border:none;background:none;color:#c0392b;cursor:pointer;">✕ quitar</button></div>`).join('')||'<div style="color:var(--text3);">Sin alias</div>'}</div>
+    <div style="margin-top:8px;display:flex;gap:6px;align-items:center;font-size:12px;"><span>Fusionar en:</span><select id="cat_merge" style="${SOL_INPUT_STYLE}max-width:260px;"><option value="">— elegir ítem —</option>${otros.map(o=>`<option value="${o.id}">${solEsc(o.codigo)} · ${solEsc(o.nombre)}</option>`).join('')}</select><button onclick="catFusionar('${id}')" style="border:1px solid var(--border);background:#fff;border-radius:6px;padding:6px 10px;font-size:11px;cursor:pointer;">Fusionar</button></div></div>`:''}
+  <div style="display:flex;gap:8px;"><button onclick="catGuardar(${id?`'${id}'`:'null'})" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar</button><button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button>
+  ${id?`<button onclick="catEliminar('${id}')" style="margin-left:auto;background:none;border:1px solid #e8b4b4;color:#c0392b;border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Eliminar</button>`:''}</div>`,720);
+}
+async function catGuardar(id){
+  const g=k=>document.getElementById('cat_'+k)?.value.trim()||null;
+  const row={codigo:g('codigo'),nombre:g('nombre'),familia:g('familia'),tipo:g('tipo')||'servicio',rubro_ingreso:g('rubro_ingreso'),
+    precio_lista:g('precio_lista')===null?null:parseFloat(g('precio_lista')),clave_sae:g('clave_sae'),clave_sat:g('clave_sat'),
+    descripcion_comercial:g('descripcion_comercial'),incluye:g('incluye'),requisitos_cliente:g('requisitos_cliente'),validaciones_previas:g('validaciones_previas'),
+    activo:document.getElementById('cat_activo').checked,revisado:document.getElementById('cat_revisado').checked,updated_at:new Date().toISOString()};
+  if(!row.codigo||!row.nombre)return alert('Captura código y nombre.');
+  row.codigo=row.codigo.toUpperCase().replace(/\s+/g,'-');
+  const r=id?await sb.from('catalogo_items').update(row).eq('id',id):await sb.from('catalogo_items').insert(row);
+  if(r.error)return alert(/duplicate|unique/i.test(r.error.message)?'Ya existe un ítem con ese código.':'No se pudo guardar: '+r.error.message);
+  solCerrarModal();renderFinCatalogo();
+}
+async function catEliminar(id){
+  const n=catAliasDe(id).length;
+  if(!confirm('¿Eliminar este ítem?'+(n?` Sus ${n} alias regresarán a "por clasificar".`:'')))return;
+  const {error}=await sb.from('catalogo_items').delete().eq('id',id);
+  if(error)return alert('No se pudo eliminar: '+error.message);
+  solCerrarModal();renderFinCatalogo();
+}
+async function catQuitarAlias(aid,itemId){
+  const {error}=await sb.from('catalogo_alias').delete().eq('id',aid);
+  if(error)return alert(error.message);
+  _catAlias=_catAlias.filter(a=>a.id!==aid);catEditarModal(itemId);
+}
+async function catFusionar(id){
+  const dest=document.getElementById('cat_merge').value;if(!dest)return alert('Elige el ítem destino.');
+  const d=_catItems.find(x=>x.id===dest);
+  if(!confirm(`Los alias de este ítem pasarán a «${d.codigo}» y este ítem se eliminará. ¿Continuar?`))return;
+  let r=await sb.from('catalogo_alias').update({item_id:dest}).eq('item_id',id);
+  if(r.error)return alert(r.error.message);
+  r=await sb.from('catalogo_items').delete().eq('id',id);
+  if(r.error)return alert(r.error.message);
+  solCerrarModal();renderFinCatalogo();
+}
+// ─── Bandeja "por clasificar" ────────────────────────────────────────────────
+function catPintarBandeja(){
+  document.getElementById('catCuerpo').innerHTML=`
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+    <input type="search" value="${solEsc(_catBandBusca)}" oninput="_catBandBusca=this.value;catPintarTablaBandeja()" placeholder="🔍 Buscar concepto…" style="flex:1;min-width:220px;max-width:380px;padding:7px 11px;border:1px solid var(--border);border-radius:8px;font-size:12px;">
+    <span id="catBandConteo" style="font-size:11px;color:var(--text3);"></span>
+  </div>
+  <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Conceptos de tus facturas que el sistema no pudo agrupar solo (combos, hardware, textos raros). Asígnalos a un ítem existente, crea uno nuevo o márcalos para ignorar.</div>
+  <div id="catBandTabla" style="background:#fff;border:1px solid var(--border);border-radius:10px;overflow-x:auto;"></div>`;
+  catPintarTablaBandeja();
+}
+function catPintarTablaBandeja(){
+  const box=document.getElementById('catBandTabla');if(!box)return;
+  const q=catNorm(_catBandBusca);
+  const L=_catConceptos.filter(x=>!q||x.n.includes(q));
+  const lim=L.slice(0,200);
+  document.getElementById('catBandConteo').textContent=(L.length>200?'mostrando 200 de ':'')+L.length;
+  const opts=_catItems.slice().sort((a,b)=>a.codigo.localeCompare(b.codigo)).map(o=>`<option value="${o.id}">${solEsc(o.codigo)} · ${solEsc(o.nombre)}</option>`).join('');
+  box.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="background:#f8fafb;"><th style="padding:8px 10px;text-align:left;font-size:11px;">Concepto</th><th style="padding:8px 10px;text-align:right;font-size:11px;">Usos</th><th style="padding:8px 10px;text-align:right;font-size:11px;">Importe prom.</th><th style="padding:8px 10px;text-align:left;font-size:11px;">Rubro</th><th style="padding:8px 10px;text-align:left;font-size:11px;">Asignar a</th><th></th></tr></thead><tbody>
+  ${lim.map((x,i)=>`<tr style="border-top:1px solid #eef1f3;"><td style="padding:6px 10px;max-width:380px;">${solEsc(x.orig)}</td><td style="padding:6px 10px;text-align:right;">${x.usos}</td><td style="padding:6px 10px;text-align:right;">$${Math.round(x.prom).toLocaleString('es-MX')}</td><td style="padding:6px 10px;">${solEsc(x.rubro)}</td>
+  <td style="padding:6px 10px;"><select id="catAs_${i}" onchange="catAsignar(${i},this.value)" style="max-width:240px;padding:5px;border:1px solid var(--border);border-radius:6px;font-size:11px;"><option value="">— elegir —</option>${opts}</select></td>
+  <td style="padding:6px 10px;white-space:nowrap;"><button onclick="catNuevoDesde(${i})" style="border:1px solid var(--border);background:#fff;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;">+ Ítem nuevo</button> <button onclick="catIgnorar(${i})" style="border:none;background:none;color:var(--text3);font-size:11px;cursor:pointer;">ignorar</button></td></tr>`).join('')||'<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--text3);">Nada por clasificar 🎉</td></tr>'}
+  </tbody></table>`;
+  window._catBandLista=lim;
+}
+async function catAsignar(i,itemId){
+  const x=(window._catBandLista||[])[i];if(!x||!itemId)return;
+  const {data,error}=await sb.from('catalogo_alias').insert({item_id:itemId,alias_norm:x.n,alias_original:x.orig,origen:'manual'}).select('id,item_id,alias_norm,alias_original,ignorado').single();
+  if(error)return alert(error.message);
+  _catAlias.push(data);_catConceptos=_catConceptos.filter(c=>c.n!==x.n);catPintar();
+}
+async function catIgnorar(i){
+  const x=(window._catBandLista||[])[i];if(!x)return;
+  const {data,error}=await sb.from('catalogo_alias').insert({item_id:null,alias_norm:x.n,alias_original:x.orig,ignorado:true,origen:'manual'}).select('id,item_id,alias_norm,alias_original,ignorado').single();
+  if(error)return alert(error.message);
+  _catAlias.push(data);_catConceptos=_catConceptos.filter(c=>c.n!==x.n);catPintar();
+}
+async function catNuevoDesde(i){
+  const x=(window._catBandLista||[])[i];if(!x)return;
+  let sug=null;try{const r=await sb.rpc('catalogo_sugerir',{concepto:x.orig});sug=r.data;}catch(e){}
+  const cod=(sug&&sug.codigo)||('NUEVO-'+catNorm(x.orig).replace(/[^A-Z0-9]+/g,'-').slice(0,24).replace(/-$/,''));
+  const nom=(sug&&sug.nombre)||x.orig;
+  const fam=(sug&&sug.familia)||'';
+  const ex=_catItems.find(o=>o.codigo===cod);
+  let itemId=ex?ex.id:null;
+  if(!ex){
+    const {data,error}=await sb.from('catalogo_items').insert({codigo:cod,nombre:nom,familia:fam||null,tipo:(sug&&sug.tipo)||'servicio',rubro_ingreso:x.rubro||null,atributos:(sug&&sug.atributos)||{}}).select('*').single();
+    if(error)return alert(error.message);
+    _catItems.push(data);itemId=data.id;
+  }
+  await catAsignar(i,itemId);
+  if(!ex)catEditarModal(itemId);
+}
+
 async function renderFinTimbres(){
   finLoading();
   const c=finCont();
