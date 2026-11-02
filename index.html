@@ -29845,6 +29845,8 @@ function solTarjeta(r,modo){
       ${r.cotizacion_pdf_path?btn('📄 Cotización',`solVerArchivo('${solEsc(r.cotizacion_pdf_path)}')`):''}
       ${r.crm_link?`<a href="${solEsc(r.crm_link)}" target="_blank" rel="noopener" style="border:1px solid var(--border);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:var(--text2);text-decoration:none;">🔗 CRM</a>`:''}
       ${(esDir||esAdm)?btn('📋 Copiar datos',`solCopiarDatos('${r.id}')`):''}
+      ${(esDir||esAdm)&&r.factura_folio&&!r.fact_ingreso_id?btn('📊 Cargar a Finanzas',`solCargarFinanzasBtn('${r.id}')`,'#1B4D6E'):''}
+      ${(esDir||esAdm)&&r.fact_ingreso_id?'<span style="font-size:11px;color:#2E7D32;font-weight:700;align-self:center;">📊 En Finanzas ✓</span>':''}
       ${puedeValidar?btn('✅ Validar pago',`solValidarModal('${r.id}')`,'var(--teal)'):''}
       ${puedeFacturar?btn('🧾 Registrar factura',`solFacturarModal('${r.id}')`,'#1B4D6E'):''}
       ${faltaComprobante?btn('📎 Adjuntar comprobante de pago',`solComprobanteModal('${r.id}')`,'#7C3AED'):''}
@@ -30009,6 +30011,7 @@ async function solValidarPago(id,mov,nota,desdeCasado){
   if(error) return alert('No se pudo validar: '+error.message);
   Object.assign(r,upd);
   if(r.pipeline_vendedor_id) pipeComentarioCrmLibre(r.pipeline_vendedor_id,`[Facturación] Pago validado · ${fmt(r.pago_monto||r.monto_total)}${r.factura_folio?' · factura '+(r.factura_serie||'')+r.factura_folio:''}`,r.vendedor_id);
+  try{ await solMarcarIngresoCobrado(r,mov); }catch(e){ console.error('ingreso cobrado',e); }
   // Timbres: si el concepto es de timbres, se asigna solo un paquete disponible de esa cantidad.
   let msgTim=null;
   if(!r.timbres_estado&&timCantidadDeConcepto(r.concepto)){
@@ -30041,7 +30044,7 @@ function solParseXML(txt){
 }
 function solFacturarModal(id){
   const r=_solRows.find(z=>z.id===id);if(!r) return;
-  window._solXml=null;window._solXmlFile=null;
+  window._solXml=null;window._solXmlFile=null;window._solXmlText=null;
   solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">🧾 Registrar factura</div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">${solEsc(r.cliente_nombre)} · ${solEsc(r.concepto)} · <b>${fmt(r.monto_total)}</b></div>
     ${solFld('XML de la factura (recomendado)','<input id="sfxXml" type="file" accept=".xml" onchange="solFacturarLeerXml(\''+id+'\',this)" style="font-size:12px;">','Se llenan serie, folio y UUID, y se verifica total y RFC.')}
@@ -30054,10 +30057,11 @@ function solFacturarModal(id){
 }
 async function solFacturarLeerXml(id,input){
   const r=_solRows.find(z=>z.id===id);const f=input.files?.[0];if(!r||!f) return;
-  const x=solParseXML(await f.text());
+  const txtXml=await f.text();
+  const x=solParseXML(txtXml);
   const av=document.getElementById('sfxAviso');
   if(!x){av.innerHTML='<span style="color:#c0392b;">No pude leer ese XML.</span>';return;}
-  window._solXml=x;window._solXmlFile=f;
+  window._solXml=x;window._solXmlFile=f;window._solXmlText=txtXml;
   if(x.serie) document.getElementById('sfxSerie').value=x.serie;
   if(x.folio) document.getElementById('sfxFolio').value=x.folio;
   const av2=[];
@@ -30079,8 +30083,12 @@ async function solFacturarGuardar(id){
     const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
     if(error) throw error;
     if(r.pipeline_vendedor_id) pipeComentarioCrmLibre(r.pipeline_vendedor_id,`[Facturación] Factura ${serie}${folio} emitida · ${fmt(r.monto_total)}${r.pago_validado?' · pago validado':' · pago pendiente de validar'}`,r.vendedor_id);
+    Object.assign(r,upd);
+    let finMsg='';
+    if(window._solXmlText){finMsg=solMensajeFinanzas(r,await solRegistrarIngresoFinanzas(r,window._solXmlText));}
+    else finMsg='\n\nSin XML no se carga a Finanzas; cuando lo tengas usa "📊 Cargar a Finanzas" en la tarjeta.';
     solCerrarModal();solRefrescar();
-    setTimeout(()=>alert('Factura registrada.'+(window._solXmlFile?' Para que cuente en Finanzas, el XML se sigue cargando en Finanzas › Ingresos (XML masivo).':'')+xmlAviso),200);
+    setTimeout(()=>alert('Factura registrada.'+finMsg+xmlAviso),200);
   }catch(e){alert('No se pudo guardar: '+(e?.message||e));}
 }
 
@@ -30308,6 +30316,7 @@ function timParsearTabla(txt){
     return {clave,cantidad:cant?parseInt(cant[1].replace(/[,\.]/g,''),10):null,fecha_compra:fechas[0]||null,fecha_activacion:fechas[1]||null,estatus,cliente_portal:cliente||null};
   }).filter(x=>x.cantidad>0);
 }
+let _timOrden={c:'fecha_compra',asc:false}, _timBusca='', _timSols={};
 async function renderFinTimbres(){
   finLoading();
   const c=finCont();
@@ -30317,15 +30326,13 @@ async function renderFinTimbres(){
   if(error){c.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(error.message)}</div>`;return;}
   _timRows=paqs||[];
   const ids=[...new Set(_timRows.filter(p=>p.solicitud_id).map(p=>p.solicitud_id))];
-  const sols={};
-  if(ids.length){const {data}=await sb.from('solicitudes_factura').select('id,cliente_nombre,vendedor_nombre').in('id',ids);(data||[]).forEach(s=>sols[s.id]=s);}
+  _timSols={};
+  if(ids.length){const {data}=await sb.from('solicitudes_factura').select('id,cliente_nombre,vendedor_nombre').in('id',ids);(data||[]).forEach(s=>_timSols[s.id]=s);}
   const disp=_timRows.filter(p=>p.estatus==='disponible'),asig=_timRows.filter(p=>p.estatus==='asignado'),util=_timRows.filter(p=>p.estatus==='utilizada');
-  const sum=a=>a.reduce((s,p)=>s+(p.cantidad||0),0);
+  // Los timbres se manejan por PAQUETE (no se suman timbre con timbre): se cuentan paquetes y se desglosan por cantidad.
   const porCant={};disp.forEach(p=>{porCant[p.cantidad]=(porCant[p.cantidad]||0)+1;});
-  const chips=Object.keys(porCant).map(Number).sort((a,b)=>b-a).map(q=>`<span style="background:#eef6f6;border:1px solid #9fd3d0;border-radius:14px;padding:3px 11px;font-size:12px;font-weight:600;color:var(--navy);">${timFmtN(q)} × ${porCant[q]}</span>`).join(' ');
-  const lista=_timFiltro==='disponible'?disp:_timFiltro==='asignado'?asig:_timFiltro==='utilizada'?util:_timRows;
-  const kpi=(t,v,s,col)=>`<div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 16px;min-width:170px;"><div style="font-size:11px;color:var(--text3);">${t}</div><div style="font-size:22px;font-weight:800;color:${col||'var(--navy)'};">${v}</div><div style="font-size:11px;color:var(--text3);">${s}</div></div>`;
-  const estChip=e=>({disponible:['#E8F5E9','#2E7D32','Disponible'],asignado:['#FFF3E0','#B45309','Asignado'],utilizada:['#ECEFF1','#546E7A','Utilizada']}[e]||['#eee','#555',e]);
+  const kpi=(t,v,s,col,extra)=>`<div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 16px;min-width:150px;${extra||''}"><div style="font-size:11px;color:var(--text3);">${t}</div><div style="font-size:22px;font-weight:800;color:${col||'var(--navy)'};">${v}</div><div style="font-size:11px;color:var(--text3);">${s}</div></div>`;
+  const cardsCant=Object.keys(porCant).map(Number).sort((a,b)=>b-a).map(q=>kpi(timFmtN(q)+' timbres',porCant[q],porCant[q]===1?'paquete disponible':'paquetes disponibles','var(--teal)','min-width:130px;border-color:#9fd3d0;background:#f3fafa;')).join('');
   c.innerHTML=`
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
     <div style="font-size:15px;font-weight:600;color:var(--text);">🎟 Control de timbres</div>
@@ -30334,29 +30341,61 @@ async function renderFinTimbres(){
       <button onclick="timAltaModal()" style="background:#fff;color:var(--text2);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar paquete</button>
     </div>
   </div>
-  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
-    ${kpi('Timbres disponibles',timFmtN(sum(disp)),disp.length+' paquetes','var(--teal)')}
-    ${kpi('Asignados a ventas',timFmtN(sum(asig)),asig.length+' paquetes','#B45309')}
-    ${kpi('Utilizados en el portal',timFmtN(sum(util)),util.length+' paquetes','#546E7A')}
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+    ${kpi('Paquetes disponibles',disp.length,'listos para asignar','var(--teal)')}
+    ${cardsCant}
+    ${kpi('Asignados a ventas',asig.length,asig.length===1?'paquete':'paquetes','#B45309')}
+    ${kpi('Utilizados en el portal',util.length,util.length===1?'paquete':'paquetes','#546E7A')}
     ${kpi('Solicitudes pendientes',(pend||[]).length,'sin paquete de esa cantidad',(pend||[]).length?'#c0392b':'var(--navy)')}
   </div>
-  ${chips?`<div style="margin-bottom:12px;font-size:12px;color:var(--text3);">Disponibles por cantidad: ${chips}</div>`:''}
   ${(pend||[]).length?`<div style="background:#FFF8EC;border:1px solid #F5A623;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px;"><b>⚠️ Pendientes de timbres (pago validado, sin paquete):</b>${pend.map(s=>`<div style="margin-top:4px;">${solEsc(s.cliente_nombre)} · ${solEsc(s.concepto)} · 👤 ${solEsc(s.vendedor_nombre)}</div>`).join('')}<div style="margin-top:6px;color:var(--text3);">Al dar de alta un paquete de esa cantidad se asignan solos.</div></div>`:''}
-  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
     ${[['disponible','Disponibles'],['asignado','Asignados'],['utilizada','Utilizados'],['todos','Todos']].map(([k,l])=>`<button onclick="_timFiltro='${k}';renderFinTimbres()" style="padding:6px 13px;border-radius:16px;border:1px solid ${_timFiltro===k?'var(--teal)':'var(--border)'};background:${_timFiltro===k?'var(--teal)':'#fff'};color:${_timFiltro===k?'#fff':'var(--text2)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${l}</button>`).join('')}
+    </div>
+    <input id="timBuscar" type="search" value="${solEsc(_timBusca)}" oninput="_timBusca=this.value;timPintarTabla()" placeholder="🔍 Buscar clave, cantidad, cliente…" style="flex:1;min-width:220px;max-width:360px;padding:7px 11px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'Inter',sans-serif;">
+    <span id="timConteo" style="font-size:11px;color:var(--text3);"></span>
   </div>
-  <div style="background:#fff;border:1px solid var(--border);border-radius:10px;overflow-x:auto;">
-  <table style="width:100%;border-collapse:collapse;font-size:12px;">
-    <thead><tr style="background:#f4f7f9;color:var(--text3);text-align:left;"><th style="padding:8px 12px;">Clave</th><th style="padding:8px 12px;">Cantidad</th><th style="padding:8px 12px;">Compra</th><th style="padding:8px 12px;">Activación</th><th style="padding:8px 12px;">Estatus</th><th style="padding:8px 12px;">Cliente / solicitud</th><th style="padding:8px 12px;"></th></tr></thead>
-    <tbody>${lista.length?lista.map(p=>{const ec=estChip(p.estatus);const s=sols[p.solicitud_id];return `<tr style="border-top:1px solid var(--border);">
+  <div id="timTabla" style="background:#fff;border:1px solid var(--border);border-radius:10px;overflow-x:auto;"></div>`;
+  timPintarTabla();
+}
+function timOrdenar(col){
+  _timOrden=_timOrden.c===col?{c:col,asc:!_timOrden.asc}:{c:col,asc:true};
+  timPintarTabla();
+}
+function timPintarTabla(){
+  const box=document.getElementById('timTabla');if(!box) return;
+  const estChip=e=>({disponible:['#E8F5E9','#2E7D32','Disponible'],asignado:['#FFF3E0','#B45309','Asignado'],utilizada:['#ECEFF1','#546E7A','Utilizada']}[e]||['#eee','#555',e]);
+  const nombreCli=p=>{const s=_timSols[p.solicitud_id];return s?s.cliente_nombre:(p.cliente_portal||'');};
+  let lista=_timFiltro==='todos'?_timRows.slice():_timRows.filter(p=>p.estatus===(_timFiltro));
+  const q=_timBusca.trim().toLowerCase();
+  if(q){
+    const qn=q.replace(/,/g,'');
+    lista=lista.filter(p=>{
+      const s=_timSols[p.solicitud_id];
+      const txt=[p.clave,p.estatus,p.cliente_portal||'',s?s.cliente_nombre+' '+(s.vendedor_nombre||''):'',p.fecha_compra?solFecha(p.fecha_compra):'',p.fecha_activacion?solFecha(p.fecha_activacion):''].join(' ').toLowerCase();
+      // Una búsqueda numérica ("1000") coincide con la cantidad exacta del paquete, no con 10,000.
+      return txt.includes(q)||(/^\d+$/.test(qn)&&String(p.cantidad)===qn);
+    });
+  }
+  const {c,asc}=_timOrden;
+  const val=p=>c==='cliente'?nombreCli(p).toLowerCase():c==='cantidad'?(p.cantidad||0):(p[c]??'');
+  lista.sort((x,y)=>{const a=val(x),b=val(y);
+    if(a===''&&b!=='') return 1; if(b===''&&a!=='') return -1;   // vacíos siempre al final
+    const r=typeof a==='number'&&typeof b==='number'?a-b:String(a).localeCompare(String(b),'es',{numeric:true});
+    return asc?r:-r;});
+  const th=(col,label)=>`<th onclick="timOrdenar('${col}')" style="padding:8px 12px;cursor:pointer;user-select:none;white-space:nowrap;${c===col?'color:var(--teal);':''}">${label} ${c===col?(asc?'▲':'▼'):'<span style="opacity:.35;">↕</span>'}</th>`;
+  box.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="background:#f4f7f9;color:var(--text3);text-align:left;">${th('clave','Clave')}${th('cantidad','Cantidad')}${th('fecha_compra','Compra')}${th('fecha_activacion','Activación')}${th('estatus','Estatus')}${th('cliente','Cliente / solicitud')}<th style="padding:8px 12px;"></th></tr></thead>
+    <tbody>${lista.length?lista.map(p=>{const ec=estChip(p.estatus);const s=_timSols[p.solicitud_id];return `<tr style="border-top:1px solid var(--border);">
       <td style="padding:7px 12px;font-family:'JetBrains Mono',monospace;">${solEsc(p.clave)}</td>
       <td style="padding:7px 12px;font-weight:700;">${timFmtN(p.cantidad)}</td>
       <td style="padding:7px 12px;">${p.fecha_compra?solFecha(p.fecha_compra):'—'}</td>
       <td style="padding:7px 12px;">${p.fecha_activacion?solFecha(p.fecha_activacion):'—'}</td>
       <td style="padding:7px 12px;"><span style="background:${ec[0]};color:${ec[1]};border-radius:10px;padding:2px 9px;font-weight:700;font-size:11px;">${ec[2]}</span></td>
       <td style="padding:7px 12px;">${s?`${solEsc(s.cliente_nombre)} <span style="color:var(--text3);">· 👤 ${solEsc(s.vendedor_nombre)}</span>`:solEsc(p.cliente_portal||'—')}</td>
-      <td style="padding:7px 12px;white-space:nowrap;">${p.estatus==='asignado'?`<button onclick="timLiberar('${p.id}')" style="border:1px solid var(--border);background:#fff;border-radius:6px;font-size:11px;padding:3px 9px;cursor:pointer;">Liberar</button>`:''}${p.estatus==='disponible'?`<button onclick="timEliminar('${p.id}')" title="Eliminar" style="border:none;background:none;cursor:pointer;color:var(--text3);font-size:13px;">✕</button>`:''}</td></tr>`;}).join(''):'<tr><td colspan="7" style="padding:24px;text-align:center;color:var(--text3);">No hay paquetes en esta vista.</td></tr>'}</tbody>
-  </table></div>`;
+      <td style="padding:7px 12px;white-space:nowrap;">${p.estatus==='asignado'?`<button onclick="timLiberar('${p.id}')" style="border:1px solid var(--border);background:#fff;border-radius:6px;font-size:11px;padding:3px 9px;cursor:pointer;">Liberar</button>`:''}${p.estatus==='disponible'?`<button onclick="timEliminar('${p.id}')" title="Eliminar" style="border:none;background:none;cursor:pointer;color:var(--text3);font-size:13px;">✕</button>`:''}</td></tr>`;}).join(''):'<tr><td colspan="7" style="padding:24px;text-align:center;color:var(--text3);">No hay paquetes que coincidan.</td></tr>'}</tbody></table>`;
+  const cnt=document.getElementById('timConteo');if(cnt) cnt.textContent=lista.length+(lista.length===1?' paquete':' paquetes');
 }
 async function timLiberar(id){
   if(!confirm('¿Liberar este paquete? Vuelve a quedar disponible y se desliga de la solicitud.')) return;
@@ -30423,6 +30462,98 @@ async function timImportarOk(){
   const msgs=await timReintentarPendientes();
   await renderFinTimbres();
   setTimeout(()=>alert(`Importación lista: ${nuevos.length} nuevos, ${cambios.length} actualizados.`+(msgs.length?'\n\n'+msgs.join('\n\n'):'')),200);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// FACTURA → FINANZAS › INGRESOS (Jp, 2026-11-02)
+// Al registrar la factura con su XML, el ingreso se carga solo en fact_ingresos
+// (antes había que subir el XML aparte en Ingresos › XML masivo). Si el pago ya
+// está validado queda cobrado (y conciliado si se casó contra el banco); si no,
+// queda EMITIDA y al validar el pago se marca cobrada. No duplica: si el folio
+// ya existe, solo le adjunta el XML.
+// ════════════════════════════════════════════════════════════════════════════
+async function solRegistrarIngresoFinanzas(r,xmlText){
+  try{
+    const d=parsearCFDI(xmlText);
+    if(!d.folio||!(d.total>0)) return {ok:false,error:'el XML no trae folio o total'};
+    const vendedor=mapNombreAVendedorFi(r.vendedor_nombre);
+    if(vendedor==='GUILLERMO BLANCAS') return {ok:false,error:'las facturas de GB llevan retención y se cargan desde Ingresos › XML masivo'};
+    const cobrado=!!r.pago_validado;
+    const conciliado=cobrado&&!!r.pago_movimiento;
+    const fechaPago=cobrado?(r.pago_fecha||todayLocal()):null;
+    const {data:ex}=await sb.from('fact_ingresos').select('id,xml_path').eq('folio',d.folio).limit(1);
+    if(ex&&ex.length){
+      const upd={};
+      if(!ex[0].xml_path){const p=await subirXMLStorage(xmlText,'ingresos',d.folio);if(p) upd.xml_path=p;}
+      if(cobrado) Object.assign(upd,{cobrado:true,estatus:'PAGADA',fecha_pago:fechaPago,conciliado});
+      if(Object.keys(upd).length) await sb.from('fact_ingresos').update(upd).eq('id',ex[0].id);
+      await sb.from('solicitudes_factura').update({fact_ingreso_id:ex[0].id}).eq('id',r.id);
+      r.fact_ingreso_id=ex[0].id;
+      return {ok:true,creado:false,conciliado};
+    }
+    const anio=Number(d.fecha.slice(0,4))||currentYear,mes=Number(d.fecha.slice(5,7))||currentMonth;
+    const rubro=sugerirRubroPartida(d.concepto)||null;
+    const estatus=cobrado?'PAGADA':'EMITIDA';
+    const base={anio,mes,fecha:d.fecha||null,folio:d.folio,serie:null,cliente:d.cliente||r.cliente_nombre||null,vendedor,concepto:d.concepto||null,rubro,
+      subtotal_original:d.subtotal||0,descuento:d.descuento||0,subtotal_final:d.subtotalFinal??((d.subtotal||0)-(d.descuento||0)),iva:d.ivaTras||0,total:d.total||0,
+      forma_pago:(r.forma_pago||'TRANSFERENCIA').toUpperCase(),estatus,fecha_pago:fechaPago,cobrado,conciliado,cliente_cartera_id:r.cliente_cartera_id||null,
+      notas:'[Solicitud de factura] cargada automáticamente al registrar la factura'};
+    const partidas=((d.conceptos||[]).filter(c=>(Number(c.importe)||0)>0).length>1)?cfdiPartidas(d):null;
+    let principal=null,rubroOk=!!rubro;
+    if(partidas&&partidas.length>1){
+      const n=partidas.length;
+      const filas=partidas.map((p,idx)=>({...base,rubro:p.rubro||null,concepto:p.descripcion||base.concepto,subtotal_original:Math.round((p.sub+p.desc)*100)/100,descuento:p.desc,subtotal_final:p.sub,iva:p.iva,total:p.total,
+        xml_mismatch_descartado:idx===0,notas:'[DIVIDIDA] Parte '+(idx+1)+'/'+n+' de '+d.folio+' · [Solicitud de factura]'}));
+      const {data:ins,error}=await sb.from('fact_ingresos').insert(filas).select();
+      if(error||!ins?.length) return {ok:false,error:error?.message||'no se pudo insertar'};
+      ins.sort((a,b)=>String(a.notas).localeCompare(String(b.notas),undefined,{numeric:true}));
+      principal=ins[0];rubroOk=ins.every(x=>x.rubro);
+    }else{
+      const {data:ins,error}=await sb.from('fact_ingresos').insert(base).select().single();
+      if(error||!ins) return {ok:false,error:error?.message||'no se pudo insertar'};
+      principal=ins;
+    }
+    const path=await subirXMLStorage(xmlText,'ingresos',d.folio);
+    if(path) await sb.from('fact_ingresos').update({xml_path:path}).eq('id',principal.id);
+    await sb.from('solicitudes_factura').update({fact_ingreso_id:principal.id}).eq('id',r.id);
+    r.fact_ingreso_id=principal.id;
+    fiComentarNuevaFacturaEnCuenta(base.cliente_cartera_id,principal);
+    return {ok:true,creado:true,conciliado,rubro:rubroOk};
+  }catch(e){return {ok:false,error:String(e?.message||e)};}
+}
+function solMensajeFinanzas(r,fr){
+  if(!fr.ok) return `\n\n⚠️ No se pudo cargar a Finanzas: ${fr.error}. Puedes reintentarlo con el botón "📊 Cargar a Finanzas" de la tarjeta.`;
+  return `\n\n📊 ${fr.creado?'Cargada a Finanzas › Ingresos':'Ya estaba en Finanzas › Ingresos; se le adjuntó el XML'}${r.pago_validado?' como cobrada'+(fr.conciliado?' y conciliada':''):' como emitida (se marcará cobrada al validar el pago)'}.${fr.rubro===false?'\n⚠️ No pude deducir el rubro: asígnalo en Ingresos.':''}`;
+}
+// Cuando se valida el pago de una factura que ya estaba cargada como EMITIDA.
+async function solMarcarIngresoCobrado(r,mov){
+  if(!r.fact_ingreso_id) return;
+  await sb.from('fact_ingresos').update({cobrado:true,estatus:'PAGADA',fecha_pago:r.pago_fecha||todayLocal(),conciliado:!!mov}).eq('id',r.fact_ingreso_id);
+}
+// Botón de la tarjeta: factura ya registrada que aún no está en Finanzas (o sin XML a la mano).
+async function solCargarFinanzasBtn(id){
+  const r=_solRows.find(x=>x.id===id);if(!r) return;
+  let txt=null;
+  try{
+    const {data:lst}=await sb.storage.from('facturas-xml').list('solicitudes',{search:r.id});
+    const f=(lst||[]).filter(x=>String(x.name).startsWith(r.id)).sort((a,b)=>String(b.name).localeCompare(String(a.name)))[0];
+    if(f){const {data:blob}=await sb.storage.from('facturas-xml').download('solicitudes/'+f.name);if(blob) txt=await blob.text();}
+  }catch(e){}
+  if(txt) return solCargarFinanzasConTexto(id,txt);
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">📊 Cargar a Finanzas</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(r.cliente_nombre)} · factura ${solEsc((r.factura_serie||'')+(r.factura_folio||''))}. No encontré el XML guardado; selecciónalo.</div>
+    <input id="scfXml" type="file" accept=".xml" onchange="solCargarFinanzasArchivo('${id}',this)" style="font-size:12px;">`);
+}
+async function solCargarFinanzasArchivo(id,input){
+  const f=input.files?.[0];if(!f) return;
+  solCargarFinanzasConTexto(id,await f.text());
+}
+async function solCargarFinanzasConTexto(id,txt){
+  const r=_solRows.find(x=>x.id===id);if(!r) return;
+  const fr=await solRegistrarIngresoFinanzas(r,txt);
+  solCerrarModal();
+  alert(fr.ok?solMensajeFinanzas(r,fr).trim():solMensajeFinanzas(r,fr).trim());
+  solRefrescar();
 }
 
 function buildAdminUI(){
