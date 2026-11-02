@@ -30685,7 +30685,19 @@ async function timImportarOk(){
 // queda EMITIDA y al validar el pago se marca cobrada. No duplica: si el folio
 // ya existe, solo le adjunta el XML.
 // ════════════════════════════════════════════════════════════════════════════
-async function solRegistrarIngresoFinanzas(r,xmlText){
+// Jp, 2026-11-02: la factura INN616 se duplicó (dos inserts a 60 ms de distancia:
+// ambos pasaron la revisión "¿ya existe el folio?" antes de que el otro terminara).
+// Candado en memoria: llamadas simultáneas para la misma solicitud/folio comparten
+// la MISMA ejecución. La red de seguridad definitiva es el trigger de sql_ingresos_antiduplicado.sql.
+const _solIngEnCurso={};
+function solRegistrarIngresoFinanzas(r,xmlText){
+  let folio='';try{folio=parsearCFDI(xmlText).folio||'';}catch(e){}
+  const k=(r&&r.id||'')+'|'+folio;
+  if(_solIngEnCurso[k]) return _solIngEnCurso[k];
+  const pr=solRegistrarIngresoFinanzasInt(r,xmlText).finally(()=>{setTimeout(()=>{delete _solIngEnCurso[k];},3000);});
+  _solIngEnCurso[k]=pr;return pr;
+}
+async function solRegistrarIngresoFinanzasInt(r,xmlText){
   try{
     const d=parsearCFDI(xmlText);
     if(!d.folio||!(d.total>0)) return {ok:false,error:'el XML no trae folio o total'};
