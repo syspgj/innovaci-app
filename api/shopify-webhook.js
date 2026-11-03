@@ -21,7 +21,7 @@ import crypto from 'crypto';
 
 export const config = { api: { bodyParser: false } };
 
-const SECRET = process.env.SHOPIFY_WEBHOOK_SECRET;
+const SECRET = (process.env.SHOPIFY_WEBHOOK_SECRET || '').trim();
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -43,11 +43,21 @@ function firmaValida(crudo, firma) {
 }
 
 export default async function handler(req, res) {
+  // GET = diagnóstico: abre https://os.innovaci.com.mx/api/shopify-webhook en el navegador.
+  // No revela la clave; solo dice si el servidor la tiene y cuántos caracteres mide (Shopify usa 64).
+  if (req.method === 'GET') {
+    return res.status(200).json({
+      ok: true,
+      secretConfigurada: !!SECRET,
+      longitudSecret: SECRET.length,
+      supabaseConfigurado: !!SUPABASE_URL && !!SUPABASE_SERVICE_KEY,
+    });
+  }
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'method not allowed' });
 
   const crudo = await leerCrudo(req);
   if (!firmaValida(crudo, req.headers['x-shopify-hmac-sha256'])) {
-    console.error('shopify-webhook: firma inválida o SHOPIFY_WEBHOOK_SECRET sin configurar');
+    console.error(`shopify-webhook: firma inválida · secretConfigurada=${!!SECRET} longitudSecret=${SECRET.length} traeFirma=${!!req.headers['x-shopify-hmac-sha256']} bytesCuerpo=${crudo.length} topic=${req.headers['x-shopify-topic'] || ''}`);
     return res.status(401).json({ ok: false, error: 'firma inválida' });
   }
 
