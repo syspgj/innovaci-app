@@ -14744,6 +14744,7 @@ const VENTAS_SUBTABS=[
   {id:'anual',label:'📅 Anual'},
   {id:'kpis',label:'KPIs'},
   {id:'liberaciones',label:'Liberaciones'},
+  {id:'pedidosShopify',label:'🛍 Pedidos Shopify'},
   {id:'cotizadordir',label:'🧮 Cotizador'},
   {id:'cartera',label:'💼 Cartera'},
   {id:'proyectosdir',label:'📁 Proyectos'},
@@ -14813,6 +14814,7 @@ function renderDirectorTab(){
   else if(id==='anual')renderDirectorAnual();
   else if(id==='kpis')renderDirectorKpis();
   else if(id==='liberaciones')renderDirectorLiberaciones();
+  else if(id==='pedidosShopify')renderPedidosShopify();
   else if(id==='crm')renderDirectorCRM();
   else if(id==='campanas')renderDirectorCampanas();
   else if(id==='cotizadordir')renderCotizador(); // Jp, 2026-10-27: el Cotizador existía para Vendedor/Telemarketing pero nunca se enlazó en el menú del Director — por eso Jp no lo veía en "su perfil". renderCotizador() ya detecta esDirector internamente (muestra ⚙️ Descuentos de distribuidor), así que basta con enlazarlo aquí.
@@ -29709,6 +29711,7 @@ async function renderPedidosShopify(){
   const mc=document.getElementById('mainContent');mc.classList.remove('full-width');
   mc.innerHTML=`<div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px;">🛍 Pedidos de Shopify</div>
   <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">Los pedidos de la tienda llegan solos. Toma uno con “Yo lo atiendo”, confirma los datos con el cliente y genera la solicitud de factura. Si pagó con depósito, contáctalo para que envíe su pago.</div>
+  <div style="margin-bottom:10px;"><button id="shpAvisoBtn" onclick="shpActivarAvisos()" style="border:1px solid var(--border);background:#fff;border-radius:7px;padding:4px 10px;font-size:11px;cursor:pointer;">${('Notification' in window&&Notification.permission==='granted')?'🔔 Avisos del navegador activados':'🔔 Activar avisos del navegador (aunque tengas otra pestaña abierta)'}</button></div>
   <div id="shpBar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;"></div>
   <div id="shpLista"><div style="font-size:12px;color:var(--text3);">Cargando…</div></div>
   <div id="shpMapBox" style="margin-top:20px;"></div>`;
@@ -29822,21 +29825,50 @@ async function shpGuardarMap(clave){
   _shpMap[clave]={clave,titulo,catalogo_item_id:id,concepto:item?.nombre||null,nivel:niv};
   shpPintar();shpPintarMapeo();
 }
-// ── Aviso de pedidos nuevos (pestaña con contador + toast) ──
-async function shpActualizarBadge(){
+// ── Aviso de pedidos nuevos: contador en la pestaña + notificación emergente (cada 30 s) ──
+let _shpVistos=null;
+function shpActualizarBadge(){return shpTick();}
+function shpBadgeInit(){return shpTick();}
+async function shpTick(){
   try{
-    const {count}=await sb.from('shopify_pedidos').select('id',{count:'exact',head:true}).eq('estado','nuevo');
-    const n=count||0;
+    if(typeof currentUser==='undefined'||!currentUser||!userProfile) return;
+    if(!['director','vendedor','asesor'].includes(userProfile.rol)) return;
+    const {data,error}=await sb.from('shopify_pedidos').select('id,numero,cliente_nombre,total').eq('estado','nuevo').order('creado_shopify',{ascending:false}).limit(60);
+    if(error||!data) return;
+    const n=data.length;
     document.querySelectorAll('#tabsBar .tab,#tabsBar2 .tab').forEach(t=>{if(/^🛍 Pedidos/.test(t.textContent)) t.textContent='🛍 Pedidos Shopify'+(n?` (${n})`:'');});
-    if(window._shpUltimoN!=null&&n>window._shpUltimoN){try{uiToast('🛍 Nuevo pedido de Shopify en la bandeja');}catch(_){}}
-    window._shpUltimoN=n;
+    const ids=new Set(data.map(x=>x.id));
+    if(_shpVistos===null){ if(n) shpNotificar(data,true); }
+    else{ const nuevos=data.filter(x=>!_shpVistos.has(x.id)); if(nuevos.length) shpNotificar(nuevos,false); }
+    _shpVistos=ids;
   }catch(e){}
 }
-function shpBadgeInit(){
-  shpActualizarBadge();
-  if(window._shpTimer) return;
-  window._shpTimer=setInterval(()=>{if(document.visibilityState==='visible'&&typeof sb!=='undefined'&&currentUser) shpActualizarBadge();},90000);
+function shpIrAPedidos(){
+  document.getElementById('shpToast')?.remove();
+  if(userProfile?.rol==='director'){ if(typeof swDArea==='function'){currentDirTab='pedidosShopify';swDArea('ventas');} }
+  else if(typeof swV==='function') swV('pedidosShopify');
 }
+function shpNotificar(lista,resumen){
+  const n=lista.length;
+  const txt=resumen?`Hay ${n} pedido${n>1?'s':''} de Shopify por atender`:(n===1?`Nuevo pedido Shopify ${lista[0].numero} · ${lista[0].cliente_nombre||''} · ${fmt(lista[0].total)}`:`${n} pedidos nuevos de Shopify`);
+  try{
+    document.getElementById('shpToast')?.remove();
+    const t=document.createElement('div');t.id='shpToast';
+    t.style.cssText='position:fixed;top:18px;right:18px;z-index:100002;background:#0d3b66;color:#fff;border-radius:12px;padding:12px 16px;box-shadow:0 8px 24px rgba(0,0,0,.28);max-width:340px;font-size:13px;cursor:pointer;border-left:5px solid #2ecc71;';
+    t.innerHTML=`<div style="font-weight:700;margin-bottom:3px;">🛍 ${solEsc(txt)}</div><div style="font-size:11px;opacity:.85;">Clic para abrir la bandeja</div>`;
+    t.onclick=shpIrAPedidos;document.body.appendChild(t);
+    setTimeout(()=>t.remove(),20000);
+  }catch(e){}
+  try{ // sonido corto
+    const C=window.AudioContext||window.webkitAudioContext;if(C){const c=new C(),o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.type='sine';o.frequency.value=880;g.gain.setValueAtTime(.15,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.5);o.start();o.stop(c.currentTime+.5);}
+  }catch(e){}
+  try{ if('Notification' in window&&Notification.permission==='granted') new Notification('🛍 Pedido Shopify',{body:txt}); }catch(e){}
+}
+function shpActivarAvisos(){
+  if(!('Notification' in window)) return alert('Tu navegador no admite avisos.');
+  Notification.requestPermission().then(r=>{const b=document.getElementById('shpAvisoBtn');if(b) b.textContent=r==='granted'?'🔔 Avisos del navegador activados':'🔕 Avisos bloqueados (actívalos en el candado de la barra)';});
+}
+if(!window._shpTimer){window._shpTimer=setInterval(shpTick,30000);setTimeout(shpTick,6000);}
 // Prefill de la solicitud de factura desde un pedido
 async function solAplicarPrefillShopify(id){
   const {data:p}=await sb.from('shopify_pedidos').select('*').eq('id',id).single();
@@ -29845,10 +29877,12 @@ async function solAplicarPrefillShopify(id){
   const {data:mp}=await sb.from('shopify_producto_map').select('*');const mapa={};(mp||[]).forEach(m=>mapa[m.clave]=m);
   const ms=(p.lineas||[]).map(l=>mapa[shpClave(l)]);
   const concepto=(p.lineas||[]).map((l,i)=>ms[i]?.concepto||l.titulo).join(' + ');
-  const nivel=ms.find(m=>m?.nivel)?.nivel||(p.lineas||[]).map(l=>shpNivelSku(l.sku)).find(Boolean)||'';
+  const nivelVar=(p.lineas||[]).map(l=>{const v=String(l.variante||'').toLowerCase();return /premium/.test(v)?'premium':/plus/.test(v)?'plus':/esencial/.test(v)?'esencial':'';}).find(Boolean)||'';
+  const nivel=ms.find(m=>m?.nivel)?.nivel||(p.lineas||[]).map(l=>shpNivelSku(l.sku)).find(Boolean)||nivelVar;
+  const rfcPed=/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/i.test((p.empresa||'').trim())?(p.empresa||'').trim().toUpperCase():'';
   const pg=shpPagoInfo(p);
   // Cliente: por empresa o nombre en Cartera; si no hay, se deja escrito
-  const buscar=(p.empresa||p.cliente_nombre||'').trim();
+  const buscar=((rfcPed?'':p.empresa)||p.cliente_nombre||'').trim();
   if(buscar){
     const limpio=buscar.replace(/[%,()]/g,' ');
     const {data:cs}=await sb.from('clientes_cartera').select('*').ilike('razon_social','%'+limpio+'%').limit(8);
@@ -29857,6 +29891,7 @@ async function solAplicarPrefillShopify(id){
   }
   const set=(i,v)=>{const e=document.getElementById(i);if(e&&v!=null&&v!=='') e.value=v;};
   set('sfCotiz','');
+  if(rfcPed&&!document.getElementById('sfRfc').value) set('sfRfc',rfcPed);
   set('sfForma',/paypal/i.test(p.pasarela||'')?'PayPal':(pg.auto||p.estado_pago!=='paid'&&!/manual/i.test(p.pasarela||'')?'Shopify':'Transferencia'));
   if(document.getElementById('sfForma').value==='Shopify'&&/manual|deposit|dep[oó]sito|transfer|bank/i.test(p.pasarela||'')) set('sfForma','Transferencia');
   set('sfShopPedido',p.numero);set('sfConcepto',concepto);set('sfTotal',p.total);
