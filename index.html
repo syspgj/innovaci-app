@@ -20016,7 +20016,7 @@ async function toggleProspectoEnCampana(campanaId,prospectoId,marcado){
     await sb.from('campana_prospectos').insert({campana_id:campanaId,prospecto_id:prospectoId});
     window._idsEnCampanaActual?.add(prospectoId);
     await reiniciarEstatusProspectosNuevosEnCampana([prospectoId]);
-    const agente=document.getElementById('editCampAsignado')?.value;
+    const agente=document.getElementById('editCampAsignado')?.value||(await sb.from('campanas').select('asignado_a').eq('id',campanaId).single()).data?.asignado_a;
     if(agente) await sb.from('prospectos').update({asignado_a:agente}).eq('id',prospectoId);
   }else{
     await sb.from('campana_prospectos').delete().eq('campana_id',campanaId).eq('prospecto_id',prospectoId);
@@ -20027,8 +20027,28 @@ async function toggleProspectoEnCampana(campanaId,prospectoId,marcado){
 async function agregarPorEvento(campanaId){
   const evento=document.getElementById('campSelEvento')?.value;
   if(!evento){alert('Selecciona un evento primero');return;}
-  const {data:prospectosDelEvento}=await sb.from('prospectos').select('id').eq('evento',evento).eq('no_contactar',false);
-  const ids=(prospectosDelEvento||[]).map(p=>p.id);
+  // Jp, 2026-11-03: antes solo se tomaban los prospectos cuyo campo "evento" era este — pero un
+  // prospecto que YA existía y volvió a registrarse en este evento conserva su evento original
+  // (solo se le agrega una fila en prospecto_eventos). Resultado: de ~242 asistentes a la
+  // masterclass solo entraban a la campaña los 134 nuevos. Ahora se toma la unión de ambos.
+  const idsEv=new Set();
+  for(let desde=0;;desde+=1000){
+    const {data}=await sb.from('prospectos').select('id').eq('evento',evento).eq('no_contactar',false).range(desde,desde+999);
+    (data||[]).forEach(p=>idsEv.add(p.id));
+    if(!data||data.length<1000) break;
+  }
+  const idsViaEventos=[];
+  for(let desde=0;;desde+=1000){
+    const {data}=await sb.from('prospecto_eventos').select('prospecto_id').eq('evento',evento).range(desde,desde+999);
+    (data||[]).forEach(r=>idsViaEventos.push(r.prospecto_id));
+    if(!data||data.length<1000) break;
+  }
+  const extra=[...new Set(idsViaEventos)].filter(id=>!idsEv.has(id));
+  if(extra.length){
+    const contactables=await seleccionarPorLotesIds('prospectos','id',extra,q=>q.eq('no_contactar',false));
+    contactables.forEach(p=>idsEv.add(p.id));
+  }
+  const ids=[...idsEv];
   if(!ids.length){alert('No hay prospectos contactables de ese evento');return;}
   // Jp, 2026-10-27: solo se reinicia el estatus de los que de verdad son
   // nuevos en ESTA campaña — si el botón se vuelve a usar, no se debe borrar
@@ -20039,7 +20059,7 @@ async function agregarPorEvento(campanaId){
   const {error}=await sb.from('campana_prospectos').upsert(filas,{onConflict:'campana_id,prospecto_id',ignoreDuplicates:true});
   if(error){alert('Error al agregar: '+error.message);return;}
   await reiniciarEstatusProspectosNuevosEnCampana(idsNuevosEv);
-  const agenteEv=document.getElementById('editCampAsignado')?.value;
+  const agenteEv=document.getElementById('editCampAsignado')?.value||(await sb.from('campanas').select('asignado_a').eq('id',campanaId).single()).data?.asignado_a;
   if(agenteEv) await actualizarPorLotesIds('prospectos',ids,{asignado_a:agenteEv});
   await abrirCampana(campanaId);
   const msgEl=document.createElement('div');
@@ -20083,7 +20103,7 @@ async function agregarPorSistema(campanaId){
   const {error}=await sb.from('campana_prospectos').upsert(filas,{onConflict:'campana_id,prospecto_id',ignoreDuplicates:true});
   if(error){alert('Error al agregar: '+error.message);return;}
   await reiniciarEstatusProspectosNuevosEnCampana(idsNuevosSis);
-  const agenteSis=document.getElementById('editCampAsignado')?.value;
+  const agenteSis=document.getElementById('editCampAsignado')?.value||(await sb.from('campanas').select('asignado_a').eq('id',campanaId).single()).data?.asignado_a;
   if(agenteSis) await actualizarPorLotesIds('prospectos',ids,{asignado_a:agenteSis});
   await abrirCampana(campanaId);
   const msgEl=document.createElement('div');
