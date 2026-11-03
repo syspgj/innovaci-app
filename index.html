@@ -29553,7 +29553,7 @@ async function renderFinBalance(){
 // Estados: solicitada → pago_validado → cerrada
 //          pendiente_pago (liberar pago) → facturada → cerrada (al validar pago)
 // ════════════════════════════════════════════════════════════════════════════
-const SOL_FORMAS=['Transferencia','PayPal','Efectivo','Cheque','Tarjeta de crédito/débito','Por definir'];
+const SOL_FORMAS=['Transferencia','Shopify','PayPal','Efectivo','Cheque','Tarjeta de crédito/débito','Por definir'];
 // Jp, 2026-11-03: clientes que NO requieren factura se facturan a Violeta (no a público en general).
 const SOL_PG_MARCA='[FACTURAR A VIOLETA]';
 const SOL_VIOLETA={nombre:'TANIA VIOLETA OLAGUE SANCHEZ',rfc:'OAST9210095E7',cp:'57000',regimen:'Actividades Empresariales y Profesionales (Persona Física)',uso:'Gastos en general'};
@@ -29629,6 +29629,7 @@ async function renderSolFacturaVendedor(){
       ${solFld('Cotización de SAE',`<input id="sfCotiz" placeholder="C-INN13309" style="${SOL_INPUT_STYLE}">`)}
       ${solFld('Forma de pago',solSelect('sfForma',SOL_FORMAS,'Transferencia'))}
       ${solFld('Método de pago',solSelect('sfMetodo',SOL_METODOS,'PUE'))}
+      ${solFld('Núm. de pedido de Shopify',`<input id="sfShopPedido" placeholder="#1768" style="${SOL_INPUT_STYLE}">`,'Obligatorio si la forma de pago es Shopify (aparece en la lista de pedidos). Sirve para validar el pago aunque el comprador tenga otro nombre.')}
       ${solFld('Uso de CFDI',solSelect('sfUso',SOL_USOS,'Gastos en general'))}
       ${solFld('Régimen fiscal del cliente',solSelect('sfReg',SOL_REGIMENES,SOL_REGIMENES[0]))}
       ${solFld('RFC del cliente',`<input id="sfRfc" style="${SOL_INPUT_STYLE}text-transform:uppercase;">`)}
@@ -29650,14 +29651,7 @@ async function renderSolFacturaVendedor(){
       ${solFld('Fecha en que pagará el cliente',`<input id="sfEsperada" type="date" style="${SOL_INPUT_STYLE}">`,'Cuando pague, adjunta el comprobante desde tu lista de solicitudes.')}
     </div>
     ${solFld('Cotización en PDF (opcional)',`<input id="sfCotizPdf" type="file" accept=".pdf,image/*" onchange="solLeerCotizacion(this)" style="font-size:12px;"><div id="sfCotizEstado" style="font-size:11px;margin-top:3px;"></div>`,'Si la subes, la app intenta leer el folio y el total; siempre revísalos.')}
-    <details style="margin-bottom:12px;"><summary style="cursor:pointer;font-size:12px;font-weight:600;color:var(--teal);">🎓 Datos del asistente (si es curso 24/7 o Academia)</summary>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:0 14px;margin-top:8px;">
-        ${solFld('Nombre del asistente',`<input id="sfAsNombre" style="${SOL_INPUT_STYLE}">`)}
-        ${solFld('Correo',`<input id="sfAsCorreo" type="email" style="${SOL_INPUT_STYLE}">`)}
-        ${solFld('Teléfono / WhatsApp',`<input id="sfAsTel" style="${SOL_INPUT_STYLE}">`)}
-        ${solFld('Curso (generación)',`<select id="sfAsCurso" style="${SOL_INPUT_STYLE}"><option value="">Cargando generaciones...</option></select>`)}
-      </div>
-    </details>
+    ${solAcadHtml('sf',null)}
     ${solFld('Notas para facturación (opcional)',`<input id="sfNotas" style="${SOL_INPUT_STYLE}">`)}
     <button id="sfEnviar" onclick="solEnviar()" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:10px 22px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">Enviar solicitud</button>
     <span id="sfMsg" style="font-size:12px;margin-left:10px;"></span>
@@ -29667,14 +29661,141 @@ async function renderSolFacturaVendedor(){
   solCargarListaVendedor();
   solCargarGeneraciones();
   solAplicarPrefill();
+  document.getElementById('sfConcepto')?.addEventListener('input',e=>{const n=solAcadNivelDeConcepto(e.target.value);const sl=document.getElementById('sfAcadNivel');if(n&&sl) sl.value=n;});
+}
+// ─── ACADEMIA DESDE LA SOLICITUD (Jp, 2026-11-03) ────────────────────────────
+// El vendedor captura asistente(s), generación(es) (combo = 2) y nivel de acceso.
+// Al VALIDAR EL PAGO la app crea al participante y lo inscribe sola (no se da
+// acceso sin pago verificado). Datos en solicitudes_factura.academia (jsonb):
+// {asistentes:[{nombre,correo,telefono}],generaciones:[{id,clave,curso}],nivel,no_aplica,inscrito_at,resultado}
+const SOL_RE_CURSO=/CURSO|DIPLOMADO|TALLER|COMBO|CIERRE COMPLETO|AGUINALDO|MASTER|24\/7|ACADEMIA|CAPACITACI/i;
+function solAcadNivelDeConcepto(c){const t=String(c||'').toUpperCase();return /PREMIUM/.test(t)?'premium':/PLUS/.test(t)?'plus':/ESENCIAL/.test(t)?'esencial':'';}
+function solAcadFilaHtml(p,a){
+  a=a||{};
+  return `<div class="${p}AsRow" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:0 10px;border-bottom:1px dashed var(--border);margin-bottom:6px;">
+    ${solFld('Nombre del asistente',`<input class="${p}AsN" value="${solEsc(a.nombre||'')}" style="${SOL_INPUT_STYLE}">`)}
+    ${solFld('Correo',`<input class="${p}AsC" type="email" value="${solEsc(a.correo||'')}" style="${SOL_INPUT_STYLE}">`)}
+    ${solFld('Teléfono / WhatsApp',`<input class="${p}AsT" value="${solEsc(a.telefono||'')}" style="${SOL_INPUT_STYLE}">`)}
+  </div>`;
+}
+function solAcadHtml(p,ac){
+  ac=ac||{};
+  const as=(ac.asistentes&&ac.asistentes.length)?ac.asistentes:[{}];
+  return `<div id="${p}AcadBox" style="background:#f3fafa;border:1px solid #9fd3d0;border-radius:8px;padding:12px 14px;margin-bottom:12px;">
+    <div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:2px;">🎓 Alumno(s) y acceso en Academia</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Obligatorio en cursos, talleres, diplomados y combos. El acceso se da solo cuando Dirección valida el pago. Si es un combo, marca las dos generaciones.</div>
+    <label style="font-size:11px;display:flex;gap:6px;align-items:center;margin-bottom:8px;"><input type="checkbox" id="${p}AcadNA" ${ac.no_aplica?'checked':''}> Este concepto no lleva alumnos en Academia</label>
+    <div id="${p}AsLista">${as.map(a=>solAcadFilaHtml(p,a)).join('')}</div>
+    <button type="button" onclick="document.getElementById('${p}AsLista').insertAdjacentHTML('beforeend',solAcadFilaHtml('${p}'))" style="border:1px solid var(--border);background:#fff;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;margin-bottom:8px;">+ Otro asistente</button>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 12px;">
+      ${solFld('Nivel de acceso',`<select id="${p}AcadNivel" style="${SOL_INPUT_STYLE}"><option value="esencial" ${ac.nivel==='esencial'?'selected':''}>Esencial</option><option value="plus" ${ac.nivel==='plus'?'selected':''}>Plus</option><option value="premium" ${ac.nivel==='premium'?'selected':''}>Premium</option></select>`)}
+    </div>
+    <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:3px;">Generación(es)</div>
+    <div id="${p}AcadGens" style="font-size:12px;max-height:150px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:6px;padding:6px 10px;" data-sel="${solEsc(((ac.generaciones||[]).map(g=>g.id)).join(','))}">Cargando generaciones…</div>
+  </div>`;
+}
+async function solAcadCargarGens(p){
+  const box=document.getElementById(p+'AcadGens');if(!box) return;
+  if(!window._solGens) await solCargarGeneraciones();
+  const gens=(window._solGens||[]).filter(g=>!g.curso||true);
+  const sel=new Set((box.dataset.sel||'').split(',').filter(Boolean));
+  box.innerHTML=gens.length?gens.map(g=>`<label style="display:flex;gap:6px;align-items:flex-start;padding:2px 0;"><input type="checkbox" class="${p}AcadGen" value="${g.id}" ${sel.has(g.id)?'checked':''}><span>${solEsc(g.clave||'')} · ${solEsc(g.curso?.nombre||'')}${g.fecha_inicio?' · inicia '+solFecha(g.fecha_inicio):''}</span></label>`).join(''):'<span style="color:var(--text3);">No hay generaciones vigentes en Academia. Pídele a Dirección que las cree (en un combo, una por curso); mientras, puedes enviar sin generación y se asigna después desde la tarjeta.</span>';
+}
+function solAcadLeer(p){
+  const asistentes=[...document.querySelectorAll('.'+p+'AsRow')].map(r=>({nombre:r.querySelector('.'+p+'AsN').value.trim(),correo:r.querySelector('.'+p+'AsC').value.trim(),telefono:r.querySelector('.'+p+'AsT').value.trim()})).filter(a=>a.nombre||a.correo||a.telefono);
+  const ids=[...document.querySelectorAll('.'+p+'AcadGen:checked')].map(c=>c.value);
+  const generaciones=ids.map(id=>{const g=(window._solGens||[]).find(x=>x.id===id);return {id,clave:g?.clave||'',curso:g?.curso?.nombre||''};});
+  return {asistentes,generaciones,nivel:document.getElementById(p+'AcadNivel')?.value||'esencial',no_aplica:!!document.getElementById(p+'AcadNA')?.checked};
+}
+function solAcadValidar(ac,concepto){
+  if(ac.no_aplica) return '';
+  if(!SOL_RE_CURSO.test(concepto||'')&&!ac.asistentes.length) return '';
+  if(!ac.asistentes.length) return 'Captura el nombre, correo y teléfono del asistente (o marca "no lleva alumnos en Academia").';
+  const mal=ac.asistentes.find(a=>!a.nombre||!a.correo||!a.telefono);
+  if(mal) return 'Cada asistente necesita nombre, correo y teléfono.';
+  const cursos=ac.generaciones.map(g=>g.curso).filter(Boolean);
+  if(new Set(cursos).size<cursos.length) return 'Marcaste dos fechas del mismo taller; el cliente entra solo a una. Deja una sola generación por taller.';
+  return '';
+}
+// Inscripción real. Devuelve texto de resultado (o '' si no aplica).
+async function solInscribirAcademia(r,silencioso){
+  const ac=r.academia;
+  if(!ac||ac.no_aplica||ac.inscrito_at) return '';
+  if(!ac.asistentes?.length) return silencioso?'':'🎓 Academia: faltan los datos del asistente — complétalos desde la tarjeta.';
+  if(!ac.generaciones?.length) return '🎓 Academia: falta elegir la generación (o generaciones) — hazlo desde la tarjeta para inscribirlo.';
+  const ids=ac.generaciones.map(g=>g.id);
+  const {data:gens}=await sb.from('academia_generaciones').select('id,clave,curso:curso_id(nombre,sistema:sistema_id(clave,codigo_clave))').in('id',ids);
+  const out=[];let ok=0,fallos=0,pidPrimero=null;
+  for(const a of ac.asistentes){
+    const {data:pid,error:ep}=await sb.rpc('academia_find_or_create_participante',{p_nombre:a.nombre,p_mail:a.correo||null,p_telefono:a.telefono||null,p_cliente_id:r.cliente_cartera_id||null});
+    if(ep||!pid){fallos++;out.push(`✖ ${a.nombre}: no se pudo crear el participante (${ep?.message||'sin id'})`);continue;}
+    if(!pidPrimero) pidPrimero=pid;
+    for(const g0 of ac.generaciones){
+      const gen=(gens||[]).find(x=>x.id===g0.id);if(!gen) continue;
+      const {data:ya}=await sb.from('academia_inscripciones').select('id').eq('participante_id',pid).eq('generacion_id',gen.id).maybeSingle();
+      if(ya){out.push(`• ${a.nombre} ya estaba en ${gen.clave}`);ok++;continue;}
+      const sis=(gen.curso?.sistema?.codigo_clave||gen.curso?.sistema?.clave||'').toUpperCase();
+      const auto=!!(gen.clave&&sis&&gen.clave.toUpperCase().startsWith(sis+'-'));
+      // Clave auto (NOI-TEMA-MESAA): el folio se arma con la clave y p_sistema va vacío (igual que Facturación).
+      // Clave antigua: prefijo = sistema + versión del nombre del curso (ej. NOI11).
+      const ver=((gen.curso?.nombre||'').match(new RegExp(sis+'\\s*(\\d{1,2})','i'))||[])[1]||'';
+      const {data:folio,error:ef}=await sb.rpc('academia_generar_folio',{p_sistema:auto?'':(sis+ver),p_generacion:gen.clave,p_acceso:academiaAccesoLetra(ac.nivel)});
+      if(ef){fallos++;out.push(`✖ ${a.nombre} / ${gen.clave}: no se pudo generar el folio (${ef.message})`);continue;}
+      const {error:ei}=await sb.from('academia_inscripciones').insert({participante_id:pid,generacion_id:gen.id,nivel_acceso:ac.nivel||'esencial',tipo:'entero',folio,vendedor_nombre_original:r.vendedor_nombre||null});
+      if(ei){fallos++;out.push(`✖ ${a.nombre} / ${gen.clave}: ${ei.message}`);}else{ok++;out.push(`✔ ${a.nombre} → ${gen.clave} (${ac.nivel}) ${folio||''}`);}
+    }
+  }
+  if(!fallos){
+    const nuevo={...ac,inscrito_at:new Date().toISOString(),resultado:out};
+    const {error}=await sb.from('solicitudes_factura').update({academia:nuevo}).eq('id',r.id);
+    if(!error) r.academia=nuevo;
+    if(pidPrimero&&r.fact_ingreso_id) await sb.from('fact_ingresos').update({academia_participante_id:pidPrimero}).eq('id',r.fact_ingreso_id);
+  }
+  return `🎓 Academia: ${ok} inscripción(es) ${fallos?'con '+fallos+' problema(s)':'listas'}\n${out.join('\n')}`;
+}
+function solAcadEditarModal(id){
+  const r=_solRows.find(z=>z.id===id);if(!r) return;
+  const ac=r.academia||(r.asistente?{asistentes:[{nombre:r.asistente.nombre,correo:r.asistente.correo,telefono:r.asistente.telefono}],generaciones:[],nivel:solAcadNivelDeConcepto(r.concepto)||'esencial'}:{nivel:solAcadNivelDeConcepto(r.concepto)||'esencial'});
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">🎓 Datos de Academia</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(r.cliente_nombre)} · ${solEsc(r.concepto)}</div>
+    ${solAcadHtml('sa',ac)}
+    <div style="display:flex;gap:8px;"><button onclick="solAcadGuardar('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">${r.pago_validado?'Guardar e inscribir':'Guardar'}</button><button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>
+    ${r.pago_validado?'':'<div style="font-size:11px;color:var(--text3);margin-top:6px;">La inscripción se hará sola cuando se valide el pago.</div>'}`,680);
+  solAcadCargarGens('sa');
+}
+async function solAcadGuardar(id){
+  const r=_solRows.find(z=>z.id===id);if(!r) return;
+  const ac=solAcadLeer('sa');
+  const err=solAcadValidar(ac,r.concepto);if(err) return alert(err);
+  if(r.academia?.inscrito_at&&!confirm('Esta solicitud ya inscribió alumnos. Guardar de nuevo volverá a intentar inscribir lo que falte. ¿Continuar?')) return;
+  const nuevo={...ac};
+  const {error}=await sb.from('solicitudes_factura').update({academia:nuevo,asistente:ac.asistentes[0]?{...ac.asistentes[0],curso:ac.generaciones.map(g=>g.clave).join(' + ')}:null,generacion_id:ac.generaciones[0]?.id||null}).eq('id',id);
+  if(error) return alert('No se pudo guardar: '+error.message+(/academia/.test(error.message)?'\n\nFalta correr sql_academia_solicitud.sql en Supabase.':''));
+  r.academia=nuevo;
+  let msg='';
+  if(r.pago_validado){ if(r.academia.inscrito_at) delete r.academia.inscrito_at; msg=await solInscribirAcademia(r); }
+  solCerrarModal();solRefrescar();
+  if(msg) setTimeout(()=>alert(msg),250);
+}
+function solAcadTarjetaHtml(r){
+  const ac=r.academia;
+  if(!ac&&!r.asistente&&!SOL_RE_CURSO.test(r.concepto||'')) return '';
+  if(ac&&ac.no_aplica) return '';
+  const lista=ac?(ac.asistentes||[]).map(a=>`${solEsc(a.nombre)} · ${solEsc(a.correo)} · ${solEsc(a.telefono)}`).join('<br>'):(r.asistente?`${solEsc(r.asistente.nombre)} · ${solEsc(r.asistente.correo)} · ${solEsc(r.asistente.telefono)}`:'');
+  const gens=ac?(ac.generaciones||[]).map(g=>solEsc(g.clave)).join(' + '):'';
+  let estado,col;
+  if(ac&&ac.inscrito_at){estado='✅ Inscrito en Academia';col='#2E7D32';}
+  else if(!lista){estado='⚠️ Faltan los datos del asistente';col='#c0392b';}
+  else if(!gens){estado='⚠️ Falta elegir la generación';col='#B45309';}
+  else if(!r.pago_validado){estado='⏳ Se inscribe al validar el pago';col='#B45309';}
+  else{estado='⚠️ Pago validado, pendiente de inscribir';col='#c0392b';}
+  return `<div style="font-size:11px;margin-top:5px;border-left:3px solid ${col};padding:2px 0 2px 8px;"><b style="color:${col};">🎓 ${estado}</b>${ac&&ac.nivel?` · nivel ${solEsc(ac.nivel)}`:''}${gens?` · ${gens}`:''}${lista?`<div style="color:var(--text2);">${lista}</div>`:''} <button onclick="solAcadEditarModal('${r.id}')" style="border:1px solid var(--border);background:#fff;border-radius:6px;padding:2px 8px;font-size:10px;cursor:pointer;">${lista?'Editar':'Capturar'} datos de Academia</button></div>`;
 }
 async function solCargarGeneraciones(){
-  const sel=document.getElementById('sfAsCurso');if(!sel) return;
   const {data}=await sb.from('academia_generaciones').select('id,clave,fecha_inicio,fecha_fin,archivado_manual,curso:curso_id(nombre)').order('fecha_inicio',{ascending:false}).limit(120);
   const hoy=new Date();hoy.setDate(hoy.getDate()-10);const lim=hoy.toISOString().slice(0,10);
-  const vig=(data||[]).filter(g=>!g.archivado_manual&&(!g.fecha_fin||g.fecha_fin>=lim));
-  window._solGens=vig;
-  sel.innerHTML='<option value="">— selecciona la generación —</option>'+vig.map(g=>`<option value="${g.id}">${solEsc(g.clave||'')} · ${solEsc(g.curso?.nombre||'')}${g.fecha_inicio?' · inicia '+solFecha(g.fecha_inicio):''}</option>`).join('');
+  window._solGens=(data||[]).filter(g=>!g.archivado_manual&&(!g.fecha_fin||g.fecha_fin>=lim));
+  if(document.getElementById('sfAcadGens')) solAcadCargarGens('sf');
 }
 async function solLeerCotizacion(input){
   const f=input.files?.[0];const est=document.getElementById('sfCotizEstado');
@@ -29799,6 +29920,8 @@ async function solEnviar(){
   if(!v('sfConcepto')) return err('Falta el concepto.');
   if(!(total>0)) return err('Falta el total a facturar.');
   if(!v('sfRfc')) return err('Falta el RFC del cliente.');
+  const shopPedido=solNormPedido(v('sfShopPedido'));
+  if(v('sfForma')==='Shopify'&&!shopPedido) return err('Captura el número de pedido de Shopify (ej. #1768).');
   let pagoMonto=null,pagoFecha=null,file=null;
   if(tipo==='con_pago'){
     pagoMonto=parseFloat(v('sfPagoMonto'));pagoFecha=v('sfPagoFecha');
@@ -29809,6 +29932,9 @@ async function solEnviar(){
   } else if(!v('sfEsperada')){
     return err('Indica la fecha en que pagará el cliente.');
   }
+  const acad=solAcadLeer('sf');
+  const errAc=solAcadValidar(acad,v('sfConcepto'));
+  if(errAc) return err(errAc);
   const btn=document.getElementById('sfEnviar');btn.disabled=true;msg.style.color='var(--teal)';msg.textContent='Enviando...';
   try{
     const id=solUuid();
@@ -29818,10 +29944,6 @@ async function solEnviar(){
     if(file) compPath=await solSubirArchivo(file,fid,'comprobante');
     const cf=document.getElementById('sfCotizPdf').files[0];
     if(cf) cotPath=await solSubirArchivo(cf,fid,'cotizacion');
-    const asN=v('sfAsNombre');
-    const genSel=document.getElementById('sfAsCurso');
-    const genId=genSel?.value||null;
-    const genTxt=genId?genSel.options[genSel.selectedIndex].text:'';
     const row={
       vendedor_id:userProfile?.id||currentUser.id,vendedor_nombre:userProfile?.nombre||'',
       cliente_cartera_id:cli?.id||null,num_cliente:cli?.num_cliente||null,cliente_nombre:nombre,rfc:v('sfRfc').toUpperCase(),
@@ -29829,12 +29951,15 @@ async function solEnviar(){
       cotizacion_sae:v('sfCotiz'),concepto:v('sfConcepto'),monto_total:total,
       pago_monto:pagoMonto,pago_fecha:pagoFecha||null,pago_hora:v('sfPagoHora')||null,fecha_pago_esperada:tipo==='liberar_pago'?v('sfEsperada'):null,
       comprobante_path:compPath,cotizacion_pdf_path:cotPath,crm_link:v('sfCrm')||null,notas:(publicoGral?`${SOL_PG_MARCA} Facturar a ${SOL_VIOLETA.nombre} · RFC ${SOL_VIOLETA.rfc} · C.P. ${SOL_VIOLETA.cp}. El cliente no requiere factura. `:'')+(v('sfNotas')||'')||null,
-      asistente:asN?{nombre:asN,correo:v('sfAsCorreo'),telefono:v('sfAsTel'),curso:genTxt}:null,
-      generacion_id:genId||null,pipeline_vendedor_id:window._sfPipe?.id||null,
+      asistente:acad.asistentes[0]?{...acad.asistentes[0],curso:acad.generaciones.map(g=>g.clave).join(' + ')}:null,
+      generacion_id:acad.generaciones[0]?.id||null,pipeline_vendedor_id:window._sfPipe?.id||null,
       estado:tipo==='con_pago'?'solicitada':'pendiente_pago',
     };
+    if(shopPedido) row.shopify_pedido=shopPedido; // columna nueva (sql_shopify_pedido.sql)
+    if(acad.asistentes.length||acad.generaciones.length||acad.no_aplica) row.academia=acad; // columna nueva (sql_academia_solicitud.sql)
     if(solId) row.id=solId;
-    const {error}=await sb.from('solicitudes_factura').insert(row);
+    let {error}=await sb.from('solicitudes_factura').insert(row);
+    if(error&&/academia/.test(error.message||'')){delete row.academia;({error}=await sb.from('solicitudes_factura').insert(row));}
     if(error) throw error;
     // Datos fiscales nuevos → se guardan en la cuenta (solo si ahí estaban vacíos)
     if(cli&&!publicoGral){
@@ -29886,11 +30011,13 @@ function solTarjeta(r,modo){
     </div>
     <div style="font-size:12px;color:var(--text2);margin-top:3px;">${solEsc(r.concepto)} · <b>${fmt(r.monto_total)}</b> · ${solEsc(r.cotizacion_sae)}${!esVend?` · 👤 ${solEsc(r.vendedor_nombre)}`:''} · ${solFecha(r.created_at)}</div>
     <div style="font-size:11px;color:var(--text3);margin-top:2px;">${solEsc(r.rfc)} · ${solEsc(r.forma_pago)} · ${solEsc(r.metodo_pago)} · ${solEsc(r.uso_cfdi)} · ${solEsc(r.regimen)}</div>
+    ${r.shopify_pedido?`<div style="font-size:11px;color:#5b3fa0;margin-top:3px;">🛍 Pedido de Shopify: <b>${solEsc(r.shopify_pedido)}</b></div>`:''}
     ${String(r.notas||'').startsWith(SOL_PG_MARCA)?`<div style="font-size:11px;font-weight:700;color:#8a6d00;background:#fffbea;border:1px solid #f3dc8a;border-radius:6px;padding:3px 8px;margin-top:5px;display:inline-block;">🧾 FACTURAR A VIOLETA — el cliente no requiere factura · C.P. ${SOL_VIOLETA.cp}</div>`:''}
     ${pago}${fact}
     ${timTarjetaHtml(r,esDir,esVend)}
     ${r.pago_nota?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">Nota de validación: ${solEsc(r.pago_nota)}</div>`:''}
-    ${r.asistente?`<div style="font-size:11px;color:var(--teal);margin-top:3px;">🎓 Asistente: ${solEsc(r.asistente.nombre)} · ${solEsc(r.asistente.correo)} · ${solEsc(r.asistente.telefono)} · ${solEsc(r.asistente.curso)}</div>`:''}
+    ${solAcadTarjetaHtml(r)}
+    ${false&&r.asistente?`<div style="font-size:11px;color:var(--teal);margin-top:3px;">🎓 Asistente: ${solEsc(r.asistente.nombre)} · ${solEsc(r.asistente.correo)} · ${solEsc(r.asistente.telefono)} · ${solEsc(r.asistente.curso)}</div>`:''}
     ${r.notas?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">📝 ${solEsc(r.notas)}</div>`:''}
     ${faltaCrm&&esVend?`<div style="font-size:11px;color:#B45309;margin-top:4px;">⚠️ Falta tu comentario en el CRM. <label style="cursor:pointer;"><input type="checkbox" onchange="solMarcarCrm('${r.id}',this.checked)"> Ya lo dejé</label></div>`:''}
     ${faltaCrm&&!esVend?`<div style="font-size:11px;color:#B45309;margin-top:4px;">⚠️ El vendedor aún no marca su comentario en el CRM.</div>`:''}
@@ -29926,7 +30053,7 @@ async function solCancelar(id){
 function solCopiarDatos(id){
   const r=_solRows.find(x=>x.id===id);if(!r) return;
   const aV=String(r.notas||'').startsWith(SOL_PG_MARCA);
-  const t=[aV?`Cliente (facturar a): ${SOL_VIOLETA.nombre}`:`Cliente: ${r.num_cliente?r.num_cliente+' ':''}${r.cliente_nombre}`,aV?`Comprador real (el cliente no requiere factura): ${r.cliente_nombre}`:'',`RFC: ${r.rfc}`,aV?`C.P.: ${SOL_VIOLETA.cp}`:'',`Forma de pago: ${r.forma_pago}`,`Método de pago: ${r.metodo_pago}`,`Uso de CFDI: ${r.uso_cfdi}`,`Régimen: ${r.regimen}`,`Cotización SAE: ${r.cotizacion_sae}`,`Concepto: ${r.concepto}`,`Total: ${fmt(r.monto_total)}`,r.notas?`Notas: ${r.notas}`:''].filter(Boolean).join('\n');
+  const t=[aV?`Cliente (facturar a): ${SOL_VIOLETA.nombre}`:`Cliente: ${r.num_cliente?r.num_cliente+' ':''}${r.cliente_nombre}`,aV?`Comprador real (el cliente no requiere factura): ${r.cliente_nombre}`:'',`RFC: ${r.rfc}`,aV?`C.P.: ${SOL_VIOLETA.cp}`:'',`Forma de pago: ${r.forma_pago}`,r.shopify_pedido?`Pedido Shopify: ${r.shopify_pedido}`:'',`Método de pago: ${r.metodo_pago}`,`Uso de CFDI: ${r.uso_cfdi}`,`Régimen: ${r.regimen}`,`Cotización SAE: ${r.cotizacion_sae}`,`Concepto: ${r.concepto}`,`Total: ${fmt(r.monto_total)}`,r.notas?`Notas: ${r.notas}`:''].filter(Boolean).join('\n');
   (navigator.clipboard?.writeText(t)||Promise.reject()).then(()=>alert('Datos copiados.')).catch(()=>prompt('Copia los datos:',t));
 }
 function solComprobanteModal(id){
@@ -30040,6 +30167,7 @@ function solCasar(){
 // estado de cuenta; se valida contra la lista de pedidos (Pagado + mismo total).
 // El pago queda validado pero NO conciliado con banco (fuente:'shopify').
 let _solShop=[],_solShopRes=[];
+function solNormPedido(t){const d=String(t||'').replace(/\D/g,'');return d?'#'+d:'';}
 async function solLeerShopify(input){
   const file=input.files?.[0];input.value='';
   if(!file) return;
@@ -30077,7 +30205,17 @@ function solCasarShopify(){
     const mismoTotal=pagados.filter(p=>Math.abs(p.total-monto)<0.01);
     const fuerte=mismoTotal.filter(p=>sim(p)>=0.5);
     let tipo,cands;
-    if(fuerte.length===1){tipo='coincide';cands=fuerte;}
+    // Si el vendedor capturó el número de pedido, es la liga más confiable (el comprador puede tener otro nombre)
+    const ped=solNormPedido(r.shopify_pedido);
+    const porPedido=ped?_solShop.filter(p=>solNormPedido(p.pedido)===ped):[];
+    if(porPedido.length){
+      const p=porPedido[0];
+      if(!/pagad/i.test(p.estado_pago)){tipo='no_pagado';cands=[p];}
+      else if(usados.has(p.pedido)){tipo='ninguno';cands=[];}
+      else if(Math.abs(p.total-monto)<0.01){tipo='coincide_pedido';cands=[p];}
+      else{tipo='pedido_total';cands=[p];}
+    }
+    else if(fuerte.length===1){tipo='coincide';cands=fuerte;}
     else if(fuerte.length>1){tipo='varios';cands=fuerte;}
     else if(mismoTotal.length){tipo='solo_monto';cands=mismoTotal;}
     else{
@@ -30088,17 +30226,17 @@ function solCasarShopify(){
   }).filter(x=>x.tipo!=='ninguno'||x.r.estado==='solicitada'||x.r.estado==='facturada');
   // Un pedido no puede ser "coincide" de dos solicitudes a la vez
   const reclam={};
-  res.filter(x=>x.tipo==='coincide').forEach(x=>{(reclam[x.cands[0].pedido]=reclam[x.cands[0].pedido]||[]).push(x);});
-  Object.values(reclam).forEach(g=>{if(g.length>1) g.forEach(x=>{x.tipo='varios';});});
+  res.filter(x=>x.tipo==='coincide'||x.tipo==='coincide_pedido').forEach(x=>{(reclam[x.cands[0].pedido]=reclam[x.cands[0].pedido]||[]).push(x);});
+  Object.values(reclam).forEach(g=>{if(g.length>1) g.forEach(x=>{if(x.tipo==='coincide') x.tipo='varios';});});
   return res;
 }
 function solMostrarShopify(){
   _solShopRes=solCasarShopify();
-  const et={coincide:['✅ Coincide (mismo total y nombre)','#2E7D32'],varios:['⚠️ Hay varios parecidos','#B45309'],solo_monto:['⚠️ Mismo total, el nombre no coincide','#B45309'],no_pagado:['⏳ El pedido aparece, pero NO está pagado','#c0392b'],ninguno:['❌ No encontrado en la captura','#c0392b']};
+  const et={coincide_pedido:['✅ Coincide por número de pedido y total','#2E7D32'],pedido_total:['⚠️ El pedido coincide, pero el total es distinto','#B45309'],coincide:['✅ Coincide (mismo total y nombre)','#2E7D32'],varios:['⚠️ Hay varios parecidos','#B45309'],solo_monto:['⚠️ Mismo total, el nombre no coincide','#B45309'],no_pagado:['⏳ El pedido aparece, pero NO está pagado','#c0392b'],ninguno:['❌ No encontrado en la captura','#c0392b']};
   const pedTxt=p=>`${solEsc(p.pedido)} · ${p.fecha?solFecha(p.fecha)+' · ':''}<b>${fmt(p.total)}</b> · ${solEsc(p.cliente)} · ${solEsc(p.estado_pago)}`;
   const filas=_solShopRes.length?_solShopRes.map((x,i)=>{
     const [l,c]=et[x.tipo];
-    const bot=x.tipo==='no_pagado'?'':x.cands.map((p,j)=>`<button onclick="solConfirmarShopify(${i},${j})" style="margin:4px 6px 0 0;background:${x.tipo==='coincide'?'var(--teal)':'#fff'};color:${x.tipo==='coincide'?'#fff':'var(--text2)'};border:1px solid ${x.tipo==='coincide'?'var(--teal)':'var(--border)'};border-radius:6px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;">Validar con ${solEsc(p.pedido)} · ${solEsc(p.cliente)}</button>`).join('');
+    const bot=x.tipo==='no_pagado'?'':x.cands.map((p,j)=>`<button onclick="solConfirmarShopify(${i},${j})" style="margin:4px 6px 0 0;background:${/^coincide/.test(x.tipo)?'var(--teal)':'#fff'};color:${/^coincide/.test(x.tipo)?'#fff':'var(--text2)'};border:1px solid ${/^coincide/.test(x.tipo)?'var(--teal)':'var(--border)'};border-radius:6px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;">Validar con ${solEsc(p.pedido)} · ${solEsc(p.cliente)}</button>`).join('');
     const det=x.cands.length?`<div style="font-size:11px;color:var(--text2);margin-top:3px;">${x.cands.map(pedTxt).join('<br>')}</div>`:'';
     return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
       <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;"><div style="font-size:12px;font-weight:700;color:var(--navy);">${solEsc(x.r.cliente_nombre)} · ${fmt(x.monto)}</div><div style="font-size:11px;font-weight:700;color:${c};">${l}</div></div>
@@ -30156,10 +30294,13 @@ async function solValidarPago(id,mov,nota,desdeCasado,desdeShopify){
   if(!r.timbres_estado&&timCantidadDeConcepto(r.concepto)){
     try{msgTim=timMensajeResultado(r,await timAsignar(r));}catch(e){msgTim='No se pudieron asignar los timbres: '+(e?.message||e);}
   }
+  let msgAc='';
+  try{ msgAc=await solInscribirAcademia(r); }catch(e){ msgAc='🎓 Academia: no se pudo inscribir ('+(e?.message||e)+'). Hazlo desde la tarjeta.'; }
   if(desdeShopify){if(_solContenedor) renderSolFacturaGestion(_solContenedor).then(()=>{});}
   else if(desdeCasado){solMostrarCasadoTrasValidar();}
   else{solCerrarModal();solRefrescar();}
-  if(msgTim) setTimeout(()=>alert(msgTim),250);
+  const _m=[msgTim,msgAc].filter(Boolean).join('\n\n');
+  if(_m) setTimeout(()=>alert(_m),250);
 }
 function solMostrarCasadoTrasValidar(){
   // Recalcula el casado (los movimientos ya consumidos desaparecen) y refresca el fondo
@@ -30838,7 +30979,7 @@ async function solRegistrarIngresoFinanzasInt(r,xmlText){
     const estatus=cobrado?'PAGADA':'EMITIDA';
     const base={anio,mes,fecha:d.fecha||null,folio:d.folio,serie:null,cliente:(String(r.notas||'').startsWith(SOL_PG_MARCA)?r.cliente_nombre:d.cliente)||r.cliente_nombre||null,vendedor,concepto:d.concepto||null,rubro,
       subtotal_original:d.subtotal||0,descuento:d.descuento||0,subtotal_final:d.subtotalFinal??((d.subtotal||0)-(d.descuento||0)),iva:d.ivaTras||0,total:d.total||0,
-      forma_pago:(r.forma_pago||'TRANSFERENCIA').toUpperCase(),estatus,fecha_pago:fechaPago,cobrado,conciliado,cliente_cartera_id:r.cliente_cartera_id||null,
+      forma_pago:(/^shopify$/i.test(r.forma_pago||'')?'TARJETA DE CREDITO':(r.forma_pago||'TRANSFERENCIA').toUpperCase()),estatus,fecha_pago:fechaPago,cobrado,conciliado,cliente_cartera_id:r.cliente_cartera_id||null,
       notas:'[Solicitud de factura] cargada automáticamente al registrar la factura'};
     const partidas=((d.conceptos||[]).filter(c=>(Number(c.importe)||0)>0).length>1)?cfdiPartidas(d):null;
     let principal=null,rubroOk=!!rubro;
