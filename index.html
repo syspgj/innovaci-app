@@ -9790,13 +9790,25 @@ async function pipeSincronizarComentarioCrm(pipelineVendedorId,tipo,fecha,hora,r
     const {data:sess}=await sb.auth.getSession();
     const token=sess?.session?.access_token;
     const contenido=construirComentarioActividad(tipo,fecha,hora,resultado,nota);
-    const res=await fetch('/api/crm-agregar-comentario',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({crm_potentialid:o.crm_potentialid,comentario:contenido,vendedor_usuario_id:currentUser.id}),
-    });
-    const j=await res.json().catch(()=>({}));
-    if(!res.ok||!j.ok){console.error('CRM comentario failed',j);return null;}
+    // Reintenta hasta 3 veces (Vtiger a veces rechaza el login de forma intermitente)
+    let j={},res=null;
+    for(let intento=1;intento<=3;intento++){
+      try{
+        res=await fetch('/api/crm-agregar-comentario',{
+          method:'POST',
+          headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+          body:JSON.stringify({crm_potentialid:o.crm_potentialid,comentario:contenido,vendedor_usuario_id:currentUser.id}),
+        });
+        j=await res.json().catch(()=>({}));
+        if(res.ok&&j.ok) break;
+        console.error('CRM comentario failed (intento '+intento+')',res.status,j);
+      }catch(e){console.error('CRM comentario red (intento '+intento+')',e);res=null;}
+      if(intento<3) await new Promise(r=>setTimeout(r,1500*intento));
+    }
+    if(!res||!res.ok||!j.ok){
+      try{uiToast('⚠️ La actividad se guardó, pero el comentario NO se pudo enviar al CRM'+(j&&j.error?': '+j.error:'')+'. Avísale a sistemas.',false);}catch(_){}
+      return null;
+    }
     return j.id||null;
   }catch(e){
     console.error('CRM comentario error',e);
