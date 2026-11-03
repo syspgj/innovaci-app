@@ -29706,7 +29706,7 @@ async function renderSolFacturaVendedor(){
       ${solFld('RFC del cliente',`<input id="sfRfc" style="${SOL_INPUT_STYLE}text-transform:uppercase;">`)}
       ${solFld('Total a facturar (con IVA)',`<input id="sfTotal" type="number" step="0.01" placeholder="0.00" style="${SOL_INPUT_STYLE}">`)}
     </div>
-    ${solFld('Concepto / curso o servicio',`<input id="sfConcepto" placeholder="Ej. CURSO EMPRESARIAL SIIGO ASPEL BANCO 6.0" style="${SOL_INPUT_STYLE}">`)}
+    ${solFld('Concepto / curso o servicio',`<input id="sfConcepto" list="sfConceptoLista" placeholder="Elige del catálogo o escribe" style="${SOL_INPUT_STYLE}" onfocus="solCargarCatalogoConcepto()"><datalist id="sfConceptoLista"></datalist>`,'Empieza a escribir para ver el catálogo de productos y servicios; también puedes escribirlo libre.')}
     ${solFld('Liga de la oportunidad en el CRM',`<input id="sfCrm" placeholder="http://crminn.dynns.com/..." style="${SOL_INPUT_STYLE}">`)}
     <label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;margin-bottom:10px;padding:9px 12px;background:#fffbea;border:1px solid #f3dc8a;border-radius:8px;cursor:pointer;"><input type="checkbox" id="sfPublicoGral" onchange="solPublicoGralCambio()" style="margin-top:2px;"><span><b>El cliente no requiere factura → facturar a Violeta</b><br><span style="color:var(--text3);">Se usan los datos fiscales de Violeta (Tania Violeta Olague Sánchez). El comprador real sigue siendo el cliente que elegiste. Administración lo ve marcado.</span></span></label>
     <div id="sfBloquePago" style="background:#f8fafb;border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;">
@@ -29751,6 +29751,14 @@ function solAcadFilaHtml(p,a){
 }
 
 // ── Comprobante de pago: elegir directo de la galería / cámara, pegar (Ctrl+V) o arrastrar ──
+async function solCargarCatalogoConcepto(){
+  if(window._solCatConc) return;window._solCatConc=true;
+  try{
+    const {data}=await sb.from('catalogo_items').select('nombre').eq('activo',true).order('nombre').limit(500);
+    const dl=document.getElementById('sfConceptoLista');
+    if(dl) dl.innerHTML=(data||[]).map(x=>`<option value="${solEsc(x.nombre)}"></option>`).join('');
+  }catch(e){window._solCatConc=false;}
+}
 function solComprobanteHtml(){
   return `<input id="sfComprobante" type="file" accept="image/*,.pdf" style="display:none;" onchange="solComprobanteCambio(this)">
   <div id="sfCompZona" ondragover="event.preventDefault();this.style.background='#e6f6f5'" ondragleave="this.style.background='#fff'" ondrop="event.preventDefault();this.style.background='#fff';solComprobanteSet(event.dataTransfer.files[0])" style="border:2px dashed var(--teal);border-radius:10px;padding:12px;text-align:center;background:#fff;">
@@ -29811,6 +29819,7 @@ function solAcadHtml(p,ac){
       ${solFld('Nivel de acceso',`<select id="${p}AcadNivel" style="${SOL_INPUT_STYLE}"><option value="esencial" ${ac.nivel==='esencial'?'selected':''}>Esencial</option><option value="plus" ${ac.nivel==='plus'?'selected':''}>Plus</option><option value="premium" ${ac.nivel==='premium'?'selected':''}>Premium</option></select>`)}
     </div>
     <div style="font-size:12px;font-weight:700;color:#b45309;margin-bottom:3px;">📅 ¿En qué fecha entra el cliente? <span style="font-weight:500;color:var(--text3);">(obligatorio en talleres en vivo; combo = una fecha por taller)</span></div>
+    <div style="margin:6px 0 4px;"><input id="${p}AcadFecha" value="${solEsc(ac.fecha_texto||'')}" placeholder="Fecha del taller que elige el cliente, ej. 11 de noviembre / 2 de diciembre" style="${SOL_INPUT_STYLE}"><div style="font-size:10px;color:var(--text3);">Escríbela aquí si todavía no aparece en la lista de abajo; Dirección la liga a la generación.</div></div>
     <div id="${p}AcadGens" style="font-size:12px;max-height:150px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:6px;padding:6px 10px;" data-sel="${solEsc(((ac.generaciones||[]).map(g=>g.id)).join(','))}">Cargando generaciones…</div>
   </div>`;
 }
@@ -29825,7 +29834,7 @@ function solAcadLeer(p){
   const asistentes=[...document.querySelectorAll('.'+p+'AsRow')].map(r=>({nombre:r.querySelector('.'+p+'AsN').value.trim(),correo:r.querySelector('.'+p+'AsC').value.trim(),telefono:r.querySelector('.'+p+'AsT').value.trim()})).filter(a=>a.nombre||a.correo||a.telefono);
   const ids=[...document.querySelectorAll('.'+p+'AcadGen:checked')].map(c=>c.value);
   const generaciones=ids.map(id=>{const g=(window._solGens||[]).find(x=>x.id===id);return {id,clave:g?.clave||'',curso:g?.curso?.nombre||''};});
-  return {asistentes,generaciones,nivel:document.getElementById(p+'AcadNivel')?.value||'esencial',no_aplica:!!document.getElementById(p+'AcadNA')?.checked};
+  return {asistentes,generaciones,nivel:document.getElementById(p+'AcadNivel')?.value||'esencial',no_aplica:!!document.getElementById(p+'AcadNA')?.checked,fecha_texto:(document.getElementById(p+'AcadFecha')?.value||'').trim()};
 }
 function solAcadValidar(ac,concepto){
   if(ac.no_aplica) return '';
@@ -29834,8 +29843,9 @@ function solAcadValidar(ac,concepto){
   const mal=ac.asistentes.find(a=>!a.nombre||!a.correo||!a.telefono);
   if(mal) return 'Cada asistente necesita nombre, correo y teléfono.';
   const esVivo=/AGUINALDO|CIERRE|TALLER|COMBO/i.test(concepto||'');
+  if(esVivo&&!ac.fecha_texto&&!ac.generaciones.length) return 'Indica la FECHA del taller a la que entrará el cliente (escríbela o elige la generación).';
   const hayGens=(window._solGens||[]).length>0;
-  if(esVivo&&hayGens){
+  if(esVivo&&hayGens&&!ac.fecha_texto){
     const min=/COMBO/i.test(concepto||'')?2:1;
     if(ac.generaciones.length<min) return min>1?'Es un combo: marca la fecha (generación) de cada uno de los dos talleres.':'Marca la FECHA en la que entrará el cliente (generación). Es obligatorio en talleres en vivo.';
   }
@@ -29848,7 +29858,7 @@ async function solInscribirAcademia(r,silencioso){
   const ac=r.academia;
   if(!ac||ac.no_aplica||ac.inscrito_at) return '';
   if(!ac.asistentes?.length) return silencioso?'':'🎓 Academia: faltan los datos del asistente — complétalos desde la tarjeta.';
-  if(!ac.generaciones?.length) return '🎓 Academia: falta elegir la generación (o generaciones) — hazlo desde la tarjeta para inscribirlo.';
+  if(!ac.generaciones?.length) return '🎓 Academia: falta elegir la generación (o generaciones)'+(ac.fecha_texto?' — el vendedor pidió: '+ac.fecha_texto:'')+' — hazlo desde la tarjeta para inscribirlo.';
   const ids=ac.generaciones.map(g=>g.id);
   const {data:gens}=await sb.from('academia_generaciones').select('id,clave,curso:curso_id(nombre,sistema:sistema_id(clave,codigo_clave))').in('id',ids);
   const out=[];let ok=0,fallos=0,pidPrimero=null;
@@ -29912,10 +29922,10 @@ function solAcadTarjetaHtml(r){
   let estado,col;
   if(ac&&ac.inscrito_at){estado='✅ Inscrito en Academia';col='#2E7D32';}
   else if(!lista){estado='⚠️ Faltan los datos del asistente';col='#c0392b';}
-  else if(!gens){estado='⚠️ Falta elegir la generación';col='#B45309';}
+  else if(!gens){estado='⚠️ Falta ligar la generación'+(ac&&ac.fecha_texto?' · fecha pedida: '+solEsc(ac.fecha_texto):'');col='#B45309';}
   else if(!r.pago_validado){estado='⏳ Se inscribe al validar el pago';col='#B45309';}
   else{estado='⚠️ Pago validado, pendiente de inscribir';col='#c0392b';}
-  return `<div style="font-size:11px;margin-top:5px;border-left:3px solid ${col};padding:2px 0 2px 8px;"><b style="color:${col};">🎓 ${estado}</b>${ac&&ac.nivel?` · nivel ${solEsc(ac.nivel)}`:''}${gens?` · ${gens}`:''}${lista?`<div style="color:var(--text2);">${lista}</div>`:''} <button onclick="solAcadEditarModal('${r.id}')" style="border:1px solid var(--border);background:#fff;border-radius:6px;padding:2px 8px;font-size:10px;cursor:pointer;">${lista?'Editar':'Capturar'} datos de Academia</button></div>`;
+  return `<div style="font-size:11px;margin-top:5px;border-left:3px solid ${col};padding:2px 0 2px 8px;"><b style="color:${col};">🎓 ${estado}</b>${ac&&ac.nivel?` · nivel ${solEsc(ac.nivel)}`:''}${gens?` · ${gens}`:''}${ac&&ac.fecha_texto&&gens?` · 📅 ${solEsc(ac.fecha_texto)}`:''}${lista?`<div style="color:var(--text2);">${lista}</div>`:''} <button onclick="solAcadEditarModal('${r.id}')" style="border:1px solid var(--border);background:#fff;border-radius:6px;padding:2px 8px;font-size:10px;cursor:pointer;">${lista?'Editar':'Capturar'} datos de Academia</button></div>`;
 }
 async function solCargarGeneraciones(){
   const {data}=await sb.from('academia_generaciones').select('id,clave,fecha_inicio,fecha_fin,archivado_manual,curso:curso_id(nombre)').order('fecha_inicio',{ascending:false}).limit(120);
@@ -29992,7 +30002,9 @@ async function solClienteBuscar(){
   const {data,error}=await sb.from('clientes_cartera').select('*').or(`razon_social.ilike.%${limpio}%,num_cliente.ilike.%${limpio}%`).limit(8);
   if(error){cont.innerHTML=`<div style="font-size:11px;color:#c0392b;">${solEsc(error.message)}</div>`;return;}
   window._solMatches=data||[];
-  cont.innerHTML=(data||[]).length?(data||[]).map((m,i)=>`<div onclick="solClienteElegir(${i})" style="cursor:pointer;padding:6px 9px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-bottom:4px;background:#f8fafb;">${solEsc(m.razon_social)}${m.num_cliente?` · #${solEsc(m.num_cliente)}`:''}${m.rfc?` · ${solEsc(m.rfc)}`:''}</div>`).join(''):'<div style="font-size:11px;color:var(--text3);">Sin coincidencias en Cartera. Puedes enviar con el nombre escrito, pero conviene que el cliente exista en Cartera.</div>';
+  // Un solo resultado que coincide exacto con lo escrito: se elige solo (así se cargan RFC y datos fiscales)
+  if((data||[]).length===1&&String(data[0].razon_social||'').trim().toLowerCase()===t.toLowerCase()&&window._sfCliente?.id!==data[0].id){solClienteElegir(0);return;}
+  cont.innerHTML=(data||[]).length?(data||[]).map((m,i)=>`<div onclick="solClienteElegir(${i})" title="Clic para elegir" style="cursor:pointer;padding:6px 9px;border:1px solid var(--teal);border-radius:6px;font-size:12px;margin-bottom:4px;background:#f8fafb;">👆 ${solEsc(m.razon_social)}${m.num_cliente?` · #${solEsc(m.num_cliente)}`:''}${m.rfc?` · ${solEsc(m.rfc)}`:''}</div>`).join(''):'<div style="font-size:11px;color:var(--text3);">Sin coincidencias en Cartera. Puedes enviar con el nombre escrito, pero conviene que el cliente exista en Cartera.</div>';
 }
 async function solClienteElegir(i){
   const m=(window._solMatches||[])[i];
@@ -30019,12 +30031,9 @@ async function solClienteElegir(i){
   const u=ult?.[0];
   if(u){
     const set=(id,v)=>{const el=document.getElementById(id);if(el&&v)el.value=v;};
-    if(!m.forma_pago_pref) set('sfForma',u.forma_pago);
-    if(!m.metodo_pago_pref) set('sfMetodo',u.metodo_pago);
-    if(!m.uso_cfdi) set('sfUso',u.uso_cfdi);
-    if(!m.regimen_fiscal) set('sfReg',u.regimen);
+    set('sfForma',u.forma_pago);set('sfMetodo',u.metodo_pago);set('sfUso',u.uso_cfdi);set('sfReg',u.regimen);
     if(u.rfc&&!m.rfc) set('sfRfc',u.rfc);
-    document.getElementById('sfClienteSel').innerHTML+=`<div style="font-size:11px;color:var(--text3);">Se precargaron los datos fiscales de su última factura. Verifícalos.</div>`;
+    document.getElementById('sfClienteSel').innerHTML+=`<div style="font-size:11px;color:var(--text3);">Se precargaron forma de pago, método, uso de CFDI y régimen de su última solicitud. Cámbialos solo si es necesario.</div>`;
   }
 }
 function solElegirNegociacion(id){
@@ -30076,7 +30085,7 @@ async function solEnviar(){
       tipo,forma_pago:v('sfForma'),metodo_pago:v('sfMetodo'),uso_cfdi:v('sfUso'),regimen:v('sfReg'),
       cotizacion_sae:v('sfCotiz'),concepto:v('sfConcepto'),monto_total:total,
       pago_monto:pagoMonto,pago_fecha:pagoFecha||null,pago_hora:v('sfPagoHora')||null,fecha_pago_esperada:tipo==='liberar_pago'?v('sfEsperada'):null,
-      comprobante_path:compPath,cotizacion_pdf_path:cotPath,crm_link:v('sfCrm')||null,notas:(publicoGral?`${SOL_PG_MARCA} Facturar a ${SOL_VIOLETA.nombre} · RFC ${SOL_VIOLETA.rfc} · C.P. ${SOL_VIOLETA.cp}. El cliente no requiere factura. `:'')+(v('sfNotas')||'')||null,
+      comprobante_path:compPath,cotizacion_pdf_path:cotPath,crm_link:v('sfCrm')||null,notas:(publicoGral?`${SOL_PG_MARCA} Facturar a ${SOL_VIOLETA.nombre} · RFC ${SOL_VIOLETA.rfc} · C.P. ${SOL_VIOLETA.cp}. El cliente no requiere factura. `:'')+(acad.fecha_texto?`Fecha del taller: ${acad.fecha_texto}. `:'')+(v('sfNotas')||'')||null,
       asistente:acad.asistentes[0]?{...acad.asistentes[0],curso:acad.generaciones.map(g=>g.clave).join(' + ')}:null,
       generacion_id:acad.generaciones[0]?.id||null,pipeline_vendedor_id:window._sfPipe?.id||null,
       estado:tipo==='con_pago'?'solicitada':'pendiente_pago',
@@ -30089,8 +30098,8 @@ async function solEnviar(){
     if(error) throw error;
     // Datos fiscales nuevos → se guardan en la cuenta (solo si ahí estaban vacíos)
     if(cli&&!publicoGral){
-      const upd={};const f=(k,val)=>{if(val&&!cli[k]) upd[k]=val;};
-      f('rfc',row.rfc);f('regimen_fiscal',row.regimen);f('uso_cfdi',row.uso_cfdi);f('forma_pago_pref',row.forma_pago);f('metodo_pago_pref',row.metodo_pago);
+      const upd={};const f=(k,val,sobre)=>{if(val&&(sobre?cli[k]!==val:!cli[k])) upd[k]=val;};
+      f('rfc',row.rfc);f('regimen_fiscal',row.regimen,true);f('uso_cfdi',row.uso_cfdi,true);f('forma_pago_pref',row.forma_pago,true);f('metodo_pago_pref',row.metodo_pago,true);
       if(Object.keys(upd).length){const {error:eu}=await sb.from('clientes_cartera').update(upd).eq('id',cli.id);if(eu) console.error('actualizar cuenta',eu);}
     }
     // Comentario en el CRM, en la oportunidad ligada a la negociación
