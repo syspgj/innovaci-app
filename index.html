@@ -5661,7 +5661,7 @@ function buildVendorUI(){
   // Fila 2 (consulta/referencia): Cartera, Proyección, Histórico, Promociones, Reglas de comisión
   const _tabsBottom=[];
   if(esVendedor)_tabsBottom.push({l:'💼 Cartera',v:'cartera'},{l:'🧲 Prospectos',v:'prospectosV'},{l:'📁 Proyectos',v:'proyectos'},{l:'📋 Suscripciones',v:'suscripciones'});
-  _tabsBottom.push({l:'🧾 Solicitar factura',v:'factura'},{l:'Proyección',v:'proyeccion'},{l:'🧮 Cotizador',v:'cotizador'},{l:'Histórico',v:'historico'},{l:'🏷 Promociones',v:'promos'},{l:'📜 Reglas de comisión',v:'reglas'},{l:'🖥 Servidores',v:'servidores'},{l:'🔑 Licencias TS Plus',v:'tsplus'});
+  _tabsBottom.push({l:'🛍 Pedidos Shopify',v:'pedidosShopify'},{l:'🧾 Solicitar factura',v:'factura'},{l:'Proyección',v:'proyeccion'},{l:'🧮 Cotizador',v:'cotizador'},{l:'Histórico',v:'historico'},{l:'🏷 Promociones',v:'promos'},{l:'📜 Reglas de comisión',v:'reglas'},{l:'🖥 Servidores',v:'servidores'},{l:'🔑 Licencias TS Plus',v:'tsplus'});
   if(_tabsBottom.length){
     _t2.style.display='flex';
     _t2.innerHTML='';
@@ -5680,6 +5680,7 @@ function buildVendorUI(){
   window._vendTabsBottom=_tabsBottom.map(t=>t.v);
   mostrarBotonesReporte();
   renderVendor();
+  setTimeout(shpBadgeInit,600);
 }
 let currentVendTab='miMes';
 function swV(id){
@@ -5700,6 +5701,7 @@ function swV(id){
   else if(id==='promos')renderVistaPromociones();
   else if(id==='reglas')renderReglasComision();
   else if(id==='factura')renderSolFacturaVendedor();
+  else if(id==='pedidosShopify')renderPedidosShopify();
   else if(id==='servidores')renderCatalogoServidores();
   else if(id==='tsplus')renderCatalogoTSPlus();
   else renderHistorico();
@@ -5718,6 +5720,7 @@ async function renderVendor(){
   else if(currentVendTab==='historico')renderHistorico();
   else if(currentVendTab==='promos')renderVistaPromociones();
   else if(currentVendTab==='factura')renderSolFacturaVendedor();
+  else if(currentVendTab==='pedidosShopify')renderPedidosShopify();
   else if(currentVendTab==='servidores')renderCatalogoServidores();
   else if(currentVendTab==='tsplus')renderCatalogoTSPlus();
   else renderVendorMiMes();
@@ -29684,10 +29687,200 @@ function solMinutos(h){const m=/^(\d{1,2}):(\d{2})/.exec(h||'');return m?(+m[1])
 function solFecha(f){if(!f)return '';const p=String(f).slice(0,10).split('-');return p.length===3?`${p[2]}/${p[1]}/${p[0]}`:f;}
 
 // ─── VISTA DEL VENDEDOR ──────────────────────────────────────────────────────
+// ═══ PEDIDOS DE SHOPIFY (Jp, 2026-11-03) ═══
+// Cada pedido de la tienda llega solo (api/shopify-webhook.js → tabla shopify_pedidos).
+// Ventas lo atiende desde una bandeja común, confirma datos y genera la solicitud
+// de factura ya llena. Los productos de la tienda se vinculan al catálogo (shopify_producto_map).
+let _shpRows=[],_shpFiltro='nuevos',_shpMap={},_shpCat=[];
+const SHP_ESTADO={nuevo:['Nuevo','#1976D2'],atendiendo:['En atención','#B45309'],enviado_facturar:['Enviado a facturar','#2E7D32'],descartado:['Descartado','#888']};
+function shpClave(l){return l.sku||('var-'+(l.variante_id||l.producto_id||''));}
+function shpNivelSku(sku){const s=String(sku||'').toUpperCase();return /AE$/.test(s)?'esencial':/AP$/.test(s)?'plus':'';}
+function shpEsDir(){return userProfile?.rol==='director';}
+function shpAutoPasarela(p){return !/manual|deposit|dep[oó]sito|transfer|bank|cash|efectivo/i.test(p.pasarela||'');}
+function shpPagoInfo(p){
+  const pas=solEsc(String(p.pasarela||'').replace(/_/g,' '));
+  if(p.cancelado) return {t:'❌ Cancelado',c:'#c0392b',pagado:false,auto:false};
+  if(p.estado_pago==='paid') return {t:'✅ Pagado'+(pas?' · '+pas:''),c:'#2E7D32',pagado:true,auto:shpAutoPasarela(p)};
+  if(p.estado_pago==='refunded'||p.estado_pago==='partially_refunded') return {t:'↩️ Reembolsado',c:'#c0392b',pagado:false,auto:false};
+  return {t:'⏳ Pago pendiente'+(pas?' · '+pas:'')+' — contacta al cliente para que mande su pago',c:'#B45309',pagado:false,auto:false};
+}
+function shpFechaMx(iso){return iso?new Date(iso).toLocaleString('es-MX',{timeZone:'America/Mexico_City',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):'';}
+async function renderPedidosShopify(){
+  const mc=document.getElementById('mainContent');mc.classList.remove('full-width');
+  mc.innerHTML=`<div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px;">🛍 Pedidos de Shopify</div>
+  <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">Los pedidos de la tienda llegan solos. Toma uno con “Yo lo atiendo”, confirma los datos con el cliente y genera la solicitud de factura. Si pagó con depósito, contáctalo para que envíe su pago.</div>
+  <div id="shpBar" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;"></div>
+  <div id="shpLista"><div style="font-size:12px;color:var(--text3);">Cargando…</div></div>
+  <div id="shpMapBox" style="margin-top:20px;"></div>`;
+  await shpCargar();
+}
+async function shpCargar(){
+  const lista=document.getElementById('shpLista');if(!lista) return;
+  const [rp,rm]=await Promise.all([
+    sb.from('shopify_pedidos').select('*').order('creado_shopify',{ascending:false}).limit(200),
+    sb.from('shopify_producto_map').select('*')]);
+  if(rp.error){lista.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(rp.error.message)}${/shopify_pedidos/.test(rp.error.message)?'<br>Falta correr sql_shopify_pedidos.sql en Supabase.':''}</div>`;return;}
+  _shpRows=rp.data||[];_shpMap={};(rm.data||[]).forEach(m=>_shpMap[m.clave]=m);
+  shpPintar();shpPintarMapeo();shpActualizarBadge();
+}
+function shpPintar(){
+  const me=userProfile?.id||currentUser?.id;
+  const cuenta=f=>_shpRows.filter(f).length;
+  const F={
+    nuevos:{l:'🆕 Nuevos',f:p=>p.estado==='nuevo'},
+    mios:{l:'🙋 Los que atiendo',f:p=>p.estado==='atendiendo'&&p.atiende_id===me},
+    atencion:{l:'👥 En atención (todos)',f:p=>p.estado==='atendiendo'},
+    facturados:{l:'🧾 Enviados a facturar',f:p=>p.estado==='enviado_facturar'},
+    descartados:{l:'🗑 Descartados',f:p=>p.estado==='descartado'},
+  };
+  document.getElementById('shpBar').innerHTML=Object.entries(F).map(([k,v])=>`<button onclick="_shpFiltro='${k}';shpPintar()" style="border:1px solid ${_shpFiltro===k?'var(--teal)':'var(--border)'};background:${_shpFiltro===k?'var(--teal)':'#fff'};color:${_shpFiltro===k?'#fff':'var(--text2)'};border-radius:16px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;">${v.l} (${cuenta(v.f)})</button>`).join('');
+  const rows=_shpRows.filter((F[_shpFiltro]||F.nuevos).f);
+  document.getElementById('shpLista').innerHTML=rows.length?rows.map(shpTarjeta).join(''):'<div style="font-size:12px;color:var(--text3);padding:10px 0;">No hay pedidos en esta vista.</div>';
+}
+function shpTarjeta(p){
+  const pg=shpPagoInfo(p);const est=SHP_ESTADO[p.estado]||['',''];
+  const me=userProfile?.id||currentUser?.id;
+  const lineas=(p.lineas||[]).map(l=>{const m=_shpMap[shpClave(l)];
+    return `<div style="font-size:12px;">• ${l.cantidad>1?l.cantidad+' × ':''}${solEsc(l.titulo)}${l.variante&&l.variante!=='Default Title'?' ('+solEsc(l.variante)+')':''} · ${fmt(l.precio)} ${m&&m.catalogo_item_id?`<span style="color:#2E7D32;">🔗 ${solEsc(m.concepto||'catálogo')}${m.nivel?' · '+solEsc(m.nivel):''}</span>`:'<span style="color:#B45309;">sin vincular al catálogo</span>'}</div>`;}).join('');
+  const tel=String(p.telefono||'').replace(/\D/g,'');const wa=tel?(tel.length===10?'52'+tel:tel):'';
+  const mio=p.atiende_id===me;
+  const btn=(txt,fn,estilo)=>`<button onclick="${fn}" style="${estilo||'border:1px solid var(--border);background:#fff;color:var(--text2);'}border-radius:7px;padding:5px 11px;font-size:11px;font-weight:600;cursor:pointer;">${txt}</button>`;
+  const acciones=[];
+  if(p.estado==='nuevo') acciones.push(btn('✋ Yo lo atiendo',`shpTomar('${p.id}')`,'background:var(--teal);color:#fff;border:none;'));
+  if(p.estado==='atendiendo'&&(mio||shpEsDir())) acciones.push(btn('🧾 Generar solicitud de factura',`shpFacturar('${p.id}')`,'background:var(--teal);color:#fff;border:none;'),btn('↩️ Devolver a la bandeja',`shpSoltar('${p.id}')`));
+  if(p.estado!=='enviado_facturar'&&p.estado!=='descartado'&&(p.estado==='nuevo'||mio||shpEsDir())) acciones.push(btn('🗑 Descartar',`shpDescartar('${p.id}')`));
+  if(p.estado==='descartado'&&(shpEsDir()||mio)) acciones.push(btn('↩️ Reabrir',`shpSoltar('${p.id}')`));
+  return `<div style="background:#fff;border:1px solid var(--border);border-left:4px solid ${pg.c};border-radius:10px;padding:12px 14px;margin-bottom:10px;">
+    <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+      <div style="font-size:13px;font-weight:700;color:var(--navy);">${solEsc(p.numero)} · ${solEsc(p.cliente_nombre||'(sin nombre)')}${p.empresa?` · ${solEsc(p.empresa)}`:''}</div>
+      <div style="font-size:13px;font-weight:700;">${fmt(p.total)}</div></div>
+    <div style="font-size:11px;color:var(--text3);margin:2px 0 6px;">${shpFechaMx(p.creado_shopify)} · ${solEsc(p.email||'sin correo')} · ${solEsc(p.telefono||'sin teléfono')}</div>
+    ${lineas}
+    <div style="font-size:12px;font-weight:600;color:${pg.c};margin-top:6px;">${pg.t}</div>
+    <div style="font-size:11px;margin-top:3px;"><span style="color:${est[1]};font-weight:700;">${est[0]}</span>${p.atiende_nombre&&p.estado!=='nuevo'?` · ${solEsc(p.atiende_nombre)}`:''}${p.motivo_descarte?` · ${solEsc(p.motivo_descarte)}`:''}${p.nota?` · Nota del cliente: ${solEsc(p.nota)}`:''}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;">${acciones.join('')}
+      ${wa?`<a href="https://wa.me/${wa}" target="_blank" rel="noopener" style="text-decoration:none;border:1px solid var(--border);border-radius:7px;padding:5px 11px;font-size:11px;font-weight:600;color:#128C7E;">💬 WhatsApp</a>`:''}
+      ${p.email?`<a href="mailto:${solEsc(p.email)}" style="text-decoration:none;border:1px solid var(--border);border-radius:7px;padding:5px 11px;font-size:11px;font-weight:600;color:var(--text2);">✉️ Correo</a>`:''}</div></div>`;
+}
+async function shpTomar(id){
+  const {data,error}=await sb.from('shopify_pedidos').update({estado:'atendiendo',atiende_id:userProfile?.id||currentUser.id,atiende_nombre:userProfile?.nombre||'',atiende_at:new Date().toISOString()}).eq('id',id).is('atiende_id',null).select();
+  if(error) return alert('No se pudo tomar el pedido: '+error.message);
+  if(!(data||[]).length){alert('Otro vendedor ya tomó este pedido.');}
+  _shpFiltro='mios';await shpCargar();
+}
+async function shpSoltar(id){
+  const {error}=await sb.from('shopify_pedidos').update({estado:'nuevo',atiende_id:null,atiende_nombre:null,atiende_at:null,motivo_descarte:null}).eq('id',id);
+  if(error) return alert(error.message);
+  _shpFiltro='nuevos';await shpCargar();
+}
+async function shpDescartar(id){
+  const m=prompt('¿Por qué se descarta? (ej. duplicado, ya facturado, prueba, sin respuesta)');
+  if(m===null) return;
+  const {error}=await sb.from('shopify_pedidos').update({estado:'descartado',motivo_descarte:m||'sin motivo',atiende_id:userProfile?.id||currentUser.id,atiende_nombre:userProfile?.nombre||''}).eq('id',id);
+  if(error) return alert(error.message);
+  await shpCargar();
+}
+function shpFacturar(id){
+  window._solPrefill={shopify_id:id};
+  if(typeof swV==='function') swV('factura');
+}
+// ── Vincular productos de Shopify al catálogo (Dirección) ──
+function shpTokens(t){return new Set(String(typeof catNorm==='function'?catNorm(t):t||'').toLowerCase().split(/[^a-z0-9áéíóúñ]+/).filter(w=>w.length>2));}
+function shpSugerir(titulo){
+  const a=shpTokens(titulo);let mejor=null,best=0;
+  _shpCat.forEach(c=>{const b=shpTokens(c.nombre);let i=0;a.forEach(w=>{if(b.has(w))i++;});const s=i/Math.max(1,new Set([...a,...b]).size);if(s>best){best=s;mejor=c;}});
+  return best>=0.5?mejor:null;
+}
+async function shpPintarMapeo(){
+  const box=document.getElementById('shpMapBox');if(!box) return;
+  if(!shpEsDir()){box.innerHTML='';return;}
+  if(!_shpCat.length){const {data}=await sb.from('catalogo_items').select('id,nombre').eq('activo',true).order('nombre').limit(500);_shpCat=data||[];}
+  // claves vistas en pedidos + las ya registradas
+  const vistas={};_shpRows.forEach(p=>(p.lineas||[]).forEach(l=>{const k=shpClave(l);if(!vistas[k]) vistas[k]={clave:k,titulo:l.titulo,sku:l.sku};}));
+  Object.values(_shpMap).forEach(m=>{if(!vistas[m.clave]) vistas[m.clave]={clave:m.clave,titulo:m.titulo,sku:m.clave};});
+  const todas=Object.values(vistas).sort((a,b)=>String(a.titulo).localeCompare(String(b.titulo)));
+  const pend=todas.filter(x=>!_shpMap[x.clave]?.catalogo_item_id);
+  const fila=x=>{const m=_shpMap[x.clave]||{};const sug=m.catalogo_item_id?null:shpSugerir(x.titulo);const sel=m.catalogo_item_id||(sug?sug.id:'');const niv=m.nivel||shpNivelSku(x.sku);
+    return `<div style="display:grid;grid-template-columns:minmax(180px,2fr) minmax(180px,2fr) 110px auto;gap:8px;align-items:center;border-bottom:1px solid var(--border);padding:6px 0;font-size:12px;">
+      <div><b>${solEsc(x.titulo)}</b><div style="font-size:10px;color:var(--text3);">${solEsc(x.clave)}</div></div>
+      <select id="shpM_${solEsc(x.clave)}" style="${SOL_INPUT_STYLE}"><option value="">— elegir del catálogo —</option>${_shpCat.map(c=>`<option value="${c.id}" ${c.id===sel?'selected':''}>${solEsc(c.nombre)}</option>`).join('')}</select>
+      <select id="shpN_${solEsc(x.clave)}" style="${SOL_INPUT_STYLE}"><option value="">nivel…</option>${['esencial','plus','premium'].map(n=>`<option ${n===niv?'selected':''}>${n}</option>`).join('')}</select>
+      <button onclick="shpGuardarMap('${solEsc(x.clave).replace(/'/g,"\\'")}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;">Guardar</button></div>`;};
+  box.innerHTML=`<details ${pend.length?'open':''} style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 14px;">
+    <summary style="cursor:pointer;font-size:13px;font-weight:700;color:var(--navy);">🔗 Vincular productos de Shopify al catálogo ${pend.length?`<span style="color:#B45309;">(${pend.length} por vincular)</span>`:'<span style="color:#2E7D32;">(todos vinculados)</span>'}</summary>
+    <div style="font-size:11px;color:var(--text3);margin:6px 0;">El catálogo da el nombre del concepto en la factura; el nivel (esencial/plus/premium) define el acceso en Academia. Se sugiere automáticamente el más parecido; verifícalo.</div>
+    ${(pend.length?pend:todas).map(fila).join('')||'<div style="font-size:12px;color:var(--text3);">Aún no hay productos.</div>'}
+    ${pend.length&&todas.length>pend.length?`<div style="font-size:11px;color:var(--text3);margin-top:6px;">Mostrando solo los pendientes.</div>`:''}</details>`;
+}
+async function shpGuardarMap(clave){
+  const id=document.getElementById('shpM_'+clave)?.value;const niv=document.getElementById('shpN_'+clave)?.value||null;
+  if(!id) return alert('Elige el producto del catálogo.');
+  const item=_shpCat.find(c=>c.id===id);
+  const titulo=_shpRows.flatMap(p=>p.lineas||[]).find(l=>shpClave(l)===clave)?.titulo||_shpMap[clave]?.titulo||clave;
+  const {error}=await sb.from('shopify_producto_map').upsert({clave,titulo,catalogo_item_id:id,concepto:item?.nombre||null,nivel:niv,updated_at:new Date().toISOString()});
+  if(error) return alert('No se pudo guardar: '+error.message);
+  _shpMap[clave]={clave,titulo,catalogo_item_id:id,concepto:item?.nombre||null,nivel:niv};
+  shpPintar();shpPintarMapeo();
+}
+// ── Aviso de pedidos nuevos (pestaña con contador + toast) ──
+async function shpActualizarBadge(){
+  try{
+    const {count}=await sb.from('shopify_pedidos').select('id',{count:'exact',head:true}).eq('estado','nuevo');
+    const n=count||0;
+    document.querySelectorAll('#tabsBar .tab,#tabsBar2 .tab').forEach(t=>{if(/^🛍 Pedidos/.test(t.textContent)) t.textContent='🛍 Pedidos Shopify'+(n?` (${n})`:'');});
+    if(window._shpUltimoN!=null&&n>window._shpUltimoN){try{uiToast('🛍 Nuevo pedido de Shopify en la bandeja');}catch(_){}}
+    window._shpUltimoN=n;
+  }catch(e){}
+}
+function shpBadgeInit(){
+  shpActualizarBadge();
+  if(window._shpTimer) return;
+  window._shpTimer=setInterval(()=>{if(document.visibilityState==='visible'&&typeof sb!=='undefined'&&currentUser) shpActualizarBadge();},90000);
+}
+// Prefill de la solicitud de factura desde un pedido
+async function solAplicarPrefillShopify(id){
+  const {data:p}=await sb.from('shopify_pedidos').select('*').eq('id',id).single();
+  if(!p) return;
+  window._sfShop=p;
+  const {data:mp}=await sb.from('shopify_producto_map').select('*');const mapa={};(mp||[]).forEach(m=>mapa[m.clave]=m);
+  const ms=(p.lineas||[]).map(l=>mapa[shpClave(l)]);
+  const concepto=(p.lineas||[]).map((l,i)=>ms[i]?.concepto||l.titulo).join(' + ');
+  const nivel=ms.find(m=>m?.nivel)?.nivel||(p.lineas||[]).map(l=>shpNivelSku(l.sku)).find(Boolean)||'';
+  const pg=shpPagoInfo(p);
+  // Cliente: por empresa o nombre en Cartera; si no hay, se deja escrito
+  const buscar=(p.empresa||p.cliente_nombre||'').trim();
+  if(buscar){
+    const limpio=buscar.replace(/[%,()]/g,' ');
+    const {data:cs}=await sb.from('clientes_cartera').select('*').ilike('razon_social','%'+limpio+'%').limit(8);
+    if((cs||[]).length===1){window._solMatches=cs;await solClienteElegir(0);}
+    else{document.getElementById('sfCliente').value=buscar;await solClienteBuscar();}
+  }
+  const set=(i,v)=>{const e=document.getElementById(i);if(e&&v!=null&&v!=='') e.value=v;};
+  set('sfCotiz','');
+  set('sfForma',/paypal/i.test(p.pasarela||'')?'PayPal':(pg.auto||p.estado_pago!=='paid'&&!/manual/i.test(p.pasarela||'')?'Shopify':'Transferencia'));
+  if(document.getElementById('sfForma').value==='Shopify'&&/manual|deposit|dep[oó]sito|transfer|bank/i.test(p.pasarela||'')) set('sfForma','Transferencia');
+  set('sfShopPedido',p.numero);set('sfConcepto',concepto);set('sfTotal',p.total);
+  set('sfTipo',p.estado_pago==='paid'?'con_pago':'liberar_pago');
+  if(typeof solTipoCambio==='function') solTipoCambio();
+  if(p.estado_pago==='paid'){
+    const d=new Date(p.creado_shopify);
+    set('sfPagoMonto',p.total);
+    set('sfPagoFecha',d.toLocaleDateString('en-CA',{timeZone:'America/Mexico_City'}));
+    set('sfPagoHora',d.toLocaleTimeString('en-GB',{timeZone:'America/Mexico_City',hour:'2-digit',minute:'2-digit'}));
+  }
+  set('sfNotas','Pedido Shopify '+p.numero+(p.email?' · '+p.email:''));
+  // Asistente
+  const fila=document.querySelector('.sfAsRow');
+  if(fila){const v=(c,x)=>{const e=fila.querySelector(c);if(e&&!e.value) e.value=x||'';};v('.sfAsN',p.cliente_nombre);v('.sfAsC',p.email);v('.sfAsT',p.telefono);}
+  if(nivel) set('sfAcadNivel',nivel);
+  const box=document.getElementById('sfPipeBox');
+  if(box){box.style.display='block';box.innerHTML=`<div style="font-size:12px;background:#eef6f6;border:1px solid #b9dede;border-radius:8px;padding:8px 12px;">🛍 Pedido de Shopify <b>${solEsc(p.numero)}</b> · ${fmt(p.total)} · ${pg.t}${pg.auto&&pg.pagado?'<br><b>El pago ya está confirmado por Shopify: no necesitas subir comprobante y se valida al enviar.</b>':''}<br><span style="color:var(--text3);">Confirma con el cliente RFC, régimen, uso de CFDI y la fecha del taller (si aplica) antes de enviar.</span></div>`;}
+}
+
 async function renderSolFacturaVendedor(){
   const mc=document.getElementById('mainContent');
   mc.classList.remove('full-width');
-  window._sfCliente=null;window._sfPipe=null;
+  window._sfCliente=null;window._sfPipe=null;window._sfShop=null;
   mc.innerHTML=`
   <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px;">🧾 Solicitar factura</div>
   <div style="font-size:12px;color:var(--text3);margin-bottom:14px;">Llena esta solicitud en lugar de escribir en Telegram. Dirección valida el pago y Administración emite la factura; aquí ves en qué va.</div>
@@ -29954,6 +30147,7 @@ async function solLeerCotizacion(input){
 // Prefill desde Proyección (negociación Cerrada-Ganada → "mandar a facturación")
 async function solAplicarPrefill(){
   const p=window._solPrefill;window._solPrefill=null;
+  if(p?.shopify_id) return solAplicarPrefillShopify(p.shopify_id);
   if(!p?.pipeline_id) return;
   const {data:n}=await sb.from('pipeline_vendedor').select('*, oportunidades_crm(crm_folio,crm_potentialid)').eq('id',p.pipeline_id).single();
   if(!n) return;
@@ -30062,7 +30256,7 @@ async function solEnviar(){
     pagoMonto=parseFloat(v('sfPagoMonto'));pagoFecha=v('sfPagoFecha');
     file=document.getElementById('sfComprobante').files[0];
     if(!(pagoMonto>0)||!pagoFecha) return err('Captura el monto y la fecha del pago.');
-    if(!file) return err('Adjunta el comprobante de pago.');
+    if(!file&&!(window._sfShop&&shpPagoInfo(window._sfShop).auto&&shpPagoInfo(window._sfShop).pagado)) return err('Adjunta el comprobante de pago.');
     if(Math.abs(pagoMonto-total)>0.5&&!confirm(`El monto depositado (${fmt(pagoMonto)}) es distinto al total a facturar (${fmt(total)}). ¿Enviar de todos modos?`)) return;
   } else if(!v('sfEsperada')){
     return err('Indica la fecha en que pagará el cliente.');
@@ -30087,14 +30281,20 @@ async function solEnviar(){
       pago_monto:pagoMonto,pago_fecha:pagoFecha||null,pago_hora:v('sfPagoHora')||null,fecha_pago_esperada:tipo==='liberar_pago'?v('sfEsperada'):null,
       comprobante_path:compPath,cotizacion_pdf_path:cotPath,crm_link:v('sfCrm')||null,notas:(publicoGral?`${SOL_PG_MARCA} Facturar a ${SOL_VIOLETA.nombre} · RFC ${SOL_VIOLETA.rfc} · C.P. ${SOL_VIOLETA.cp}. El cliente no requiere factura. `:'')+(acad.fecha_texto?`Fecha del taller: ${acad.fecha_texto}. `:'')+(v('sfNotas')||'')||null,
       asistente:acad.asistentes[0]?{...acad.asistentes[0],curso:acad.generaciones.map(g=>g.clave).join(' + ')}:null,
-      generacion_id:acad.generaciones[0]?.id||null,pipeline_vendedor_id:window._sfPipe?.id||null,
+      generacion_id:acad.generaciones[0]?.id||null,shopify_pedido_id:window._sfShop?.id||null,pipeline_vendedor_id:window._sfPipe?.id||null,
       estado:tipo==='con_pago'?'solicitada':'pendiente_pago',
     };
     if(shopPedido) row.shopify_pedido=shopPedido; // columna nueva (sql_shopify_pedido.sql)
     if(acad.asistentes.length||acad.generaciones.length||acad.no_aplica) row.academia=acad; // columna nueva (sql_academia_solicitud.sql)
     if(solId) row.id=solId;
     let {error}=await sb.from('solicitudes_factura').insert(row);
-    if(error&&/academia/.test(error.message||'')){delete row.academia;({error}=await sb.from('solicitudes_factura').insert(row));}
+    for(let k=0;k<2&&error;k++){
+      const m=error.message||'';
+      if(/academia/.test(m)&&'academia' in row) delete row.academia;
+      else if(/shopify_pedido_id/.test(m)&&'shopify_pedido_id' in row) delete row.shopify_pedido_id;
+      else break;
+      ({error}=await sb.from('solicitudes_factura').insert(row));
+    }
     if(error) throw error;
     // Datos fiscales nuevos → se guardan en la cuenta (solo si ahí estaban vacíos)
     if(cli&&!publicoGral){
@@ -30109,9 +30309,25 @@ async function solEnviar(){
       const cid=await pipeComentarioCrmLibre(row.pipeline_vendedor_id,txt,row.vendedor_id);
       if(cid){crmOk=true;await sb.from('solicitudes_factura').update({comentario_crm_hecho:true,crm_comment_id:String(cid)}).eq('id',solId);}
     }
+    // Pedido de Shopify: se liga a la solicitud y, si el pago ya lo confirmó Shopify, se valida solo
+    let msgShop='';
+    if(window._sfShop&&solId){
+      const ped=window._sfShop;const pgi=shpPagoInfo(ped);
+      try{await sb.from('shopify_pedidos').update({estado:'enviado_facturar',solicitud_id:solId,atiende_id:ped.atiende_id||userProfile?.id||currentUser.id,atiende_nombre:ped.atiende_nombre||userProfile?.nombre||''}).eq('id',ped.id);}catch(e){console.error('ligar pedido',e);}
+      if(pgi.pagado&&pgi.auto&&tipo==='con_pago'){
+        try{
+          const {data:nr}=await sb.from('solicitudes_factura').select('*').eq('id',solId).single();
+          if(nr){_solRows=[nr,...(_solRows||[]).filter(z=>z.id!==solId)];
+            const fch=new Date(ped.creado_shopify).toLocaleDateString('en-CA',{timeZone:'America/Mexico_City'});
+            await solValidarPago(solId,{fuente:'shopify',pedido:ped.numero,fecha:fch,monto:Number(ped.total),descripcion:'Shopify '+ped.numero+' · '+(ped.cliente_nombre||'')},`Pago confirmado por Shopify (${ped.numero}${ped.pasarela?' · '+ped.pasarela:''}) al recibir el pedido`,false,true,'Shopify (automático)');
+            msgShop=' El pago ya quedó validado con Shopify.';}
+        }catch(e){console.error('auto-validar shopify',e);}
+      }
+    }
+    window._sfShop=null;
     window._sfPipe=null;
     renderSolFacturaVendedor();
-    setTimeout(()=>{const m=document.getElementById('sfMsg');if(m){m.style.color='var(--teal)';m.textContent='✅ Solicitud enviada.'+(crmOk?' Se dejó el comentario en el CRM.':(row.pipeline_vendedor_id?' (No se pudo dejar el comentario en el CRM.)':' (Sin negociación ligada: no se dejó comentario en el CRM.)'));}},150);
+    setTimeout(()=>{const m=document.getElementById('sfMsg');if(m){m.style.color='var(--teal)';m.textContent='✅ Solicitud enviada.'+msgShop+(crmOk?' Se dejó el comentario en el CRM.':(row.pipeline_vendedor_id?' (No se pudo dejar el comentario en el CRM.)':' (Sin negociación ligada: no se dejó comentario en el CRM.)'));}},150);
   }catch(e){
     btn.disabled=false;err('No se pudo enviar: '+(e?.message||e));
   }
@@ -30416,9 +30632,9 @@ async function solConfirmarCasado(i,j){
   const m=x.cands[j];if(!m) return;
   await solValidarPago(x.r.id,m,`Casado con captura del banco: ${m.descripcion||''}`.trim(),true);
 }
-async function solValidarPago(id,mov,nota,desdeCasado,desdeShopify){
+async function solValidarPago(id,mov,nota,desdeCasado,desdeShopify,quien){
   const r=_solRows.find(z=>z.id===id);if(!r) return;
-  const upd={pago_validado:true,pago_validado_at:new Date().toISOString(),pago_validado_por:userProfile?.nombre||'Dirección',pago_nota:nota||null,pago_movimiento:mov||null,estado:r.factura_folio?'cerrada':(r.estado==='facturada'?'cerrada':'pago_validado')};
+  const upd={pago_validado:true,pago_validado_at:new Date().toISOString(),pago_validado_por:quien||userProfile?.nombre||'Dirección',pago_nota:nota||null,pago_movimiento:mov||null,estado:r.factura_folio?'cerrada':(r.estado==='facturada'?'cerrada':'pago_validado')};
   const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
   if(error) return alert('No se pudo validar: '+error.message);
   Object.assign(r,upd);
