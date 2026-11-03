@@ -9824,6 +9824,44 @@ async function pipeSincronizarComentarioCrm(pipelineVendedorId,tipo,fecha,hora,r
 // queda como la pieza compartida que hace esa subida+réplica; la lista de
 // abajo (cargarDocumentosAdjuntos) sigue mostrando el histórico completo de
 // la Cuenta/Oportunidad, de solo lectura, con opción de borrar.
+// Jp, 2026-11-03: Dulce reportó que "no puede subir documentos desde Proyección". Sí se podía,
+// pero guardar la actividad + subir el archivo + replicar al CRM tarda varios segundos y la
+// pantalla no mostraba nada (el formulario se vaciaba y parecía que no pasó). Ahora, mientras
+// se guarda, aparece un aviso con círculo girando que bloquea la pantalla (evita doble clic) y
+// al terminar se confirma si el documento quedó subido.
+function uiOcupado(msg,detalle){
+  let ov=document.getElementById('uiOcupadoOv');
+  if(!ov){
+    if(!document.getElementById('uiOcupadoCss')){
+      const st=document.createElement('style');st.id='uiOcupadoCss';
+      st.textContent='@keyframes uiOcuGira{to{transform:rotate(360deg)}}';document.head.appendChild(st);
+    }
+    ov=document.createElement('div');ov.id='uiOcupadoOv';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(15,30,50,.45);z-index:100000;display:flex;align-items:center;justify-content:center;';
+    document.body.appendChild(ov);
+  }
+  ov.innerHTML=`<div style="background:#fff;border-radius:12px;padding:22px 28px;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.3);max-width:340px;">
+    <div style="width:38px;height:38px;border:4px solid #d8e6e6;border-top-color:var(--teal,#00A99D);border-radius:50%;margin:0 auto 12px;animation:uiOcuGira .8s linear infinite;"></div>
+    <div style="font-size:14px;font-weight:700;color:var(--navy,#0f2a43);">${msg||'Guardando…'}</div>
+    <div style="font-size:11px;color:#6b7a88;margin-top:4px;">${detalle||'Puede tardar unos segundos. No cierres esta pantalla.'}</div></div>`;
+  return ()=>{document.getElementById('uiOcupadoOv')?.remove();};
+}
+function uiToast(txt,ok=true){
+  const t=document.createElement('div');t.textContent=txt;
+  t.style.cssText=`position:fixed;top:20px;left:50%;transform:translateX(-50%);background:${ok?'#27AE60':'#c0392b'};color:#fff;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;z-index:100001;box-shadow:0 4px 12px rgba(0,0,0,.2);`;
+  document.body.appendChild(t);setTimeout(()=>t.remove(),3500);
+}
+// Envuelve una función de guardado para mostrar el indicador mientras corre.
+function conIndicadorGuardado(fn,idArchivo){
+  return async function(...args){
+    const inp=document.getElementById(idArchivo(...args));
+    const conArchivo=!!(inp&&inp.files&&inp.files[0]);
+    const fin=uiOcupado(conArchivo?'Guardando y subiendo el documento…':'Guardando…',conArchivo?'Se sube el archivo y se replica al CRM; puede tardar unos segundos. No cierres esta pantalla.':null);
+    try{ return await fn.apply(this,args); }
+    finally{ fin(); }
+  };
+}
+// (los 4 guardados con adjunto se envuelven abajo, después de definirse)
 async function subirDocumentoAdjuntoActividad(entidadTipo,entidadId,file,crmComentarioId){
   if(!file) return;
   try{
@@ -9868,6 +9906,7 @@ async function subirDocumentoAdjuntoActividad(entidadTipo,entidadId,file,crmCome
     // Jp, 2026-10-23 — Mesa de Control / resguardo: se necesita el id de la
     // fila insertada para ligarla a resguardo_evidencias (ver
     // guardarEvidenciaResguardo). Antes esta función no devolvía nada.
+    uiToast('✓ Documento "'+file.name+'" subido');
     return fila?.id||null;
   }catch(e){
     console.error('subirDocumentoAdjuntoActividad error',e);
@@ -32080,6 +32119,14 @@ async function descargarReporteMensual(){
 sb.auth.getSession().then(({data:{session}})=>{
   if(session){ initApp(session.user); iniciarMonitorInactividad(); }
 });
+
+// Indicador de guardado en los 4 flujos con documento adjunto (Proyección y Cartera)
+try{
+  pipeGuardarNuevaActividad=conIndicadorGuardado(pipeGuardarNuevaActividad,id=>'actArchivo_'+id);
+  pipeGuardarCompletarActividad=conIndicadorGuardado(pipeGuardarCompletarActividad,id=>'actArchivoCompletar_'+id);
+  fcGuardarNuevaActividad=conIndicadorGuardado(fcGuardarNuevaActividad,id=>'fcActArchivo_'+id);
+  fcGuardarCompletarActividad=conIndicadorGuardado(fcGuardarCompletarActividad,id=>'fcActArchivoCompletar_'+id);
+}catch(e){console.error('indicador de guardado',e);}
 </script>
 </body>
 </html>
