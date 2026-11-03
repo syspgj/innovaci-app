@@ -26626,8 +26626,18 @@ async function previsualizarXMLsIng(){
   if(folios.length){
     const {data:existentes}=await sb.from('fact_ingresos').select('id,folio,cliente,total,xml_path,xml_mismatch_descartado').in('folio',folios);
     const norm=s=>(s||'').toUpperCase().trim();
-    (existentes||[]).forEach(e=>{
-      const d=_xmlParsedIng.find(x=>x.folio===e.folio);
+    // Jp, 2026-11-02: hay folios repetidos en el histórico (dos ventas distintas con el
+    // mismo folio). Si hay varias filas con el folio del XML, se elige la que mejor
+    // coincide (mismo total y cliente) en vez de quedarse con la última que llegue.
+    const _elegidas=[];
+    _xmlParsedIng.forEach(d=>{
+      const cands=(existentes||[]).filter(e=>e.folio===d.folio);
+      if(!cands.length) return;
+      const pts=e=>(d.total&&e.total&&Math.abs(d.total-e.total)<=1?2:0)+(d.cliente&&e.cliente&&norm(d.cliente)===norm(e.cliente)?1:0);
+      cands.sort((x,y)=>pts(y)-pts(x));
+      _elegidas.push([cands[0],d]);
+    });
+    _elegidas.forEach(([e,d])=>{
       if(d){
         d._existe=true;
         d._existeId=e.id;
@@ -29543,7 +29553,11 @@ async function renderFinBalance(){
 // Estados: solicitada → pago_validado → cerrada
 //          pendiente_pago (liberar pago) → facturada → cerrada (al validar pago)
 // ════════════════════════════════════════════════════════════════════════════
-const SOL_FORMAS=['Transferencia','Efectivo','Cheque','Tarjeta de crédito/débito','Por definir'];
+const SOL_FORMAS=['Transferencia','PayPal','Efectivo','Cheque','Tarjeta de crédito/débito','Por definir'];
+// Jp, 2026-11-03: clientes que NO requieren factura se facturan a Violeta (no a público en general).
+const SOL_PG_MARCA='[FACTURAR A VIOLETA]';
+const SOL_VIOLETA={nombre:'TANIA VIOLETA OLAGUE SANCHEZ',rfc:'OAST9210095E7',cp:'57000',regimen:'Actividades Empresariales y Profesionales (Persona Física)',uso:'Gastos en general'};
+const SOL_PG_RFC=SOL_VIOLETA.rfc;
 const SOL_METODOS=['PUE','PPD'];
 const SOL_USOS=['Gastos en general','Adquisición de mercancías','Pagos','Por definir','Sin efectos fiscales'];
 const SOL_REGIMENES=['Régimen General de Ley Personas Morales','Personas Morales con Fines no Lucrativos','Sueldos y Salarios','Actividades Empresariales y Profesionales (Persona Física)','Régimen Simplificado de Confianza (RESICO)','Arrendamiento','Sin obligaciones fiscales','Otro'];
@@ -29622,6 +29636,7 @@ async function renderSolFacturaVendedor(){
     </div>
     ${solFld('Concepto / curso o servicio',`<input id="sfConcepto" placeholder="Ej. CURSO EMPRESARIAL SIIGO ASPEL BANCO 6.0" style="${SOL_INPUT_STYLE}">`)}
     ${solFld('Liga de la oportunidad en el CRM',`<input id="sfCrm" placeholder="http://crminn.dynns.com/..." style="${SOL_INPUT_STYLE}">`)}
+    <label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;margin-bottom:10px;padding:9px 12px;background:#fffbea;border:1px solid #f3dc8a;border-radius:8px;cursor:pointer;"><input type="checkbox" id="sfPublicoGral" onchange="solPublicoGralCambio()" style="margin-top:2px;"><span><b>El cliente no requiere factura → facturar a Violeta</b><br><span style="color:var(--text3);">Se usan los datos fiscales de Violeta (Tania Violeta Olague Sánchez). El comprador real sigue siendo el cliente que elegiste. Administración lo ve marcado.</span></span></label>
     <div id="sfBloquePago" style="background:#f8fafb;border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;">
       <div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:8px;">💵 Datos del pago del cliente</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 12px;">
@@ -29700,6 +29715,20 @@ function solAplicarNegociacion(n){
   const box=document.getElementById('sfPipeBox');
   if(box){box.style.display='block';box.innerHTML=`<div style="font-size:12px;background:#eef6f6;border:1px solid #b9dede;border-radius:8px;padding:8px 12px;">📊 Ligada a la negociación de Proyección: <b>${solEsc(n.producto||'')}</b> · ${fmt(n.monto_total)} · ${solEsc(n.estatus||'')}${n.oportunidades_crm?.crm_folio?` · CRM ${solEsc(n.oportunidades_crm.crm_folio)}`:' · <span style="color:#B45309;">sin oportunidad en el CRM (no se dejará comentario allá)</span>'} <span onclick="window._sfPipe=null;document.getElementById('sfPipeBox').style.display='none';" style="cursor:pointer;text-decoration:underline;color:var(--text3);margin-left:6px;">desligar</span></div>`;}
 }
+function solPublicoGralCambio(){
+  const on=document.getElementById('sfPublicoGral').checked;
+  const rfc=document.getElementById('sfRfc'),uso=document.getElementById('sfUso'),reg=document.getElementById('sfReg');
+  if(on){
+    window._sfPrevFiscal={rfc:rfc.value,uso:uso.value,reg:reg.value};
+    rfc.value=SOL_PG_RFC;rfc.readOnly=true;
+    uso.value=SOL_VIOLETA.uso;reg.value=SOL_VIOLETA.regimen;
+  }else{
+    rfc.readOnly=false;
+    const pv=window._sfPrevFiscal;
+    if(pv){rfc.value=pv.rfc===SOL_PG_RFC?'':pv.rfc;uso.value=pv.uso;reg.value=pv.reg;}
+    else if(rfc.value===SOL_PG_RFC) rfc.value='';
+  }
+}
 function solTipoCambio(){
   const t=document.getElementById('sfTipo').value;
   document.getElementById('sfBloquePago').style.display=t==='con_pago'?'block':'none';
@@ -29760,6 +29789,7 @@ async function solEnviar(){
   const msg=document.getElementById('sfMsg');
   const v=id=>document.getElementById(id)?.value?.trim()||'';
   const tipo=v('sfTipo');
+  const publicoGral=!!document.getElementById('sfPublicoGral')?.checked;
   const cli=window._sfCliente;
   const nombre=cli?.razon_social||v('sfCliente');
   const total=parseFloat(v('sfTotal'));
@@ -29798,7 +29828,7 @@ async function solEnviar(){
       tipo,forma_pago:v('sfForma'),metodo_pago:v('sfMetodo'),uso_cfdi:v('sfUso'),regimen:v('sfReg'),
       cotizacion_sae:v('sfCotiz'),concepto:v('sfConcepto'),monto_total:total,
       pago_monto:pagoMonto,pago_fecha:pagoFecha||null,pago_hora:v('sfPagoHora')||null,fecha_pago_esperada:tipo==='liberar_pago'?v('sfEsperada'):null,
-      comprobante_path:compPath,cotizacion_pdf_path:cotPath,crm_link:v('sfCrm')||null,notas:v('sfNotas')||null,
+      comprobante_path:compPath,cotizacion_pdf_path:cotPath,crm_link:v('sfCrm')||null,notas:(publicoGral?`${SOL_PG_MARCA} Facturar a ${SOL_VIOLETA.nombre} · RFC ${SOL_VIOLETA.rfc} · C.P. ${SOL_VIOLETA.cp}. El cliente no requiere factura. `:'')+(v('sfNotas')||'')||null,
       asistente:asN?{nombre:asN,correo:v('sfAsCorreo'),telefono:v('sfAsTel'),curso:genTxt}:null,
       generacion_id:genId||null,pipeline_vendedor_id:window._sfPipe?.id||null,
       estado:tipo==='con_pago'?'solicitada':'pendiente_pago',
@@ -29807,7 +29837,7 @@ async function solEnviar(){
     const {error}=await sb.from('solicitudes_factura').insert(row);
     if(error) throw error;
     // Datos fiscales nuevos → se guardan en la cuenta (solo si ahí estaban vacíos)
-    if(cli){
+    if(cli&&!publicoGral){
       const upd={};const f=(k,val)=>{if(val&&!cli[k]) upd[k]=val;};
       f('rfc',row.rfc);f('regimen_fiscal',row.regimen);f('uso_cfdi',row.uso_cfdi);f('forma_pago_pref',row.forma_pago);f('metodo_pago_pref',row.metodo_pago);
       if(Object.keys(upd).length){const {error:eu}=await sb.from('clientes_cartera').update(upd).eq('id',cli.id);if(eu) console.error('actualizar cuenta',eu);}
@@ -29856,6 +29886,7 @@ function solTarjeta(r,modo){
     </div>
     <div style="font-size:12px;color:var(--text2);margin-top:3px;">${solEsc(r.concepto)} · <b>${fmt(r.monto_total)}</b> · ${solEsc(r.cotizacion_sae)}${!esVend?` · 👤 ${solEsc(r.vendedor_nombre)}`:''} · ${solFecha(r.created_at)}</div>
     <div style="font-size:11px;color:var(--text3);margin-top:2px;">${solEsc(r.rfc)} · ${solEsc(r.forma_pago)} · ${solEsc(r.metodo_pago)} · ${solEsc(r.uso_cfdi)} · ${solEsc(r.regimen)}</div>
+    ${String(r.notas||'').startsWith(SOL_PG_MARCA)?`<div style="font-size:11px;font-weight:700;color:#8a6d00;background:#fffbea;border:1px solid #f3dc8a;border-radius:6px;padding:3px 8px;margin-top:5px;display:inline-block;">🧾 FACTURAR A VIOLETA — el cliente no requiere factura · C.P. ${SOL_VIOLETA.cp}</div>`:''}
     ${pago}${fact}
     ${timTarjetaHtml(r,esDir,esVend)}
     ${r.pago_nota?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">Nota de validación: ${solEsc(r.pago_nota)}</div>`:''}
@@ -29894,7 +29925,8 @@ async function solCancelar(id){
 }
 function solCopiarDatos(id){
   const r=_solRows.find(x=>x.id===id);if(!r) return;
-  const t=[`Cliente: ${r.num_cliente?r.num_cliente+' ':''}${r.cliente_nombre}`,`RFC: ${r.rfc}`,`Forma de pago: ${r.forma_pago}`,`Método de pago: ${r.metodo_pago}`,`Uso de CFDI: ${r.uso_cfdi}`,`Régimen: ${r.regimen}`,`Cotización SAE: ${r.cotizacion_sae}`,`Concepto: ${r.concepto}`,`Total: ${fmt(r.monto_total)}`,r.notas?`Notas: ${r.notas}`:''].filter(Boolean).join('\n');
+  const aV=String(r.notas||'').startsWith(SOL_PG_MARCA);
+  const t=[aV?`Cliente (facturar a): ${SOL_VIOLETA.nombre}`:`Cliente: ${r.num_cliente?r.num_cliente+' ':''}${r.cliente_nombre}`,aV?`Comprador real (el cliente no requiere factura): ${r.cliente_nombre}`:'',`RFC: ${r.rfc}`,aV?`C.P.: ${SOL_VIOLETA.cp}`:'',`Forma de pago: ${r.forma_pago}`,`Método de pago: ${r.metodo_pago}`,`Uso de CFDI: ${r.uso_cfdi}`,`Régimen: ${r.regimen}`,`Cotización SAE: ${r.cotizacion_sae}`,`Concepto: ${r.concepto}`,`Total: ${fmt(r.monto_total)}`,r.notas?`Notas: ${r.notas}`:''].filter(Boolean).join('\n');
   (navigator.clipboard?.writeText(t)||Promise.reject()).then(()=>alert('Datos copiados.')).catch(()=>prompt('Copia los datos:',t));
 }
 function solComprobanteModal(id){
@@ -30053,7 +30085,7 @@ function solValidarModal(id){
   const r=_solRows.find(z=>z.id===id);if(!r) return;
   solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:6px;">✅ Validar pago manualmente</div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(r.cliente_nombre)} · ${fmt(r.pago_monto||r.monto_total)}</div>
-    ${solFld('Nota (cómo lo verificaste)','<input id="svNota" placeholder="Ej. visto en estado de cuenta, SPEI 15/10" style="'+SOL_INPUT_STYLE+'">')}
+    ${solFld('Nota (cómo lo verificaste)','<input id="svNota" placeholder="Ej. visto en estado de cuenta, SPEI 15/10 o en PayPal" style="'+SOL_INPUT_STYLE+'">')}
     <div style="display:flex;gap:8px;"><button onclick="solValidarPago('${id}',null,document.getElementById('svNota').value)" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Marcar pago validado</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:12px;cursor:pointer;">Cerrar</button></div>`,440);
 }
 
@@ -30719,7 +30751,7 @@ async function solRegistrarIngresoFinanzasInt(r,xmlText){
     const anio=Number(d.fecha.slice(0,4))||currentYear,mes=Number(d.fecha.slice(5,7))||currentMonth;
     const rubro=sugerirRubroPartida(d.concepto)||null;
     const estatus=cobrado?'PAGADA':'EMITIDA';
-    const base={anio,mes,fecha:d.fecha||null,folio:d.folio,serie:null,cliente:d.cliente||r.cliente_nombre||null,vendedor,concepto:d.concepto||null,rubro,
+    const base={anio,mes,fecha:d.fecha||null,folio:d.folio,serie:null,cliente:(String(r.notas||'').startsWith(SOL_PG_MARCA)?r.cliente_nombre:d.cliente)||r.cliente_nombre||null,vendedor,concepto:d.concepto||null,rubro,
       subtotal_original:d.subtotal||0,descuento:d.descuento||0,subtotal_final:d.subtotalFinal??((d.subtotal||0)-(d.descuento||0)),iva:d.ivaTras||0,total:d.total||0,
       forma_pago:(r.forma_pago||'TRANSFERENCIA').toUpperCase(),estatus,fecha_pago:fechaPago,cobrado,conciliado,cliente_cartera_id:r.cliente_cartera_id||null,
       notas:'[Solicitud de factura] cargada automáticamente al registrar la factura'};
