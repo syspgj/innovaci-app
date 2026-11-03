@@ -112,6 +112,7 @@ export default async function handler(req, res) {
   const accessToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   const usuario = await validarUsuarioSupabase(accessToken);
   if (!usuario) {
+    console.error('crm-agregar-comentario 401: token inválido/expirado');
     return res.status(401).json({ ok: false, error: 'sesión inválida — vuelve a iniciar sesión' });
   }
 
@@ -129,7 +130,11 @@ export default async function handler(req, res) {
       assigned_user_id = usuarios[0]?.crm_user_id || VTIGER_USUARIO_RESPALDO;
     }
 
-    const sessionName = await vtigerLogin();
+    let sessionName;
+    for (let i = 1; i <= 3; i++) {
+      try { sessionName = await vtigerLogin(); break; }
+      catch (e) { console.error('vtigerLogin intento ' + i, String(e.message || e)); if (i === 3) throw e; await new Promise((r) => setTimeout(r, 800 * i)); }
+    }
     const creado = await vtigerCreateComentario(sessionName, {
       commentcontent: comentario,
       related_to: crm_potentialid,
