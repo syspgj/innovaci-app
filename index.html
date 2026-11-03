@@ -29716,7 +29716,7 @@ async function renderSolFacturaVendedor(){
         ${solFld('Fecha del pago',`<input id="sfPagoFecha" type="date" style="${SOL_INPUT_STYLE}">`)}
         ${solFld('Hora (si aparece)',`<input id="sfPagoHora" type="time" style="${SOL_INPUT_STYLE}">`)}
       </div>
-      ${solFld('Comprobante de pago (imagen o PDF)',`<input id="sfComprobante" type="file" accept="image/*,.pdf" style="font-size:12px;">`)}
+      ${solFld('Comprobante de pago (imagen o PDF)',solComprobanteHtml())}
     </div>
     <div id="sfBloqueEsperado" style="display:none;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:12px 14px;margin-bottom:10px;">
       ${solFld('Fecha en que pagará el cliente',`<input id="sfEsperada" type="date" style="${SOL_INPUT_STYLE}">`,'Cuando pague, adjunta el comprobante desde tu lista de solicitudes.')}
@@ -29749,6 +29749,55 @@ function solAcadFilaHtml(p,a){
     ${solFld('Teléfono / WhatsApp',`<input class="${p}AsT" value="${solEsc(a.telefono||'')}" style="${SOL_INPUT_STYLE}">`)}
   </div>`;
 }
+
+// ── Comprobante de pago: elegir directo de la galería / cámara, pegar (Ctrl+V) o arrastrar ──
+function solComprobanteHtml(){
+  return `<input id="sfComprobante" type="file" accept="image/*,.pdf" style="display:none;" onchange="solComprobanteCambio(this)">
+  <div id="sfCompZona" ondragover="event.preventDefault();this.style.background='#e6f6f5'" ondragleave="this.style.background='#fff'" ondrop="event.preventDefault();this.style.background='#fff';solComprobanteSet(event.dataTransfer.files[0])" style="border:2px dashed var(--teal);border-radius:10px;padding:12px;text-align:center;background:#fff;">
+    <button type="button" onclick="document.getElementById('sfComprobante').click()" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">📷 Elegir captura / tomar foto</button>
+    <div style="font-size:11px;color:var(--text3);margin-top:6px;">En el celular elige la captura directo de <b>Fotos / Galería</b> (no hace falta mandarla por WhatsApp). En computadora puedes <b>pegarla con Ctrl+V</b> o arrastrarla aquí.</div>
+    <div id="sfCompPrev" style="margin-top:8px;"></div>
+    <div id="sfCompEstado" style="font-size:11px;margin-top:4px;"></div>
+  </div>`;
+}
+function solComprobanteSet(file){
+  const inp=document.getElementById('sfComprobante');if(!inp||!file) return;
+  if(!/^image\/|pdf$/i.test(file.type||'')){alert('El comprobante debe ser imagen o PDF.');return;}
+  try{const dt=new DataTransfer();dt.items.add(file);inp.files=dt.files;}catch(e){alert('Tu navegador no permitió pegar el archivo; usa el botón.');return;}
+  solComprobanteCambio(inp);
+}
+async function solComprobanteCambio(inp){
+  const f=inp.files?.[0];
+  const prev=document.getElementById('sfCompPrev'),est=document.getElementById('sfCompEstado');
+  if(!prev) return;
+  if(!f){prev.innerHTML='';if(est)est.textContent='';return;}
+  if(f.type.startsWith('image/')){
+    const url=URL.createObjectURL(f);
+    prev.innerHTML=`<img src="${url}" style="max-height:140px;max-width:100%;border-radius:6px;border:1px solid var(--border);"><div style="font-size:11px;color:var(--text3);margin-top:3px;">${solEsc(f.name||'captura')}</div>`;
+  }else prev.innerHTML=`<div style="font-size:12px;">📄 ${solEsc(f.name)}</div>`;
+  // Si es imagen y los datos del pago están vacíos, intenta leerlos (siempre se pueden corregir)
+  if(!f.type.startsWith('image/')) return;
+  const vacio=['sfPagoMonto','sfPagoFecha'].every(i=>!document.getElementById(i)?.value);
+  if(!vacio) return;
+  if(est){est.textContent='Leyendo el comprobante…';est.style.color='var(--teal)';}
+  try{
+    const b64=await new Promise((ok,ko)=>{const rd=new FileReader();rd.onload=()=>ok(String(rd.result).split(',')[1]||'');rd.onerror=ko;rd.readAsDataURL(f);});
+    const {data:sess}=await sb.auth.getSession();
+    const resp=await fetch('/api/solicitud-leer-captura',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({imagenBase64:b64,mediaType:f.type||'image/png'})});
+    let data={};try{data=await resp.json();}catch(e){}
+    const movs=(resp.ok&&data.ok)?(data.movimientos||[]):[];
+    if(movs.length!==1){if(est){est.textContent='Captura cargada. Captura monto y fecha a mano.';est.style.color='var(--text3)';}return;}
+    const m=movs[0];
+    const set=(i,v)=>{const e=document.getElementById(i);if(e&&!e.value&&v) e.value=v;};
+    set('sfPagoMonto',m.monto);set('sfPagoFecha',m.fecha);set('sfPagoHora',m.hora);
+    if(est){est.textContent='Llené monto/fecha/hora desde el comprobante — revísalos.';est.style.color='#27AE60';}
+  }catch(e){if(est){est.textContent='Captura cargada. Captura monto y fecha a mano.';est.style.color='var(--text3)';}}
+}
+document.addEventListener('paste',e=>{
+  if(!document.getElementById('sfComprobante')) return;
+  const it=[...(e.clipboardData?.items||[])].find(x=>x.kind==='file'&&/^image\//.test(x.type));
+  if(it){e.preventDefault();solComprobanteSet(it.getAsFile());}
+});
 function solAcadHtml(p,ac){
   ac=ac||{};
   const as=(ac.asistentes&&ac.asistentes.length)?ac.asistentes:[{}];
@@ -29761,16 +29810,16 @@ function solAcadHtml(p,ac){
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 12px;">
       ${solFld('Nivel de acceso',`<select id="${p}AcadNivel" style="${SOL_INPUT_STYLE}"><option value="esencial" ${ac.nivel==='esencial'?'selected':''}>Esencial</option><option value="plus" ${ac.nivel==='plus'?'selected':''}>Plus</option><option value="premium" ${ac.nivel==='premium'?'selected':''}>Premium</option></select>`)}
     </div>
-    <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:3px;">Generación(es)</div>
+    <div style="font-size:12px;font-weight:700;color:#b45309;margin-bottom:3px;">📅 ¿En qué fecha entra el cliente? <span style="font-weight:500;color:var(--text3);">(obligatorio en talleres en vivo; combo = una fecha por taller)</span></div>
     <div id="${p}AcadGens" style="font-size:12px;max-height:150px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:6px;padding:6px 10px;" data-sel="${solEsc(((ac.generaciones||[]).map(g=>g.id)).join(','))}">Cargando generaciones…</div>
   </div>`;
 }
 async function solAcadCargarGens(p){
   const box=document.getElementById(p+'AcadGens');if(!box) return;
   if(!window._solGens) await solCargarGeneraciones();
-  const gens=(window._solGens||[]).filter(g=>!g.curso||true);
+  const gens=(window._solGens||[]).slice().sort((a,b)=>String(a.fecha_inicio||'9').localeCompare(String(b.fecha_inicio||'9')));
   const sel=new Set((box.dataset.sel||'').split(',').filter(Boolean));
-  box.innerHTML=gens.length?gens.map(g=>`<label style="display:flex;gap:6px;align-items:flex-start;padding:2px 0;"><input type="checkbox" class="${p}AcadGen" value="${g.id}" ${sel.has(g.id)?'checked':''}><span>${solEsc(g.clave||'')} · ${solEsc(g.curso?.nombre||'')}${g.fecha_inicio?' · inicia '+solFecha(g.fecha_inicio):''}</span></label>`).join(''):'<span style="color:var(--text3);">No hay generaciones vigentes en Academia. Pídele a Dirección que las cree (en un combo, una por curso); mientras, puedes enviar sin generación y se asigna después desde la tarjeta.</span>';
+  box.innerHTML=gens.length?gens.map(g=>`<label style="display:flex;gap:6px;align-items:flex-start;padding:2px 0;"><input type="checkbox" class="${p}AcadGen" value="${g.id}" ${sel.has(g.id)?'checked':''}><span>${g.fecha_inicio?'<b>'+solFecha(g.fecha_inicio)+'</b> · ':''}${solEsc(g.curso?.nombre||'')} <span style="color:var(--text3);">(${solEsc(g.clave||'')})</span></span></label>`).join(''):'<span style="color:var(--text3);">No hay generaciones vigentes en Academia. Pídele a Dirección que las cree (en un combo, una por curso); mientras, puedes enviar sin generación y se asigna después desde la tarjeta.</span>';
 }
 function solAcadLeer(p){
   const asistentes=[...document.querySelectorAll('.'+p+'AsRow')].map(r=>({nombre:r.querySelector('.'+p+'AsN').value.trim(),correo:r.querySelector('.'+p+'AsC').value.trim(),telefono:r.querySelector('.'+p+'AsT').value.trim()})).filter(a=>a.nombre||a.correo||a.telefono);
@@ -29784,6 +29833,12 @@ function solAcadValidar(ac,concepto){
   if(!ac.asistentes.length) return 'Captura el nombre, correo y teléfono del asistente (o marca "no lleva alumnos en Academia").';
   const mal=ac.asistentes.find(a=>!a.nombre||!a.correo||!a.telefono);
   if(mal) return 'Cada asistente necesita nombre, correo y teléfono.';
+  const esVivo=/AGUINALDO|CIERRE|TALLER|COMBO/i.test(concepto||'');
+  const hayGens=(window._solGens||[]).length>0;
+  if(esVivo&&hayGens){
+    const min=/COMBO/i.test(concepto||'')?2:1;
+    if(ac.generaciones.length<min) return min>1?'Es un combo: marca la fecha (generación) de cada uno de los dos talleres.':'Marca la FECHA en la que entrará el cliente (generación). Es obligatorio en talleres en vivo.';
+  }
   const cursos=ac.generaciones.map(g=>g.curso).filter(Boolean);
   if(new Set(cursos).size<cursos.length) return 'Marcaste dos fechas del mismo taller; el cliente entra solo a una. Deja una sola generación por taller.';
   return '';
