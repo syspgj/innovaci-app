@@ -15678,6 +15678,7 @@ async function renderDirectorVendedores(){
   const users=await loadDirectorData();
   const vendedores=users.filter(u=>u.rol==='vendedor');
   const telemarketing=users.filter(u=>u.rol==='telemarketing');
+  const comTeleFin=await calcComisionTeleFin(currentYear,currentMonth); // ventas reales de Carolina desde Finanzas
   // Recalcular deptoAlcanzado para el mes actual — getRate() depende de esto y no debe
   // quedarse con el valor de un render anterior (mismo fix aplicado en renderDirectorResumen)
   const metaDeptoRowV=kpiConfig.find(k=>k.kpi_key==='meta_depto');
@@ -15801,6 +15802,8 @@ async function renderDirectorVendedores(){
         {n:'Seguimientos',v:tot.seguimientos,m:100},
       ];
       const bonoPros=tot.prospectos>=15?tot.prospectos*50:0;
+      const esCarolina=/carolina/i.test(u.nombre||'')&&comTeleFin.ventas.total>0;
+      const bonoVista=bonoPros+(esCarolina?comTeleFin.bono:0);
       const kpiRows=kpiTele.map(k=>{
         const p=Math.min(k.v/(k.m||1),1);
         const pc=pcol(p);
@@ -15824,10 +15827,11 @@ async function renderDirectorVendedores(){
         +'<div style="font-size:11px;color:rgba(255,255,255,0.6);">Telemarketing</div></div>'
         +'</div>'
         +'<div style="text-align:right;">'
-        +'<div style="font-size:18px;font-weight:700;color:#fff;">'+(tot.prospectos>=15?'$'+bonoPros.toLocaleString('es-MX'):'Sin bono')+'</div>'
-        +'<div style="font-size:11px;color:rgba(255,255,255,0.55);">'+tot.prospectos+' prospectos</div>'
+        +'<div style="font-size:18px;font-weight:700;color:#fff;">'+(bonoVista>0?'$'+bonoVista.toLocaleString('es-MX',{maximumFractionDigits:2}):'Sin bono')+'</div>'
+        +'<div style="font-size:11px;color:rgba(255,255,255,0.55);">'+tot.prospectos+' prospectos'+(esCarolina?' · ventas '+fmt(comTeleFin.ventas.total):'')+'</div>'
         +'</div></div>'
         +'<div style="padding:12px 18px 0;">'+kpiRows+'</div>'
+        +(esCarolina?'<div style="margin:10px 18px 0;padding:8px 10px;background:rgba(91,79,207,0.08);border-radius:8px;font-size:11px;color:var(--text2);line-height:1.6;"><b>Ventas cobradas (Finanzas, sin IVA):</b> Círculo '+fmt(comTeleFin.ventas.circulo)+' · Cursos en vivo '+fmt(comTeleFin.ventas.cursos_vivo)+' · Timbres '+fmt(comTeleFin.ventas.timbres)+'<br>Comisión base '+fmt(comTeleFin.base)+' × '+comTeleFin.escala.mult+' ('+comTeleFin.escala.txt+': '+Math.round(comTeleFin.pct*100)+'% de '+fmt(comTeleFin.meta)+') = <b>'+fmt(comTeleFin.bono)+'</b></div>':'')
         +'<div style="padding:10px 18px;border-top:1px solid var(--border);display:flex;gap:6px;">'
         +'<button style="flex:1;background:'+col+';color:#fff;border:none;border-radius:var(--radsm);padding:8px;font-size:12px;font-weight:600;cursor:pointer;" '
         +'onclick="verRegistrosVendedor(this.dataset.uid,this.dataset.unm,\'telemarketing\')" data-uid="'+uid+'" data-unm="'+unm+'">'
@@ -17513,6 +17517,15 @@ async function calcVentasTeleFinanzas(anio,mes){
   });
   out.total=out.circulo+out.cursos_vivo+out.timbres;
   return out;
+}
+async function calcComisionTeleFin(anio,mes){
+  const v=await calcVentasTeleFinanzas(anio,mes);
+  const {data:cfg}=await sb.from('kpi_config').select('*').eq('anio',anio).eq('mes',mes).eq('kpi_key','meta_cursos_tele');
+  const meta=cfg&&cfg[0]?cfg[0].meta_dulce:20000;
+  const pct=meta>0?v.total/meta:0;
+  const escala=TELE_COM_ESCALA.find(e=>pct>=e.desde)||TELE_COM_ESCALA[TELE_COM_ESCALA.length-1];
+  const base=v.circulo*TELE_COM_TASAS.circulo+v.cursos_vivo*TELE_COM_TASAS.cursos_vivo+v.timbres*TELE_COM_TASAS.timbres;
+  return {ventas:v,meta,pct,escala,base,bono:base*escala.mult};
 }
 async function renderTele(){
   const mc=document.getElementById('mainContent');
