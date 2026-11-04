@@ -66,20 +66,13 @@ export default async function handler(req, res) {
     }
 
     const campos = describeJson.result.fields || [];
-    const candidatos = campos.filter((f) =>
-      /servicio/i.test(f.label || '') || /servicio/i.test(f.name || '')
-    );
-
-    return res.status(200).json({
-      ok: true,
-      candidatos_tipo_servicio: candidatos.map((f) => ({
-        name: f.name,
-        label: f.label,
-        type: f.type?.name,
-        picklistValues: f.type?.picklistValues || null,
-      })),
-      todos_los_campos: campos.map((f) => ({ name: f.name, label: f.label })),
-    });
+    const interes = ['cf_970','cf_972','cf_974','cf_980','cf_982','cf_984','cf_1016','cf_1100','cf_1128','cf_1130','cf_1132','cf_1176','contact_id','nextstep','opportunity_type','leadsource','description'];
+    const esc = (t) => String(t ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    const fila = (f) => `<tr style="${interes.includes(f.name)?'background:#fff3cd;font-weight:600':''}"><td>${esc(f.name)}</td><td>${esc(f.label)}</td><td>${esc(f.type?.name)}</td><td>${f.mandatory?'SÍ':''}</td><td>${esc((f.type?.picklistValues||[]).map(p=>p.value).join(' | '))}</td></tr>`;
+    const orden = [...campos].sort((a,b)=>(interes.includes(b.name)?1:0)-(interes.includes(a.name)?1:0));
+    const html = `<!doctype html><meta charset="utf-8"><title>Campos de Oportunidades</title><body style="font-family:Arial;font-size:13px;padding:16px"><h2>Campos de Oportunidades (Potentials) en el CRM</h2><p>Los amarillos son los que estamos revisando.</p><table border="1" cellpadding="5" style="border-collapse:collapse"><tr><th>Código</th><th>Etiqueta en el CRM</th><th>Tipo</th><th>Obligatorio</th><th>Opciones</th></tr>${orden.map(fila).join('')}</table></body>`;
+    res.setHeader('Content-Type','text/html; charset=utf-8');
+    return res.status(200).send(html);
   } catch (err) {
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
