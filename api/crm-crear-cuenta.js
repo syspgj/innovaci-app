@@ -60,16 +60,39 @@ async function vtigerLogin() {
   return loginRes.result.sessionName;
 }
 
+// Jp, 2026-11-04 — el CRM exige campos personalizados obligatorios (cf_1044, …)
+// que la API no rellena sola con el valor por defecto de la pantalla. Se crea la
+// Cuenta y, si Vtiger responde MANDATORY_FIELDS_MISSING, se completa el campo
+// pedido con el valor neutro/default de abajo (los más comunes en cuentas
+// recientes del espejo) y se reintenta. Valores de lista = deben existir en el
+// picklist del CRM; "NA" es el "no aplica" que ya usa el CRM.
+const VTIGER_DEFAULTS_CF = {
+  cf_1044: 'NA', cf_924: 'NA', cf_928: 'NA', cf_932: 'NA', cf_936: 'NA', cf_940: 'NA',
+  cf_944: 'NA', cf_948: 'NA', cf_952: 'NA', cf_954: 'NA',
+  cf_1062: 'E Red List', cf_1066: '0', cf_1074: '3.3', cf_1094: 'Azul',
+  cf_1136: 'Mensual', cf_1146: 'Mensual', cf_1150: 'Mensual', cf_1154: 'Mensual', cf_1160: 'Mensual',
+};
+
 async function vtigerCreateAccount(sessionName, element) {
-  const body = new URLSearchParams({
-    operation: 'create',
-    sessionName,
-    elementType: 'Accounts',
-    element: JSON.stringify(element),
-  });
-  const res = await fetch(VTIGER_BASE, { method: 'POST', body }).then((r) => r.json());
-  if (!res.success) throw new Error('create Accounts failed: ' + JSON.stringify(res));
-  return res.result;
+  const el = { ...element };
+  for (let intento = 0; intento < 15; intento++) {
+    const body = new URLSearchParams({
+      operation: 'create',
+      sessionName,
+      elementType: 'Accounts',
+      element: JSON.stringify(el),
+    });
+    const res = await fetch(VTIGER_BASE, { method: 'POST', body }).then((r) => r.json());
+    if (res.success) return res.result;
+    const msg = (res.error && res.error.message) || '';
+    const m = res.error && res.error.code === 'MANDATORY_FIELDS_MISSING' && msg.match(/^(\w+) does not have a value/);
+    if (m && !(m[1] in el) && VTIGER_DEFAULTS_CF[m[1]] !== undefined) {
+      el[m[1]] = VTIGER_DEFAULTS_CF[m[1]];
+      continue;
+    }
+    throw new Error('create Accounts failed: ' + JSON.stringify(res));
+  }
+  throw new Error('create Accounts failed: demasiados campos obligatorios sin valor');
 }
 
 async function validarUsuarioSupabase(accessToken) {
