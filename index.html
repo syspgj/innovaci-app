@@ -29730,6 +29730,7 @@ async function shpCargar(){
     sb.from('shopify_producto_map').select('*')]);
   if(rp.error){lista.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(rp.error.message)}${/shopify_pedidos/.test(rp.error.message)?'<br>Falta correr sql_shopify_pedidos.sql en Supabase.':''}</div>`;return;}
   _shpRows=rp.data||[];_shpMap={};(rm.data||[]).forEach(m=>_shpMap[m.clave]=m);
+  await shpCargarClientes();
   shpPintar();shpPintarMapeo();shpActualizarBadge();
 }
 function shpPintar(){
@@ -29763,6 +29764,55 @@ function shpWaLink(p,tipo){
   }
   return `https://wa.me/${num}?text=${encodeURIComponent(t)}`;
 }
+// ── ¿Ya es cliente? Se compara el pedido contra Cartera por correo, teléfono, RFC y nombre ──
+let _shpCli=null,_shpCliAt=0,_shpUsuarios={};
+async function shpCargarClientes(){
+  if(_shpCli&&Date.now()-_shpCliAt<600000) return;
+  const todos=[];
+  for(let a=0;;a+=1000){
+    const {data,error}=await sb.from('clientes_cartera').select('id,num_cliente,razon_social,rfc,correo_principal,email,otro_correo,telefono,telefono_whatsapp,vendedor_asignado,vendedor_origen').range(a,a+999);
+    if(error||!data) break;
+    todos.push(...data);
+    if(data.length<1000) break;
+  }
+  const {data:us}=await sb.from('usuarios').select('id,nombre');_shpUsuarios={};(us||[]).forEach(u=>_shpUsuarios[u.id]=u.nombre);
+  const nrm=t=>String(t||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\b(s\.?a\.?|de|c\.?v\.?|s\.?a\.? de c\.?v\.?|sapi|rl|del|la|el)\b/g,' ').replace(/[^a-z0-9]+/g,' ').trim().split(' ').filter(Boolean).sort().join(' ');
+  const tel=t=>String(t||'').replace(/\D/g,'').slice(-10);
+  const idx={mail:new Map(),tel:new Map(),rfc:new Map(),nom:new Map()};
+  const put=(m,k,c)=>{if(k&&k.length>=3){if(!m.has(k)) m.set(k,[]);m.get(k).push(c);}};
+  todos.forEach(c=>{
+    [c.correo_principal,c.email,c.otro_correo].forEach(e=>put(idx.mail,String(e||'').trim().toLowerCase(),c));
+    [c.telefono,c.telefono_whatsapp].forEach(t=>{const d=tel(t);if(d.length===10) put(idx.tel,d,c);});
+    put(idx.rfc,String(c.rfc||'').trim().toUpperCase(),c);
+    put(idx.nom,nrm(c.razon_social),c);
+  });
+  idx.nrm=nrm;idx.tel=idx.tel;idx.telf=tel;
+  _shpCli=idx;_shpCliAt=Date.now();
+}
+function shpBuscarCliente(p){
+  const I=_shpCli;if(!I) return null;
+  const rfcRe=/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/i;
+  const emp=(p.empresa||'').trim();
+  const rfc=rfcRe.test(emp)?emp.toUpperCase():'';
+  const prueba=[
+    ['RFC',I.rfc,rfc],
+    ['correo',I.mail,String(p.email||'').trim().toLowerCase()],
+    ['teléfono',I.tel,I.telf(p.telefono)],
+  ];
+  for(const [por,mapa,k] of prueba){ const r=k&&mapa.get(k); if(r&&r.length) return {nivel:'fuerte',por,c:r[0],n:r.length}; }
+  for(const nom of [rfc?'':emp,p.cliente_nombre]){ const r=nom&&I.nom.get(I.nrm(nom)); if(r&&r.length) return {nivel:'posible',por:'nombre',c:r[0],n:r.length}; }
+  return {nivel:'nuevo'};
+}
+function shpClienteHtml(p){
+  const m=shpBuscarCliente(p);if(!m) return '';
+  if(m.nivel==='nuevo') return `<div style="font-size:11px;margin-top:4px;color:#7B3FA0;">🆕 <b>Cliente nuevo</b>: no está en Cartera (se busca por correo, teléfono, RFC y nombre). Al generar la solicitud se captura el RFC.</div>`;
+  const c=m.c;const own=_shpUsuarios[c.vendedor_asignado]||c.vendedor_origen||'';
+  const me=userProfile?.id||currentUser?.id;
+  const otro=c.vendedor_asignado&&c.vendedor_asignado!==me?` · cuenta de <b>${solEsc(own)}</b>`:(own?` · ${solEsc(own)}`:'');
+  const ico=m.nivel==='fuerte'?'✅':'❓';
+  const txt=m.nivel==='fuerte'?`Ya es cliente (coincide ${m.por})`:'Posible cliente existente (solo coincide el nombre; verifica)';
+  return `<div style="font-size:11px;margin-top:4px;color:${m.nivel==='fuerte'?'#2E7D32':'#B45309'};">${ico} <b>${txt}</b>: ${solEsc(c.razon_social)} · #${solEsc(c.num_cliente||'')}${c.rfc?' · '+solEsc(c.rfc):''}${otro}${m.n>1?` · <span title="Hay ${m.n} cuentas con ese dato">⚠️ ${m.n} cuentas</span>`:''}</div>`;
+}
 function shpTarjeta(p){
   const pg=shpPagoInfo(p);const est=SHP_ESTADO[p.estado]||['',''];
   const me=userProfile?.id||currentUser?.id;
@@ -29783,6 +29833,7 @@ function shpTarjeta(p){
     <div style="font-size:11px;color:var(--text3);margin:2px 0 6px;">${shpFechaMx(p.creado_shopify)} · ${solEsc(p.email||'sin correo')} · ${solEsc(p.telefono||'sin teléfono')}</div>
     ${lineas}
     <div style="font-size:12px;font-weight:600;color:${pg.c};margin-top:6px;">${pg.t}</div>
+    ${shpClienteHtml(p)}
     <div style="font-size:11px;margin-top:3px;"><span style="color:${est[1]};font-weight:700;">${est[0]}</span>${p.atiende_nombre&&p.estado!=='nuevo'?` · ${solEsc(p.atiende_nombre)}`:''}${p.motivo_descarte?` · ${solEsc(p.motivo_descarte)}`:''}${p.nota?` · Nota del cliente: ${solEsc(p.nota)}`:''}</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;">${acciones.join('')}
       ${wa&&p.estado!=='descartado'?`<a href="${shpWaLink(p,'confirmar')}" target="_blank" rel="noopener" style="text-decoration:none;background:#25D366;color:#fff;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:700;">💬 ${shpPagoInfo(p).pagado?'Confirmar pedido por WhatsApp':'WhatsApp: pago pendiente'}</a><a href="${shpWaLink(p,'fiscal')}" target="_blank" rel="noopener" style="text-decoration:none;border:1px solid #25D366;color:#128C7E;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:700;">🧾 Pedir datos fiscales por WhatsApp</a>`:(!wa&&p.estado!=='descartado'?'<span style="font-size:11px;color:var(--text3);align-self:center;">Sin teléfono: contáctalo por correo</span>':'')}
@@ -29924,7 +29975,15 @@ async function solAplicarPrefillShopify(id){
   const pg=shpPagoInfo(p);
   // Cliente: por empresa o nombre en Cartera; si no hay, se deja escrito
   const buscar=((rfcPed?'':p.empresa)||p.cliente_nombre||'').trim();
-  if(buscar){
+  let ligado=false;
+  try{
+    await shpCargarClientes();const mm=shpBuscarCliente(p);
+    if(mm&&mm.nivel==='fuerte'){
+      const {data:cc}=await sb.from('clientes_cartera').select('*').eq('id',mm.c.id).single();
+      if(cc){window._solMatches=[cc];await solClienteElegir(0);ligado=true;}
+    }
+  }catch(e){console.error('buscar cliente pedido',e);}
+  if(!ligado&&buscar){
     const limpio=buscar.replace(/[%,()]/g,' ');
     const {data:cs}=await sb.from('clientes_cartera').select('*').ilike('razon_social','%'+limpio+'%').limit(8);
     if((cs||[]).length===1){window._solMatches=cs;await solClienteElegir(0);}
