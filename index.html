@@ -1198,6 +1198,56 @@ function renderAcademiaTab(){
 // un curso empresarial/24_7 significa que tiene al menos una inscripción cuyo
 // período de prácticas no está vencido (vigente o por vencer) — así deja de
 // aparecer solo cuando ya no le queda nadie con acceso corriendo.
+// ── Nuevos asistentes desde facturación (Jp, 2026-11-04) ─────────────────────
+// Cuando una solicitud de factura inscribe alumnos (solInscribirAcademia) la
+// inscripción queda con origen='facturacion' y atendido_at=null. Capacitación
+// los ve aquí, hace registro / accesos / grupo de WhatsApp y los marca como
+// atendidos. El cron api/cron/academia-nuevos-asistentes.js manda cada mañana
+// el mismo listado por correo.
+async function academiaNuevosAsistentesHtml(){
+  let rows=[];
+  try{
+    const {data,error}=await sb.from('academia_inscripciones')
+      .select('id,nivel_acceso,folio,created_at,atencion,vendedor_nombre_original,participante:participante_id(nombre,mail,telefono),generacion:generacion_id(clave,curso:curso_id(nombre))')
+      .eq('origen','facturacion').is('atendido_at',null).order('created_at',{ascending:true});
+    if(error) return /origen|atendido/.test(error.message||'')?'<div style="margin-bottom:16px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--text3);">Falta correr <b>sql_academia_nuevos_asistentes.sql</b> en Supabase para ver los nuevos asistentes de facturación.</div>':'';
+    rows=data||[];
+  }catch(e){return '';}
+  const esc=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const chk=(r,k,lbl)=>`<label style="display:inline-flex;align-items:center;gap:3px;margin-right:10px;font-size:11px;cursor:pointer;white-space:nowrap;"><input type="checkbox" ${(r.atencion||{})[k]?'checked':''} onchange="academiaNuevoCheck('${r.id}','${k}',this.checked)"> ${lbl}</label>`;
+  const fila=r=>{const p=r.participante||{};const g=r.generacion||{};
+    return `<tr style="border-top:1px solid var(--border);">
+      <td style="padding:8px 12px;"><b>${esc(p.nombre)}</b><div style="font-size:11px;color:var(--text3);">${esc(p.mail||'sin correo')} · ${esc(p.telefono||'sin teléfono')}</div></td>
+      <td>${esc(g.curso?.nombre||'')} · ${esc(g.clave||'')}<div style="font-size:11px;color:var(--text3);">${esc(r.nivel_acceso||'')} ${r.folio?'· '+esc(r.folio):''} ${r.vendedor_nombre_original?'· vende: '+esc(r.vendedor_nombre_original):''}</div></td>
+      <td style="font-size:11px;color:var(--text3);">${new Date(r.created_at).toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}</td>
+      <td>${chk(r,'registro','Registro')}${chk(r,'accesos','Accesos')}${chk(r,'whatsapp','Grupo WhatsApp')}</td>
+      <td style="padding-right:12px;text-align:right;"><button onclick="academiaNuevoAtendido('${r.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">✔ Atendido</button></td>
+    </tr>`;};
+  return `<div style="margin-bottom:20px;">
+    <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">🆕 Nuevos asistentes desde facturación (${rows.length}) <span style="font-weight:400;color:var(--text3);font-size:11px;">— por atender: registro, accesos y grupo de WhatsApp</span></div>
+    <div class="card" style="overflow-x:auto;${rows.length?'border-left:3px solid var(--red);':''}">
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;"><th style="padding:8px 12px;">Asistente</th><th>Curso / generación</th><th>Alta</th><th>Pasos</th><th></th></tr></thead>
+        <tbody>${rows.map(fila).join('')||'<tr><td colspan="5" style="padding:14px;color:var(--text3);">Sin asistentes nuevos por atender.</td></tr>'}</tbody>
+      </table>
+    </div></div>`;
+}
+async function academiaNuevoCheck(id,k,val){
+  const {data}=await sb.from('academia_inscripciones').select('atencion').eq('id',id).single();
+  const at={...(data?.atencion||{}),[k]:!!val};
+  const {error}=await sb.from('academia_inscripciones').update({atencion:at}).eq('id',id);
+  if(error) uiToast('No se pudo guardar: '+error.message,false);
+}
+async function academiaNuevoAtendido(id){
+  const {data}=await sb.from('academia_inscripciones').select('atencion').eq('id',id).single();
+  const at=data?.atencion||{};
+  if(!(at.registro&&at.accesos&&at.whatsapp)&&!confirm('Faltan pasos sin marcar (registro / accesos / grupo de WhatsApp). ¿Marcar como atendido de todos modos?')) return;
+  const {error}=await sb.from('academia_inscripciones').update({atendido_at:new Date().toISOString(),atendido_por:userProfile?.nombre||''}).eq('id',id);
+  if(error) return uiToast('No se pudo guardar: '+error.message,false);
+  uiToast('Asistente marcado como atendido',true);
+  renderAcademiaDashboard();
+}
+
 async function renderAcademiaDashboard(){
   academiaDispararChequeoEvaluaciones();
   const mc=document.getElementById('mainContent');
@@ -1391,11 +1441,13 @@ async function renderAcademiaDashboard(){
     </tr>`;
   }
 
+  const nuevosAsistHtml=await academiaNuevosAsistentesHtml();
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
     <div style="font-size:18px;font-weight:600;color:var(--text);">Resumen de Academia</div>
     <div style="font-size:12px;color:var(--text3);">Cursos activos y próximos vencimientos de prácticas.</div>
   </div>
+  ${nuevosAsistHtml}
   <div style="margin-bottom:20px;">
     <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">📋 Actividad operativa pendiente (${actividadFilas.length})</div>
     <div class="card" style="overflow-x:auto;">
@@ -30217,7 +30269,9 @@ async function solInscribirAcademia(r,silencioso){
       const ver=((gen.curso?.nombre||'').match(new RegExp(sis+'\\s*(\\d{1,2})','i'))||[])[1]||'';
       const {data:folio,error:ef}=await sb.rpc('academia_generar_folio',{p_sistema:auto?'':(sis+ver),p_generacion:gen.clave,p_acceso:academiaAccesoLetra(ac.nivel)});
       if(ef){fallos++;out.push(`✖ ${a.nombre} / ${gen.clave}: no se pudo generar el folio (${ef.message})`);continue;}
-      const {error:ei}=await sb.from('academia_inscripciones').insert({participante_id:pid,generacion_id:gen.id,nivel_acceso:ac.nivel||'esencial',tipo:'entero',folio,vendedor_nombre_original:r.vendedor_nombre||null});
+      const filaInsc={participante_id:pid,generacion_id:gen.id,nivel_acceso:ac.nivel||'esencial',tipo:'entero',folio,vendedor_nombre_original:r.vendedor_nombre||null,origen:'facturacion',origen_solicitud_id:r.id};
+      let {error:ei}=await sb.from('academia_inscripciones').insert(filaInsc);
+      if(ei&&/origen/.test(ei.message||'')){delete filaInsc.origen;delete filaInsc.origen_solicitud_id;({error:ei}=await sb.from('academia_inscripciones').insert(filaInsc));} // falta sql_academia_nuevos_asistentes.sql
       if(ei){fallos++;out.push(`✖ ${a.nombre} / ${gen.clave}: ${ei.message}`);}else{ok++;out.push(`✔ ${a.nombre} → ${gen.clave} (${ac.nivel}) ${folio||''}`);}
     }
   }
