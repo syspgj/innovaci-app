@@ -30013,6 +30013,47 @@ function shpActivarAvisos(){
   Notification.requestPermission().then(r=>{const b=document.getElementById('shpAvisoBtn');if(b) b.textContent=r==='granted'?'🔔 Avisos del navegador activados':'🔕 Avisos bloqueados (actívalos en el candado de la barra)';});
 }
 if(!window._shpTimer){window._shpTimer=setInterval(shpTick,30000);setTimeout(shpTick,6000);}
+
+// ── Aviso emergente de nuevos asistentes desde facturación (Jp, 2026-11-04) ──
+// Mismo patrón que shpTick: sondeo cada 30 s para Capacitación (rol academia) y
+// director; toast + beep + notificación del navegador cuando aparece alguien nuevo.
+let _acadNuevosVistos=null;
+async function acadNuevosTick(){
+  try{
+    if(typeof currentUser==='undefined'||!currentUser||!userProfile) return;
+    if(!['academia','director'].includes(userProfile.rol)) return;
+    const {data,error}=await sb.from('academia_inscripciones').select('id,participante:participante_id(nombre)').eq('origen','facturacion').is('atendido_at',null).limit(200);
+    if(error||!data) return;
+    const ids=new Set(data.map(x=>x.id));
+    if(_acadNuevosVistos===null){ if(data.length) acadNuevosNotificar(data,true); }
+    else{ const nuevos=data.filter(x=>!_acadNuevosVistos.has(x.id)); if(nuevos.length) acadNuevosNotificar(nuevos,false); }
+    _acadNuevosVistos=ids;
+  }catch(e){}
+}
+function acadNuevosIr(){
+  document.getElementById('acadNuevosToast')?.remove();
+  if(userProfile?.rol==='director'){ if(typeof swDArea==='function') swDArea('academia'); }
+  if(typeof swAcademia==='function') swAcademia('dashboard');
+}
+function acadNuevosNotificar(lista,resumen){
+  const n=lista.length;
+  const nombres=[...new Set(lista.map(x=>x.participante?.nombre).filter(Boolean))];
+  const txt=resumen?`Hay ${n} inscripción${n>1?'es':''} de facturación por atender`:(nombres.length===1?`Nuevo asistente desde facturación: ${nombres[0]}`:`${nombres.length||n} asistentes nuevos desde facturación`);
+  try{
+    document.getElementById('acadNuevosToast')?.remove();
+    const t=document.createElement('div');t.id='acadNuevosToast';
+    t.style.cssText='position:fixed;top:18px;right:18px;z-index:100002;background:#0d3b66;color:#fff;border-radius:12px;padding:12px 16px;box-shadow:0 8px 24px rgba(0,0,0,.28);max-width:340px;font-size:13px;cursor:pointer;border-left:5px solid #f39c12;';
+    t.innerHTML=`<div style="font-weight:700;margin-bottom:3px;">🎓 ${solEsc(txt)}</div><div style="font-size:11px;opacity:.85;">Registro, accesos y grupo de WhatsApp · clic para abrir el Resumen</div>`;
+    t.onclick=acadNuevosIr;document.body.appendChild(t);
+    setTimeout(()=>t.remove(),20000);
+  }catch(e){}
+  try{
+    const C=window.AudioContext||window.webkitAudioContext;if(C){const c=new C(),o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.type='sine';o.frequency.value=660;g.gain.setValueAtTime(.15,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.5);o.start();o.stop(c.currentTime+.5);}
+  }catch(e){}
+  try{ if('Notification' in window&&Notification.permission==='granted') new Notification('🎓 Nuevo asistente desde facturación',{body:txt}); }catch(e){}
+}
+if(!window._acadNuevosTimer){window._acadNuevosTimer=setInterval(acadNuevosTick,30000);setTimeout(acadNuevosTick,7000);}
+
 // Prefill de la solicitud de factura desde un pedido
 async function solAplicarPrefillShopify(id){
   const {data:p}=await sb.from('shopify_pedidos').select('*').eq('id',id).single();
