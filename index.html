@@ -7423,7 +7423,7 @@ function modalPipeTeleHTML(r,hoy){
         <input type="text" id="tCliente" value="${v.cliente||''}" placeholder="Escribe para buscar cuenta o prospecto" oninput="document.getElementById('tCuentaId').value='';document.getElementById('tProspectoId').value='';teleFiltrarCuentas();" autocomplete="off">
         <input type="hidden" id="tCuentaId" value="${v.cliente_cartera_id||''}">
         <input type="hidden" id="tProspectoId" value="${v.prospecto_app_id||''}">
-        <div id="tCuentaResultados" style="max-height:140px;overflow-y:auto;margin-top:4px;display:grid;gap:4px;"></div>
+        <div id="tCuentaResultados" style="max-height:140px;overflow-y:auto;margin-top:4px;display:grid;gap:4px;">${v.oportunidad_crm_id?'<div style="font-size:11px;color:var(--teal);font-weight:600;padding:4px;">📡 Ligada a cuenta y con Oportunidad en el CRM</div>':v.cliente_cartera_id?'<div style="font-size:11px;color:#1D5FA8;font-weight:600;padding:4px;">🔗 Ligada a cuenta — al guardar se crea su Oportunidad en el CRM</div>':v.prospecto_app_id?'<div style="font-size:11px;color:var(--teal);font-weight:600;padding:4px;">🧲 Ligado a prospecto</div>':''}</div>
       </div>
       <div class="form-field">
         <label>Monto ($)</label>
@@ -7516,6 +7516,27 @@ async function guardarFilaPipeTele(){
     }
   }
   if(error){alert('Error: '+error.message);return;}
+  // Jp, 2026-11-04: crear/actualizar la Oportunidad en el CRM y reenviar documentos pendientes.
+  const filaId=id||nuevaFila?.id;
+  if(filaId&&cuentaId){
+    const fin=uiOcupado('Sincronizando con el CRM…');
+    try{
+      const {data:f}=await sb.from('pipeline_vendedor').select('oportunidad_crm_id,estatus,probabilidad').eq('id',filaId).single();
+      if(f?.oportunidad_crm_id){
+        if(id&&window._teleEditOriginal&&window._teleEditOriginal.estatus!==payload.estatus){
+          const fase=crmFaseDesdeEstatus(payload.estatus);
+          await crmActualizarOportunidad(f.oportunidad_crm_id,fase,fase==='Cerrada-Ganada'?100:fase==='Cerrada-Perdida'?0:(f.probabilidad||50));
+        }
+      } else {
+        const rr=await crmAsegurarOportunidadFila(filaId);
+        if(!rr.ok) uiToast('Guardado, pero no se pudo crear la Oportunidad en CRM: '+rr.error,false);
+        else uiToast('✓ Oportunidad creada en el CRM');
+      }
+      const {data:pend}=await sb.from('crm_documentos').select('id').eq('pipeline_vendedor_id',filaId).neq('crm_sync_estatus','ok');
+      let env=0; for(const d of pend||[]){ if(await reenviarDocumentoCrm(d.id,filaId,null,true)) env++; }
+      if(env) uiToast(`✓ ${env} documento(s) enviados al CRM`);
+    } finally { fin(); }
+  }
   document.getElementById('modalPipeTele')?.remove();
   await renderProyeccionTele();
 }
@@ -9413,6 +9434,71 @@ function pipeSiguienteIdEnLista(idActual){
   return lista[idx+1];
 }
 
+// Jp, 2026-11-04 — Telemarketing: al ligar una negociación a una cuenta
+// DESPUÉS de crearla, nunca se creaba la Oportunidad en el CRM (solo el
+// flujo de Vendedor lo hacía) y por eso los documentos quedaban "no
+// replicados". Estos helpers lo resuelven y sirven también para reintentar.
+function crmFaseDesdeEstatus(e){
+  if(ESTATUS_PIPE.includes(e)) return e;
+  const m={'Cotizado':'Cotización enviada','En seguimiento':'Negociación o Revisión con Cliente','Canalizado a vendedor':'Prospectando','Cerrado-Ganado':'Cerrada-Ganada','Cerrado-Perdido':'Cerrada-Perdida','Cerrado-Sin interés':'Cerrada-Perdida'};
+  return m[e]||'Prospectando';
+}
+async function crmAsegurarOportunidadFila(filaId){
+  try{
+    const {data:fila}=await sb.from('pipeline_vendedor').select('*').eq('id',filaId).single();
+    if(!fila) return {ok:false,error:'No se encontró la negociación'};
+    if(fila.oportunidad_crm_id) return {ok:true,yaExistia:true,oportunidad_crm_id:fila.oportunidad_crm_id};
+    if(!fila.cliente_cartera_id) return {ok:false,error:'La negociación no está ligada a una cuenta de Cartera'};
+    const fase=crmFaseDesdeEstatus(fila.estatus);
+    const prob=fase==='Cerrada-Ganada'?100:fase==='Cerrada-Perdida'?0:(fila.probabilidad||50);
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const res=await fetch('/api/crm-crear-oportunidad',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body:JSON.stringify({
+        cliente_cartera_id:fila.cliente_cartera_id,
+        nombre_oportunidad:`${fila.cliente||''} | ${fila.producto||''}`.trim(),
+        monto:fila.monto_total,
+        fase_venta:fase,
+        probabilidad:prob,
+        fecha_prevista:fila.fecha_prevista||todayLocal(),
+        vendedor_usuario_id:fila.usuario_id,
+        tipo_servicio:TIPOS_SERVICIO.includes(fila.tipo_servicio)?fila.tipo_servicio:undefined,
+      }),
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok) return {ok:false,error:j.error||('error '+res.status)};
+    await sb.from('pipeline_vendedor').update({oportunidad_crm_id:j.oportunidad_crm_id}).eq('id',filaId);
+    return {ok:true,creada:true,oportunidad_crm_id:j.oportunidad_crm_id};
+  }catch(e){ return {ok:false,error:String(e.message||e)}; }
+}
+async function reenviarDocumentoCrm(docId,pipelineId,containerId,silencioso){
+  const r=await crmAsegurarOportunidadFila(pipelineId);
+  if(!r.ok){ if(!silencioso) alert('No se pudo enviar al CRM: '+r.error); return false; }
+  const {data:d}=await sb.from('crm_documentos').select('crm_comentario_id').eq('id',docId).single();
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    const res=await fetch('/api/crm-documento',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+      body:JSON.stringify({crm_documento_id:docId,crm_comentario_id:d?.crm_comentario_id||null,vendedor_usuario_id:currentUser.id})});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){ if(!silencioso) alert('No se pudo enviar al CRM: '+(j.error||res.status)); return false; }
+    if(containerId) cargarDocumentosAdjuntos('oportunidad',pipelineId,containerId);
+    return true;
+  }catch(e){ if(!silencioso) alert('Sin conexión con el servidor.'); return false; }
+}
+async function reenviarDocumentosPendientesCrm(pipelineId,containerId){
+  const fin=uiOcupado('Enviando documentos al CRM…');
+  let ok=0,mal=0;
+  try{
+    const {data:docs}=await sb.from('crm_documentos').select('id,crm_sync_estatus').eq('pipeline_vendedor_id',pipelineId).neq('crm_sync_estatus','ok');
+    for(const d of docs||[]){ (await reenviarDocumentoCrm(d.id,pipelineId,null,true))?ok++:mal++; }
+  } finally { fin(); }
+  uiToast(mal?`${ok} enviados, ${mal} con error`:`✓ ${ok} documento(s) enviados al CRM`,!mal);
+  cargarDocumentosAdjuntos('oportunidad',pipelineId,containerId);
+}
+
 async function crmCrearOportunidadDesdeNuevaFila(fila,cuentaId,payload){
   try{
     const clienteNombre=document.getElementById('pCliente')?.value||payload.cliente||'';
@@ -10215,12 +10301,14 @@ async function cargarDocumentosAdjuntos(entidadTipo,entidadId,containerId){
   if(error){box.innerHTML='<div style="font-size:11px;color:var(--red);">No se pudieron cargar los documentos.</div>';return;}
   const docs=data||[];
   if(!docs.length){box.innerHTML='<div style="font-size:11px;color:var(--text3);font-style:italic;">Sin documentos adjuntos todavía — se agregan desde "Programar actividad" o "Completar".</div>';return;}
-  box.innerHTML=docs.map(d=>{
+  const pendCrm=entidadTipo==='oportunidad'?docs.filter(d=>d.crm_sync_estatus!=='ok').length:0;
+  box.innerHTML=(pendCrm>1?`<div style="margin-bottom:6px;"><button onclick="reenviarDocumentosPendientesCrm('${entidadId}','${containerId}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:11px;font-weight:700;cursor:pointer;">↻ Enviar los ${pendCrm} pendientes a CRM</button></div>`:'')+docs.map(d=>{
     const estatus=d.crm_sync_estatus==='ok'?'🔗 en CRM':d.crm_sync_estatus==='error'?'⚠️ no replicado':'⏳ replicando...';
     return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
       <span style="font-size:12px;cursor:pointer;color:var(--navy);text-decoration:underline;" onclick="abrirDocumentoAdjunto('${d.storage_path.replace(/'/g,"\\'")}')">${d.nombre_archivo}</span>
       <span style="display:flex;align-items:center;gap:6px;white-space:nowrap;">
         <span style="font-size:10px;color:var(--text3);" title="${d.crm_sync_error?String(d.crm_sync_error).replace(/"/g,'&quot;'):''}">${estatus}</span>
+        ${(entidadTipo==='oportunidad'&&d.crm_sync_estatus!=='ok')?`<span onclick="reenviarDocumentoCrm('${d.id}','${entidadId}','${containerId}')" style="cursor:pointer;font-size:10px;font-weight:700;color:#fff;background:var(--teal);border-radius:4px;padding:2px 7px;">↻ Enviar a CRM</span>`:''}
         <span onclick="borrarDocumentoAdjunto('${d.id}','${d.storage_path.replace(/'/g,"\\'")}','${entidadTipo}','${entidadId}','${containerId}')" title="Eliminar" style="cursor:pointer;color:var(--red);font-size:13px;">🗑</span>
       </span>
     </div>`;
