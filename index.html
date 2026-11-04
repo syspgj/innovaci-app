@@ -17478,6 +17478,24 @@ async function guardarYSiguienteCuenta(cuentaId, campanaId){
   else{alert('Era la última cuenta de la campaña.');await renderTeleClientes();}
 }
 
+// Jp, 2026-11-04 — Carolina (Telemarketing) vende Círculo, cursos en vivo y
+// timbres: comisión sobre lo COBRADO en Finanzas (vendedor CAROLINA), base
+// sin IVA, con tasa por categoría y multiplicador escalonado por meta mensual
+// (meta = kpi_config 'meta_cursos_tele', default $20,000).
+const TELE_COM_TASAS={circulo:0.08,cursos_vivo:0.05,timbres:0.03};
+const TELE_COM_ESCALA=[{desde:1.2,mult:1.25,txt:'≥120% de meta'},{desde:1,mult:1,txt:'≥100% de meta'},{desde:0.7,mult:0.5,txt:'70–99% de meta'},{desde:0,mult:0,txt:'<70% de meta'}];
+async function calcVentasTeleFinanzas(anio,mes){
+  const out={circulo:0,cursos_vivo:0,timbres:0,total:0};
+  const {data}=await sb.from('fact_ingresos').select('rubro,subtotal_original,descuento,costo_licencias,vendedor,cobrado').eq('anio',anio).eq('mes',mes).eq('cobrado',true).ilike('vendedor','%CAROLINA%');
+  (data||[]).forEach(r=>{
+    const ru=(r.rubro||'').toUpperCase().trim();
+    const cat=ru==='TIMBRES'?'timbres':FINANZAS_CATEGORIA[ru];
+    if(!(cat in TELE_COM_TASAS)) return;
+    out[cat]+=Math.max(0,(r.subtotal_original||0)-(r.descuento||0)-(r.costo_licencias||0));
+  });
+  out.total=out.circulo+out.cursos_vivo+out.timbres;
+  return out;
+}
 async function renderTele(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando...</div>';
@@ -17526,7 +17544,15 @@ async function renderTele(){
   const TASA_CURSOS=tasaCursosRow?tasaCursosRow.meta_dulce/100:0.05;
   function getTasaCursos(v,m){return v>=m?TASA_CURSOS:0;}
   const tasaCursos=getTasaCursos(tot.cursos,META_CURSOS);
-  const bonoCursos=tot.cursos*tasaCursos;
+  // Ventas reales de Finanzas: si Carolina ya tiene ventas cobradas este mes, esta
+  // comisión sustituye al bono manual de cursos (evita pagar doble lo mismo).
+  const ventasFin=await calcVentasTeleFinanzas(currentYear,currentMonth);
+  const usaFin=ventasFin.total>0;
+  const pctMeta=META_CURSOS>0?ventasFin.total/META_CURSOS:0;
+  const escala=TELE_COM_ESCALA.find(e=>pctMeta>=e.desde)||TELE_COM_ESCALA[TELE_COM_ESCALA.length-1];
+  const comBase=ventasFin.circulo*TELE_COM_TASAS.circulo+ventasFin.cursos_vivo*TELE_COM_TASAS.cursos_vivo+ventasFin.timbres*TELE_COM_TASAS.timbres;
+  const bonoVentasFin=comBase*escala.mult;
+  const bonoCursos=usaFin?bonoVentasFin:tot.cursos*tasaCursos;
   const bonoTotal=bonoPros+bonoCursos;
   const diasHab=getDiasHabiles(currentYear,currentMonth);
   const hoy=new Date();
@@ -17572,8 +17598,9 @@ async function renderTele(){
       <div>
         <div class="comm-num" style="color:${bonoTotal>0?'#fff':'rgba(255,255,255,0.3)'};">${fmt(bonoTotal)}</div>
         <div class="comm-sub">
-          Prospectos <b style="color:var(--teal);">${fmt(bonoPros)}</b> + Cursos <b style="color:var(--teal);">${fmt(bonoCursos)}</b>
+          Prospectos <b style="color:var(--teal);">${fmt(bonoPros)}</b> + ${usaFin?'Ventas (Finanzas)':'Cursos'} <b style="color:var(--teal);">${fmt(bonoCursos)}</b>
         </div>
+        ${usaFin?`<div style="font-size:10px;color:rgba(255,255,255,0.55);margin-top:6px;line-height:1.5;">Cobrado sin IVA: Círculo ${fmt(ventasFin.circulo)} (8%) · Cursos en vivo ${fmt(ventasFin.cursos_vivo)} (5%) · Timbres ${fmt(ventasFin.timbres)} (3%)<br>Comisión base ${fmt(comBase)} × ${escala.mult} (${escala.txt}: ${Math.round(pctMeta*100)}% de ${fmt(META_CURSOS)})</div>`:''}
         <div style="display:flex;gap:8px;margin-top:8px;">
           <div class="rate-chip">$50/prospecto · mín. ${MINIMO}</div>
           <div class="rate-chip">Cursos ${(tasaCursos*100).toFixed(1)}% · ${Math.round(tot.cursos/META_CURSOS*100)}% meta</div>
@@ -26479,6 +26506,7 @@ function mapNombreAVendedorFi(nombre){
   if(n.includes('dulce')) return 'DULCE SOLANO';
   if(n.includes('manuel')) return 'MANUEL PEÑA';
   if(n.includes('mireya')) return 'MIREYA';
+  if(n.includes('carolina')) return 'CAROLINA';
   if(n.includes('guillermo')) return 'GUILLERMO BLANCAS';
   return null;
 }
@@ -26601,10 +26629,35 @@ function fiClienteCarteraHtml(p='fi',cliente='',clienteCarteraId='',clienteCarte
     </div>`;
 }
 
+// Jp, 2026-11-04 — Las altas de alumnos ya se capturan en la Solicitud de
+// factura. Si el folio de esta factura corresponde a una solicitud, no se
+// vuelve a pedir nada: se muestra un resumen de solo lectura y se oculta el
+// bloque manual (evita duplicar inscripciones).
+async function fiAplicarResumenSolicitud(p,necesita){
+  const bloque=document.getElementById(p+'AlumnoBloque'); if(!bloque) return;
+  const fol=(document.getElementById(p+'Folio')?.value||'').trim();
+  const inp=document.getElementById(p+'Folio');
+  if(inp&&!inp._resumenLigado){inp._resumenLigado=true;inp.addEventListener('change',()=>fiToggleAlumnoBlock(p));}
+  let res=document.getElementById(p+'AlumnoResumen');
+  if(!res){res=document.createElement('div');res.id=p+'AlumnoResumen';res.style.cssText='display:none;margin-bottom:10px;padding:10px 12px;background:#f3fafa;border:1px solid #9fd3d0;border-radius:8px;font-size:12px;';bloque.parentNode.insertBefore(res,bloque);}
+  if(!necesita||!fol){res.style.display='none';return;}
+  try{
+    const {data}=await sb.from('solicitudes_factura').select('academia,asistente,cliente_nombre').ilike('factura_folio',fol).limit(1);
+    const sol=data?.[0];
+    if(!sol){res.style.display='none';return;}
+    const ac=sol.academia||{};
+    const as=(ac.asistentes||[]).map(a=>a.nombre).filter(Boolean);
+    const gens=(ac.generaciones||[]).map(g=>g.clave||g.curso).filter(Boolean);
+    bloque.style.display='none';
+    res.style.display='block';
+    res.innerHTML=`<b>🎓 Alumno(s) ya capturados en la Solicitud de factura</b><div style="margin-top:4px;color:var(--text2);">${ac.no_aplica?'Este concepto no lleva alumnos en Academia.':(as.length?'Alumno(s): '+as.map(solEsc).join(', '):(sol.asistente?'Asistente: '+solEsc(sol.asistente):'Sin alumnos capturados.'))}${gens.length?' · Generación: '+gens.map(solEsc).join(', '):''}${ac.nivel?' · Acceso: '+solEsc(ac.nivel):''}</div><div style="font-size:10px;color:var(--text3);margin-top:3px;">No se vuelve a pedir aquí. La inscripción se hace al validar el pago desde la Solicitud.</div>`;
+  }catch(e){res.style.display='none';}
+}
 function fiToggleAlumnoBlock(p='fi'){
   const r=document.getElementById(p+'RubroOtro')?.style.display!=='none'?document.getElementById(p+'RubroOtro')?.value:document.getElementById(p+'RubroSel')?.value;
   const bloque=document.getElementById(p+'AlumnoBloque');
   if(bloque) bloque.style.display=fiRubroNecesitaAlumno(r)?'block':'none';
+  fiAplicarResumenSolicitud(p,fiRubroNecesitaAlumno(r));
   const bloqueCirc=document.getElementById(p+'CirculoBloque');
   if(bloqueCirc) bloqueCirc.style.display=fiRubroEsCirculo(r)?'block':'none';
   const bloqueLic=document.getElementById(p+'LicenciasBloque');
@@ -26849,7 +26902,7 @@ async function abrirNuevaFactIngreso(){
     </div>
     ${fiClienteCarteraHtml('fi')}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      ${fld('Vendedor',sel('fiVendedor',['','DULCE SOLANO','MANUEL PEÑA','MIREYA','EDUARDO','CARLOS','GUILLERMO BLANCAS']))}
+      ${fld('Vendedor',sel('fiVendedor',['','DULCE SOLANO','MANUEL PEÑA','MIREYA','CAROLINA','EDUARDO','CARLOS','GUILLERMO BLANCAS']))}
       ${fld('Rubro',`<select id="fiRubroSel" onchange="if(this.value==='OTRO'){document.getElementById('fiRubroOtro').style.display='block'}else{document.getElementById('fiRubroOtro').style.display='none';document.getElementById('fiRubro').value=this.value};fiToggleAlumnoBlock()" style="${INP}">${rubros.map(r=>`<option>${r}</option>`).join('')}<option value="OTRO">+ Otro...</option></select><input id="fiRubroOtro" type="text" placeholder="Nuevo rubro..." oninput="fiToggleAlumnoBlock()" style="${INP}margin-top:4px;display:none;"><input id="fiRubro" type="hidden" value="${rubros[0]}">`)}
     </div>
     <div style="margin-bottom:10px;">${fld('Concepto',inp('fiConcepto','text','Descripción del servicio'))}</div>
@@ -27125,7 +27178,7 @@ async function previsualizarXMLsIng(){
   const files=Array.from(document.getElementById('xmlMasivoIng')?.files||[]);
   if(!files.length)return;
   const rubros=window._rubrosIng||['MEMBRESIA','TIMBRES','CLOUD','CLIENTES GB'];
-  const vendedores=['','DULCE SOLANO','MANUEL PEÑA','MIREYA','EDUARDO','CARLOS','GUILLERMO BLANCAS'];
+  const vendedores=['','DULCE SOLANO','MANUEL PEÑA','MIREYA','CAROLINA','EDUARDO','CARLOS','GUILLERMO BLANCAS'];
   _xmlParsedIng=[];
   const area=document.getElementById('xmlPreviewAreaIng');
   area.innerHTML='<div style="text-align:center;padding:20px;color:var(--text3);">Leyendo y verificando archivos...</div>';
@@ -27489,7 +27542,7 @@ async function editarIngreso(id){
     </div>
     ${fiClienteCarteraHtml('eii',r.cliente||'',r.cliente_cartera_id||'',clienteCarteraPrevio?.razon_social||'')}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      ${fld('Vendedor',sel('eiiVendedor',['','DULCE SOLANO','MANUEL PEÑA','MIREYA','EDUARDO','CARLOS','GUILLERMO BLANCAS'],r.vendedor||''))}
+      ${fld('Vendedor',sel('eiiVendedor',['','DULCE SOLANO','MANUEL PEÑA','MIREYA','CAROLINA','EDUARDO','CARLOS','GUILLERMO BLANCAS'],r.vendedor||''))}
       ${fld('Rubro',(()=>{const opts=(window._rubrosIng||[]);const hasOther=r.rubro&&!opts.includes(r.rubro);return`<select id="eiiRubroSel" onchange="document.getElementById('eiiRubro').value=this.value==='__otro__'?'':this.value;document.getElementById('eiiRubroOtro').style.display=this.value==='__otro__'?'block':'none';fiToggleAlumnoBlock('eii')" style="${INP}"><option value="">-- Seleccionar --</option>${opts.map(o=>`<option value="${o}" ${r.rubro===o?'selected':''}>${o}</option>`).join('')}<option value="__otro__" ${hasOther?'selected':''}>+ Otro...</option></select><input id="eiiRubroOtro" type="text" value="${hasOther?r.rubro:''}" placeholder="Nuevo rubro..." oninput="fiToggleAlumnoBlock('eii')" style="${INP}margin-top:4px;display:${hasOther?'block':'none'};"><input id="eiiRubro" type="hidden" value="${r.rubro||''}">`;})())}
     </div>
     <div style="margin-bottom:10px;">${fld('Concepto',inp('eiiConcepto','text','',r.concepto||''))}</div>
