@@ -30510,6 +30510,7 @@ async function renderSolFacturaVendedor(){
     ${solFld('Cliente (busca por nombre o número)',`<input id="sfCliente" oninput="solClienteBuscarDeb()" placeholder="Ej. GEL KLEEN o 1511" style="${SOL_INPUT_STYLE}"><div id="sfClienteMatches" style="margin-top:6px;"></div>`)}
     <div id="sfClienteSel" style="font-size:12px;margin-bottom:10px;"></div>
     <div id="sfPipeBox" style="display:none;margin-bottom:10px;"></div>
+    <div id="sfPipeDocs" style="display:none;margin-bottom:10px;background:#f3fafa;border:1px solid #b9dede;border-radius:8px;padding:8px 12px;"></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:0 14px;">
       ${solFld('Tipo de solicitud',`<select id="sfTipo" onchange="solTipoCambio()" style="${SOL_INPUT_STYLE}"><option value="con_pago">Con pago (ya pagó)</option><option value="liberar_pago">Para liberar pago (aún no paga)</option></select>`)}
       ${solFld('Cotización de SAE',`<input id="sfCotiz" placeholder="C-INN13309" style="${SOL_INPUT_STYLE}">`)}
@@ -30783,8 +30784,56 @@ async function solAplicarPrefill(){
   } else document.getElementById('sfCliente').value=n.cliente||'';
   solAplicarNegociacion(n);
 }
+// Jp, 2026-11-04 — Los documentos que el vendedor ya subió en Proyección
+// (cotización y comprobante de pago) se jalan solos a la solicitud de factura.
+function solDocEsPago(d){
+  const n=(d.nombre_archivo||'').toLowerCase();
+  if(/\.(png|jpe?g|webp|heic)$/.test(n)) return true;
+  return /comprobante|pago|transfer|spei|deposito|depósito|ficha|captura|whatsapp/.test(n);
+}
+async function solDocComoArchivo(d){
+  const {data,error}=await sb.storage.from('crm-documentos').download(d.storage_path);
+  if(error||!data) throw error||new Error('no se pudo descargar');
+  const nombre=d.nombre_archivo||'documento';
+  const tipo=data.type||(/\.pdf$/i.test(nombre)?'application/pdf':/\.png$/i.test(nombre)?'image/png':'image/jpeg');
+  return new File([data],nombre,{type:tipo});
+}
+async function solUsarDocComo(docId,rol){
+  const d=(window._solDocsPipe||[]).find(x=>x.id===docId); if(!d) return;
+  try{
+    const f=await solDocComoArchivo(d);
+    if(rol==='pago'){ solComprobanteSet(f); }
+    else{
+      const inp=document.getElementById('sfCotizPdf'); if(!inp) return;
+      const dt=new DataTransfer(); dt.items.add(f); inp.files=dt.files;
+      solLeerCotizacion(inp);
+    }
+    uiToast('✓ "'+d.nombre_archivo+'" cargado como '+(rol==='pago'?'comprobante de pago':'cotización'));
+  }catch(e){ alert('No se pudo cargar el documento: '+(e.message||e)); }
+}
+async function solDocsDePipeline(pipelineId){
+  try{
+    const {data}=await sb.from('crm_documentos').select('*').eq('pipeline_vendedor_id',pipelineId).order('created_at',{ascending:false});
+    const docs=data||[];
+    window._solDocsPipe=docs;
+    if(!docs.length) return;
+    const pago=docs.find(solDocEsPago);
+    const cot=docs.find(d=>!solDocEsPago(d)&&/\.pdf$/i.test(d.nombre_archivo||''))||docs.find(d=>d!==pago&&/\.pdf$/i.test(d.nombre_archivo||''));
+    const hayPago=document.getElementById('sfComprobante')?.files?.length;
+    const hayCot=document.getElementById('sfCotizPdf')?.files?.length;
+    if(pago&&!hayPago) await solUsarDocComo(pago.id,'pago');
+    if(cot&&!hayCot) await solUsarDocComo(cot.id,'cot');
+    const box=document.getElementById('sfPipeDocs');
+    if(box){
+      box.style.display='block';
+      box.innerHTML=`<div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:4px;">📎 Documentos de la negociación en Proyección — se cargaron solos; si alguno quedó en el lugar equivocado, cámbialo:</div>`+
+        docs.map(d=>`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;padding:4px 0;border-top:1px solid #e3eeee;"><span>${solEsc(d.nombre_archivo||'')}</span><span style="white-space:nowrap;"><button type="button" onclick="solUsarDocComo('${d.id}','pago')" style="border:1px solid var(--border);background:#fff;border-radius:5px;padding:2px 8px;font-size:11px;cursor:pointer;">Usar como comprobante</button> <button type="button" onclick="solUsarDocComo('${d.id}','cot')" style="border:1px solid var(--border);background:#fff;border-radius:5px;padding:2px 8px;font-size:11px;cursor:pointer;">Usar como cotización</button></span></div>`).join('');
+    }
+  }catch(e){ console.error('solDocsDePipeline',e); }
+}
 function solAplicarNegociacion(n){
   window._sfPipe=n;
+  solDocsDePipeline(n.id);
   const set=(id,v)=>{const el=document.getElementById(id);if(el&&v!=null&&v!=='')el.value=v;};
   set('sfConcepto',n.producto);set('sfTotal',n.monto_total);
   const pid=n.oportunidades_crm?.crm_potentialid;
