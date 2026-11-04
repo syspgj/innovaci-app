@@ -49,15 +49,39 @@ async function sbGet(path) {
   return res.json();
 }
 
+// PostgREST devuelve máximo 1000 filas por consulta. Cartera ya pasa de 1,800 cuentas y el espejo del CRM
+// de 1,400: leer sin paginar dejaba fuera cuentas que SÍ existían, el script las creía nuevas y el alta
+// fallaba con "duplicate key ... clientes_cartera_num_cliente_key" (caso ACC605, 2026-11-03).
+async function sbGetAll(path) {
+  const todas = [];
+  const paso = 1000;
+  for (let desde = 0; ; desde += paso) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      headers: {
+        apikey: SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+        Range: `${desde}-${desde + paso - 1}`,
+        'Range-Unit': 'items',
+      },
+    });
+    if (!res.ok) throw new Error(`Supabase GET ${path} -> ${res.status}: ${await res.text()}`);
+    const lote = await res.json();
+    todas.push(...lote);
+    if (lote.length < paso) break;
+  }
+  return todas;
+}
+
 async function sbInsert(table, rows) {
   if (!rows.length) return;
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=num_cliente`, {
     method: 'POST',
     headers: {
       apikey: SUPABASE_SERVICE_ROLE_KEY,
       Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
       'Content-Type': 'application/json',
-      Prefer: 'return=minimal',
+      // Si una cuenta ya existe se omite en silencio en vez de tumbar todo el lote.
+      Prefer: 'return=minimal,resolution=ignore-duplicates',
     },
     body: JSON.stringify(rows),
   });
@@ -79,13 +103,20 @@ export default async function handler(req, res) {
 
   try {
     const [crm, existentes] = await Promise.all([
-      sbGet(
-        'stg_cuentas_crm_raw?select=account_no,accountname,phone,email1,website,rating,description,bill_street,bill_city,bill_state,bill_code,createdtime'
+      sbGetAll(
+        'stg_cuentas_crm_raw?select=account_no,accountname,phone,email1,website,rating,description,bill_street,bill_city,bill_state,bill_code,createdtime&order=account_no.asc'
       ),
-      sbGet('clientes_cartera?select=num_cliente&num_cliente=not.is.null'),
+      sbGetAll('clientes_cartera?select=num_cliente&num_cliente=not.is.null&order=num_cliente.asc'),
     ]);
     const existentesSet = new Set((existentes || []).map((c) => c.num_cliente));
-    const nuevas = (crm || []).filter((c) => c.account_no && c.accountname && !existentesSet.has(c.account_no));
+    const vistas = new Set();
+    const nuevas = (crm || []).filter((c) => {
+      if (!c.account_no || !c.accountname || existentesSet.has(c.account_no) || vistas.has(c.account_no)) return false;
+      // Cuentas de descarte que el equipo deja en el CRM (BASURA, PRUEBA, NO USAR) no se dan de alta en Cartera.
+      if (/^\s*(basura|prueba|no usar)/i.test(c.accountname)) return false;
+      vistas.add(c.account_no);
+      return true;
+    });
 
     const hoy = new Date().toISOString().slice(0, 10);
     const rows = nuevas.map((c) => ({
