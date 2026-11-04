@@ -8756,6 +8756,7 @@ function renderProyeccionTabla(){
       <div style="font-size:12px;color:var(--text3);margin-top:2px;">${pipe.length} negociaciones · Total: ${fmt(totalMonto)} · Subtotal: ${fmt(totalSubtotal)} · <span style="color:var(--navy);font-weight:600;">🔓 ${totalAbiertasMes} abiertas en total este mes</span></div>
     </div>
     <div style="display:flex;gap:8px;">
+      ${crmSyncBtnHtml('oportunidades')}
       ${(userProfile.rol==='director'||userProfile.rol==='administracion')?`<button onclick="renderPipePendientesVincularModal()" style="background:${window._pipePendientesCount?'#F5A623':'none'};color:${window._pipePendientesCount?'#fff':'var(--text2)'};border:1px solid ${window._pipePendientesCount?'#F5A623':'var(--border)'};border-radius:var(--radsm);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Pendientes de vincular${window._pipePendientesCount?` (${window._pipePendientesCount})`:''}</button>`:''}
       <button onclick="agregarFilaPipe()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar</button>
     </div>
@@ -10551,7 +10552,8 @@ async function renderCarteraVendedor(){
     <button onclick="swCartera('todos')" id="carteraSub_todos" class="cartera-subtab">Todos los clientes</button>
     <button onclick="swCartera('activos')" id="carteraSub_activos" class="cartera-subtab">✅ Activos</button>
     <button onclick="swCartera('sin_seguimiento')" id="carteraSub_sin_seguimiento" class="cartera-subtab">🕓 Sin seguimiento (+90 días)</button>
-    <button onclick="abrirAltaCuenta()" style="margin-left:auto;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nuevo cliente</button>
+    ${crmSyncBtnHtml('cuentas','margin-left:auto;')}
+    <button onclick="abrirAltaCuenta()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nuevo cliente</button>
   </div>
   <div id="carteraVendedorBotonesWrap" style="display:none;gap:6px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
     <span style="font-size:11px;color:var(--text3);">Filtrar por vendedor (clic de nuevo para quitar):</span>
@@ -16677,6 +16679,7 @@ function buildTeleUI(){
     <div class="tab active" onclick="swT('miMes')">Mi actividad</div>
     <div class="tab" onclick="swT('prospectos')">Mis prospectos</div>
     <div class="tab" onclick="swT('clientes')">📋 Clientes</div>
+    <div class="tab" onclick="swT('cartera')">🗂 Cartera de cuentas</div>
     <div class="tab" onclick="swT('registro')">Registrar día</div>
     <div class="tab" onclick="swT('cotizador')">🧮 Cotizador</div>
     <div class="tab" onclick="swT('proyeccionTele')">📊 Proyección</div>
@@ -16692,10 +16695,11 @@ function swT(id){
   const mc=document.getElementById('mainContent');
   if(id==='historico'||id==='miMes') mc.classList.add('full-width');
   else mc.classList.remove('full-width');
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['miMes','prospectos','clientes','registro','cotizador','proyeccionTele','factura','pedidosShopify','historico','promos'][i]===id));
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['miMes','prospectos','clientes','cartera','registro','cotizador','proyeccionTele','factura','pedidosShopify','historico','promos'][i]===id));
   if(id==='miMes')renderTele();
   else if(id==='prospectos')renderProspectos();
   else if(id==='clientes')renderTeleClientes();
+  else if(id==='cartera')renderCarteraVendedor();
   else if(id==='registro')renderTeleRegistro();
   else if(id==='cotizador')renderCotizador();
   else if(id==='proyeccionTele')renderProyeccionTele();
@@ -16708,6 +16712,7 @@ async function renderTeleActual(){
   if(currentTeleTab==='miMes')renderTele();
   else if(currentTeleTab==='prospectos')renderProspectos();
   else if(currentTeleTab==='clientes')renderTeleClientes();
+  else if(currentTeleTab==='cartera')renderCarteraVendedor();
   else if(currentTeleTab==='registro')renderTeleRegistro();
   else if(currentTeleTab==='cotizador')renderCotizador();
   else if(currentTeleTab==='proyeccionTele')renderProyeccionTele();
@@ -18339,6 +18344,7 @@ async function renderProspectosVendedor(){
         style="padding:7px 32px 7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;width:220px;box-sizing:border-box;">
       <button onclick="document.getElementById('buscarProsV').value='';filtrarProspectosVendedor()" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:15px;">✕</button>
     </div>
+    <button id="btnSyncProspectosMios" onclick="sincronizarProspectosPendientesCrm(true)" title="Revisa contra el CRM solo TUS prospectos pendientes (más rápido que el lote completo)." style="margin-left:auto;padding:7px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--teal);background:none;color:var(--teal);font-family:'Inter',sans-serif;white-space:nowrap;">🔄 Sincronizar mis prospectos con CRM</button>
   </div>
   <div class="card">
     <table class="daily" style="font-size:12px;">
@@ -21069,10 +21075,13 @@ async function subirProspectos(){
 // el mismo endpoint, uno por uno — es seguro de volver a correr (si se
 // detiene a la mitad, o si algo falló, se puede lanzar otra vez: los
 // prospectos ya resueltos se saltan de inmediato).
-async function sincronizarProspectosPendientesCrm(){
-  const btn=document.getElementById('btnSyncProspectosPendientes');
-  const {data:pendientes,error}=await sb.from('prospectos')
-    .select('id').is('prospecto_crm_id',null).is('cliente_cartera_id',null);
+async function sincronizarProspectosPendientesCrm(soloMios){
+  const btn=document.getElementById(soloMios===true?'btnSyncProspectosMios':'btnSyncProspectosPendientes');
+  const txtBtn0=btn?btn.textContent:'🔄 Sincronizar pendientes con CRM';
+  // Jp, 2026-11-04: los vendedores sincronizan solo SUS prospectos (soloMios) — más rápido.
+  let qPend=sb.from('prospectos').select('id').is('prospecto_crm_id',null).is('cliente_cartera_id',null);
+  if(soloMios===true) qPend=qPend.eq('vendedor_asignado',currentUser.id);
+  const {data:pendientes,error}=await qPend;
   if(error){ alert('Error al buscar pendientes: '+error.message); return; }
   const total=(pendientes||[]).length;
   if(!total){ alert('No hay prospectos pendientes — todos ya están ligados a un Lead o marcados como Cuenta.'); return; }
@@ -21111,9 +21120,9 @@ async function sincronizarProspectosPendientesCrm(){
       console.error('Sync prospecto pendiente error',pendientes[i].id,e);
     }
   }
-  if(btn){btn.disabled=false;btn.textContent='🔄 Sincronizar pendientes con CRM';}
+  if(btn){btn.disabled=false;btn.textContent=txtBtn0;}
   alert(`✅ Lote terminado.\n${creados} Lead(s) nuevo(s) creados.\n${vinculados} ya tenían un Lead en el CRM — se ligaron (sin duplicar).\n${marcadosCuenta} resultaron ser clientes ya existentes — se marcaron como Cuenta y se registraron sus eventos como comentarios en esa Cuenta.${fallidos?`\n⚠️ ${fallidos} fallaron.${erroresMuestra.length?`\n\nMotivo(s) reportado(s):\n- ${erroresMuestra.join('\n- ')}`:' revisa la consola.'}\n\nPuedes volver a correr esta sincronización, los ya resueltos se saltan solos.`:''}`);
-  renderDirectorCRM();
+  soloMios===true?renderProspectosVendedor():renderDirectorCRM();
 }
 
 // ─── PROYECCIÓN DIRECTOR (compilado Dulce + Manuel) ──────────────────────────
@@ -21770,6 +21779,38 @@ async function renderDirectorOperaciones(){
   else await renderOpsTickets();
 }
 
+// Jp, 2026-11-04 — "Sincronizar CRM" por tarea para vendedores/telemarketing: cada
+// pantalla sincroniza SOLO lo suyo (Cartera → cuentas y cuentas nuevas;
+// Proyección → oportunidades), así es mucho más rápido que el sync completo.
+function crmSyncBtnHtml(tarea,extraStyle){
+  const t={cuentas:['🔄 Sincronizar cuentas con CRM','Trae las cuentas nuevas y cambios del CRM (solo cuentas, más rápido que el sync completo).'],
+           oportunidades:['🔄 Sincronizar oportunidades con CRM','Trae las oportunidades del CRM (solo oportunidades, más rápido que el sync completo).']}[tarea];
+  return `<button id="btnSyncCrm_${tarea}" onclick="sincronizarCrmTarea('${tarea}')" title="${t[1]}" style="padding:7px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--teal);background:none;color:var(--teal);font-family:'Inter',sans-serif;white-space:nowrap;${extraStyle||''}">${t[0]}</button>`;
+}
+async function sincronizarCrmTarea(tarea){
+  const btn=document.getElementById('btnSyncCrm_'+tarea);
+  if(btn&&btn.disabled) return;
+  const txt0=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='⏳ Sincronizando…';}
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/admin-sync-crm?tarea='+encodeURIComponent(tarea),{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){alert('No se pudo sincronizar: '+(j.error||res.status));return;}
+    if(tarea==='cuentas'){
+      const okC=j.cuentas?.ok, nuevas=j.cuentasNuevas;
+      if(!okC) alert('⚠ No se pudieron traer las cuentas del CRM: '+(j.cuentas?.error||j.cuentas?.status));
+      else uiToast('✅ Cuentas sincronizadas'+(nuevas?.ok?` · ${nuevas.creadas??0} cuenta(s) nueva(s) en Cartera`:''),true);
+      window._cartClientes=null;
+      renderCarteraVendedor();
+    } else if(tarea==='oportunidades'){
+      if(!j.oportunidades?.ok) alert('⚠ No se pudieron traer las oportunidades: '+(j.oportunidades?.error||j.oportunidades?.status));
+      else uiToast('✅ Oportunidades sincronizadas',true);
+      renderProyeccion();
+    }
+  }catch(e){ alert('Error al sincronizar: '+e.message); }
+  finally{ const b=document.getElementById('btnSyncCrm_'+tarea); if(b){b.disabled=false;b.textContent=txt0;} }
+}
 // Jp, 2026-10-29 — botón manual "Sincronizar CRM ahora" en Mesa de Control.
 // Dispara los 3 syncs del CRM (Cuentas, Oportunidades, Proyectos — este
 // último incluye la detección automática de renovación de pólizas de
