@@ -120,6 +120,63 @@ async function supabasePatch(table, filtro, cambios) {
   if (!res.ok) throw new Error(`Supabase patch ${table} failed (${res.status}): ${await res.text()}`);
 }
 
+async function supabaseUpsertRaw(row) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/stg_cuentas_crm_raw?on_conflict=account_no`, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      'Content-Type': 'application/json',
+      Prefer: 'resolution=merge-duplicates,return=minimal',
+    },
+    body: JSON.stringify(row),
+  });
+  if (!res.ok) console.error('upsert stg_cuentas_crm_raw failed', res.status, await res.text());
+}
+
+async function crearDesdeCuentaApp(res, clienteId) {
+  try {
+    const filas = await supabaseGet(
+      `clientes_cartera?id=eq.${encodeURIComponent(clienteId)}&select=id,razon_social,rfc,telefono,correo_principal,num_cliente,vendedor_asignado`
+    );
+    const c = filas[0];
+    if (!c) return res.status(404).json({ ok: false, error: 'cuenta no encontrada' });
+    if (!/^ALT-/i.test(c.num_cliente || '')) {
+      return res.status(400).json({ ok: false, error: 'esta cuenta ya tiene folio del CRM (' + c.num_cliente + ')' });
+    }
+    let assigned_user_id = VTIGER_USUARIO_RESPALDO;
+    if (c.vendedor_asignado) {
+      const u = await supabaseGet(`usuarios?id=eq.${encodeURIComponent(c.vendedor_asignado)}&select=crm_user_id`);
+      assigned_user_id = u[0]?.crm_user_id || VTIGER_USUARIO_RESPALDO;
+    }
+    const sessionName = await vtigerLogin();
+    const creado = await vtigerCreateAccount(sessionName, {
+      accountname: c.razon_social,
+      siccode: c.rfc || undefined, // el CRM usa siccode como RFC
+      phone: c.telefono || undefined,
+      email1: c.correo_principal || undefined,
+      assigned_user_id,
+      description: `Alta directa desde App VENTAS el ${new Date().toISOString().slice(0, 10)}.`,
+    });
+    if (!creado.account_no) {
+      return res.status(502).json({ ok: false, error: 'la Cuenta se creó en Vtiger pero no regresó account_no — revísala en el CRM.', crm_record_id: creado.id });
+    }
+    await supabasePatch('clientes_cartera', `id=eq.${encodeURIComponent(clienteId)}`, { num_cliente: creado.account_no });
+    // Espejo inmediato para que "Abrir en CRM" funcione sin esperar al siguiente sync.
+    await supabaseUpsertRaw({
+      account_no: creado.account_no,
+      accountname: c.razon_social,
+      crm_record_id: creado.id,
+      assigned_user_id,
+      synced_at: new Date().toISOString(),
+    });
+    return res.status(200).json({ ok: true, cliente_cartera_id: clienteId, num_cliente: creado.account_no, razon_social: c.razon_social, crm_record_id: creado.id });
+  } catch (err) {
+    console.error('crm-crear-cuenta (desde cuenta App) failed', err);
+    return res.status(500).json({ ok: false, error: String((err && err.message) || err) });
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'method not allowed' });
 
@@ -128,7 +185,12 @@ export default async function handler(req, res) {
   const usuario = await validarUsuarioSupabase(accessToken);
   if (!usuario) return res.status(401).json({ ok: false, error: 'sesión inválida — vuelve a iniciar sesión' });
 
-  const { prospecto_id, vendedor_usuario_id } = req.body || {};
+  const { prospecto_id, vendedor_usuario_id, cliente_cartera_id } = req.body || {};
+  // Jp, 2026-11-04 — cuentas dadas de alta directo en la App ("➕ Nuevo cliente",
+  // num_cliente 'ALT-…') nunca llegaban al CRM: al abrirlas decía "aún no está en
+  // el espejo del CRM" y no se podía crear su Oportunidad. Con cliente_cartera_id
+  // se crea esa Cuenta en Vtiger y se reemplaza el 'ALT-…' por el folio ACC real.
+  if (cliente_cartera_id) return crearDesdeCuentaApp(res, cliente_cartera_id);
   if (!prospecto_id) return res.status(400).json({ ok: false, error: 'falta prospecto_id' });
 
   try {
