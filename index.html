@@ -16379,6 +16379,8 @@ function buildTeleUI(){
     <div class="tab" onclick="swT('registro')">Registrar día</div>
     <div class="tab" onclick="swT('cotizador')">🧮 Cotizador</div>
     <div class="tab" onclick="swT('proyeccionTele')">📊 Proyección</div>
+    <div class="tab" onclick="swT('factura')">🧾 Solicitar factura</div>
+    <div class="tab" onclick="swT('pedidosShopify')">🛍 Pedidos Shopify</div>
     <div class="tab" onclick="swT('historico')">Histórico</div>
     <div class="tab" onclick="swT('promos')">🏷 Promociones</div>`;
   mostrarBotonesReporte();
@@ -16389,13 +16391,15 @@ function swT(id){
   const mc=document.getElementById('mainContent');
   if(id==='historico'||id==='miMes') mc.classList.add('full-width');
   else mc.classList.remove('full-width');
-  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['miMes','prospectos','clientes','registro','cotizador','proyeccionTele','historico','promos'][i]===id));
+  document.querySelectorAll('.tab').forEach((t,i)=>t.classList.toggle('active',['miMes','prospectos','clientes','registro','cotizador','proyeccionTele','factura','pedidosShopify','historico','promos'][i]===id));
   if(id==='miMes')renderTele();
   else if(id==='prospectos')renderProspectos();
   else if(id==='clientes')renderTeleClientes();
   else if(id==='registro')renderTeleRegistro();
   else if(id==='cotizador')renderCotizador();
   else if(id==='proyeccionTele')renderProyeccionTele();
+  else if(id==='factura')renderSolFacturaVendedor();
+  else if(id==='pedidosShopify')renderPedidosShopify();
   else if(id==='promos')renderVistaPromociones();
   else renderTeleHistorico();
 }
@@ -16406,6 +16410,8 @@ async function renderTeleActual(){
   else if(currentTeleTab==='registro')renderTeleRegistro();
   else if(currentTeleTab==='cotizador')renderCotizador();
   else if(currentTeleTab==='proyeccionTele')renderProyeccionTele();
+  else if(currentTeleTab==='factura')renderSolFacturaVendedor();
+  else if(currentTeleTab==='pedidosShopify')renderPedidosShopify();
   else if(currentTeleTab==='historico')renderTeleHistorico();
   else if(currentTeleTab==='promos')renderVistaPromociones();
   else renderTele();
@@ -29693,7 +29699,7 @@ function solFecha(f){if(!f)return '';const p=String(f).slice(0,10).split('-');re
 // Cada pedido de la tienda llega solo (api/shopify-webhook.js → tabla shopify_pedidos).
 // Ventas lo atiende desde una bandeja común, confirma datos y genera la solicitud
 // de factura ya llena. Los productos de la tienda se vinculan al catálogo (shopify_producto_map).
-let _shpRows=[],_shpFiltro='nuevos',_shpMap={},_shpCat=[];
+let _shpRows=[],_shpFiltro='nuevos',_shpMap={},_shpCat=[],_shpGens=[],_shpGenSel={},_shpGenVerArch=false;
 const SHP_ESTADO={nuevo:['Nuevo','#1976D2'],atendiendo:['En atención','#B45309'],enviado_facturar:['Enviado a facturar','#2E7D32'],descartado:['Descartado','#888']};
 function shpClave(l){return l.sku||('var-'+(l.variante_id||l.producto_id||''));}
 function shpNivelSku(sku){const s=String(sku||'').toUpperCase();return /AE$/.test(s)?'esencial':/AP$/.test(s)?'plus':'';}
@@ -29785,7 +29791,8 @@ async function shpDescartar(id){
 }
 function shpFacturar(id){
   window._solPrefill={shopify_id:id};
-  if(typeof swV==='function') swV('factura');
+  if(userProfile?.rol==='telemarketing'&&typeof swT==='function') swT('factura');
+  else if(typeof swV==='function') swV('factura');
 }
 // ── Vincular productos de Shopify al catálogo (Dirección) ──
 function shpTokens(t){return new Set(String(typeof catNorm==='function'?catNorm(t):t||'').toLowerCase().split(/[^a-z0-9áéíóúñ]+/).filter(w=>w.length>2));}
@@ -29798,16 +29805,18 @@ async function shpPintarMapeo(){
   const box=document.getElementById('shpMapBox');if(!box) return;
   if(!shpEsDir()){box.innerHTML='';return;}
   if(!_shpCat.length){const {data}=await sb.from('catalogo_items').select('id,nombre').eq('activo',true).order('nombre').limit(500);_shpCat=data||[];}
+  if(!_shpGens.length){const {data}=await sb.from('academia_generaciones').select('id,clave,fecha_inicio,fecha_fin,archivado_manual,curso:curso_id(nombre)').order('fecha_inicio',{ascending:false,nullsFirst:false}).limit(300);_shpGens=data||[];}
   // claves vistas en pedidos + las ya registradas
   const vistas={};_shpRows.forEach(p=>(p.lineas||[]).forEach(l=>{const k=shpClave(l);if(!vistas[k]) vistas[k]={clave:k,titulo:l.titulo,sku:l.sku};}));
   Object.values(_shpMap).forEach(m=>{if(!vistas[m.clave]) vistas[m.clave]={clave:m.clave,titulo:m.titulo,sku:m.clave};});
   const todas=Object.values(vistas).sort((a,b)=>String(a.titulo).localeCompare(String(b.titulo)));
-  const pend=todas.filter(x=>!_shpMap[x.clave]?.catalogo_item_id);
-  const fila=x=>{const m=_shpMap[x.clave]||{};const sug=m.catalogo_item_id?null:shpSugerir(x.titulo);const sel=m.catalogo_item_id||(sug?sug.id:'');const niv=m.nivel||shpNivelSku(x.sku);
-    return `<div style="display:grid;grid-template-columns:minmax(180px,2fr) minmax(180px,2fr) 110px auto;gap:8px;align-items:center;border-bottom:1px solid var(--border);padding:6px 0;font-size:12px;">
+  const pend=todas.filter(x=>!_shpMap[x.clave]?.catalogo_item_id&&!(_shpMap[x.clave]?.generacion_ids||[]).length);
+  const fila=x=>{const m=_shpMap[x.clave]||{};if(!_shpGenSel[x.clave]) _shpGenSel[x.clave]=new Set(m.generacion_ids||[]);const sug=m.catalogo_item_id?null:shpSugerir(x.titulo);const sel=m.catalogo_item_id||(sug?sug.id:'');const niv=m.nivel||shpNivelSku(x.sku);
+    return `<div style="display:grid;grid-template-columns:minmax(170px,2fr) minmax(170px,2fr) 100px 150px auto;gap:8px;align-items:center;border-bottom:1px solid var(--border);padding:6px 0;font-size:12px;">
       <div><b>${solEsc(x.titulo)}</b><div style="font-size:10px;color:var(--text3);">${solEsc(x.clave)}</div></div>
       <select id="shpM_${solEsc(x.clave)}" style="${SOL_INPUT_STYLE}"><option value="">— elegir del catálogo —</option>${_shpCat.map(c=>`<option value="${c.id}" ${c.id===sel?'selected':''}>${solEsc(c.nombre)}</option>`).join('')}</select>
       <select id="shpN_${solEsc(x.clave)}" style="${SOL_INPUT_STYLE}"><option value="">nivel…</option>${['esencial','plus','premium'].map(n=>`<option ${n===niv?'selected':''}>${n}</option>`).join('')}</select>
+      <button id="shpG_${solEsc(x.clave)}" onclick="shpGenModal('${solEsc(x.clave).replace(/'/g,"\\'")}')" style="border:1px solid var(--teal);background:#fff;color:var(--teal);border-radius:6px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;">🎓 Generaciones (${_shpGenSel[x.clave].size})</button>
       <button onclick="shpGuardarMap('${solEsc(x.clave).replace(/'/g,"\\'")}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;">Guardar</button></div>`;};
   box.innerHTML=`<details ${pend.length?'open':''} style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 14px;">
     <summary style="cursor:pointer;font-size:13px;font-weight:700;color:var(--navy);">🔗 Vincular productos de Shopify al catálogo ${pend.length?`<span style="color:#B45309;">(${pend.length} por vincular)</span>`:'<span style="color:#2E7D32;">(todos vinculados)</span>'}</summary>
@@ -29815,14 +29824,28 @@ async function shpPintarMapeo(){
     ${(pend.length?pend:todas).map(fila).join('')||'<div style="font-size:12px;color:var(--text3);">Aún no hay productos.</div>'}
     ${pend.length&&todas.length>pend.length?`<div style="font-size:11px;color:var(--text3);margin-top:6px;">Mostrando solo los pendientes.</div>`:''}</details>`;
 }
+function shpGenModal(clave){
+  const sel=_shpGenSel[clave]||(_shpGenSel[clave]=new Set());
+  const hoy=new Date().toISOString().slice(0,10);
+  const lista=_shpGens.filter(g=>_shpGenVerArch||!g.archivado_manual||sel.has(g.id));
+  const fmtF=f=>f?solFecha(f):'';
+  const fila=g=>`<label style="display:flex;gap:7px;align-items:flex-start;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;"><input type="checkbox" ${sel.has(g.id)?'checked':''} onchange="shpGenTog('${clave.replace(/'/g,"\\'")}','${g.id}',this.checked)"><span><b>${solEsc(g.curso?.nombre||'(sin curso)')}</b> <span style="color:var(--text3);">· ${solEsc(g.clave)}${g.fecha_inicio?' · '+fmtF(g.fecha_inicio)+(g.fecha_fin&&g.fecha_fin!==g.fecha_inicio?' → '+fmtF(g.fecha_fin):''):' · abierta 24/7'}${g.archivado_manual?' · archivada':''}</span></span></label>`;
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">🎓 Generaciones de Academia</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">${solEsc(_shpRows.flatMap(p=>p.lineas||[]).find(l=>shpClave(l)===clave)?.titulo||_shpMap[clave]?.titulo||clave)}<br><span style="color:var(--text3);">Marca la(s) generación(es) a las que puede entrar quien compre este producto. Si marcas varias del mismo taller (ej. dos fechas), el vendedor elige la que pide el cliente; en un combo, una por taller.</span></div>
+    <label style="font-size:11px;display:block;margin-bottom:6px;"><input type="checkbox" ${_shpGenVerArch?'checked':''} onchange="_shpGenVerArch=this.checked;shpGenModal('${clave.replace(/'/g,"\\'")}')"> Mostrar también generaciones archivadas</label>
+    <div style="max-height:360px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:4px 10px;">${lista.map(fila).join('')||'<div style="font-size:12px;color:var(--text3);padding:8px;">No hay generaciones.</div>'}</div>
+    <div style="margin-top:10px;"><button onclick="solCerrarModal();shpPintarMapeo();" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Listo</button> <span style="font-size:11px;color:var(--text3);">Después pulsa “Guardar” en la fila del producto.</span></div>`,640);
+}
+function shpGenTog(clave,id,on){const s=_shpGenSel[clave]||(_shpGenSel[clave]=new Set());if(on)s.add(id);else s.delete(id);}
 async function shpGuardarMap(clave){
   const id=document.getElementById('shpM_'+clave)?.value;const niv=document.getElementById('shpN_'+clave)?.value||null;
-  if(!id) return alert('Elige el producto del catálogo.');
+  const gens=[...(_shpGenSel[clave]||[])];
+  if(!id&&!gens.length) return alert('Elige el producto del catálogo y/o al menos una generación de Academia.');
   const item=_shpCat.find(c=>c.id===id);
   const titulo=_shpRows.flatMap(p=>p.lineas||[]).find(l=>shpClave(l)===clave)?.titulo||_shpMap[clave]?.titulo||clave;
-  const {error}=await sb.from('shopify_producto_map').upsert({clave,titulo,catalogo_item_id:id,concepto:item?.nombre||null,nivel:niv,updated_at:new Date().toISOString()});
+  const {error}=await sb.from('shopify_producto_map').upsert({clave,titulo,catalogo_item_id:id||null,concepto:item?.nombre||null,nivel:niv,generacion_ids:gens,updated_at:new Date().toISOString()});
   if(error) return alert('No se pudo guardar: '+error.message);
-  _shpMap[clave]={clave,titulo,catalogo_item_id:id,concepto:item?.nombre||null,nivel:niv};
+  _shpMap[clave]={clave,titulo,catalogo_item_id:id||null,concepto:item?.nombre||null,nivel:niv,generacion_ids:gens};
   shpPintar();shpPintarMapeo();
 }
 // ── Aviso de pedidos nuevos: contador en la pestaña + notificación emergente (cada 30 s) ──
@@ -29832,7 +29855,7 @@ function shpBadgeInit(){return shpTick();}
 async function shpTick(){
   try{
     if(typeof currentUser==='undefined'||!currentUser||!userProfile) return;
-    if(!['director','vendedor','asesor'].includes(userProfile.rol)) return;
+    if(!['director','vendedor','asesor','telemarketing'].includes(userProfile.rol)) return;
     const {data,error}=await sb.from('shopify_pedidos').select('id,numero,cliente_nombre,total').eq('estado','nuevo').order('creado_shopify',{ascending:false}).limit(60);
     if(error||!data) return;
     const n=data.length;
@@ -29846,6 +29869,7 @@ async function shpTick(){
 function shpIrAPedidos(){
   document.getElementById('shpToast')?.remove();
   if(userProfile?.rol==='director'){ if(typeof swDArea==='function'){currentDirTab='pedidosShopify';swDArea('ventas');} }
+  else if(userProfile?.rol==='telemarketing'&&typeof swT==='function') swT('pedidosShopify');
   else if(typeof swV==='function') swV('pedidosShopify');
 }
 function shpNotificar(lista,resumen){
@@ -29908,6 +29932,17 @@ async function solAplicarPrefillShopify(id){
   const fila=document.querySelector('.sfAsRow');
   if(fila){const v=(c,x)=>{const e=fila.querySelector(c);if(e&&!e.value) e.value=x||'';};v('.sfAsN',p.cliente_nombre);v('.sfAsC',p.email);v('.sfAsT',p.telefono);}
   if(nivel) set('sfAcadNivel',nivel);
+  // Generaciones vinculadas al producto: las de un taller con una sola opción se marcan solas; las ambiguas se sugieren (⭐)
+  const linked=[...new Set(ms.flatMap(m=>m?.generacion_ids||[]))];
+  if(linked.length){
+    if(!window._solGens) await solCargarGeneraciones();
+    const {data:gl}=await sb.from('academia_generaciones').select('id,curso_id').in('id',linked);
+    const porCurso={};(gl||[]).forEach(g=>{(porCurso[g.curso_id]=porCurso[g.curso_id]||[]).push(g.id);});
+    const auto=Object.values(porCurso).filter(a=>a.length===1).map(a=>a[0]);
+    window._solGenSug=new Set(linked);
+    const box=document.getElementById('sfAcadGens');
+    if(box){box.dataset.sel=auto.join(',');await solAcadCargarGens('sf');}
+  }
   const box=document.getElementById('sfPipeBox');
   if(box){box.style.display='block';box.innerHTML=`<div style="font-size:12px;background:#eef6f6;border:1px solid #b9dede;border-radius:8px;padding:8px 12px;">🛍 Pedido de Shopify <b>${solEsc(p.numero)}</b> · ${fmt(p.total)} · ${pg.t}${pg.auto&&pg.pagado?'<br><b>El pago ya está confirmado por Shopify: no necesitas subir comprobante y se valida al enviar.</b>':''}<br><span style="color:var(--text3);">Confirma con el cliente RFC, régimen, uso de CFDI y la fecha del taller (si aplica) antes de enviar.</span></div>`;}
 }
@@ -29915,7 +29950,7 @@ async function solAplicarPrefillShopify(id){
 async function renderSolFacturaVendedor(){
   const mc=document.getElementById('mainContent');
   mc.classList.remove('full-width');
-  window._sfCliente=null;window._sfPipe=null;window._sfShop=null;
+  window._sfCliente=null;window._sfPipe=null;window._sfShop=null;window._solGenSug=null;
   mc.innerHTML=`
   <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px;">🧾 Solicitar factura</div>
   <div style="font-size:12px;color:var(--text3);margin-bottom:14px;">Llena esta solicitud en lugar de escribir en Telegram. Dirección valida el pago y Administración emite la factura; aquí ves en qué va.</div>
@@ -30054,9 +30089,10 @@ function solAcadHtml(p,ac){
 async function solAcadCargarGens(p){
   const box=document.getElementById(p+'AcadGens');if(!box) return;
   if(!window._solGens) await solCargarGeneraciones();
-  const gens=(window._solGens||[]).slice().sort((a,b)=>String(a.fecha_inicio||'9').localeCompare(String(b.fecha_inicio||'9')));
+  const sug=window._solGenSug||new Set();
+  const gens=(window._solGens||[]).slice().sort((a,b)=>(sug.has(b.id)-sug.has(a.id))||String(a.fecha_inicio||'9').localeCompare(String(b.fecha_inicio||'9')));
   const sel=new Set((box.dataset.sel||'').split(',').filter(Boolean));
-  box.innerHTML=gens.length?gens.map(g=>`<label style="display:flex;gap:6px;align-items:flex-start;padding:2px 0;"><input type="checkbox" class="${p}AcadGen" value="${g.id}" ${sel.has(g.id)?'checked':''}><span>${g.fecha_inicio?'<b>'+solFecha(g.fecha_inicio)+'</b> · ':''}${solEsc(g.curso?.nombre||'')} <span style="color:var(--text3);">(${solEsc(g.clave||'')})</span></span></label>`).join(''):'<span style="color:var(--text3);">No hay generaciones vigentes en Academia. Pídele a Dirección que las cree (en un combo, una por curso); mientras, puedes enviar sin generación y se asigna después desde la tarjeta.</span>';
+  box.innerHTML=gens.length?gens.map(g=>`<label style="display:flex;gap:6px;align-items:flex-start;padding:2px 0;"><input type="checkbox" class="${p}AcadGen" value="${g.id}" ${sel.has(g.id)?'checked':''}><span>${sug.has(g.id)?'⭐ ':''}${g.fecha_inicio?'<b>'+solFecha(g.fecha_inicio)+'</b> · ':''}${solEsc(g.curso?.nombre||'')} <span style="color:var(--text3);">(${solEsc(g.clave||'')})</span></span></label>`).join(''):'<span style="color:var(--text3);">No hay generaciones vigentes en Academia. Pídele a Dirección que las cree (en un combo, una por curso); mientras, puedes enviar sin generación y se asigna después desde la tarjeta.</span>';
 }
 function solAcadLeer(p){
   const asistentes=[...document.querySelectorAll('.'+p+'AsRow')].map(r=>({nombre:r.querySelector('.'+p+'AsN').value.trim(),correo:r.querySelector('.'+p+'AsC').value.trim(),telefono:r.querySelector('.'+p+'AsT').value.trim()})).filter(a=>a.nombre||a.correo||a.telefono);
