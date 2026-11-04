@@ -29746,6 +29746,23 @@ function shpPintar(){
   const rows=_shpRows.filter((F[_shpFiltro]||F.nuevos).f);
   document.getElementById('shpLista').innerHTML=rows.length?rows.map(shpTarjeta).join(''):'<div style="font-size:12px;color:var(--text3);padding:10px 0;">No hay pedidos en esta vista.</div>';
 }
+function shpWaLink(p,tipo){
+  const tel=String(p.telefono||'').replace(/\D/g,'');if(!tel) return '';
+  const num=tel.length===10?'52'+tel:tel;
+  const yo=String(userProfile?.nombre||'').trim().split(/\s+/)[0]||'tu asesor';
+  const nom=String(p.cliente_nombre||'').trim().split(/\s+/)[0]||'';
+  const prod=(p.lineas||[]).map(l=>l.titulo+(l.variante&&l.variante!=='Default Title'?' ('+l.variante+')':'')).join(' + ')||'tu compra';
+  const pg=shpPagoInfo(p);
+  let t;
+  if(tipo==='fiscal'){
+    t=`Hola ${nom}, soy ${yo} de Grupo Innovaci. Si requieres factura de tu pedido ${p.numero}, por favor envíanos estos datos:\n\n• RFC\n• Razón social (como aparece en tu Constancia de Situación Fiscal)\n• Régimen fiscal\n• Código postal fiscal\n• Uso de CFDI (ej. Gastos en general)\n• Correo para enviarte la factura\n\nPuedes mandarnos directo una foto o PDF de tu Constancia de Situación Fiscal. ¡Gracias!`;
+  }else if(!pg.pagado&&!p.cancelado){
+    t=`Hola ${nom}, soy ${yo} de Grupo Innovaci. Recibimos tu pedido ${p.numero} (${prod}) por ${fmt(p.total)}, que quedó pendiente de pago. ¿Te ayudo con los datos para tu depósito o transferencia? En cuanto lo realices, mándanos tu comprobante por este medio y activamos tu compra.`;
+  }else{
+    t=`Hola ${nom}, soy ${yo} de Grupo Innovaci. Recibimos tu pedido ${p.numero}: ${prod} por ${fmt(p.total)}. Te escribo para confirmar que tus datos estén correctos (nombre, correo y teléfono de contacto) y resolver cualquier duda. ¿Todo bien con tu pedido?`;
+  }
+  return `https://wa.me/${num}?text=${encodeURIComponent(t)}`;
+}
 function shpTarjeta(p){
   const pg=shpPagoInfo(p);const est=SHP_ESTADO[p.estado]||['',''];
   const me=userProfile?.id||currentUser?.id;
@@ -29768,7 +29785,7 @@ function shpTarjeta(p){
     <div style="font-size:12px;font-weight:600;color:${pg.c};margin-top:6px;">${pg.t}</div>
     <div style="font-size:11px;margin-top:3px;"><span style="color:${est[1]};font-weight:700;">${est[0]}</span>${p.atiende_nombre&&p.estado!=='nuevo'?` · ${solEsc(p.atiende_nombre)}`:''}${p.motivo_descarte?` · ${solEsc(p.motivo_descarte)}`:''}${p.nota?` · Nota del cliente: ${solEsc(p.nota)}`:''}</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;">${acciones.join('')}
-      ${wa?`<a href="https://wa.me/${wa}" target="_blank" rel="noopener" style="text-decoration:none;border:1px solid var(--border);border-radius:7px;padding:5px 11px;font-size:11px;font-weight:600;color:#128C7E;">💬 WhatsApp</a>`:''}
+      ${wa&&p.estado!=='descartado'?`<a href="${shpWaLink(p,'confirmar')}" target="_blank" rel="noopener" style="text-decoration:none;background:#25D366;color:#fff;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:700;">💬 ${shpPagoInfo(p).pagado?'Confirmar pedido por WhatsApp':'WhatsApp: pago pendiente'}</a><a href="${shpWaLink(p,'fiscal')}" target="_blank" rel="noopener" style="text-decoration:none;border:1px solid #25D366;color:#128C7E;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:700;">🧾 Pedir datos fiscales por WhatsApp</a>`:(!wa&&p.estado!=='descartado'?'<span style="font-size:11px;color:var(--text3);align-self:center;">Sin teléfono: contáctalo por correo</span>':'')}
       ${p.email?`<a href="mailto:${solEsc(p.email)}" style="text-decoration:none;border:1px solid var(--border);border-radius:7px;padding:5px 11px;font-size:11px;font-weight:600;color:var(--text2);">✉️ Correo</a>`:''}</div></div>`;
 }
 async function shpTomar(id){
