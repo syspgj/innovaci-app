@@ -11009,7 +11009,29 @@ function toggleFichaProyecto(id){
 const CRM_BASE_URL_FE='http://crminn.dynns.com/innova';
 // Jp, 2026-10-30 — botones "Abrir en CRM": se abre la pestaña de inmediato (para
 // que el navegador no la bloquee) y se rellena cuando llega el id del CRM.
+// Jp, 2026-11-04: crea en el CRM una cuenta que se dio de alta solo en la App
+// (num_cliente 'ALT-…'). Devuelve {ok,num_cliente,error}. Ver api/crm-crear-cuenta.js.
+async function crmCrearCuentaDeAlta(clienteId){
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/crm-crear-cuenta',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({cliente_cartera_id:clienteId})});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok) return {ok:false,error:j.error||('HTTP '+res.status)};
+    return {ok:true,num_cliente:j.num_cliente};
+  }catch(e){ return {ok:false,error:e.message||String(e)}; }
+}
 async function abrirCuentaEnCrm(numCliente){
+  // Cuenta dada de alta solo en la App: primero se crea en el CRM.
+  if(/^ALT-/i.test(numCliente||'')){
+    if(!confirm('Esta cuenta se dio de alta en la App y todavía no existe en el CRM.\n\n¿Crearla ahora en el CRM y abrirla?')) return;
+    const {data:cl}=await sb.from('clientes_cartera').select('id').eq('num_cliente',numCliente).maybeSingle();
+    if(!cl) return alert('No encontré la cuenta en Cartera.');
+    const r=await crmCrearCuentaDeAlta(cl.id);
+    if(!r.ok) return alert('No se pudo crear la cuenta en el CRM: '+r.error);
+    numCliente=r.num_cliente;
+    try{ (window._cartClientes||[]).forEach(c=>{ if(c.id===cl.id) c.num_cliente=r.num_cliente; }); }catch(e){}
+    uiToast('✅ Cuenta creada en el CRM: '+r.num_cliente,true);
+  }
   const w=window.open('about:blank','_blank');
   try{
     const {data,error}=await sb.rpc('crm_cuenta_record_id',{p_num:numCliente});
@@ -12756,7 +12778,12 @@ async function guardarAltaCuenta(){
     origen:'alta_vendedor'
   });
   if(error){msg.textContent='Error: '+error.message;return;}
+  // Jp, 2026-11-04: la cuenta nueva también se crea en el CRM (antes quedaba solo en la App).
+  msg.textContent='Creando la cuenta en el CRM...';
+  const rCrm=await crmCrearCuentaDeAlta(nuevoCliente.id);
   document.getElementById('modalAltaCuenta').remove();
+  if(rCrm.ok) uiToast('✅ Cuenta creada también en el CRM ('+rCrm.num_cliente+')',true);
+  else alert('La cuenta se dio de alta en la App, pero NO se pudo crear en el CRM.\nDetalle: '+rCrm.error+'\n\nPuedes crearla después con el botón "Abrir en CRM" de su ficha.');
   renderCarteraVendedor();
 }
 
@@ -30753,10 +30780,11 @@ async function solEnviar(){
     if(acad.asistentes.length||acad.generaciones.length||acad.no_aplica) row.academia=acad; // columna nueva (sql_academia_solicitud.sql)
     if(solId) row.id=solId;
     let {error}=await sb.from('solicitudes_factura').insert(row);
-    for(let k=0;k<2&&error;k++){
+    for(let k=0;k<4&&error;k++){
       const m=error.message||'';
       if(/academia/.test(m)&&'academia' in row) delete row.academia;
       else if(/shopify_pedido_id/.test(m)&&'shopify_pedido_id' in row) delete row.shopify_pedido_id;
+      else if(/shopify_pedido/.test(m)&&'shopify_pedido' in row) delete row.shopify_pedido;
       else break;
       ({error}=await sb.from('solicitudes_factura').insert(row));
     }
