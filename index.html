@@ -6126,6 +6126,16 @@ function cotizadorDescuentoVigente(productoId,periodicidad){
   d.sort((a,b)=>b.fecha_inicio.localeCompare(a.fecha_inicio));
   return parseFloat(d[0].porcentaje)||0;
 }
+// Vigencia del descuento de distribuidor (Jp, 2026-11-04): fecha en que vence el
+// % vigente, para mostrarla al vendedor y en la propuesta/PDF. null = sin fecha de fin.
+function cotizadorDescuentoFin(productoId,periodicidad,fecha){
+  const hoy=fecha||todayLocal();
+  const d=(window._cotizDescuentos||[]).filter(x=>x.producto_id===productoId&&x.periodicidad===periodicidad&&x.fecha_inicio<=hoy&&(!x.fecha_fin||x.fecha_fin>=hoy));
+  if(!d.length) return null;
+  d.sort((a,b)=>b.fecha_inicio.localeCompare(a.fecha_inicio));
+  return d[0].fecha_fin||null;
+}
+function cotizFechaCorta(f){ if(!f) return ''; const m=String(f).match(/^(\d{4})-(\d{2})-(\d{2})/); return m?`${m[3]}/${m[2]}/${m[1]}`:f; }
 const COTIZ_IVA_PCT=16;
 function cotizadorCalcularPlan(plan,productoId,periodicidad,conIva){
   const precioRow=(window._cotizPrecios||[]).find(p=>p.plan_id===plan.id&&p.periodicidad===periodicidad);
@@ -6156,7 +6166,7 @@ function cotizadorCalcularPlan(plan,productoId,periodicidad,conIva){
   // solo se suma cuando el toggle está prendido.
   const iva=conIva?(1+COTIZ_IVA_PCT/100):1;
   return {
-    meses, descPct, conIva,
+    meses, descPct, conIva, descFin:descPct>0?cotizadorDescuentoFin(productoId,periodicidad):null,
     precioMensualFinal:precioMensualFinalSinIva*iva,
     listaPeriodo:listaPeriodoSinIva*iva,
     subtotalSinIva,
@@ -6403,7 +6413,7 @@ function cotizadorTarjetaPlan(plan,producto){
       return plan.usuarios?`${capTxt} · ${plan.usuarios} usuario${plan.usuarios>1?'s':''}`:capTxt;
     })()}</div>
     <div style="font-size:22px;font-weight:800;color:var(--navy);">${fmt(c.precioMensualFinal)}<span style="font-size:11px;font-weight:600;color:var(--text3);">/mes</span></div>
-    ${c.descPct>0?`<div style="font-size:11px;color:var(--teal);font-weight:700;margin-top:2px;">-${c.descPct}% distribuidor activo</div>`:''}
+    ${c.descPct>0?`<div style="font-size:11px;color:var(--teal);font-weight:700;margin-top:2px;">-${c.descPct}% distribuidor activo</div><div style="font-size:11px;color:var(--text2);margin-top:1px;">⏳ ${c.descFin?'Descuento válido hasta el <b>'+cotizFechaCorta(c.descFin)+'</b>':'Descuento sin fecha de vencimiento'}</div>`:''}
 
     <div style="margin-top:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:8px;">
       <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px;">Resumen — total ${c.meses===1?'1 mes':c.meses+' meses'} ${cotizConIva?'(con IVA)':'(sin IVA)'}</div>
@@ -6749,16 +6759,16 @@ function propGenerarActual(){
   const planes=(window._cotizPlanes||[]).filter(p=>p.producto_id===producto.id&&(p.capacidad_cubierta==null||p.capacidad_cubierta>=n));
   const plan=planes.find(p=>p.id===cotizPlanSeleccionado)||planes[0]; if(!plan){alert('Elige un plan primero.');return;}
   const c=cotizadorCalcularPlan(plan,producto.id,cotizPeriodo,cotizConIva); if(!c) return;
-  propAbrir({...base,..._propPlanDeTotales(producto,plan,cotizPeriodo,c.totalPeriodo,cotizConIva,c.descPct)});
+  propAbrir({...base,..._propPlanDeTotales(producto,plan,cotizPeriodo,c.totalPeriodo,cotizConIva,c.descPct,c.descFin)});
 }
-function _propPlanDeTotales(producto,plan,periodicidad,total,conIva,descPct){
+function _propPlanDeTotales(producto,plan,periodicidad,total,conIva,descPct,descFin){
   const subtotal=conIva?total/(1+COTIZ_IVA_PCT/100):total;
   const lista=descPct>0?subtotal/(1-descPct/100):subtotal;
   const per=periodicidad?periodicidad[0].toUpperCase()+periodicidad.slice(1):'';
   const unidad=producto.unidad_capacidad||'RFC';
   const cap=plan.capacidad_cubierta==null?`${unidad}s ilimitados`:`Hasta ${plan.capacidad_cubierta} ${unidad}${plan.capacidad_cubierta>1?'s':''}`;
   return {titulo:'Siigo '+producto.nombre.replace(/^Siigo\s*/,'')+' — Plan '+plan.nombre,subtitulo:per+' · '+cap+(plan.usuarios?(' · '+plan.usuarios+' usuario'+(plan.usuarios>1?'s':'')):''),
-    lineas:[{concepto:`${producto.nombre} — Plan ${plan.nombre} (${per})`,cant:1,pu:lista,importe:lista}],descuento:lista-subtotal,descuentoPct:descPct,
+    lineas:[{concepto:`${producto.nombre} — Plan ${plan.nombre} (${per})`,cant:1,pu:lista,importe:lista}],descuento:lista-subtotal,descuentoPct:descPct,descuentoFin:descFin||null,
     iva:conIva?total-subtotal:0,total,conIva,planBeneficios:plan.beneficios||[],
     resumen:[['Plan',plan.nombre],['Capacidad',cap],['Periodicidad',per]]};
 }
@@ -6781,7 +6791,9 @@ function propGenerarDeReciente(id){
   }
   if(producto.slug==='curso-empresarial'&&d) return propAbrir({...base,..._propCursoDeDetalle(d,d.iva_monto,d.total,d.con_iva)});
   const plan=(window._cotizPlanes||[]).find(p=>p.id===r.plan_id); if(!plan){alert('Esta cotización no tiene plan asociado.');return;}
-  propAbrir({...base,..._propPlanDeTotales(producto,plan,r.periodicidad,parseFloat(r.precio_total_periodo),!!r.incluye_iva,parseFloat(r.descuento_pct_aplicado)||0)});
+  const _dp=parseFloat(r.descuento_pct_aplicado)||0;
+  const _fechaCot=new Date(r.created_at).toLocaleDateString('en-CA',{timeZone:'America/Mexico_City'});
+  propAbrir({...base,..._propPlanDeTotales(producto,plan,r.periodicidad,parseFloat(r.precio_total_periodo),!!r.incluye_iva,_dp,_dp>0?cotizadorDescuentoFin(producto.id,r.periodicidad,_fechaCot):null)});
 }
 function _propCss(){ return `
 @page{size:A4;margin:0}
@@ -6855,7 +6867,7 @@ function propAbrir(P){
   </tbody></table>
   <div class="tot">
     <div><span>Subtotal</span><span>${_pfmt(sumL)}</span></div>
-    ${P.descuento>0?`<div style="color:#00877E"><span>Descuento${P.descuentoPct?' ('+Number(P.descuentoPct).toFixed(P.descuentoPct%1?1:0)+'%)':''}</span><span>-${_pfmt(P.descuento)}</span></div><div><span>Subtotal con descuento</span><span>${_pfmt(neto)}</span></div>`:''}
+    ${P.descuento>0?`<div style="color:#00877E"><span>Descuento${P.descuentoPct?' ('+Number(P.descuentoPct).toFixed(P.descuentoPct%1?1:0)+'%)':''}${P.descuentoPct&&P.slug!=='ts-plus'&&P.slug!=='curso-empresarial'?` <small style="font-weight:600;">· ${P.descuentoFin?'válido hasta el '+cotizFechaCorta(P.descuentoFin):'sin fecha de vencimiento'}</small>`:''}</span><span>-${_pfmt(P.descuento)}</span></div><div><span>Subtotal con descuento</span><span>${_pfmt(neto)}</span></div>`:''}
     <div><span>IVA (16%)</span><span>${P.conIva?_pfmt(P.iva):'No incluido'}</span></div>
     <div class="g"><span>Total ${P.conIva?'(IVA incluido)':'(más IVA)'}</span><span>${_pfmt(P.conIva?P.total:neto)}</span></div>
   </div></div>
