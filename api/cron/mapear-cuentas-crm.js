@@ -104,10 +104,25 @@ export default async function handler(req, res) {
   try {
     const [crm, existentes] = await Promise.all([
       sbGetAll(
-        'stg_cuentas_crm_raw?select=account_no,accountname,phone,email1,website,rating,description,bill_street,bill_city,bill_state,bill_code,createdtime&order=account_no.asc'
+        'stg_cuentas_crm_raw?select=account_no,accountname,phone,email1,website,rating,description,bill_street,bill_city,bill_state,bill_code,createdtime,assigned_user_id,cf_964,cf_1062&order=account_no.asc'
       ),
       sbGetAll('clientes_cartera?select=num_cliente&num_cliente=not.is.null&order=num_cliente.asc'),
     ]);
+    // Dueño de la cuenta: se resuelve con usuarios.crm_user_id (assigned_user_id del CRM) y, si ese usuario
+    // no está ligado, con el nombre del campo Vendedor del CRM (cf_964). Validado contra 1,475 cuentas ya
+    // existentes: cf_964 = vendedor_origen (99%), cf_1062 = tipo_cliente_2, assigned_user_id = vendedor_asignado.
+    const usuarios = await sbGetAll('usuarios?select=id,nombre,crm_user_id&activo=eq.true');
+    const norm = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+    const porCrm = new Map(usuarios.filter((u) => u.crm_user_id).map((u) => [u.crm_user_id, u.id]));
+    const porNombre = new Map(usuarios.map((u) => [norm(u.nombre), u.id]));
+    // El CRM a veces trae el nombre incompleto o con otra letra final ("Carolina Crisanto" vs "Carolina Crisantos").
+    const buscarPorNombre = (n) => {
+      const k = norm(n);
+      if (!k) return null;
+      if (porNombre.has(k)) return porNombre.get(k);
+      const cand = usuarios.filter((u) => norm(u.nombre).startsWith(k) || k.startsWith(norm(u.nombre)));
+      return cand.length === 1 ? cand[0].id : null;
+    };
     const existentesSet = new Set((existentes || []).map((c) => c.num_cliente));
     const vistas = new Set();
     const nuevas = (crm || []).filter((c) => {
@@ -131,8 +146,11 @@ export default async function handler(req, res) {
       direccion_estado: c.bill_state || null,
       direccion_cp: c.bill_code || null,
       fecha_creacion_crm: c.createdtime ? String(c.createdtime).slice(0, 10) : null,
+      vendedor_asignado: porCrm.get(c.assigned_user_id) || buscarPorNombre(c.cf_964) || null,
+      vendedor_origen: c.cf_964 || null,
+      tipo_cliente_2: c.cf_1062 || null,
       origen: 'crm_auto',
-      notas: `Dada de alta automáticamente desde CRM (Vtiger) el ${hoy} — completar RFC, vendedor asignado y demás datos a mano.${c.description ? '\n\nDescripción en CRM: ' + c.description : ''}`,
+      notas: `Dada de alta automáticamente desde CRM (Vtiger) el ${hoy} — completar RFC y demás datos a mano.${c.description ? '\n\nDescripción en CRM: ' + c.description : ''}`,
     }));
 
     // Inserta por lotes de 100 para no mandar un body gigante de una vez.
