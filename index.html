@@ -7362,7 +7362,7 @@ function renderProyeccionTeleTabla(){
           <td style="font-family:'JetBrains Mono',monospace;">${fmt(r.monto_total||0)}</td>
           <td><span style="font-size:10px;font-weight:700;color:${ESTATUS_PIPE_TELE_COLOR[r.estatus]||'#888'};">${r.estatus}</span></td>
           <td style="font-size:11px;color:var(--text3);">${r.siguiente_paso?`${r.siguiente_paso}${r.fecha_siguiente_paso?' · '+fechaLegible(r.fecha_siguiente_paso):''}`:'—'}</td>
-          <td style="text-align:right;">${r.cliente_cartera_id?'🏢':r.prospecto_app_id?'🧲':''}</td>
+          <td style="text-align:right;white-space:nowrap;">${r.estatus==='Cerrado-Ganado'?`<button onclick="event.stopPropagation();pipeIrAFacturar('${r.id}')" title="Mandar a facturación" style="background:none;border:1px solid var(--teal);border-radius:var(--radsm);padding:2px 8px;font-size:11px;cursor:pointer;color:var(--teal);font-weight:700;margin-right:6px;">🧾 Facturar</button>`:''}${r.cliente_cartera_id?'🏢':r.prospecto_app_id?'🧲':''}</td>
         </tr>`).join('')}
       </tbody>
     </table>
@@ -7448,6 +7448,7 @@ function modalPipeTeleHTML(r,hoy){
     <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap;">
       <button id="teleBtnGuardar" onclick="guardarFilaPipeTele()" style="flex:1;background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar</button>
       ${puedeCanalizar?`<button onclick="teleAbrirCanalizar('${v.id}')" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📈 Canalizar a vendedor</button>`:''}
+      ${(v.id&&v.estatus==='Cerrado-Ganado')?`<button onclick="document.getElementById('modalPipeTele')?.remove();pipeIrAFacturar('${v.id}')" style="flex:1;background:#27AE60;color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🧾 Mandar a facturación</button>`:''}
       ${v.canalizado_a_pipeline_id?`<div style="flex:1;text-align:center;font-size:11px;color:var(--teal);font-weight:600;align-self:center;">✓ Ya canalizada a vendedor</div>`:''}
       <button onclick="document.getElementById('modalPipeTele')?.remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);">Cancelar</button>
     </div>
@@ -7538,6 +7539,9 @@ async function guardarFilaPipeTele(){
     } finally { fin(); }
   }
   document.getElementById('modalPipeTele')?.remove();
+  // Jp, 2026-11-04: al marcar Cerrado-Ganado se ofrece mandarla a facturación (igual que Vendedor).
+  const ganadaNueva=payload.estatus==='Cerrado-Ganado'&&(!id||window._teleEditOriginal?.estatus!=='Cerrado-Ganado');
+  if(ganadaNueva&&filaId){ const fueAFact=await pipeOfrecerFacturar(filaId); if(fueAFact) return; }
   await renderProyeccionTele();
 }
 
@@ -9377,7 +9381,8 @@ async function pipeRegistrarMotivo(pid,estatus,texto){
 }
 function pipeIrAFacturar(pid){
   window._solPrefill={pipeline_id:pid};
-  if(typeof swV==='function') swV('factura');
+  if(userProfile?.rol==='telemarketing'&&typeof swT==='function') swT('factura');
+  else if(typeof swV==='function') swV('factura');
 }
 async function pipeOfrecerFacturar(pid){
   if(!pid) return false;
