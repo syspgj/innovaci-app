@@ -64,13 +64,21 @@ export default async function handler(req, res) {
     // tiempo desde 2-3 llamadas simultáneas (se pisan los tokens de
     // reto entre sí) — por eso ahora van uno por uno, en serie. Un poco
     // más lento, pero confiable.
-    const cuentas = await dispararSync('sync-crm-accounts');
-    // Da de alta en Cartera las cuentas que el paso anterior trajo nuevas
-    // al espejo crudo y que todavía no existían — ver mapear-cuentas-crm.js.
-    const cuentasNuevas = await dispararSync('mapear-cuentas-crm');
-    const oportunidades = await dispararSync('sync-crm-oportunidades');
-    const proyectos = await dispararSync('sync-crm-proyectos');
-    return res.status(200).json({ ok: true, cuentas, cuentasNuevas, oportunidades, proyectos });
+    // Jp, 2026-11-04 — sincronización por tarea: los vendedores/telemarketing solo
+    // necesitan lo suyo (Cartera → cuentas; Proyección → oportunidades), y el
+    // sync completo tarda mucho. ?tarea=cuentas | oportunidades | proyectos;
+    // sin tarea = todo (comportamiento original de Dirección/Mesa de Control).
+    const tarea = String((req.query && req.query.tarea) || (req.body && req.body.tarea) || 'todo');
+    const out = { ok: true, tarea };
+    if (tarea === 'todo' || tarea === 'cuentas') {
+      out.cuentas = await dispararSync('sync-crm-accounts');
+      // Da de alta en Cartera las cuentas que el paso anterior trajo nuevas
+      // al espejo crudo y que todavía no existían — ver mapear-cuentas-crm.js.
+      out.cuentasNuevas = await dispararSync('mapear-cuentas-crm');
+    }
+    if (tarea === 'todo' || tarea === 'oportunidades') out.oportunidades = await dispararSync('sync-crm-oportunidades');
+    if (tarea === 'todo' || tarea === 'proyectos') out.proyectos = await dispararSync('sync-crm-proyectos');
+    return res.status(200).json(out);
   } catch (err) {
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
