@@ -6201,6 +6201,11 @@ function cotizadorPintar(){
   const esDirector=userProfile?.rol==='director'||userProfile?.rol==='administracion';
   const producto=(window._cotizProductos||[]).find(p=>p.slug===cotizProductoSlug);
   if(!producto){mc.innerHTML='<div style="padding:20px;color:var(--text3);">Todavía no hay productos configurados en el cotizador.</div>';return;}
+  // Jp, 2026-11-05: Timbres es de pago único (paquete) — no tiene periodicidad. Internamente se guarda como
+  // 'mensual' (1 mes) para reutilizar tablas/constraints; la UI oculta el selector y lo muestra como "pago único".
+  const pagoUnico=!!producto.pago_unico;
+  if(pagoUnico){ if(cotizPeriodo!=='mensual'){ window._cotizPeriodoPrev=cotizPeriodo; cotizPeriodo='mensual'; } }
+  else if(window._cotizPeriodoPrev){ cotizPeriodo=window._cotizPeriodoPrev; window._cotizPeriodoPrev=null; }
   const planesProducto=(window._cotizPlanes||[]).filter(p=>p.producto_id===producto.id);
   const n=parseInt(cotizEmpresas)||1;
   // Planes que cubren o exceden el número de empresas/RFCs solicitado — se
@@ -6249,12 +6254,12 @@ function cotizadorPintar(){
         <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">${producto.etiqueta_capacidad||'¿Cuántas empresas (RFCs) necesita el cliente?'}</div>
         <input type="number" min="1" id="cotizInputEmpresas" value="${n}" style="width:100px;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;" oninput="cotizEmpresas=this.value;cotizadorPintar();">
       </div>
-      <div>
+      ${pagoUnico?'':`<div>
         <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Periodicidad</div>
         <div style="display:flex;gap:6px;">
           ${['mensual','semestral','anual'].map(p=>`<button class="cartera-subtab ${cotizPeriodo===p?'active':''}" style="${cotizPeriodo===p?'background:var(--navy);color:#fff;':''}" onclick="cotizPeriodo='${p}';cotizadorPintar();">${p[0].toUpperCase()+p.slice(1)}</button>`).join('')}
         </div>
-      </div>
+      </div>`}
       <div>
         <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
           <input type="checkbox" ${cotizConIva?'checked':''} onchange="cotizConIva=this.checked;cotizadorPintar();"> Mostrar con IVA (16%)
@@ -6322,7 +6327,7 @@ async function cotizadorCargarRecientes(){
       return `<tr style="border-top:1px solid var(--border);">
       <td style="padding:6px 8px;">${(r.created_at||'').slice(0,10)}</td>
       <td style="padding:6px 8px;">${r.cotizador_planes?.nombre||r.detalle?.titulo||'—'}</td>
-      <td style="padding:6px 8px;text-transform:capitalize;">${/^\d+a$/.test(r.periodicidad||'')?parseInt(r.periodicidad)+' año'+(parseInt(r.periodicidad)>1?'s':''):r.periodicidad}</td>
+      <td style="padding:6px 8px;text-transform:capitalize;">${/timbres/i.test(r.cotizador_planes?.nombre||'')?'Pago único':/^\d+a$/.test(r.periodicidad||'')?parseInt(r.periodicidad)+' año'+(parseInt(r.periodicidad)>1?'s':''):r.periodicidad}</td>
       <td id="cotizRecLigadaA_${r.id}" style="padding:6px 8px;position:relative;">${ligadaHtml}</td>
       ${esDirector?`<td style="padding:6px 8px;">${r.usuarios?.nombre||'—'}</td>`:''}
       <td style="padding:6px 8px;text-align:right;font-weight:700;">${fmt(r.precio_total_periodo)}</td>
@@ -6430,11 +6435,11 @@ function cotizadorTarjetaPlan(plan,producto){
       const capTxt=plan.capacidad_cubierta==null?`${unidad}s ilimitados`:`Hasta ${plan.capacidad_cubierta} ${unidad}${plan.capacidad_cubierta>1?'s':''}`;
       return plan.usuarios?`${capTxt} · ${plan.usuarios} usuario${plan.usuarios>1?'s':''}`:capTxt;
     })()}</div>
-    <div style="font-size:22px;font-weight:800;color:var(--navy);">${fmt(c.precioMensualFinal)}<span style="font-size:11px;font-weight:600;color:var(--text3);">/mes</span></div>
+    <div style="font-size:22px;font-weight:800;color:var(--navy);">${fmt(c.precioMensualFinal)}<span style="font-size:11px;font-weight:600;color:var(--text3);">${producto.pago_unico?' pago único':'/mes'}</span></div>
     ${c.descPct>0?`<div style="font-size:11px;color:var(--teal);font-weight:700;margin-top:2px;">-${c.descPct}% distribuidor activo</div><div style="font-size:11px;color:var(--text2);margin-top:1px;">⏳ ${c.descFin?'Descuento válido hasta el <b>'+cotizFechaCorta(c.descFin)+'</b>':'Descuento sin fecha de vencimiento'}</div>`:''}
 
     <div style="margin-top:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:8px;">
-      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px;">Resumen — total ${c.meses===1?'1 mes':c.meses+' meses'} ${cotizConIva?'(con IVA)':'(sin IVA)'}</div>
+      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px;">Resumen — ${producto.pago_unico?'paquete':'total '+(c.meses===1?'1 mes':c.meses+' meses')} ${cotizConIva?'(con IVA)':'(sin IVA)'}</div>
       <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-bottom:3px;"><span>Lista</span><span style="${c.descuentoPesos>0?'text-decoration:line-through;':''}">${fmt(c.listaPeriodo)}</span></div>
       ${c.descuentoPesos>0?`<div style="display:flex;justify-content:space-between;font-size:11px;color:var(--teal);margin-bottom:3px;"><span>Descuento distribuidor</span><span>-${fmt(c.descuentoPesos)}</span></div>`:''}
       <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:var(--text);border-top:1px solid var(--border);padding-top:5px;margin-top:3px;"><span>Subtotal (sin IVA)</span><span>${fmt(c.subtotalSinIva)}</span></div>
@@ -6749,6 +6754,10 @@ const PROP_CONTENIDO={
       'Web Mobile':'Edición Web Mobile: todo lo de Desktop, más Web Portal y cliente HTML5 para conectarse desde el navegador.',
       'Enterprise':'Edición Enterprise: todo lo de Web Mobile, más Farm Manager y Gateway para administrar varios servidores con un solo acceso.'},
     para:'Ideal para empresas con servidor que necesitan que su equipo se conecte de forma remota y segura a sus sistemas.'},
+  'timbres':{
+    lema:'Timbres para seguir facturando sin interrupciones',
+    queIncluye:['Paquete de timbres para emitir tus CFDI desde tus sistemas Siigo Aspel.','Pago único: sin mensualidades ni periodicidad.','Acompañamiento de Innovaci para la compra y activación de tus timbres.'],
+    para:'Ideal para empresas que emiten facturas electrónicas y necesitan abastecerse de timbres al mejor precio.'},
   'curso-empresarial':{
     lema:'Capacitación a la medida de tu equipo',
     queIncluye:['Curso impartido por instructores de Innovaci, con sesiones calendarizadas contigo.','Duración, sesiones y número de personas según tu necesidad.','Modalidad en línea o en sitio, según prefieras.','Suscripción al sistema durante el curso, cuando aplica.'],
@@ -6783,9 +6792,13 @@ function propGenerarActual(){
 function _propPlanDeTotales(producto,plan,periodicidad,total,conIva,descPct,descFin){
   const subtotal=conIva?total/(1+COTIZ_IVA_PCT/100):total;
   const lista=descPct>0?subtotal/(1-descPct/100):subtotal;
-  const per=periodicidad?periodicidad[0].toUpperCase()+periodicidad.slice(1):'';
+  const per=producto.pago_unico?'Pago único':(periodicidad?periodicidad[0].toUpperCase()+periodicidad.slice(1):'');
   const unidad=producto.unidad_capacidad||'RFC';
   const cap=plan.capacidad_cubierta==null?`${unidad}s ilimitados`:`Hasta ${plan.capacidad_cubierta} ${unidad}${plan.capacidad_cubierta>1?'s':''}`;
+  if(producto.pago_unico) return {titulo:'Timbres — '+plan.nombre,subtitulo:'Pago único · '+plan.nombre,
+    lineas:[{concepto:plan.nombre,cant:1,pu:lista,importe:lista}],descuento:lista-subtotal,descuentoPct:descPct,descuentoFin:descFin||null,
+    iva:conIva?total-subtotal:0,total,conIva,planBeneficios:plan.beneficios||[],
+    resumen:[['Paquete',plan.nombre],['Tipo de pago','Pago único']]};
   return {titulo:'Siigo '+producto.nombre.replace(/^Siigo\s*/,'')+' — Plan '+plan.nombre,subtitulo:per+' · '+cap+(plan.usuarios?(' · '+plan.usuarios+' usuario'+(plan.usuarios>1?'s':'')):''),
     lineas:[{concepto:`${producto.nombre} — Plan ${plan.nombre} (${per})`,cant:1,pu:lista,importe:lista}],descuento:lista-subtotal,descuentoPct:descPct,descuentoFin:descFin||null,
     iva:conIva?total-subtotal:0,total,conIva,planBeneficios:plan.beneficios||[],
@@ -7285,7 +7298,7 @@ function cotizadorAbrirDescuentos(){
       <tbody>${descuentos.map(d=>{
         const vigente=d.fecha_inicio<=hoy&&(!d.fecha_fin||d.fecha_fin>=hoy);
         return `<tr style="border-top:1px solid var(--border);${vigente?'background:rgba(0,169,157,0.08);':''}">
-          <td style="padding:6px 8px;">${d.periodicidad}</td>
+          <td style="padding:6px 8px;">${producto.pago_unico?'pago único':d.periodicidad}</td>
           <td style="padding:6px 8px;text-align:right;font-weight:700;">${d.porcentaje}%</td>
           <td style="padding:6px 8px;">${d.fecha_inicio} → ${d.fecha_fin||'sin fin'} ${vigente?'<b style="color:var(--teal);">· vigente hoy</b>':''}</td>
           <td style="padding:6px 8px;"><span onclick="cotizadorBorrarDescuento('${d.id}')" style="cursor:pointer;color:var(--red);">🗑</span></td>
@@ -7295,7 +7308,7 @@ function cotizadorAbrirDescuentos(){
     <div style="font-size:12px;font-weight:700;margin-bottom:8px;">+ Nueva vigencia</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
       <div><div style="font-size:10px;color:var(--text3);">Periodicidad</div>
-        <select id="cotizDescPeriodo" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;"><option value="mensual">Mensual</option><option value="semestral">Semestral</option><option value="anual" selected>Anual</option></select></div>
+        <select id="cotizDescPeriodo" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">${producto.pago_unico?'<option value="mensual" selected>Pago único</option>':'<option value="mensual">Mensual</option><option value="semestral">Semestral</option><option value="anual" selected>Anual</option>'}</select></div>
       <div><div style="font-size:10px;color:var(--text3);">%</div><input type="number" id="cotizDescPct" step="0.01" min="0" max="100" style="width:80px;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;"></div>
       <div><div style="font-size:10px;color:var(--text3);">Desde</div><input type="date" id="cotizDescInicio" value="${hoy}" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;"></div>
       <div><div style="font-size:10px;color:var(--text3);">Hasta (opcional)</div><input type="date" id="cotizDescFin" style="padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;"></div>
@@ -7357,7 +7370,9 @@ function renderProyeccionTeleTabla(){
   const mc=document.getElementById('mainContent');
   const rows=window._teleRows||[];
   const filtro=window._teleProyFiltro||'';
-  const f=filtro?rows.filter(r=>r.estatus===filtro):rows;
+  // Jp, 2026-11-05: Cerrado-Ganado oculto por default; se muestra con el botón o al filtrar por ese estatus.
+  const verGan=!!window._teleVerGanadas;
+  const f=filtro?rows.filter(r=>r.estatus===filtro):(verGan?rows:rows.filter(r=>r.estatus!=='Cerrado-Ganado'));
   const porEstatus={};
   rows.forEach(r=>{porEstatus[r.estatus]=(porEstatus[r.estatus]||0)+1;});
   mc.innerHTML=`
@@ -7366,7 +7381,8 @@ function renderProyeccionTeleTabla(){
     <button onclick="agregarFilaPipeTele()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nueva negociación</button>
   </div>
   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
-    <div onclick="window._teleProyFiltro='';renderProyeccionTeleTabla();" style="cursor:pointer;padding:5px 12px;border-radius:14px;font-size:11px;font-weight:600;${!filtro?'background:var(--navy);color:#fff;':'background:var(--surface-2,#f0f1f3);color:var(--text2);'}">Todas (${rows.length})</div>
+    <div onclick="window._teleProyFiltro='';renderProyeccionTeleTabla();" style="cursor:pointer;padding:5px 12px;border-radius:14px;font-size:11px;font-weight:600;${!filtro?'background:var(--navy);color:#fff;':'background:var(--surface-2,#f0f1f3);color:var(--text2);'}">${verGan?'Todas':'Abiertas'} (${verGan?rows.length:rows.filter(r=>r.estatus!=='Cerrado-Ganado').length})</div>
+    <div onclick="window._teleVerGanadas=!window._teleVerGanadas;renderProyeccionTeleTabla();" style="cursor:pointer;padding:5px 12px;border-radius:14px;font-size:11px;font-weight:600;border:1px solid #27AE60;${verGan?'background:#27AE60;color:#fff;':'color:#27AE60;'}">${verGan?'✅ Ocultar cerradas ganadas':'✅ Mostrar cerradas ganadas'}</div>
     ${ESTATUS_PIPE_TELE.map(e=>`<div onclick="window._teleProyFiltro='${e}';renderProyeccionTeleTabla();" style="cursor:pointer;padding:5px 12px;border-radius:14px;font-size:11px;font-weight:600;${filtro===e?'background:var(--navy);color:#fff;':'background:var(--surface-2,#f0f1f3);color:var(--text2);'}">${e} (${porEstatus[e]||0})</div>`).join('')}
   </div>
   <div class="card">
@@ -8547,7 +8563,7 @@ const ESTATUS_PIPE_COLOR={
 };
 const PROB_OPTS=[10,25,50,70,90,100];
 
-let pipeSortCol='fecha_prevista', pipeSortDir=1, pipeFiltroEstatus='', pipeFiltroTexto='', pipeFiltroEspecial='', pipeVerHistorico=false;
+let pipeSortCol='fecha_prevista', pipeSortDir=1, pipeFiltroEstatus='', pipeFiltroTexto='', pipeFiltroEspecial='', pipeVerHistorico=false, pipeVerGanadas=false;
 
 function mostrarCanalizadosDetalle(vendedorId, nombreVend){
   const detalle=(window._canalizadosDetalle||{})[vendedorId]||[];
@@ -8771,6 +8787,8 @@ function renderProyeccionTabla(){
   // default — se mandan ahí igual que se hizo con generaciones. Las
   // Cerrada-Ganada sí se quedan visibles (Jp, 2026-10-12).
   if(!pipeVerHistorico) pipe=pipe.filter(r=>r.estatus!=='Cerrada-Perdida');
+  // Jp, 2026-11-05: por default se ocultan las Cerrada-Ganada para que el vendedor se concentre en las abiertas.
+  if(!pipeVerGanadas&&pipeFiltroEstatus!=='Cerrada-Ganada') pipe=pipe.filter(r=>r.estatus!=='Cerrada-Ganada');
   if(pipeFiltroEspecial){
     const idsEspecial=new Set((resumen[pipeFiltroEspecial]||[]).map(r=>r.id));
     pipe=pipe.filter(r=>idsEspecial.has(r.id));
@@ -8824,8 +8842,9 @@ function renderProyeccionTabla(){
     </select>
     ${pipeChipFiltro('esteMes','Abiertas este mes','📅')}
     ${pipeChipFiltro('recientes30','Recientes (30d)','🕐')}
+    <button onclick="pipeVerGanadas=!pipeVerGanadas;renderProyeccionTabla();" style="background:${pipeVerGanadas?'#27AE60':'none'};color:${pipeVerGanadas?'#fff':'var(--text2)'};border:1px solid ${pipeVerGanadas?'#27AE60':'var(--border)'};border-radius:var(--radsm);padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${pipeVerGanadas?'✅ Ocultar cerradas ganadas':'✅ Mostrar cerradas ganadas'}</button>
     <button onclick="pipeVerHistorico=!pipeVerHistorico;renderProyeccionTabla();" style="background:${pipeVerHistorico?'var(--navy)':'none'};color:${pipeVerHistorico?'#fff':'var(--text2)'};border:1px solid ${pipeVerHistorico?'var(--navy)':'var(--border)'};border-radius:var(--radsm);padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">${pipeVerHistorico?'🗄️ Viendo histórico':'🗄️ Ver histórico'}</button>
-    ${(pipeFiltroEstatus||pipeFiltroTexto||pipeFiltroEspecial||pipeVerHistorico)?`<button onclick="pipeFiltroEstatus='';pipeFiltroTexto='';pipeFiltroEspecial='';pipeVerHistorico=false;renderProyeccionTabla()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:6px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕ Limpiar</button>`:''}
+    ${(pipeFiltroEstatus||pipeFiltroTexto||pipeFiltroEspecial||pipeVerHistorico)?`<button onclick="pipeFiltroEstatus='';pipeFiltroTexto='';pipeFiltroEspecial='';pipeVerHistorico=false;pipeVerGanadas=false;renderProyeccionTabla()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:6px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕ Limpiar</button>`:''}
   </div>
   <div style="overflow-x:auto;">
   <table style="width:100%;border-collapse:collapse;font-size:12px;">
@@ -21353,6 +21372,7 @@ async function renderDirectorProyeccion(){
   function limpiarFiltrosDirProyeccion(){
     window._dpFiltroEspecial='';
     window._dpVerHistorico=false;
+    window._dpVerGanadas=false;
     ['dpFiltVend','dpFiltEst','dpFiltTipo','dpBus'].forEach(id=>{const el=document.getElementById(id); if(el) el.value='';});
     renderDirPipeTabla();
   }
@@ -21386,6 +21406,7 @@ async function renderDirectorProyeccion(){
 
     let rows=(window._dirPipeRows||[]).filter(r=>{
       if(!window._dpVerHistorico&&r.estatus==='Cerrada-Perdida') return false;
+      if(!window._dpVerGanadas&&filtEst!=='Cerrada-Ganada'&&r.estatus==='Cerrada-Ganada') return false; // Jp, 2026-11-05
       if(window._dpFiltroEspecial){
         const idsEspecial=new Set((resumen[window._dpFiltroEspecial]||[]).map(x=>x.id));
         if(!idsEspecial.has(r.id)) return false;
@@ -21511,6 +21532,7 @@ async function renderDirectorProyeccion(){
     </div>
     ${dirChip('esteMes','Abiertas este mes','📅')}
     ${dirChip('recientes30','Recientes (30d)','🕐')}
+    <button onclick="window._dpVerGanadas=!window._dpVerGanadas;renderDirPipeTabla();" style="background:${window._dpVerGanadas?'#27AE60':'none'};color:${window._dpVerGanadas?'#fff':'var(--text2)'};border:1px solid ${window._dpVerGanadas?'#27AE60':'var(--border)'};border-radius:var(--radsm);padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${window._dpVerGanadas?'✅ Ocultar cerradas ganadas':'✅ Mostrar cerradas ganadas'}</button>
     <button onclick="window._dpVerHistorico=!window._dpVerHistorico;renderDirPipeTabla();" style="background:${window._dpVerHistorico?'var(--navy)':'none'};color:${window._dpVerHistorico?'#fff':'var(--text2)'};border:1px solid ${window._dpVerHistorico?'var(--navy)':'var(--border)'};border-radius:var(--radsm);padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">${window._dpVerHistorico?'🗄️ Viendo histórico':'🗄️ Ver histórico'}</button>
     <button onclick="limpiarFiltrosDirProyeccion()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:6px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕ Limpiar</button>
   </div>
