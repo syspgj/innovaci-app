@@ -11131,7 +11131,7 @@ async function crmCrearCuentaDeAlta(clienteId){
     const res=await fetch('/api/crm-crear-cuenta',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({cliente_cartera_id:clienteId})});
     const j=await res.json().catch(()=>({}));
     if(!res.ok||!j.ok) return {ok:false,error:j.error||('HTTP '+res.status)};
-    return {ok:true,num_cliente:j.num_cliente};
+    return {ok:true,num_cliente:j.num_cliente,es_subcuenta:j.es_subcuenta,padre_ligado:j.padre_ligado,padre:j.padre};
   }catch(e){ return {ok:false,error:e.message||String(e)}; }
 }
 async function abrirCuentaEnCrm(numCliente){
@@ -12768,6 +12768,11 @@ function abrirAltaCuenta(){
       <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Razón social</label>
         <input type="text" id="altaRazonSocial" oninput="altaBuscarDuplicados()" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
       <div id="altaDuplicadosBox"></div>
+      <div style="position:relative;"><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Es subcuenta de (cuenta principal) — opcional</label>
+        <input type="text" id="altaPadreSearch" placeholder="Ej: Pomodoro Rosso — déjalo vacío si es cuenta principal" oninput="altaBuscarPadre(this.value)" autocomplete="off" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+        <input type="hidden" id="altaPadreId">
+        <div id="altaPadreSugs" style="display:none;position:absolute;z-index:20;background:#fff;border:1px solid var(--border);border-radius:6px;width:100%;max-height:180px;overflow-y:auto;box-shadow:0 4px 12px rgba(0,0,0,.12);"></div>
+        <div id="altaPadreSel" style="font-size:11px;color:var(--teal);font-weight:600;margin-top:3px;"></div></div>
       <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">RFC</label>
         <input type="text" id="altaRfc" oninput="altaBuscarDuplicados()" style="width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;"></div>
       <div><label style="font-size:11px;color:var(--text2);display:block;margin-bottom:4px;">Número de serie</label>
@@ -12799,6 +12804,22 @@ function abrirAltaCuenta(){
 // sí obliga a buscar primero) — riesgo real de duplicar una cuenta por typo
 // o por no revisar Cartera antes. Se busca en vivo mientras se captura
 // razón social/RFC, y se bloquea/advierte antes de guardar.
+async function altaBuscarPadre(q){
+  const sugs=document.getElementById('altaPadreSugs'); document.getElementById('altaPadreId').value=''; document.getElementById('altaPadreSel').textContent='';
+  q=(q||'').trim().toLowerCase();
+  if(q.length<2){sugs.style.display='none';return;}
+  if(!window._cartClientes||!window._cartClientes.length) window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente,alias_nombres,vendedor_asignado,cliente_padre_id');
+  const res=(window._cartClientes||[]).filter(c=>!c.cliente_padre_id&&(c.razon_social||'').toLowerCase().includes(q)).slice(0,8);
+  if(!res.length){sugs.innerHTML='<div style="padding:7px 10px;font-size:11px;color:var(--text3);">Sin coincidencias</div>';sugs.style.display='block';return;}
+  sugs.innerHTML=res.map(c=>`<div data-id="${c.id}" data-nom="${(c.razon_social||'').replace(/"/g,'&quot;')}" onclick="altaElegirPadre(this.dataset.id,this.dataset.nom)" style="padding:7px 10px;cursor:pointer;font-size:12px;border-bottom:1px solid var(--border);">${c.razon_social} <span style="color:var(--text3);font-size:10px;">${c.num_cliente||''}</span></div>`).join('');
+  sugs.style.display='block';
+}
+function altaElegirPadre(id,nombre){
+  document.getElementById('altaPadreId').value=id;
+  document.getElementById('altaPadreSearch').value=nombre;
+  document.getElementById('altaPadreSugs').style.display='none';
+  document.getElementById('altaPadreSel').textContent='✓ Se dará de alta como subcuenta de '+nombre;
+}
 window._altaDuplicadosTimeout=null;
 function altaBuscarDuplicados(){
   clearTimeout(window._altaDuplicadosTimeout);
@@ -12877,6 +12898,7 @@ async function guardarAltaCuenta(){
     rfc:payload.rfc,
     vendedor_asignado:currentUser.id,
     origen:'alta_vendedor',
+    cliente_padre_id:document.getElementById('altaPadreId')?.value||null,
     num_cliente:'ALT-'+Date.now()
   }).select().single();
   if(errCliente){msg.textContent='Error al crear cliente: '+errCliente.message;return;}
@@ -12896,7 +12918,10 @@ async function guardarAltaCuenta(){
   msg.textContent='Creando la cuenta en el CRM...';
   const rCrm=await crmCrearCuentaDeAlta(nuevoCliente.id);
   document.getElementById('modalAltaCuenta').remove();
-  if(rCrm.ok) uiToast('✅ Cuenta creada también en el CRM ('+rCrm.num_cliente+')',true);
+  if(rCrm.ok){
+    window._cartClientes=null;
+    uiToast('✅ Cuenta creada también en el CRM ('+rCrm.num_cliente+')'+(rCrm.es_subcuenta?(rCrm.padre_ligado?' · ligada a '+rCrm.padre:' · ⚠ no se pudo ligar a la cuenta principal en el CRM'):''),rCrm.es_subcuenta&&!rCrm.padre_ligado?false:true);
+  }
   else alert('La cuenta se dio de alta en la App, pero NO se pudo crear en el CRM.\nDetalle: '+rCrm.error+'\n\nPuedes crearla después con el botón "Abrir en CRM" de su ficha.');
   renderCarteraVendedor();
 }
