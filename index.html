@@ -6602,15 +6602,15 @@ async function tsGuardarImplAdmin(){
 // La suscripción = costo de licencias (se resta de la base de comisión al facturar).
 // ══════════════════════════════════════════════════════════════════════════════
 let ceCursoClave=null, ceModalidad='linea', cePersonas=5, ceHoras=null, ceSesiones=null, ceHorasEsp=0, ceSab=0, ceDom=0,
-    ceUsuAdic=null, ceMeses=1, ceDcto=0, ceIda=null, ceRegreso=null, ceCursoPrev=null;
+    ceUsuTot=null, ceMeses=1, ceDcto=0, ceIda=null, ceRegreso=null, ceCursoPrev=null;
 function ceCurso(){ const l=window._ceCursos||[]; if(!ceCursoClave||!l.some(c=>c.clave===ceCursoClave)) ceCursoClave=l[0]?.clave||null; return l.find(c=>c.clave===ceCursoClave)||null; }
 function ceCalcular(){
   const cu=ceCurso(); if(!cu) return {error:'No hay cursos configurados.'};
   const tar=(window._ceTarifas||[]).find(t=>t.modalidad===ceModalidad); if(!tar) return {error:'Faltan tarifas.'};
-  if(ceCursoPrev!==cu.clave){ ceCursoPrev=cu.clave; ceHoras=null; ceSesiones=null; ceUsuAdic=null; }
+  if(ceCursoPrev!==cu.clave){ ceCursoPrev=cu.clave; ceHoras=null; ceSesiones=null; ceUsuTot=null; }
   const N=v=>parseFloat(v)||0, I=v=>Math.max(0,parseInt(v)||0);
   const P=Math.max(1,I(cePersonas)), H=ceHoras==null?cu.horas:I(ceHoras), S=Math.max(1,ceSesiones==null?cu.sesiones:I(ceSesiones));
-  const uAdic=ceUsuAdic==null?Math.max(0,P-1):I(ceUsuAdic), meses=Math.max(1,I(ceMeses));
+  const usuTot=ceUsuTot==null?P:Math.max(1,I(ceUsuTot)), uAdic=usuTot-1, meses=Math.max(1,I(ceMeses));
   const ida=ceIda==null?N(tar.viaje_ida):N(ceIda), reg=ceRegreso==null?N(tar.viaje_regreso):N(ceRegreso);
   const base=(ceModalidad==='linea'&&cu.precio_base_linea!=null)?N(cu.precio_base_linea):N(tar.precio_base);
   const L=[];
@@ -6624,19 +6624,19 @@ function ceCalcular(){
   add('Sesiones en domingo',I(ceDom),N(tar.domingo));
   let susc=0;
   if(N(cu.susc_base)>0){ const m=(N(cu.susc_base)+uAdic*N(cu.susc_adic))*meses; susc+=m;
-    L.push({concepto:`Suscripción ${cu.nombre.replace('Siigo Aspel ','')} — 1 + ${uAdic} usuario(s) adic. × ${meses} mes(es)`,cant:1,pu:m,importe:m,licencia:true}); }
+    L.push({concepto:`Suscripción ${cu.nombre.replace('Siigo Aspel ','')} — ${usuTot} usuario(s) (1 base + ${uAdic} adic.) × ${meses} mes(es)`,cant:1,pu:m,importe:m,licencia:true}); }
   if(N(cu.susc2_base)>0){ const m=(N(cu.susc2_base)+uAdic*N(cu.susc2_adic))*meses; susc+=m;
-    L.push({concepto:`Suscripción ${cu.susc2_nombre||''} — 1 + ${uAdic} usuario(s) adic. × ${meses} mes(es)`,cant:1,pu:m,importe:m,licencia:true}); }
+    L.push({concepto:`Suscripción ${cu.susc2_nombre||''} — ${usuTot} usuario(s) (1 base + ${uAdic} adic.) × ${meses} mes(es)`,cant:1,pu:m,importe:m,licencia:true}); }
   if(ceModalidad==='sitio'){ const v=S*(ida+reg); if(v>0) L.push({concepto:`Viáticos (${S} sesiones × ida $${ida} + regreso $${reg})`,cant:1,pu:v,importe:v}); }
   const subtotal=L.reduce((a,l)=>a+l.importe,0);
   const dp=Math.min(100,Math.max(0,N(ceDcto))), descuento=subtotal*dp/100, sub2=subtotal-descuento;
   const iva=cotizConIva?sub2*COTIZ_IVA_PCT/100:0, total=sub2+iva;
   const modTxt=ceModalidad==='linea'?'En línea':'En sitio';
   const titulo=`${cu.nombre} — ${modTxt} · ${P} personas, ${H} h, ${S} sesiones`;
-  return {error:null,titulo,lineas:L,subtotal,descuento,descPct:dp,iva,total,sub2,licencias:susc,P,H,S,
+  return {error:null,titulo,lineas:L,subtotal,descuento,descPct:dp,iva,total,sub2,licencias:susc,P,H,S,usuTot,
     periodicidadDb:'curso',periodoLabel:modTxt,mensualRef:total,
     productoTxt:'Curso Empresarial — '+titulo,
-    detalle:{producto:'curso-empresarial',curso:cu.clave,modalidad:ceModalidad,personas:P,horas:H,sesiones:S,usuarios_adic:uAdic,meses,
+    detalle:{producto:'curso-empresarial',curso:cu.clave,modalidad:ceModalidad,personas:P,horas:H,sesiones:S,usuarios_total:usuTot,usuarios_adic:uAdic,meses,
       horas_especiales:I(ceHorasEsp),sabados:I(ceSab),domingos:I(ceDom),lineas:L,subtotal_sin_iva:subtotal,descuento_pct:dp,descuento:descuento,
       iva_monto:iva,total,con_iva:!!cotizConIva,costo_licencias:susc,titulo:'Curso Empresarial — '+titulo,productoTxt:'Curso Empresarial — '+titulo}};
 }
@@ -6659,7 +6659,7 @@ function ceControlesHtml(producto){
       ${inp('Horas especiales','ceHorasEsp',ceHorasEsp)}
       ${inp('Sesiones sábado','ceSab',ceSab)}
       ${inp('Sesiones domingo','ceDom',ceDom)}
-      ${cu&&cu.susc_base>0?inp('Usuarios adic. (suscripción)','ceUsuAdic',c.error?'':(ceUsuAdic==null?Math.max(0,(parseInt(cePersonas)||1)-1):ceUsuAdic))+inp('Meses suscripción','ceMeses',ceMeses):''}
+      ${cu&&cu.susc_base>0?inp('Usuarios totales (suscripción)','ceUsuTot',c.error?'':(c.usuTot),'id="ceUsuTotInp"')+inp('Meses suscripción','ceMeses',ceMeses):''}
       ${ceModalidad==='sitio'?inp('Viaje ida $','ceIda',c.error?'':(ceIda==null?(window._ceTarifas.find(t=>t.modalidad==='sitio')?.viaje_ida||0):ceIda))+inp('Viaje regreso $','ceRegreso',c.error?'':(ceRegreso==null?(window._ceTarifas.find(t=>t.modalidad==='sitio')?.viaje_regreso||0):ceRegreso)):''}
       ${inp('% Descuento','ceDcto',ceDcto)}
     </div>
@@ -6667,6 +6667,7 @@ function ceControlesHtml(producto){
   <div id="ceResumen" style="margin-bottom:18px;">${ceResumenHtml()}</div>`;
 }
 function ceRepintar(){ const el=document.getElementById('ceResumen'); if(el) el.innerHTML=ceResumenHtml();
+  { const u=document.getElementById('ceUsuTotInp'); if(u&&ceUsuTot==null&&document.activeElement!==u){ const cc=ceCalcular(); if(!cc.error) u.value=cc.usuTot; } } // usuarios de suscripción siguen a Personas hasta que se editen a mano
   const lb=document.querySelector('#mainContent [data-ts-plan]'); if(lb){const c=ceCalcular(); lb.textContent=(c&&c.titulo)||'—';} }
 function ceResumenHtml(){
   const c=ceCalcular(); if(c.error) return `<div style="padding:16px;color:#c0392b;">${c.error}</div>`;
