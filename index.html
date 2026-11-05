@@ -6098,6 +6098,34 @@ function tsPlusEditarPrecio(id){
 // distribuidor), configurable por Jp sin tocar código. Ver
 // claude/cotizador-sibo-fiscal-diseno.md para el diseño completo.
 // ══════════════════════════════════════════════════════════════════════════════
+
+// Jp, 2026-11-05 — Buscadores que perdían el cursor: muchos campos re-pintan toda la sección en cada tecla
+// (oninput -> render...()), reemplazando el <input> y quitando el foco ("escribir P, esperar, escribir O...").
+// Solución global: se recuerda el campo activo y su cursor antes de que corra el handler, y si el campo fue
+// reemplazado se enfoca el nuevo (mismo id o mismo placeholder) en la misma posición. Aplica a TODOS los buscadores.
+(function(){
+  let snap=null;
+  document.addEventListener('input',function(e){
+    const t=e.target;
+    if(!t||!/^(INPUT|TEXTAREA)$/.test(t.tagName)||/^(checkbox|radio|file|range|color|date|time|datetime-local)$/.test(t.type)){snap=null;return;}
+    let ss=null,se=null; try{ss=t.selectionStart;se=t.selectionEnd;}catch(_){}
+    snap={el:t,id:t.id||'',ph:t.getAttribute('placeholder')||'',type:t.type,ss:ss,se:se,len:(t.value||'').length};
+  },true);
+  document.addEventListener('input',function(){
+    const s=snap; snap=null;
+    if(!s||s.el.isConnected) return; // no fue reemplazado: nada que hacer
+    let n=null;
+    if(s.id) n=document.getElementById(s.id);
+    if(!n&&s.ph) n=Array.prototype.find.call(document.querySelectorAll('input,textarea'),function(x){return x.getAttribute('placeholder')===s.ph&&x.type===s.type;});
+    if(!n) return;
+    try{
+      n.focus();
+      if(s.ss!=null) n.setSelectionRange(s.ss,s.se);
+      else { const v=n.value; n.value=''; n.value=v; } // type=number: cursor al final
+    }catch(_){}
+  },false);
+})();
+let cotizAplicarPromoMes=true;
 let cotizEmpresas=1, cotizPeriodo='anual', cotizConIva=false, cotizProductoSlug='siigo-fiscal', cotizPlanSeleccionado=null;
 async function renderCotizador(){
   const mc=document.getElementById('mainContent');
@@ -6126,6 +6154,14 @@ async function renderCotizador(){
     sb.from('cotizador_cursos_emp').select('*').eq('activo',true).order('orden'),
   ]);
   window._ceTarifas=ceTar||[]; window._ceCursos=ceCursos||[];
+  // Jp, 2026-11-05: Timbres toma su descuento de Promociones (sección "Timbres y licencias nuevas"), no de la tabla de distribuidor.
+  try{
+    const hoyP=todayLocal();
+    const {data:pr}=await sb.from('promociones_config').select('*').eq('seccion','aspel_timbres').eq('activo',true);
+    const vig=(pr||[]).filter(r=>r.permanente||(r.fecha_inicio&&r.fecha_inicio<=hoyP&&(!r.fecha_fin||r.fecha_fin>=hoyP)));
+    vig.sort((a,b)=>(a.permanente?1:0)-(b.permanente?1:0)||(parseFloat(b.descuento)||0)-(parseFloat(a.descuento)||0)); // temporal antes que permanente
+    window._cotizPromoTimbres=vig[0]?{pct:parseFloat(vig[0].descuento)||0,fin:vig[0].permanente?null:vig[0].fecha_fin,item:vig[0].item,notas:vig[0].notas||''}:null;
+  }catch(e){ console.error('promo timbres',e); window._cotizPromoTimbres=null; }
   const [{data:tsRows},{data:tsCfg},{data:tsImpl}]=await Promise.all([
     sb.from('productos_ts_plus').select('*').eq('activo',true).eq('seccion','licencias').eq('tipo','nueva').eq('categoria','remote_access').order('orden'),
     sb.from('ts_plus_config').select('*').eq('id',1).maybeSingle(),
@@ -6160,7 +6196,9 @@ function cotizadorCalcularPlan(plan,productoId,periodicidad,conIva){
   if(!precioRow) return null;
   const meses=precioRow.meses;
   const precioListaMensual=parseFloat(precioRow.precio_lista_mensual);
-  const descPct=cotizadorDescuentoVigente(productoId,periodicidad);
+  const _prod=(window._cotizProductos||[]).find(x=>x.id===productoId);
+  const _promoT=(_prod&&_prod.pago_unico)?window._cotizPromoTimbres:null;
+  const descPct=(_prod&&_prod.pago_unico)?((_promoT&&cotizAplicarPromoMes)?_promoT.pct:0):cotizadorDescuentoVigente(productoId,periodicidad);
   const precioMensualFinalSinIva=precioListaMensual*(1-descPct/100);
   // Jp, 2026-10-26 (3ra ronda): quiere el desglose tipo "resumen de compra"
   // de Siigo — Lista del periodo (sin descuento de distribuidor) → Descuento
@@ -6184,7 +6222,7 @@ function cotizadorCalcularPlan(plan,productoId,periodicidad,conIva){
   // solo se suma cuando el toggle está prendido.
   const iva=conIva?(1+COTIZ_IVA_PCT/100):1;
   return {
-    meses, descPct, conIva, descFin:descPct>0?cotizadorDescuentoFin(productoId,periodicidad):null,
+    meses, descPct, conIva, descFin:descPct>0?((_prod&&_prod.pago_unico)?(_promoT?_promoT.fin:null):cotizadorDescuentoFin(productoId,periodicidad)):null,
     precioMensualFinal:precioMensualFinalSinIva*iva,
     listaPeriodo:listaPeriodoSinIva*iva,
     subtotalSinIva,
@@ -6244,7 +6282,7 @@ function cotizadorPintar(){
       <div style="font-size:12px;color:var(--text3);">${producto.nombre}</div>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="cartera-subtab" onclick="propCirculoAbrir()">📘 PDF Círculo Innovaci</button>
-    ${esDirector?(esCE?`<button class="cartera-subtab" onclick="ceAbrirAdmin()">⚙️ Tarifas y cursos</button>`:esTS?`<button class="cartera-subtab" onclick="tsAbrirImplAdmin()">⚙️ Servicios de implementación</button>`:`<button class="cartera-subtab" onclick="cotizadorAbrirDescuentos()">⚙️ Descuentos de distribuidor</button>`):''}</div>
+    ${esDirector?(esCE?`<button class="cartera-subtab" onclick="ceAbrirAdmin()">⚙️ Tarifas y cursos</button>`:esTS?`<button class="cartera-subtab" onclick="tsAbrirImplAdmin()">⚙️ Servicios de implementación</button>`:(pagoUnico?`<span style="font-size:11px;color:var(--text3);align-self:center;">El descuento de Timbres se configura en Promociones ("Timbres y licencias nuevas")</span>`:`<button class="cartera-subtab" onclick="cotizadorAbrirDescuentos()">⚙️ Descuentos de distribuidor</button>`)):''}</div>
   </div>
 
   ${esTS?tsControlesHtml(producto):''}${esCE?ceControlesHtml(producto):''}
@@ -6265,6 +6303,11 @@ function cotizadorPintar(){
           <input type="checkbox" ${cotizConIva?'checked':''} onchange="cotizConIva=this.checked;cotizadorPintar();"> Mostrar con IVA (16%)
         </label>
       </div>
+      ${(pagoUnico&&window._cotizPromoTimbres)?`<div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;font-weight:600;color:var(--teal);">
+          <input type="checkbox" ${cotizAplicarPromoMes?'checked':''} onchange="cotizAplicarPromoMes=this.checked;cotizadorPintar();"> Aplicar descuento del mes (${window._cotizPromoTimbres.pct}%${window._cotizPromoTimbres.fin?' · válido hasta '+cotizFechaCorta(window._cotizPromoTimbres.fin):''})
+        </label>
+      </div>`:(pagoUnico?`<div style="font-size:11px;color:var(--text3);align-self:center;">Sin descuento vigente en Promociones para timbres.</div>`:'')}
     </div>
   </div>
 
