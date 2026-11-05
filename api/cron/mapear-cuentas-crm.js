@@ -158,7 +158,19 @@ export default async function handler(req, res) {
       await sbInsert('clientes_cartera', rows.slice(i, i + 100));
     }
 
-    return res.status(200).json({ ok: true, revisadas: (crm || []).length, creadas: rows.length, cuentas: rows.map((r) => r.num_cliente) });
+    // Espejo de la jerarquía del CRM (campo "Miembro de" -> cliente_padre_id). Decisiones de Jp 2026-11-05 en
+    // crm_jerarquia_decision (principales de pares circulares y cuentas excluidas). Nunca rompe el mapeo si falla.
+    let jerarquia = null;
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/aplicar_jerarquia_crm`, {
+        method: 'POST',
+        headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`, 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      jerarquia = r.ok ? await r.json() : `error ${r.status}`;
+    } catch (e) { jerarquia = 'error ' + String((e && e.message) || e); }
+
+    return res.status(200).json({ ok: true, revisadas: (crm || []).length, creadas: rows.length, jerarquia_ligadas: jerarquia, cuentas: rows.map((r) => r.num_cliente) });
   } catch (err) {
     return res.status(200).json({ ok: false, error: String((err && err.message) || err) });
   }
