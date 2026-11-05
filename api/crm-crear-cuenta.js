@@ -160,7 +160,7 @@ async function supabaseUpsertRaw(row) {
 async function crearDesdeCuentaApp(res, clienteId) {
   try {
     const filas = await supabaseGet(
-      `clientes_cartera?id=eq.${encodeURIComponent(clienteId)}&select=id,razon_social,rfc,telefono,correo_principal,num_cliente,vendedor_asignado`
+      `clientes_cartera?id=eq.${encodeURIComponent(clienteId)}&select=id,razon_social,rfc,telefono,correo_principal,num_cliente,vendedor_asignado,cliente_padre_id`
     );
     const c = filas[0];
     if (!c) return res.status(404).json({ ok: false, error: 'cuenta no encontrada' });
@@ -172,15 +172,37 @@ async function crearDesdeCuentaApp(res, clienteId) {
       const u = await supabaseGet(`usuarios?id=eq.${encodeURIComponent(c.vendedor_asignado)}&select=crm_user_id`);
       assigned_user_id = u[0]?.crm_user_id || VTIGER_USUARIO_RESPALDO;
     }
+    // Subcuenta: si tiene cuenta principal con folio del CRM, se liga con el campo
+    // "Miembro de" (account_id en Vtiger). Jp, 2026-11-05.
+    let padreCrmId = null, padreNombre = null;
+    if (c.cliente_padre_id) {
+      const pf = await supabaseGet(`clientes_cartera?id=eq.${encodeURIComponent(c.cliente_padre_id)}&select=num_cliente,razon_social`);
+      padreNombre = pf[0]?.razon_social || null;
+      if (pf[0]?.num_cliente) {
+        const pr = await supabaseGet(`stg_cuentas_crm_raw?account_no=eq.${encodeURIComponent(pf[0].num_cliente)}&select=crm_record_id`);
+        padreCrmId = pr[0]?.crm_record_id || null;
+      }
+    }
     const sessionName = await vtigerLogin();
-    const creado = await vtigerCreateAccount(sessionName, {
+    const elemento = {
       accountname: c.razon_social,
       siccode: c.rfc || undefined, // el CRM usa siccode como RFC
       phone: c.telefono || undefined,
       email1: c.correo_principal || undefined,
       assigned_user_id,
-      description: `Alta directa desde App VENTAS el ${new Date().toISOString().slice(0, 10)}.`,
-    });
+      description: `Alta directa desde App VENTAS el ${new Date().toISOString().slice(0, 10)}.${padreNombre ? ' Subcuenta de ' + padreNombre + '.' : ''}`,
+    };
+    let creado, padreLigado = false;
+    if (padreCrmId) {
+      try { creado = await vtigerCreateAccount(sessionName, { ...elemento, account_id: padreCrmId }); padreLigado = true; }
+      catch (e) {
+        // Si el CRM rechaza el campo "Miembro de", se crea sin liga y se avisa.
+        if (!/account_id|member/i.test(String(e && e.message))) throw e;
+        creado = await vtigerCreateAccount(sessionName, elemento);
+      }
+    } else {
+      creado = await vtigerCreateAccount(sessionName, elemento);
+    }
     if (!creado.account_no) {
       return res.status(502).json({ ok: false, error: 'la Cuenta se creó en Vtiger pero no regresó account_no — revísala en el CRM.', crm_record_id: creado.id });
     }
@@ -193,7 +215,7 @@ async function crearDesdeCuentaApp(res, clienteId) {
       assigned_user_id,
       synced_at: new Date().toISOString(),
     });
-    return res.status(200).json({ ok: true, cliente_cartera_id: clienteId, num_cliente: creado.account_no, razon_social: c.razon_social, crm_record_id: creado.id });
+    return res.status(200).json({ ok: true, cliente_cartera_id: clienteId, num_cliente: creado.account_no, razon_social: c.razon_social, crm_record_id: creado.id, es_subcuenta: !!c.cliente_padre_id, padre_ligado: padreLigado, padre: padreNombre });
   } catch (err) {
     console.error('crm-crear-cuenta (desde cuenta App) failed', err);
     return res.status(500).json({ ok: false, error: String((err && err.message) || err) });
