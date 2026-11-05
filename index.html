@@ -7492,7 +7492,7 @@ async function teleMostrarCuentaLigada(cuentaId,nombre){
   document.getElementById('tProspectoId').value='';
   const c=document.getElementById('tCliente'); if(c) c.value=nombre;
   const cont=document.getElementById('tCuentaResultados');
-  if(cont) cont.innerHTML=`<div style="font-size:11px;color:var(--teal);font-weight:600;padding:4px;">✓ Ligada a cuenta: ${nombre}</div>`;
+  if(cont) cont.innerHTML=`<div style="font-size:11px;color:var(--teal);font-weight:600;padding:4px;">✓ Ligada a cuenta: ${nombre}</div>`+cuentaGrupoHtml(cuentaId,'teleMostrarCuentaLigada');
 }
 function teleMostrarProspectoLigado(prospectoId,nombre){
   document.getElementById('tProspectoId').value=prospectoId;
@@ -9120,12 +9120,26 @@ function pipeFiltrarCuentasModal(){
     </div>`).join('');
 }
 
+// Jp, 2026-11-05 — Espejo de la jerarquía del CRM (principal / subcuentas "Miembro de"). Al ligar una cuenta
+// que pertenece a un grupo, muestra el grupo completo para escoger a cuál entidad va la oportunidad
+// (p. ej. Pomodoro principal vs. Tecnología en Helados subcuenta). fn = función a invocar al elegir.
+function cuentaGrupoHtml(cuentaId,fn){
+  const todas=window._cartClientes||[];
+  const c=todas.find(x=>x.id===cuentaId); if(!c) return '';
+  const padreId=c.cliente_padre_id||c.id;
+  const padre=todas.find(x=>x.id===padreId); if(!padre) return '';
+  const subs=todas.filter(x=>x.cliente_padre_id===padreId);
+  if(!subs.length) return '';
+  const esc=t=>String(t||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+  const fila=(x,esSub)=>`<div onclick="${fn}('${x.id}','${esc(x.razon_social)}')" style="cursor:pointer;padding:5px 10px;border:1px solid ${x.id===cuentaId?'var(--teal)':'var(--border)'};background:${x.id===cuentaId?'rgba(0,169,157,0.10)':'#fff'};border-radius:6px;font-size:11px;margin-left:${esSub?'16px':'0'};">${esSub?'↳ ':'🏢 '}<b>${x.razon_social||'Sin nombre'}</b> <span style="color:var(--text3);">${x.num_cliente||''}${esSub?'':' · principal'}</span>${x.id===cuentaId?' ✓':''}</div>`;
+  return `<div style="margin-top:6px;display:grid;gap:4px;"><div style="font-size:10px;color:var(--text3);">Esta cuenta pertenece a un grupo — elige a cuál va la negociación:</div>${fila(padre,false)}${subs.map(x=>fila(x,true)).join('')}</div>`;
+}
 async function pipeMostrarCuentaLigada(cuentaId,nombre){
   document.getElementById('pipeCuentaId').value=cuentaId;
   const campoCliente=document.getElementById('pCliente');
   if(campoCliente) campoCliente.value=nombre;
   const cont=document.getElementById('pipeCuentaResultados');
-  if(cont) cont.innerHTML=`<div style="font-size:11px;color:var(--teal);font-weight:600;padding:4px;">✓ Ligada a ${nombre}</div>`;
+  if(cont) cont.innerHTML=`<div style="font-size:11px;color:var(--teal);font-weight:600;padding:4px;">✓ Ligada a ${nombre}</div>`+cuentaGrupoHtml(cuentaId,'pipeMostrarCuentaLigada');
   await pipeSugerirContactoDeCuenta(cuentaId);
 }
 
@@ -30612,7 +30626,7 @@ async function solAplicarPrefillShopify(id){
 async function renderSolFacturaVendedor(){
   const mc=document.getElementById('mainContent');
   mc.classList.remove('full-width');
-  window._sfCliente=null;window._sfPipe=null;window._sfShop=null;window._solGenSug=null;
+  window._sfCliente=null;window._sfFactA=null;window._sfGrupo=null;window._sfPipe=null;window._sfShop=null;window._solGenSug=null;
   mc.innerHTML=`
   <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px;">🧾 Solicitar factura</div>
   <div style="font-size:12px;color:var(--text3);margin-bottom:14px;">Llena esta solicitud en lugar de escribir en Telegram. Dirección valida el pago y Administración emite la factura; aquí ves en qué va.</div>
@@ -31014,6 +31028,38 @@ async function solClienteElegir(i){
     if(u.rfc&&!m.rfc) set('sfRfc',u.rfc);
     document.getElementById('sfClienteSel').innerHTML+=`<div style="font-size:11px;color:var(--text3);">Se precargaron forma de pago, método, uso de CFDI y régimen de su última solicitud. Cámbialos solo si es necesario.</div>`;
   }
+  solGrupoFacturarA(m);
+}
+// Jp, 2026-11-05 — Facturar a otra razón social del mismo grupo (principal/subcuentas espejo del CRM).
+// La venta sigue ligada a la cuenta elegida (comisión, Proyección, CRM); solo cambian los datos fiscales de la factura.
+window._sfFactA=null;
+async function solGrupoFacturarA(m){
+  window._sfFactA=null;
+  document.getElementById('sfFactAbox')?.remove();
+  try{
+    const padreId=m.cliente_padre_id||m.id;
+    const {data:g}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente,rfc,uso_cfdi,regimen_fiscal,forma_pago_pref,metodo_pago_pref,cliente_padre_id').or(`id.eq.${padreId},cliente_padre_id.eq.${padreId}`);
+    const otras=(g||[]).filter(x=>x.id!==m.id);
+    if(!otras.length) return;
+    window._sfGrupo=g;
+    const sel=document.getElementById('sfClienteSel'); if(!sel) return;
+    sel.insertAdjacentHTML('beforeend',`<div id="sfFactAbox" style="margin-top:8px;padding:8px 10px;border:1px dashed var(--teal);border-radius:8px;background:#f4fbfb;">
+      <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:4px;">🧾 ¿Facturar a otra razón social del grupo?</div>
+      <select id="sfFactASel" onchange="solFacturarAElegir(this.value)" style="${SOL_INPUT_STYLE}"><option value="">Esta misma cuenta (${solEsc(m.razon_social)})</option>${otras.map(x=>`<option value="${x.id}">${x.id===padreId?'🏢 ':'↳ '}${solEsc(x.razon_social)}${x.num_cliente?' · #'+solEsc(x.num_cliente):''}</option>`).join('')}</select>
+      <div style="font-size:10px;color:var(--text3);margin-top:3px;">La venta se queda en la cuenta elegida arriba; la factura sale con el RFC y datos fiscales de la razón social que escojas aquí.</div></div>`);
+  }catch(e){console.error('grupo facturar a',e);}
+}
+function solFacturarAElegir(id){
+  const x=(window._sfGrupo||[]).find(g=>g.id===id)||null;
+  window._sfFactA=x;
+  const base=window._sfCliente; const f=x||base; if(!f) return;
+  const set=(i,v)=>{const el=document.getElementById(i);if(el)el.value=v||'';};
+  set('sfRfc',f.rfc);
+  if(f.uso_cfdi) set('sfUso',f.uso_cfdi);
+  if(f.regimen_fiscal) set('sfReg',f.regimen_fiscal);
+  if(f.forma_pago_pref) set('sfForma',f.forma_pago_pref);
+  if(f.metodo_pago_pref) set('sfMetodo',f.metodo_pago_pref);
+  if(x&&!x.rfc) uiToast('Esa razón social no tiene RFC registrado — captúralo a mano.');
 }
 function solElegirNegociacion(id){
   const n=(window._solNegs||[]).find(x=>x.id===id);
@@ -31064,7 +31110,7 @@ async function solEnviar(){
       tipo,forma_pago:v('sfForma'),metodo_pago:v('sfMetodo'),uso_cfdi:v('sfUso'),regimen:v('sfReg'),
       cotizacion_sae:v('sfCotiz'),concepto:v('sfConcepto'),monto_total:total,
       pago_monto:pagoMonto,pago_fecha:pagoFecha||null,pago_hora:v('sfPagoHora')||null,fecha_pago_esperada:tipo==='liberar_pago'?v('sfEsperada'):null,
-      comprobante_path:compPath,cotizacion_pdf_path:cotPath,crm_link:v('sfCrm')||null,notas:(publicoGral?`${SOL_PG_MARCA} Facturar a ${SOL_VIOLETA.nombre} · RFC ${SOL_VIOLETA.rfc} · C.P. ${SOL_VIOLETA.cp}. El cliente no requiere factura. `:'')+(acad.fecha_texto?`Fecha del taller: ${acad.fecha_texto}. `:'')+(v('sfNotas')||'')||null,
+      comprobante_path:compPath,cotizacion_pdf_path:cotPath,crm_link:v('sfCrm')||null,notas:(window._sfFactA&&!publicoGral?`🧾 FACTURAR A OTRA RAZÓN SOCIAL: ${window._sfFactA.razon_social}${window._sfFactA.num_cliente?' (#'+window._sfFactA.num_cliente+')':''} · RFC ${v('sfRfc').toUpperCase()} — la venta es de ${nombre}. `:'')+(publicoGral?`${SOL_PG_MARCA} Facturar a ${SOL_VIOLETA.nombre} · RFC ${SOL_VIOLETA.rfc} · C.P. ${SOL_VIOLETA.cp}. El cliente no requiere factura. `:'')+(acad.fecha_texto?`Fecha del taller: ${acad.fecha_texto}. `:'')+(v('sfNotas')||'')||null,
       asistente:acad.asistentes[0]?{...acad.asistentes[0],curso:acad.generaciones.map(g=>g.clave).join(' + ')}:null,
       generacion_id:acad.generaciones[0]?.id||null,shopify_pedido_id:window._sfShop?.id||null,pipeline_vendedor_id:window._sfPipe?.id||null,
       estado:tipo==='con_pago'?'solicitada':'pendiente_pago',
@@ -31083,7 +31129,9 @@ async function solEnviar(){
     }
     if(error) throw error;
     // Datos fiscales nuevos → se guardan en la cuenta (solo si ahí estaban vacíos)
-    if(cli&&!publicoGral){
+    const cliFis=window._sfFactA||cli;
+    if(cliFis&&!publicoGral){
+      const cli=cliFis;
       const upd={};const f=(k,val,sobre)=>{if(val&&(sobre?cli[k]!==val:!cli[k])) upd[k]=val;};
       f('rfc',row.rfc);f('regimen_fiscal',row.regimen,true);f('uso_cfdi',row.uso_cfdi,true);f('forma_pago_pref',row.forma_pago,true);f('metodo_pago_pref',row.metodo_pago,true);
       if(Object.keys(upd).length){const {error:eu}=await sb.from('clientes_cartera').update(upd).eq('id',cli.id);if(eu) console.error('actualizar cuenta',eu);}
