@@ -31135,24 +31135,37 @@ async function solClienteElegir(i){
 // Jp, 2026-11-05 — Facturar a otra razón social del mismo grupo (principal/subcuentas espejo del CRM).
 // La venta sigue ligada a la cuenta elegida (comisión, Proyección, CRM); solo cambian los datos fiscales de la factura.
 window._sfFactA=null;
+// Dos caminos (Jp, 2026-11-06):
+//  1) Subcuenta REAL (compra pólizas/suscripciones propias): es otra cuenta del grupo (cliente_padre_id) y se factura a su nombre.
+//  2) Misma cuenta que solo factura a distintas razones sociales (ej. Pomodoro Rosso): las razones sociales viven DENTRO de la cuenta
+//     (tabla cuenta_razones_sociales) y al enviar la solicitud se elige a cuál se factura (la principal o una adicional).
 async function solGrupoFacturarA(m){
   window._sfFactA=null;
   document.getElementById('sfFactAbox')?.remove();
   try{
     const padreId=m.cliente_padre_id||m.id;
-    const {data:g}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente,rfc,uso_cfdi,regimen_fiscal,forma_pago_pref,metodo_pago_pref,cliente_padre_id').or(`id.eq.${padreId},cliente_padre_id.eq.${padreId}`);
+    const [{data:g},{data:rs}]=await Promise.all([
+      sb.from('clientes_cartera').select('id,razon_social,num_cliente,rfc,uso_cfdi,regimen_fiscal,forma_pago_pref,metodo_pago_pref,cliente_padre_id').or(`id.eq.${padreId},cliente_padre_id.eq.${padreId}`),
+      sb.from('cuenta_razones_sociales').select('*').eq('activo',true).in('cliente_cartera_id',[m.id,padreId]).order('razon_social')
+    ]);
     const otras=(g||[]).filter(x=>x.id!==m.id);
-    if(!otras.length) return;
-    window._sfGrupo=g;
+    window._sfGrupo=g||[]; window._sfRazones=rs||[];
     const sel=document.getElementById('sfClienteSel'); if(!sel) return;
+    const optsRs=(rs||[]).map(x=>`<option value="rs:${x.id}">💼 ${solEsc(x.razon_social)}${x.rfc?' · '+solEsc(x.rfc):''}</option>`).join('');
+    const optsSub=otras.map(x=>`<option value="${x.id}">${x.id===padreId?'🏢 ':'↳ '}${solEsc(x.razon_social)}${x.num_cliente?' · #'+solEsc(x.num_cliente):''}</option>`).join('');
     sel.insertAdjacentHTML('beforeend',`<div id="sfFactAbox" style="margin-top:8px;padding:8px 10px;border:1px dashed var(--teal);border-radius:8px;background:#f4fbfb;">
-      <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:4px;">🧾 ¿Facturar a otra razón social del grupo?</div>
-      <select id="sfFactASel" onchange="solFacturarAElegir(this.value)" style="${SOL_INPUT_STYLE}"><option value="">Esta misma cuenta (${solEsc(m.razon_social)})</option>${otras.map(x=>`<option value="${x.id}">${x.id===padreId?'🏢 ':'↳ '}${solEsc(x.razon_social)}${x.num_cliente?' · #'+solEsc(x.num_cliente):''}</option>`).join('')}</select>
-      <div style="font-size:10px;color:var(--text3);margin-top:3px;">La venta se queda en la cuenta elegida arriba; la factura sale con el RFC y datos fiscales de la razón social que escojas aquí.</div></div>`);
+      <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:4px;">🧾 ¿A qué razón social se factura?</div>
+      <select id="sfFactASel" onchange="solFacturarAElegir(this.value)" style="${SOL_INPUT_STYLE}"><option value="">Esta misma cuenta (${solEsc(m.razon_social)})</option>${optsRs}${optsSub}<option value="__nueva">➕ Agregar otra razón social a esta cuenta…</option></select>
+      <div id="sfNuevaRS"></div>
+      <div style="font-size:10px;color:var(--text3);margin-top:3px;">La venta se queda en la cuenta elegida arriba (comisión, Proyección y CRM); la factura sale con el RFC y datos fiscales de la razón social que escojas aquí. 💼 = razón social de esta cuenta · ↳ = subcuenta.</div></div>`);
   }catch(e){console.error('grupo facturar a',e);}
 }
 function solFacturarAElegir(id){
-  const x=(window._sfGrupo||[]).find(g=>g.id===id)||null;
+  const nueva=document.getElementById('sfNuevaRS'); if(nueva) nueva.innerHTML='';
+  if(id==='__nueva'){ solNuevaRSForm(); return; }
+  let x=null;
+  if(String(id).startsWith('rs:')){const r=(window._sfRazones||[]).find(z=>z.id===id.slice(3)); if(r) x={...r,es_rs:true};}
+  else x=(window._sfGrupo||[]).find(g=>g.id===id)||null;
   window._sfFactA=x;
   const base=window._sfCliente; const f=x||base; if(!f) return;
   const set=(i,v)=>{const el=document.getElementById(i);if(el)el.value=v||'';};
@@ -31162,6 +31175,38 @@ function solFacturarAElegir(id){
   if(f.forma_pago_pref) set('sfForma',f.forma_pago_pref);
   if(f.metodo_pago_pref) set('sfMetodo',f.metodo_pago_pref);
   if(x&&!x.rfc) uiToast('Esa razón social no tiene RFC registrado — captúralo a mano.');
+}
+function solNuevaRSForm(){
+  const box=document.getElementById('sfNuevaRS'); if(!box) return;
+  const f=(id,lbl,ph)=>`<div><div style="font-size:10px;font-weight:600;color:var(--text2);margin:6px 0 2px;">${lbl}</div><input id="${id}" placeholder="${ph||''}" style="${SOL_INPUT_STYLE}"></div>`;
+  box.innerHTML=`<div style="margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff;">
+    <div style="font-size:11px;font-weight:700;margin-bottom:2px;">➕ Nueva razón social de ${solEsc(window._sfCliente?.razon_social||'la cuenta')}</div>
+    ${f('nrsNombre','Razón social (como aparece en su constancia fiscal)','Ej. HELADOS POMODORO SA DE CV')}
+    ${f('nrsRfc','RFC','XAXX010101000')}
+    <div style="font-size:10px;font-weight:600;color:var(--text2);margin:6px 0 2px;">Régimen fiscal</div>${solSelect('nrsReg',SOL_REGIMENES,SOL_REGIMENES[0])}
+    <div style="font-size:10px;font-weight:600;color:var(--text2);margin:6px 0 2px;">Uso de CFDI</div>${solSelect('nrsUso',SOL_USOS,'Gastos en general')}
+    ${f('nrsCp','Código postal fiscal (opcional)','')}
+    <div style="display:flex;gap:6px;margin-top:8px;"><button type="button" onclick="solNuevaRSGuardar()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;">Guardar razón social</button>
+    <button type="button" onclick="document.getElementById('sfNuevaRS').innerHTML='';document.getElementById('sfFactASel').value='';" style="background:none;border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">Cancelar</button></div>
+    <div id="nrsMsg" style="font-size:11px;margin-top:4px;color:#c0392b;"></div></div>`;
+}
+async function solNuevaRSGuardar(){
+  const v=id=>document.getElementById(id)?.value?.trim()||'';
+  const msg=document.getElementById('nrsMsg');
+  const cli=window._sfCliente; if(!cli){msg.textContent='Primero elige la cuenta.';return;}
+  const nombre=v('nrsNombre').toUpperCase(), rfc=v('nrsRfc').toUpperCase();
+  if(!nombre){msg.textContent='Falta la razón social.';return;}
+  if(!/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(rfc)){msg.textContent='Revisa el RFC (12 o 13 caracteres).';return;}
+  const dup=(window._sfRazones||[]).find(r=>(r.rfc||'').toUpperCase()===rfc);
+  if(dup){msg.textContent='Ya existe esa razón social en la cuenta: '+dup.razon_social;return;}
+  const {data,error}=await sb.from('cuenta_razones_sociales').insert({cliente_cartera_id:cli.cliente_padre_id||cli.id,razon_social:nombre,rfc,regimen_fiscal:v('nrsReg'),uso_cfdi:v('nrsUso'),codigo_postal:v('nrsCp')||null,creado_por:userProfile?.id||currentUser.id}).select().single();
+  if(error){msg.textContent='No se pudo guardar: '+error.message;return;}
+  window._sfRazones=[...(window._sfRazones||[]),data];
+  const sel=document.getElementById('sfFactASel');
+  sel.insertAdjacentHTML('afterbegin',`<option value="rs:${data.id}">💼 ${solEsc(data.razon_social)} · ${solEsc(data.rfc)}</option>`);
+  const first=sel.querySelector('option[value=""]'); if(first) sel.insertBefore(sel.querySelector(`option[value="rs:${data.id}"]`),first.nextSibling);
+  sel.value='rs:'+data.id; solFacturarAElegir('rs:'+data.id);
+  uiToast('Razón social guardada en la cuenta.');
 }
 function solElegirNegociacion(id){
   const n=(window._solNegs||[]).find(x=>x.id===id);
@@ -31234,7 +31279,12 @@ async function solEnviar(){
     if(solId){(async()=>{try{const {data:sess}=await sb.auth.getSession();await fetch('/api/facturacion-avisar-telegram',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solicitud_id:solId})});}catch(e){console.error('aviso telegram facturación',e);}})();}
     // Datos fiscales nuevos → se guardan en la cuenta (solo si ahí estaban vacíos)
     const cliFis=window._sfFactA||cli;
-    if(cliFis&&!publicoGral){
+    if(window._sfFactA?.es_rs&&!publicoGral){
+      const r=window._sfFactA,upd={};
+      if(row.regimen&&r.regimen_fiscal!==row.regimen) upd.regimen_fiscal=row.regimen;
+      if(row.uso_cfdi&&r.uso_cfdi!==row.uso_cfdi) upd.uso_cfdi=row.uso_cfdi;
+      if(Object.keys(upd).length){const {error:eu}=await sb.from('cuenta_razones_sociales').update(upd).eq('id',r.id);if(eu) console.error('actualizar razón social',eu);}
+    } else if(cliFis&&!publicoGral){
       const cli=cliFis;
       const upd={};const f=(k,val,sobre)=>{if(val&&(sobre?cli[k]!==val:!cli[k])) upd[k]=val;};
       f('rfc',row.rfc);f('regimen_fiscal',row.regimen,true);f('uso_cfdi',row.uso_cfdi,true);f('forma_pago_pref',row.forma_pago,true);f('metodo_pago_pref',row.metodo_pago,true);
@@ -31681,6 +31731,17 @@ const NOVEDADES=[
       vendedor:'Ahora las solicitudes de factura se hacen en la app (pestaña 🧾 Solicitar factura) y Proyección pide el motivo al cerrar como perdida, pausar o mandar a valoración con Dirección.',
       director:'Valida pagos subiendo la captura del banco (Finanzas › 🧾 Facturación) y recibe en tu dashboard las oportunidades por valorar.',
       administracion:'Tu pestaña 🧾 Facturación recibe las solicitudes con pago validado, con todos los datos listos para facturar y registrar el folio.',
+    },
+    doc:'35a031f0-4153-4b3b-b5c1-569d2bc5c684',
+  },
+  {
+    id:'razones-sociales-2026-11',
+    titulo:'Nuevo: facturar a distintas razones sociales de una misma cuenta',
+    roles:['vendedor','director','administracion'],
+    texto:{
+      vendedor:'Si un cliente (ej. Pomodoro) factura a varias razones sociales, ahora las guardas dentro de su cuenta y eliges a cuál facturar en la solicitud. Si la otra empresa tiene suscripciones propias, sigue siendo subcuenta.',
+      director:'Las solicitudes pueden traer "FACTURAR A OTRA RAZÓN SOCIAL" en las notas: la venta es de la cuenta principal y la factura sale a la razón social indicada.',
+      administracion:'Cuando una solicitud diga "FACTURAR A OTRA RAZÓN SOCIAL" en las notas, emite la factura con ese nombre y RFC; la venta sigue siendo de la cuenta principal.',
     },
     doc:'35a031f0-4153-4b3b-b5c1-569d2bc5c684',
   },
