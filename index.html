@@ -31554,12 +31554,38 @@ async function solLeerCaptura(input){
   }catch(e){if(est){est.textContent='Error: '+(e?.message||e);est.style.color='#c0392b';}}
 }
 function solClaveMov(m){return `${m.fecha}|${Number(m.monto).toFixed(2)}|${m.hora||''}`;}
+// ── Memoria de movimientos ya usados (Jp, 2026-11-06) ──
+// Cada pago validado guarda el movimiento (fecha, hora, monto, descripción, banco). Al volver a subir la
+// misma captura (u otra que repita movimientos), cada movimiento ya usado se identifica por su huella
+// (banco de origen + descripción) y deja de ofrecerse, aunque haya otros del mismo monto y día.
+// Si los movimientos repetidos son indistinguibles entre sí, solo se descuenta uno por cada uso previo
+// y lo que quede se elige a mano.
+function solNormDesc(t){return String(t||'').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^A-Z0-9]/g,'');}
+function solMismoMov(a,b){
+  const ba=solNormDesc(a.banco_origen),bb=solNormDesc(b.banco_origen);
+  if(ba&&bb&&ba!==bb) return false;
+  const da=solNormDesc(a.descripcion),db=solNormDesc(b.descripcion);
+  if(da&&db){ if(da===db) return true; if(da.includes(db)||db.includes(da)) return Math.min(da.length,db.length)>=6; return solSimNombre(a.descripcion,b.descripcion)>=0.8; }
+  return !!(ba&&bb&&ba===bb);
+}
+function solConsumidos(){
+  const usados=_solRows.filter(r=>r.pago_validado&&r.pago_movimiento&&r.pago_movimiento.fuente!=='shopify');
+  const cons=new Map(); // movimiento (objeto) -> solicitud que lo usó
+  usados.forEach(r=>{
+    const u=r.pago_movimiento;
+    const cands=_solMovs.filter(m=>!cons.has(m)&&solClaveMov(m)===solClaveMov(u));
+    if(!cands.length) return;
+    const fino=cands.find(m=>solMismoMov(m,u));
+    if(fino){cons.set(fino,r);return;}
+    // Sin huella que coincida: solo se descuenta si no hay forma de distinguir (un solo candidato o todos iguales)
+    const distintos=cands.some(m=>!solMismoMov(m,cands[0]));
+    if(cands.length===1||!distintos) cons.set(cands[0],r);
+  });
+  return cons;
+}
 function solCasar(){
-  // Cuántas veces ya se usó cada movimiento (por pagos validados antes)
-  const usados={};
-  _solRows.filter(r=>r.pago_validado&&r.pago_movimiento&&r.pago_movimiento.fuente!=='shopify').forEach(r=>{const k=solClaveMov(r.pago_movimiento);usados[k]=(usados[k]||0)+1;});
-  const total={};_solMovs.forEach(m=>{const k=solClaveMov(m);total[k]=(total[k]||0)+1;});
-  const disponible=m=>(total[solClaveMov(m)]||0)-(usados[solClaveMov(m)]||0)>0;
+  const consumidos=solConsumidos();
+  const disponible=m=>!consumidos.has(m);
   const pend=_solRows.filter(r=>!r.pago_validado&&r.pago_monto>0&&(r.estado==='solicitada'||r.estado==='facturada'));
   const res=pend.map(r=>{
     const monto=Number(r.pago_monto);
@@ -31588,7 +31614,7 @@ function solCasar(){
   res.filter(x=>x.tipo==='coincide').forEach(x=>{const k=solClaveMov(x.cands[0]);(reclam[k]=reclam[k]||[]).push(x);});
   Object.values(reclam).forEach(g=>{
     const k=solClaveMov(g[0].cands[0]);
-    const libres=(total[k]||0)-(usados[k]||0);
+    const libres=_solMovs.filter(m=>solClaveMov(m)===k&&!consumidos.has(m)).length;
     if(g.length>libres) g.forEach(x=>{x.tipo='varios';});
   });
   return res;
@@ -31703,7 +31729,7 @@ function solMostrarCasado(){
       ${botones}${nota}</div>`;}).join(''):'<div style="font-size:12px;color:var(--text3);">No hay solicitudes con pago por validar.</div>';
   solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">📷 Casado con la captura del banco</div>
     <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">${_solMovs.length} movimientos leídos de la imagen. Revisa que la lectura sea correcta; nada se valida hasta que confirmes.</div>
-    <details style="margin-bottom:12px;"><summary style="cursor:pointer;font-size:12px;color:var(--teal);font-weight:600;">Ver movimientos leídos</summary><div style="font-size:11px;margin-top:6px;">${_solMovs.map(m=>`<div>${movTxt(m)}</div>`).join('')||'Ninguno'}</div></details>
+    <details style="margin-bottom:12px;"><summary style="cursor:pointer;font-size:12px;color:var(--teal);font-weight:600;">Ver movimientos leídos</summary><div style="font-size:11px;margin-top:6px;">${(()=>{const cons=solConsumidos();return _solMovs.map(m=>cons.has(m)?`<div style="color:var(--text3);">✅ <s>${movTxt(m)}</s> · ya validado con ${solEsc(cons.get(m).cliente_nombre||'otra solicitud')}</div>`:`<div>${movTxt(m)}</div>`).join('')||'Ninguno';})()}</div></details>
     ${filas}
     <div style="text-align:right;"><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:12px;cursor:pointer;">Cerrar</button></div>`,680);
 }
