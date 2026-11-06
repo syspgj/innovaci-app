@@ -1072,6 +1072,7 @@ async function initApp(user){
   document.getElementById('loginScreen').style.display='none';
   document.getElementById('appScreen').style.display='block';
   mostrarBienvenidaOS(userProfile.nombre);
+  try{catProyCargar();}catch(e){}
   document.getElementById('userName').textContent=userProfile.nombre;
   document.getElementById('userAv').textContent=userProfile.nombre.substring(0,2).toUpperCase();
   document.getElementById('viewLabel').textContent=userProfile.rol==='director'?'Vista Director':userProfile.rol==='telemarketing'?'Telemarketing':userProfile.rol==='administracion'?'Administración':userProfile.rol==='academia'?'Academia':'Mi Mes';
@@ -7494,7 +7495,8 @@ function modalPipeTeleHTML(r,hoy){
     <div class="form-grid fg3" style="gap:10px;">
       <div class="form-field" style="grid-column:1/-1;">
         <label>Producto / servicio cotizado</label>
-        <input type="text" id="tProducto" value="${v.producto||''}" placeholder="Ej. Siigo Fiscal — Corporativo (Anual)">
+        <input type="text" id="tProducto" list="tProductoList" value="${v.producto||''}" placeholder="Ej. Siigo Fiscal — Corporativo (Anual)">
+        <datalist id="tProductoList">${(CAT_PROY||[]).filter(c=>!c.solo_para).map(c=>`<option value="${String(c.nombre).replace(/"/g,'&quot;')}">`).join('')}</datalist>
       </div>
       <div class="form-field" style="grid-column:1/-1;">
         <label>Cliente / prospecto</label>
@@ -8595,7 +8597,40 @@ async function consumirCreditoEdicion(){
 // Homologado 2026-10-12 con el catálogo real del campo personalizado "Tipo
 // de Servicio" que Jp dio de alta en Vtiger (Potentials) — mismas 9 opciones
 // en ambos lados, para poder enviarlo al CRM sin tabla de equivalencias.
-const TIPOS_SERVICIO=['Póliza','Curso Empresarial','IT','Servicio por Evento','Suscripción Aspel','Licenciamiento Aspel','Servidor Cloud','24/7','Curso o Diplomado en Vivo'];
+const TIPOS_CRM=['Póliza','Curso Empresarial','IT','Servicio por Evento','Suscripción Aspel','Licenciamiento Aspel','Servidor Cloud','24/7','Curso o Diplomado en Vivo'];
+const TIPOS_SERVICIO=[...TIPOS_CRM,'Membresías']; // Membresías no existe en el picklist del CRM: no se envía
+// Catálogo de Servicio/Póliza por tipo (tabla catalogo_proyeccion). Si falla la carga, queda texto libre.
+let CAT_PROY=null;
+async function catProyCargar(){
+  if(CAT_PROY) return CAT_PROY;
+  try{
+    const {data,error}=await sb.from('catalogo_proyeccion').select('tipo_servicio,nombre,orden,solo_para,grupo').eq('activo',true).order('orden');
+    CAT_PROY=error?[]:(data||[]);
+  }catch(e){CAT_PROY=[];}
+  return CAT_PROY;
+}
+function catProyItems(tipo){
+  const me=((typeof userProfile!=='undefined'&&userProfile&&userProfile.nombre)||'').toLowerCase();
+  return (CAT_PROY||[]).filter(c=>c.tipo_servicio===tipo&&(!c.solo_para||me.includes(c.solo_para.toLowerCase())));
+}
+function catProyPintar(actual){
+  const tipo=document.getElementById('pTipo')?.value, sel=document.getElementById('pProductoSel'), inp=document.getElementById('pProducto');
+  if(!sel||!inp) return;
+  const items=catProyItems(tipo);
+  if(!items.length){sel.style.display='none'; inp.style.display=''; return;}
+  const val=(actual!==undefined?actual:inp.value)||'';
+  const grupos=[...new Set(items.map(i=>i.grupo||''))];
+  const opt=i=>`<option value="${i.nombre.replace(/"/g,'&quot;')}" ${i.nombre===val?'selected':''}>${i.nombre}</option>`;
+  const enLista=items.some(i=>i.nombre===val);
+  sel.innerHTML='<option value="">— Elige —</option>'+grupos.map(g=>g?`<optgroup label="${g}">${items.filter(i=>(i.grupo||'')===g).map(opt).join('')}</optgroup>`:items.filter(i=>!i.grupo).map(opt).join('')).join('')
+    +(val&&!enLista?`<option value="__otro" selected>Otro: ${val}</option>`:'')+'<option value="__otro">Otro (escribir)…</option>';
+  sel.style.display=''; inp.style.display=(val&&!enLista)?'':'none';
+}
+function catProyElegir(){
+  const sel=document.getElementById('pProductoSel'), inp=document.getElementById('pProducto');
+  if(sel.value==='__otro'){inp.style.display='';inp.focus();return;}
+  inp.style.display='none'; inp.value=sel.value; inp.dispatchEvent(new Event('input',{bubbles:true}));
+}
 const ESTATUS_PIPE=['Prospectando','Evaluando Requerimientos','Valoración con Soporte','Valoración con Dirección','Preparando Propuesta','Cotización enviada','Negociación o Revisión con Cliente','Pausada por Cliente','CAP','Cerrada-Ganada','Cerrada-Perdida'];
 // Mismos nombres que la fase_venta real de Vtiger — así el traspaso a Fase 3
 // (escritura de vuelta al CRM) es literal, sin tabla de conversión.
@@ -9053,14 +9088,16 @@ function modalPipeHTML(r,hoy){
     <div class="form-grid fg3" style="gap:10px;">
       <div class="form-field" style="grid-column:1/-1;">
         <label>Tipo de servicio</label>
-        <select id="pTipo" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;">
+        <select id="pTipo" onchange="catProyPintar('')" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;">
           ${(v.tipo_servicio&&!TIPOS_SERVICIO.includes(v.tipo_servicio))?`<option selected value="${v.tipo_servicio}">⚠️ ${v.tipo_servicio} (valor anterior — actualízalo)</option>`:''}
           ${TIPOS_SERVICIO.map(t=>`<option ${v.tipo_servicio===t?'selected':''}>${t}</option>`).join('')}
         </select>
       </div>
       <div class="form-field" style="grid-column:1/-1;">
         <label>Servicio / Póliza</label>
+        <select id="pProductoSel" onchange="catProyElegir()" style="display:none;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;width:100%;margin-bottom:6px;"></select>
         <input type="text" id="pProducto" value="${v.producto||''}" placeholder="Ej. Póliza Infinito · Curso Empresarial · Servidor Cloud…">
+        <img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="display:none" onload="catProyCargar().then(()=>catProyPintar())">
       </div>
       <div class="form-field" style="grid-column:1/-1;">
         <label>Cliente</label>
@@ -9335,7 +9372,7 @@ async function _guardarFilaPipeInterno(irASiguiente){
       // solo se manda tipo_servicio al CRM cuando es uno de los valores
       // reconocidos; si es un valor heredado se omite (undefined) y el
       // backend solo actualiza fase_venta/probabilidad, sin rechazar nada.
-      const tipoServicioParaCRM=TIPOS_SERVICIO.includes(payload.tipo_servicio)?payload.tipo_servicio:undefined;
+      const tipoServicioParaCRM=TIPOS_CRM.includes(payload.tipo_servicio)?payload.tipo_servicio:undefined;
       await crmActualizarOportunidad(orig.oportunidad_crm_id,payload.estatus,payload.probabilidad,tipoServicioParaCRM);
     }
     // Jp, 2026-10-14: "cuando yo las ligue a una cuenta, debería de habilitarme
@@ -9564,7 +9601,7 @@ async function crmAsegurarOportunidadFila(filaId){
         probabilidad:prob,
         fecha_prevista:fila.fecha_prevista||todayLocal(),
         vendedor_usuario_id:fila.usuario_id,
-        tipo_servicio:TIPOS_SERVICIO.includes(fila.tipo_servicio)?fila.tipo_servicio:undefined,
+        tipo_servicio:TIPOS_CRM.includes(fila.tipo_servicio)?fila.tipo_servicio:undefined,
       }),
     });
     const j=await res.json().catch(()=>({}));
@@ -9667,7 +9704,7 @@ async function sincronizarPipelinesDeProspectoConvertido(prospectoId,clienteCart
           probabilidad:fila.probabilidad||50,
           fecha_prevista:fila.fecha_prevista,
           vendedor_usuario_id:fila.usuario_id,
-          tipo_servicio:TIPOS_SERVICIO.includes(fila.tipo_servicio)?fila.tipo_servicio:undefined,
+          tipo_servicio:TIPOS_CRM.includes(fila.tipo_servicio)?fila.tipo_servicio:undefined,
         }),
       });
       const j=await res.json().catch(()=>({}));
