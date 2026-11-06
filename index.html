@@ -30361,7 +30361,7 @@ function solFecha(f){if(!f)return '';const p=String(f).slice(0,10).split('-');re
 // Ventas lo atiende desde una bandeja común, confirma datos y genera la solicitud
 // de factura ya llena. Los productos de la tienda se vinculan al catálogo (shopify_producto_map).
 let _shpRows=[],_shpFiltro='nuevos',_shpMap={},_shpCat=[],_shpGens=[],_shpGenSel={},_shpGenVerArch=false;
-const SHP_ESTADO={nuevo:['Nuevo','#1976D2'],atendiendo:['En atención','#B45309'],enviado_facturar:['Enviado a facturar','#2E7D32'],descartado:['Descartado','#888']};
+const SHP_ESTADO={nuevo:['Nuevo','#1976D2'],atendiendo:['En atención','#B45309'],enviado_facturar:['Enviado a facturar','#2E7D32'],facturado:['Facturado','#1B5E20'],en_academia:['Ya en Academia','#6A1B9A'],descartado:['Descartado','#888']};
 function shpClave(l){return l.sku||('var-'+(l.variante_id||l.producto_id||''));}
 function shpNivelSku(sku){const s=String(sku||'').toUpperCase();return /AE$/.test(s)?'esencial':/AP$/.test(s)?'plus':'';}
 function shpEsDir(){return userProfile?.rol==='director';}
@@ -30391,6 +30391,20 @@ async function shpCargar(){
     sb.from('shopify_producto_map').select('*')]);
   if(rp.error){lista.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(rp.error.message)}${/shopify_pedidos/.test(rp.error.message)?'<br>Falta correr sql_shopify_pedidos.sql en Supabase.':''}</div>`;return;}
   _shpRows=rp.data||[];_shpMap={};(rm.data||[]).forEach(m=>_shpMap[m.clave]=m);
+  // Etapa de facturación de cada pedido (RPC con permisos de servidor: el vendedor no ve solicitudes ajenas).
+  // Si una solicitud ya apunta a un pedido que seguía "nuevo/en atención", se concilia sola.
+  _shpFact={};
+  try{
+    const {data:fe}=await sb.rpc('shopify_pedidos_fact_estado');
+    (fe||[]).forEach(f=>_shpFact[f.pedido_id]=f);
+    for(const p of _shpRows){
+      const f=_shpFact[p.id];
+      if(f&&(p.estado==='nuevo'||p.estado==='atendiendo')){
+        p.estado='enviado_facturar';p.solicitud_id=f.solicitud_id;
+        sb.from('shopify_pedidos').update({estado:'enviado_facturar',solicitud_id:f.solicitud_id}).eq('id',p.id).then(()=>{},()=>{});
+      }
+    }
+  }catch(e){console.error('estado facturación pedidos',e);}
   await shpCargarClientes();
   shpPintar();shpPintarMapeo();shpActualizarBadge();
 }
@@ -30401,7 +30415,9 @@ function shpPintar(){
     nuevos:{l:'🆕 Nuevos',f:p=>p.estado==='nuevo'},
     mios:{l:'🙋 Los que atiendo',f:p=>p.estado==='atendiendo'&&p.atiende_id===me},
     atencion:{l:'👥 En atención (todos)',f:p=>p.estado==='atendiendo'},
-    facturados:{l:'🧾 Enviados a facturar',f:p=>p.estado==='enviado_facturar'},
+    enviados:{l:'📤 Enviados a facturar',f:p=>shpEtapa(p)==='enviado_facturar'},
+    facturados:{l:'🧾 Facturados',f:p=>shpEtapa(p)==='facturado'},
+    academia:{l:'🎓 Ya en Academia',f:p=>shpEtapa(p)==='en_academia'},
     descartados:{l:'🗑 Descartados',f:p=>p.estado==='descartado'},
   };
   document.getElementById('shpBar').innerHTML=Object.entries(F).map(([k,v])=>`<button onclick="_shpFiltro='${k}';shpPintar()" style="border:1px solid ${_shpFiltro===k?'var(--teal)':'var(--border)'};background:${_shpFiltro===k?'var(--teal)':'#fff'};color:${_shpFiltro===k?'#fff':'var(--text2)'};border-radius:16px;padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;">${v.l} (${cuenta(v.f)})</button>`).join('');
@@ -30427,6 +30443,15 @@ function shpWaLink(p,tipo){
 }
 // ── ¿Ya es cliente? Se compara el pedido contra Cartera por correo, teléfono, RFC y nombre ──
 let _shpCli=null,_shpCliAt=0,_shpUsuarios={};
+let _shpFact={};
+// Etapa derivada: academia > facturado > enviado a facturar
+function shpEtapa(p){
+  if(p.estado!=='enviado_facturar') return p.estado;
+  const f=_shpFact[p.id];
+  if(f&&f.en_academia) return 'en_academia';
+  if(f&&f.facturada) return 'facturado';
+  return 'enviado_facturar';
+}
 async function shpCargarClientes(){
   if(_shpCli&&Date.now()-_shpCliAt<600000) return;
   const todos=[];
@@ -30475,7 +30500,7 @@ function shpClienteHtml(p){
   return `<div style="font-size:11px;margin-top:4px;color:${m.nivel==='fuerte'?'#2E7D32':'#B45309'};">${ico} <b>${txt}</b>: ${solEsc(c.razon_social)} · #${solEsc(c.num_cliente||'')}${c.rfc?' · '+solEsc(c.rfc):''}${otro}${m.n>1?` · <span title="Hay ${m.n} cuentas con ese dato">⚠️ ${m.n} cuentas</span>`:''}</div>`;
 }
 function shpTarjeta(p){
-  const pg=shpPagoInfo(p);const est=SHP_ESTADO[p.estado]||['',''];
+  const pg=shpPagoInfo(p);const est=SHP_ESTADO[shpEtapa(p)]||['',''];
   const me=userProfile?.id||currentUser?.id;
   const lineas=(p.lineas||[]).map(l=>{const m=_shpMap[shpClave(l)];
     return `<div style="font-size:12px;">• ${l.cantidad>1?l.cantidad+' × ':''}${solEsc(l.titulo)}${l.variante&&l.variante!=='Default Title'?' ('+solEsc(l.variante)+')':''} · ${fmt(l.precio)} ${m&&m.catalogo_item_id?`<span style="color:#2E7D32;">🔗 ${solEsc(m.concepto||'catálogo')}${m.nivel?' · '+solEsc(m.nivel):''}</span>`:'<span style="color:#B45309;">sin vincular al catálogo</span>'}</div>`;}).join('');
@@ -31242,6 +31267,15 @@ async function solEnviar(){
   const acad=solAcadLeer('sf');
   const errAc=solAcadValidar(acad,v('sfConcepto'));
   if(errAc) return err(errAc);
+  // Candado: si la solicitud se hizo sin pasar por el botón del pedido, se intenta ligar al pedido de Shopify abierto
+  if(!window._sfShop){
+    try{
+      const me=userProfile?.id||currentUser.id;
+      const {data:abiertos}=await sb.from('shopify_pedidos').select('*').in('estado',['nuevo','atendiendo']).order('creado_shopify',{ascending:false}).limit(80);
+      const cand=(abiertos||[]).filter(pd=>shopPedido?solNormPedido(pd.numero)===shopPedido:(Math.abs(Number(pd.total)-total)<0.5&&pd.atiende_id===me));
+      if(cand.length===1&&confirm(`¿Esta solicitud corresponde al pedido ${cand[0].numero} de la tienda (${cand[0].cliente_nombre||''}, ${fmt(cand[0].total)})?\n\nAceptar = se liga y el pedido pasa a "Enviado a facturar".`)) window._sfShop=cand[0];
+    }catch(e){console.error('candado pedido',e);}
+  }
   const btn=document.getElementById('sfEnviar');btn.disabled=true;msg.style.color='var(--teal)';msg.textContent='Enviando...';
   try{
     const id=solUuid();
