@@ -7580,6 +7580,8 @@ async function guardarFilaPipeTele(){
   if(id){
     ({error}=await sb.from('pipeline_vendedor').update(payload).eq('id',id));
   } else {
+    const cand=await pipeCandadoShopify({cuentaId:payload.cliente_cartera_id,nombre:payload.cliente});
+    if(!cand.ok) return;
     ({data:nuevaFila,error}=await sb.from('pipeline_vendedor').insert(payload).select().single());
     // Igual que cotizadorGuardar/cotizadorRecienteCrearOportunidad para Vendedor
     // — si esta negociación nació desde el Cotizador, se marca de vuelta.
@@ -9314,6 +9316,58 @@ async function guardarFilaPipe(irASiguiente){
     if(btnSiguiente){btnSiguiente.disabled=false;btnSiguiente.style.opacity='';btnSiguiente.style.cursor='';btnSiguiente.textContent=textoOriginalSiguiente;}
   }
 }
+// ════════════════════════════════════════════════════════════════════════════
+// CANDADO ANTI-DUPLICADO TIENDA (Jp, 2026-11-06): si el cliente ya tiene un pedido de la tienda
+// de los últimos 15 días (no descartado), crear una negociación en Proyección duplicaría la venta
+// (los pedidos van directo a facturación). Se muestra el pedido y solo se deja continuar con un motivo,
+// que queda registrado en pipeline_candado_shopify.
+// ════════════════════════════════════════════════════════════════════════════
+const SHOP_CANDADO_DIAS=15;
+async function pipeCandadoShopify(info){
+  try{
+    const desde=new Date(Date.now()-SHOP_CANDADO_DIAS*86400000).toISOString();
+    const {data:peds}=await sb.from('shopify_pedidos').select('id,numero,cliente_nombre,empresa,email,telefono,total,estado,creado_shopify,atiende_nombre').neq('estado','descartado').gte('creado_shopify',desde).order('creado_shopify',{ascending:false});
+    if(!peds||!peds.length) return {ok:true};
+    await shpCargarClientes();
+    const I=_shpCli; const nrm=t=>I?I.nrm(String(t||'')):String(t||'').toLowerCase().trim();
+    const correo=String(info.correo||'').trim().toLowerCase();
+    const tel=I?I.telf(info.telefono):'';
+    const nom=nrm(info.nombre);
+    const hit=peds.filter(pd=>{
+      const m=shpBuscarCliente(pd);
+      if(info.cuentaId&&m&&m.c&&m.c.id===info.cuentaId) return true;
+      if(correo&&String(pd.email||'').trim().toLowerCase()===correo) return true;
+      if(tel&&tel.length>=8&&I.telf(pd.telefono)===tel) return true;
+      return !!(nom&&(nrm(pd.cliente_nombre)===nom||nrm(pd.empresa)===nom));
+    });
+    if(!hit.length) return {ok:true};
+    const ped=hit[0];
+    const motivo=await new Promise(resolve=>{
+      document.getElementById('candadoShopModal')?.remove();
+      const d=document.createElement('div');d.id='candadoShopModal';
+      d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10060;display:flex;align-items:center;justify-content:center;padding:16px;';
+      const lista=hit.map(h=>`<div style="padding:7px 10px;border:1px solid #F5A623;border-radius:8px;background:#FFF8EC;margin-bottom:6px;font-size:12px;"><b>${solEsc(h.numero)}</b> · ${solEsc(h.cliente_nombre||'')} · ${fmt(h.total)} · ${new Date(h.creado_shopify).toLocaleDateString('es-MX')} · ${(SHP_ESTADO[shpEtapa(h)]||[h.estado])[0]}${h.atiende_nombre?' · atiende '+solEsc(h.atiende_nombre):''}</div>`).join('');
+      d.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px 22px;width:100%;max-width:500px;box-shadow:0 10px 40px rgba(0,0,0,.3);">
+        <div style="font-size:15px;font-weight:700;color:var(--navy);">🛒 Este cliente ya tiene un pedido en la tienda</div>
+        <div style="font-size:12px;color:var(--text2);margin:6px 0 10px;line-height:1.5;">Los pedidos de la tienda van directo a facturación (pestaña de pedidos de Shopify) y <b>no deben levantarse también como negociación en Proyección</b>: se duplicaría la venta.</div>
+        ${lista}
+        <div style="font-size:12px;color:var(--text2);margin:8px 0 4px;">Si de todos modos es una venta distinta, escribe el motivo para continuar:</div>
+        <textarea id="csMotivo" rows="3" placeholder="Ej. Es otra compra: póliza anual, distinta al curso del pedido." style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'Inter',sans-serif;"></textarea>
+        <div id="csErr" style="font-size:11px;color:#c0392b;min-height:16px;"></div>
+        <div style="display:flex;gap:8px;margin-top:4px;"><button id="csNo" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:8px;padding:9px;font-weight:700;font-size:13px;cursor:pointer;">No crear la negociación</button>
+        <button id="csOk" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:9px 14px;font-size:13px;cursor:pointer;">Es otra venta, continuar</button></div></div>`;
+      document.body.appendChild(d);
+      document.getElementById('csNo').onclick=()=>{d.remove();resolve(null);};
+      document.getElementById('csOk').onclick=()=>{
+        const t=document.getElementById('csMotivo').value.trim();
+        if(t.length<10){document.getElementById('csErr').textContent='Escribe el motivo con un poco más de detalle (mínimo una frase).';return;}
+        d.remove();resolve(t);};
+    });
+    if(!motivo) return {ok:false};
+    try{await sb.from('pipeline_candado_shopify').insert({usuario_id:currentUser.id,usuario_nombre:userProfile?.nombre||null,pedido_id:ped.id,pedido_numero:ped.numero,cliente:info.nombre||null,motivo});}catch(e){console.error('log candado',e);}
+    return {ok:true,motivo};
+  }catch(e){console.error('candado shopify',e);return {ok:true};}
+}
 async function _guardarFilaPipeInterno(irASiguiente){
   const id=document.getElementById('pipeId').value;
   const cuentaId=document.getElementById('pipeCuentaId')?.value||null;
@@ -9354,6 +9408,10 @@ async function _guardarFilaPipeInterno(irASiguiente){
     payload.motivo_estatus=motivoInfo.texto;
     payload.motivo_estatus_at=new Date().toISOString();
     payload.respuesta_direccion=null;
+  }
+  if(!id){
+    const cand=await pipeCandadoShopify({cuentaId:payload.cliente_cartera_id,nombre:payload.cliente,correo:payload.contacto_correo,telefono:payload.contacto_telefono});
+    if(!cand.ok) return;
   }
   let filaIdGuardada=id||null;
   let error;
