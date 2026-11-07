@@ -30822,7 +30822,7 @@ function shpSugerir(titulo){
   _shpCat.forEach(c=>{const b=shpTokens(c.nombre);let i=0;a.forEach(w=>{if(b.has(w))i++;});const s=i/Math.max(1,new Set([...a,...b]).size);if(s>best){best=s;mejor=c;}});
   return best>=0.5?mejor:null;
 }
-const SHP_FAM_CURSO=['Cursos','Diplomados','Talleres'],SHP_FAM_SERV=['Servicios por evento'];
+const SHP_FAM_CURSO=['Cursos','Diplomados','Talleres'],SHP_FAM_SERV=['Servicios por evento'],SHP_FAM_MEMB=['Círculo Innovaci'];
 let _shpModo={};
 function shpNivelDeLinea(l){
   const v=String(l?.variante||'').toLowerCase();
@@ -30833,12 +30833,12 @@ function shpSimGen(titulo,g){const a=shpTokens(titulo),b=shpTokens(g.curso?.nomb
 async function shpPintarMapeo(){
   const box=document.getElementById('shpMapBox');if(!box) return;
   if(!shpEsDir()){box.innerHTML='';return;}
-  if(!_shpCat.length){const {data}=await sb.from('catalogo_items').select('id,nombre,familia').eq('activo',true).in('familia',[...SHP_FAM_CURSO,...SHP_FAM_SERV]).order('nombre').limit(500);_shpCat=data||[];}
+  if(!_shpCat.length){const {data}=await sb.from('catalogo_items').select('id,nombre,familia').eq('activo',true).in('familia',[...SHP_FAM_CURSO,...SHP_FAM_SERV,...SHP_FAM_MEMB]).order('nombre').limit(500);_shpCat=data||[];}
   // Solo generaciones GRUPALES (taller / desde cero / diplomado en vivo o 24/7). Los cursos empresariales no se venden por Shopify.
   if(!_shpGens.length){const {data}=await sb.from('academia_generaciones').select('id,clave,fecha_inicio,fecha_fin,archivado_manual,curso:curso_id(nombre,tipo)').order('fecha_inicio',{ascending:false,nullsFirst:false}).limit(400);_shpGens=(data||[]).filter(g=>g.curso&&g.curso.tipo!=='empresarial');}
   const vistas={};
   _shpRows.forEach(p=>(p.lineas||[]).forEach(l=>{const k=shpClave(l);if(!vistas[k]) vistas[k]={clave:k,titulo:l.titulo,sku:l.sku,variante:l.variante,precio:l.precio};}));
-  Object.values(_shpMap).forEach(m=>{if(!vistas[m.clave]) vistas[m.clave]={clave:m.clave,titulo:m.titulo,sku:m.clave};});
+  Object.values(_shpMap).forEach(m=>{if(!vistas[m.clave]) vistas[m.clave]={clave:m.clave,titulo:m.titulo,sku:m.clave}; const v=vistas[m.clave]; if(!v.variante) v.variante=m.variante; if(!v.precio) v.precio=m.precio; v.tipo=m.tipo_producto;});
   const todas=Object.values(vistas).sort((a,b)=>String(a.titulo).localeCompare(String(b.titulo)));
   const pend=todas.filter(x=>!_shpMap[x.clave]?.catalogo_item_id&&!(_shpMap[x.clave]?.generacion_ids||[]).length);
   const fila=x=>{
@@ -30846,27 +30846,29 @@ async function shpPintarMapeo(){
     if(!_shpGenSel[x.clave]) _shpGenSel[x.clave]=new Set(m.generacion_ids||[]);
     const ngen=_shpGenSel[x.clave].size;
     const itemMap=_shpCat.find(c=>c.id===m.catalogo_item_id);
-    if(!_shpModo[x.clave]) _shpModo[x.clave]=ngen||(itemMap&&SHP_FAM_CURSO.includes(itemMap.familia))?'curso':(itemMap?'servicio':(shpEsCursoTitulo(x.titulo)?'curso':'servicio'));
+    if(!_shpModo[x.clave]) _shpModo[x.clave]=m.membresia_plan||(itemMap&&SHP_FAM_MEMB.includes(itemMap.familia))||/membres/i.test(x.tipo||x.titulo||'')?'membresia':(ngen||(itemMap&&SHP_FAM_CURSO.includes(itemMap.familia))?'curso':(itemMap?'servicio':(/servicios/i.test(x.tipo||'')?'servicio':(shpEsCursoTitulo(x.titulo)?'curso':'servicio'))));
     const modo=_shpModo[x.clave];
     const niv=m.nivel||shpNivelDeLinea(x);
-    const fams=modo==='curso'?SHP_FAM_CURSO:SHP_FAM_SERV;
+    const fams=modo==='curso'?SHP_FAM_CURSO:(modo==='membresia'?SHP_FAM_MEMB:SHP_FAM_SERV);
     const opts=_shpCat.filter(c=>fams.includes(c.familia));
     const sug=m.catalogo_item_id?null:shpSugerir(x.titulo);
     const sel=m.catalogo_item_id||(sug&&fams.includes(sug.familia)?sug.id:'');
+    const btnCrear=`<button onclick="shpCrearServicio('${kq}')" title="Dar de alta en el catálogo tomando como referencia lo que trae Shopify" style="border:1px solid #b45309;background:#fff;color:#b45309;border-radius:6px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;width:100%;">➕ Crear en catálogo</button>`;
     const celda=modo==='curso'
-      ?`<div><button id="shpG_${solEsc(x.clave)}" onclick="shpGenModal('${kq}')" style="border:1px solid var(--teal);background:#fff;color:var(--teal);border-radius:6px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;width:100%;">🎓 Generaciones (${ngen})</button></div>`
-      :`<div><button onclick="shpCrearServicio('${kq}')" style="border:1px solid #b45309;background:#fff;color:#b45309;border-radius:6px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;width:100%;">➕ Crear en catálogo</button></div>`;
+      ?`<div style="display:grid;gap:4px;"><button id="shpG_${solEsc(x.clave)}" onclick="shpGenModal('${kq}')" style="border:1px solid var(--teal);background:#fff;color:var(--teal);border-radius:6px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;width:100%;">🎓 Generaciones (${ngen})</button>${btnCrear}</div>`
+      :`<div>${btnCrear}</div>`;
     return `<div style="display:grid;grid-template-columns:minmax(170px,2fr) 120px minmax(170px,2fr) 100px 140px auto;gap:8px;align-items:center;border-bottom:1px solid var(--border);padding:6px 0;font-size:12px;">
-      <div><b>${solEsc(x.titulo)}</b>${x.variante?`<div style="font-size:11px;color:var(--navy);">Variante: ${solEsc(x.variante)}</div>`:''}<div style="font-size:10px;color:var(--text3);">${solEsc(x.clave)}</div></div>
-      <select onchange="_shpModo['${kq}']=this.value;shpPintarMapeo()" style="${SOL_INPUT_STYLE}"><option value="curso" ${modo==='curso'?'selected':''}>🎓 Curso</option><option value="servicio" ${modo==='servicio'?'selected':''}>🛠 Servicio</option></select>
-      <select id="shpM_${solEsc(x.clave)}" style="${SOL_INPUT_STYLE}"><option value="">— ${modo==='curso'?'catálogo (opcional, se sugiere por la generación)':'elegir servicio del catálogo'} —</option>${opts.map(c=>`<option value="${c.id}" ${c.id===sel?'selected':''}>${solEsc(c.nombre)}</option>`).join('')}</select>
-      ${modo==='curso'?`<select id="shpN_${solEsc(x.clave)}" style="${SOL_INPUT_STYLE}"><option value="">acceso…</option>${['esencial','plus','premium'].map(n=>`<option ${n===niv?'selected':''}>${n}</option>`).join('')}</select>`:`<span id="shpN_${solEsc(x.clave)}" style="font-size:11px;color:var(--text3);">sin acceso</span>`}
+      <div><b>${solEsc(x.titulo)}</b>${x.variante?`<div style="font-size:11px;color:var(--navy);">Variante: ${solEsc(x.variante)}</div>`:''}<div style="font-size:10px;color:var(--text3);">${solEsc(x.clave)}${x.precio?' · '+fmt(x.precio):''}</div></div>
+      <select onchange="_shpModo['${kq}']=this.value;shpPintarMapeo()" style="${SOL_INPUT_STYLE}"><option value="curso" ${modo==='curso'?'selected':''}>🎓 Curso</option><option value="membresia" ${modo==='membresia'?'selected':''}>💎 Membresía</option><option value="servicio" ${modo==='servicio'?'selected':''}>🛠 Servicio</option></select>
+      <select id="shpM_${solEsc(x.clave)}" style="${SOL_INPUT_STYLE}"><option value="">— ${modo==='curso'?'catálogo (opcional, se sugiere por la generación)':(modo==='membresia'?'elegir membresía del catálogo':'elegir servicio del catálogo')} —</option>${opts.map(c=>`<option value="${c.id}" ${c.id===sel?'selected':''}>${solEsc(c.nombre)}</option>`).join('')}</select>
+      ${modo==='curso'?`<select id="shpN_${solEsc(x.clave)}" style="${SOL_INPUT_STYLE}"><option value="">acceso…</option>${['esencial','plus','premium'].map(n=>`<option ${n===niv?'selected':''}>${n}</option>`).join('')}</select>`:(modo==='membresia'?`<select id="shpN_${solEsc(x.clave)}" style="${SOL_INPUT_STYLE}"><option value="">plan…</option>${[['socio','Socio'],['socio_pro','Socio PRO']].map(([k,l])=>`<option value="${k}" ${k===(m.membresia_plan||(/pro/i.test(x.variante||x.clave)?'socio_pro':'socio'))?'selected':''}>${l}</option>`).join('')}</select>`:`<span id="shpN_${solEsc(x.clave)}" style="font-size:11px;color:var(--text3);">sin acceso</span>`)}
       ${celda}
       <button onclick="shpGuardarMap('${kq}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;">Guardar</button></div>`;
   };
   box.innerHTML=`<details ${pend.length?'open':''} style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 14px;">
     <summary style="cursor:pointer;font-size:13px;font-weight:700;color:var(--navy);">🔗 Vincular productos de Shopify ${pend.length?`<span style="color:#B45309;">(${pend.length} por vincular)</span>`:'<span style="color:#2E7D32;">(todo vinculado)</span>'}</summary>
-    <div style="font-size:11px;color:var(--text3);margin:6px 0;"><b>Curso</b>: se casa con generaciones de Academia (solo grupales: talleres, desde cero y diplomados; los empresariales no aplican) y el acceso (esencial / plus / premium) sale de la variante de Shopify. El pedido llega ya casado y el vendedor y Facturación solo lo confirman. <b>Servicio</b> (ej. diagnósticos): se elige del catálogo o se crea desde lo que trae Shopify.</div>
+    <div style="margin:6px 0;"><button onclick="shpSincronizarProductos()" style="border:1px solid var(--teal);background:#fff;color:var(--teal);border-radius:7px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">🔄 Traer productos y variantes de Shopify</button> <span style="font-size:11px;color:var(--text3);">Para vincular una variante (ej. el acceso Plus) aunque nadie la haya comprado todavía.</span></div>
+    <div style="font-size:11px;color:var(--text3);margin:6px 0;"><b>Membresía</b>: se liga al plan del catálogo de Círculo (sin generación). <b>Curso</b>: se casa con generaciones de Academia (solo grupales: talleres, desde cero y diplomados; los empresariales no aplican) y el acceso (esencial / plus / premium) sale de la variante de Shopify. El pedido llega ya casado y el vendedor y Facturación solo lo confirman. <b>Servicio</b> (ej. diagnósticos): se elige del catálogo. En los tres casos, si no existe en el catálogo, usa “➕ Crear en catálogo”. <b>Combo</b> (dos talleres): marca TODAS las fechas de ambos talleres; el vendedor elige la fecha del que tenga varias y el otro se marca solo.</div>
     ${(pend.length?pend:todas).map(fila).join('')||'<div style="font-size:12px;color:var(--text3);">Aún no hay productos.</div>'}
     ${pend.length&&todas.length>pend.length?`<div style="font-size:11px;color:var(--text3);margin-top:6px;">Mostrando solo los pendientes.</div>`:''}</details>`;
 }
@@ -30883,40 +30885,70 @@ function shpGenModal(clave){
     <div style="margin-top:10px;"><button onclick="solCerrarModal();shpPintarMapeo();" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Listo</button> <span style="font-size:11px;color:var(--text3);">Después pulsa “Guardar” en la fila del producto.</span></div>`,640);
 }
 function shpGenTog(clave,id,on){const s=_shpGenSel[clave]||(_shpGenSel[clave]=new Set());if(on)s.add(id);else s.delete(id);}
-// Crea un servicio en el catálogo con lo que trae Shopify (solo servicios; los cursos vienen de generaciones)
+// Da de alta en el catálogo lo que trae Shopify (servicio, membresía o curso/taller/diplomado que aún no exista)
 async function shpCrearServicio(clave){
+  const modo=_shpModo[clave]||'curso';
+  const m=_shpMap[clave]||{};
   const lin=_shpRows.flatMap(p=>p.lineas||[]).find(l=>shpClave(l)===clave);
-  const titulo=lin?.titulo||_shpMap[clave]?.titulo||clave;
-  const nombre=prompt('Nombre del servicio en el catálogo:',titulo);
+  const titulo=lin?.titulo||m.titulo||clave;
+  const precio=lin?.precio||m.precio||null;
+  let familia,rubro,pref,sugerido=titulo;
+  if(modo==='membresia'){familia='Círculo Innovaci';rubro='CIRCULO INNOVACI';pref='MEMB-';sugerido=titulo.replace(/\s*\|.*$/,'').replace(/·/g,'—').trim();}
+  else if(modo==='servicio'){familia='Servicios por evento';rubro='SERVICIO POR EVENTO';pref='EVT-SHOP-';}
+  else{
+    // Curso: la familia sale del tipo de curso de la generación elegida (taller / desde cero / diplomado)
+    const g=[...(_shpGenSel[clave]||[])].map(id=>_shpGens.find(x=>x.id===id)).find(Boolean);
+    const tp=g?.curso?.tipo||'';
+    familia=tp==='diplomado_vip'?'Diplomados':(tp==='desde_cero'?'Cursos':(tp==='taller'?'Talleres':(/diplomado/i.test(titulo)?'Diplomados':(/taller/i.test(titulo)?'Talleres':'Cursos'))));
+    rubro=null;pref='CUR-SHOP-';
+    if(g?.curso?.nombre) sugerido=g.curso.nombre;
+  }
+  const nombre=prompt(`Nombre en el catálogo (familia: ${familia}):`,sugerido);
   if(!nombre||!nombre.trim()) return;
   const dup=_shpCat.find(c=>solSimNombre(c.nombre,nombre)>=0.9);
   if(dup&&!confirm(`Ya existe "${dup.nombre}" en el catálogo. ¿Crear otro de todos modos?`)) return;
-  const codigo='EVT-SHOP-'+String(clave).toUpperCase().replace(/[^A-Z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,30);
-  const {data,error}=await sb.from('catalogo_items').insert({codigo,nombre:nombre.trim(),familia:'Servicios por evento',tipo:'servicio',rubro_ingreso:'SERVICIO POR EVENTO',precio_lista:lin?.precio||null,activo:true,revisado:false}).select('id,nombre,familia').single();
+  const codigo=pref+String(clave).toUpperCase().replace(/[^A-Z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,30);
+  const fila={codigo,nombre:nombre.trim(),familia,tipo:'servicio',activo:true,revisado:false};
+  if(rubro) fila.rubro_ingreso=rubro;
+  if(modo==='servicio'&&precio) fila.precio_lista=precio;
+  const {data,error}=await sb.from('catalogo_items').insert(fila).select('id,nombre,familia').single();
   if(error) return alert('No se pudo crear en el catálogo: '+error.message);
   _shpCat.push(data);_shpCat.sort((a,b)=>a.nombre.localeCompare(b.nombre));
-  _shpMap[clave]={..._shpMap[clave],clave,titulo,catalogo_item_id:data.id,concepto:data.nombre};
-  await sb.from('shopify_producto_map').upsert({clave,titulo,catalogo_item_id:data.id,concepto:data.nombre,nivel:null,generacion_ids:[],updated_at:new Date().toISOString()});
-  uiToast('✅ Servicio creado en el catálogo y vinculado (revísalo en Catálogo: clave SAE y SAT quedan pendientes)',true);
+  _shpMap[clave]={...m,clave,titulo,catalogo_item_id:data.id,concepto:data.nombre};
+  await sb.from('shopify_producto_map').upsert({clave,titulo,catalogo_item_id:data.id,concepto:data.nombre,nivel:m.nivel||null,generacion_ids:[...(_shpGenSel[clave]||[])],membresia_plan:m.membresia_plan||null,updated_at:new Date().toISOString()});
+  uiToast('✅ Creado en el catálogo ('+familia+') y vinculado. Complétalo después en Catálogo: clave SAE y clave SAT.',true);
   shpPintar();shpPintarMapeo();
+}
+async function shpSincronizarProductos(){
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/shopify-sync-productos',{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok) return alert('No se pudo traer de Shopify: '+(j.error||res.status));
+    uiToast(`✅ Shopify: ${j.nuevos} variante(s) nueva(s), ${j.actualizados} actualizada(s)`,true);
+    await shpCargar();
+  }catch(e){alert('Error: '+(e.message||e));}
 }
 async function shpGuardarMap(clave){
   const modo=_shpModo[clave]||'curso';
   const id=document.getElementById('shpM_'+clave)?.value||null;
   const nivSel=document.getElementById('shpN_'+clave);
   const niv=modo==='curso'?(nivSel?.value||null):null;
+  const plan=modo==='membresia'?(nivSel?.value||null):null;
   const gens=modo==='curso'?[...(_shpGenSel[clave]||[])]:[];
   if(modo==='curso'&&!gens.length) return alert('Un curso se vincula con su(s) generación(es) de Academia. Elige al menos una.');
   if(modo==='curso'&&!niv) return alert('Elige el acceso (esencial / plus / premium).');
   if(modo==='servicio'&&!id) return alert('Elige el servicio del catálogo, o créalo con “➕ Crear en catálogo”.');
+  if(modo==='membresia'&&!id) return alert('Elige la membresía del catálogo de Círculo, o créala con “➕ Crear en catálogo”.');
+  if(modo==='membresia'&&!plan) return alert('Elige el plan (Socio o Socio PRO).');
   const item=_shpCat.find(c=>c.id===id);
   const titulo=_shpRows.flatMap(p=>p.lineas||[]).find(l=>shpClave(l)===clave)?.titulo||_shpMap[clave]?.titulo||clave;
   // Concepto: el del catálogo; si no hay, el nombre del curso de la(s) generación(es)
   const cursos=[...new Set(gens.map(g=>_shpGens.find(x=>x.id===g)?.curso?.nombre).filter(Boolean))];
   const concepto=item?.nombre||(cursos.length?cursos.join(' + '):null);
-  const {error}=await sb.from('shopify_producto_map').upsert({clave,titulo,catalogo_item_id:id||null,concepto,nivel:niv,generacion_ids:gens,updated_at:new Date().toISOString()});
+  const {error}=await sb.from('shopify_producto_map').upsert({clave,titulo,catalogo_item_id:id||null,concepto,nivel:niv,generacion_ids:gens,membresia_plan:plan,updated_at:new Date().toISOString()});
   if(error) return alert('No se pudo guardar: '+error.message);
-  _shpMap[clave]={clave,titulo,catalogo_item_id:id||null,concepto,nivel:niv,generacion_ids:gens};
+  _shpMap[clave]={..._shpMap[clave],clave,titulo,catalogo_item_id:id||null,concepto,nivel:niv,generacion_ids:gens,membresia_plan:plan};
   uiToast('✅ Producto vinculado',true);
   shpPintar();shpPintarMapeo();
 }
@@ -31048,7 +31080,7 @@ async function solAplicarPrefillShopify(id){
     set('sfPagoFecha',d.toLocaleDateString('en-CA',{timeZone:'America/Mexico_City'}));
     set('sfPagoHora',d.toLocaleTimeString('en-GB',{timeZone:'America/Mexico_City',hour:'2-digit',minute:'2-digit'}));
   }
-  set('sfNotas','Pedido Shopify '+p.numero+(p.email?' · '+p.email:''));
+  set('sfNotas','Pedido Shopify '+p.numero+(p.email?' · '+p.email:'')+(ms.find(m=>m?.membresia_plan)?' · Membresía Círculo: '+(ms.find(m=>m?.membresia_plan).membresia_plan==='socio_pro'?'Socio PRO':'Socio'):''));
   // Asistente
   const fila=document.querySelector('.sfAsRow');
   if(fila){const v=(c,x)=>{const e=fila.querySelector(c);if(e&&!e.value) e.value=x||'';};v('.sfAsN',p.cliente_nombre);v('.sfAsC',p.email);v('.sfAsT',p.telefono);}
