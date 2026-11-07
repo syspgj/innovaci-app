@@ -172,7 +172,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ ok: false, error: 'sesión inválida — vuelve a iniciar sesión' });
   }
 
-  const { crm_potentialid, fase_venta, probabilidad, tipo_servicio } = req.body || {};
+  const { crm_potentialid, fase_venta, probabilidad, tipo_servicio, vendedor_usuario_id } = req.body || {};
   if (!crm_potentialid) {
     return res.status(400).json({ ok: false, error: 'falta crm_potentialid' });
   }
@@ -188,7 +188,7 @@ export default async function handler(req, res) {
   if (tipo_servicio !== undefined && tipo_servicio !== null && tipo_servicio !== '' && !TIPOS_SERVICIO_PERMITIDOS.includes(tipo_servicio)) {
     return res.status(400).json({ ok: false, error: 'tipo_servicio no reconocido: ' + tipo_servicio });
   }
-  if (fase_venta === undefined && probabilidad === undefined && !tipo_servicio) {
+  if (fase_venta === undefined && probabilidad === undefined && !tipo_servicio && !vendedor_usuario_id) {
     return res.status(400).json({ ok: false, error: 'nada que actualizar' });
   }
 
@@ -203,11 +203,22 @@ export default async function handler(req, res) {
     if (fase_venta !== undefined) record.sales_stage = fase_venta;
     if (probabilidad !== undefined) record.probability = String(probabilidad);
     if (tipo_servicio) record[CAMPO_TIPO_SERVICIO] = tipo_servicio;
+    // Transferencia de venta (Jp, 2026-11-07): cambia el responsable de la Oportunidad en Vtiger
+    // al usuario de Vtiger ligado al vendedor destino (usuarios.crm_user_id). Si no tiene uno ligado, no se toca.
+    let asignadoCambiado = false;
+    if (vendedor_usuario_id) {
+      const ur = await fetch(
+        `${SUPABASE_URL}/rest/v1/usuarios?id=eq.${encodeURIComponent(vendedor_usuario_id)}&select=crm_user_id`,
+        { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } }
+      ).then((r) => r.json()).catch(() => []);
+      const crmUser = Array.isArray(ur) && ur[0] ? ur[0].crm_user_id : null;
+      if (crmUser) { record.assigned_user_id = crmUser; asignadoCambiado = true; }
+    }
     const actualizado = await vtigerUpdate(sessionName, record);
 
     await actualizarMirrorSupabase(crm_potentialid, fase_venta, probabilidad);
 
-    return res.status(200).json({ ok: true, id: actualizado.id });
+    return res.status(200).json({ ok: true, id: actualizado.id, asignado_cambiado: asignadoCambiado });
   } catch (err) {
     console.error('crm-actualizar-oportunidad failed', err);
     return res.status(500).json({ ok: false, error: String((err && err.message) || err) });
