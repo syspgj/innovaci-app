@@ -7582,7 +7582,10 @@ async function guardarFilaPipeTele(){
   } else {
     const cand=await pipeCandadoShopify({cuentaId:payload.cliente_cartera_id,nombre:payload.cliente});
     if(!cand.ok) return;
-    ({data:nuevaFila,error}=await sb.from('pipeline_vendedor').insert(payload).select().single());
+    const dn=await pipeResolverDueno(cuentaId);
+    if(!dn.ok) return;
+    if(dn.cubre){ ({data:nuevaFila,error}=await sb.rpc('crear_negociacion_cobertura',{p_payload:payload,p_owner:dn.ownerId})); if(!error&&nuevaFila) shpCrearOportunidadPedido(nuevaFila,dn.ownerId); }
+    else ({data:nuevaFila,error}=await sb.from('pipeline_vendedor').insert(payload).select().single());
     // Igual que cotizadorGuardar/cotizadorRecienteCrearOportunidad para Vendedor
     // — si esta negociación nació desde el Cotizador, se marca de vuelta.
     if(!error&&nuevaFila&&window._cotizVinculandoId){
@@ -9081,7 +9084,7 @@ function modalPipeHTML(r,hoy){
       <div>
         <div style="font-size:15px;font-weight:700;color:var(--text);">${r?'Editar':'Nueva'} negociación <span style="font-weight:500;color:var(--text3);">(Oportunidad)</span></div>
         ${v.oportunidades_crm?.crm_folio?`<div style="font-size:11px;color:var(--teal);font-weight:700;margin-top:2px;">📡 ${v.oportunidades_crm.crm_folio}${v.oportunidades_crm.crm_potentialid?` · <a href="${CRM_BASE_URL_FE}/index.php?module=Potentials&view=Detail&record=${String(v.oportunidades_crm.crm_potentialid).split('x').pop()}" target="_blank" rel="noopener" style="color:var(--teal);text-decoration:underline;">Ver detalle completo en CRM ↗</a>`:''}</div>`:''}
-        ${v.id?`<div style="margin-top:7px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${v.oportunidades_crm?.crm_potentialid?`<a href="${CRM_BASE_URL_FE}/index.php?module=Potentials&view=Detail&record=${String(v.oportunidades_crm.crm_potentialid).split('x').pop()}" target="_blank" rel="noopener" style="background:var(--teal);color:#fff;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;text-decoration:none;">🔗 Abrir oportunidad en el CRM ↗</a>`:`<button type="button" onclick="pipeLigarCrmDesdeModal('${v.id}')" style="background:#fff;color:var(--teal);border:1px solid var(--teal);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">🔗 Ligar a una oportunidad del CRM</button><span style="font-size:10px;color:var(--text3);">Sin liga, los comentarios y motivos no llegan al CRM.</span>`}</div>`:''}
+        ${v.id?`<div style="margin-top:7px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${v.oportunidades_crm?.crm_potentialid?`<a href="${CRM_BASE_URL_FE}/index.php?module=Potentials&view=Detail&record=${String(v.oportunidades_crm.crm_potentialid).split('x').pop()}" target="_blank" rel="noopener" style="background:var(--teal);color:#fff;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;text-decoration:none;">🔗 Abrir oportunidad en el CRM ↗</a>`:`<button type="button" onclick="pipeLigarCrmDesdeModal('${v.id}')" style="background:#fff;color:var(--teal);border:1px solid var(--teal);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">🔗 Ligar a una oportunidad del CRM</button><span style="font-size:10px;color:var(--text3);">Sin liga, los comentarios y motivos no llegan al CRM.</span>`}${(v.usuario_id===(userProfile?.id||currentUser.id)||v.atendio_id===(userProfile?.id||currentUser.id)||userProfile?.rol==='director'||userProfile?.rol==='admin')?`<button type="button" onclick="pipeTransferirAbrir('${v.id}')" style="background:#fff;color:#b45309;border:1px solid #b45309;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">🔁 Transferir a otro vendedor</button>`:''}</div>${v.atendio_id&&v.atendio_id!==v.usuario_id?`<div style="font-size:11px;color:var(--text3);margin-top:4px;">Atendió: <b>${solEsc(v.atendio_nombre||'')}</b> · la venta es de ${solEsc(_shpUsuarios[v.usuario_id]||'su dueño')}</div>`:''}`:''}
       </div>
       <button onclick="pipeIntentarCerrarModal()" title="Cerrar" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text3);line-height:1;padding:0;">✕</button>
     </div>
@@ -9349,7 +9352,7 @@ async function pipeCandadoShopify(info){
       const lista=hit.map(h=>`<div style="padding:7px 10px;border:1px solid #F5A623;border-radius:8px;background:#FFF8EC;margin-bottom:6px;font-size:12px;"><b>${solEsc(h.numero)}</b> · ${solEsc(h.cliente_nombre||'')} · ${fmt(h.total)} · ${new Date(h.creado_shopify).toLocaleDateString('es-MX')} · ${(SHP_ESTADO[shpEtapa(h)]||[h.estado])[0]}${h.atiende_nombre?' · atiende '+solEsc(h.atiende_nombre):''}</div>`).join('');
       d.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px 22px;width:100%;max-width:500px;box-shadow:0 10px 40px rgba(0,0,0,.3);">
         <div style="font-size:15px;font-weight:700;color:var(--navy);">🛒 Este cliente ya tiene un pedido en la tienda</div>
-        <div style="font-size:12px;color:var(--text2);margin:6px 0 10px;line-height:1.5;">Los pedidos de la tienda van directo a facturación (pestaña de pedidos de Shopify) y <b>no deben levantarse también como negociación en Proyección</b>: se duplicaría la venta.</div>
+        <div style="font-size:12px;color:var(--text2);margin:6px 0 10px;line-height:1.5;">Los pedidos de la tienda se registran en Proyección <b>desde el propio pedido</b> (botón "📊 Pasar a Proyección", que crea la cuenta y la oportunidad con sus datos). Si levantas otra negociación a mano, la venta se duplica.</div>
         ${lista}
         <div style="font-size:12px;color:var(--text2);margin:8px 0 4px;">Si de todos modos es una venta distinta, escribe el motivo para continuar:</div>
         <textarea id="csMotivo" rows="3" placeholder="Ej. Es otra compra: póliza anual, distinta al curso del pedido." style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'Inter',sans-serif;"></textarea>
@@ -9448,13 +9451,22 @@ async function _guardarFilaPipeInterno(irASiguiente){
       await pipeOfrecerVincularOportunidad(id,cuentaId,payload);
     }
   } else {
-    const {data:nuevaFila,error:errIns}=await sb.from('pipeline_vendedor').insert(payload).select().single();
+    const dn=await pipeResolverDueno(cuentaId);
+    if(!dn.ok) return;
+    let nuevaFila,errIns;
+    if(dn.cubre){
+      const r=await sb.rpc('crear_negociacion_cobertura',{p_payload:payload,p_owner:dn.ownerId});
+      nuevaFila=r.data;errIns=r.error;
+    } else {
+      ({data:nuevaFila,error:errIns}=await sb.from('pipeline_vendedor').insert(payload).select().single());
+    }
     error=errIns;
     if(nuevaFila) filaIdGuardada=nuevaFila.id;
     // Fase 4: fila NUEVA ligada a una cuenta real -> crear la Oportunidad
     // correspondiente en el CRM (nunca para texto libre, solo con cuenta).
     if(!error&&cuentaId&&nuevaFila){
-      await crmCrearOportunidadDesdeNuevaFila(nuevaFila,cuentaId,payload);
+      if(dn.cubre){ const oc=await shpCrearOportunidadPedido(nuevaFila,dn.ownerId); uiToast(oc.ok?`✅ Registrada a nombre de ${dn.ownerNombre} (tú solo atendiste)`:`Registrada a nombre de ${dn.ownerNombre}; la oportunidad del CRM no se pudo crear (${oc.error||'error'})`,oc.ok); }
+      else await crmCrearOportunidadDesdeNuevaFila(nuevaFila,cuentaId,payload);
     }
     // Jp, 2026-10-26 (5ta ronda): si esta negociación nació desde el
     // Cotizador (cotizadorGuardar o cotizadorRecienteCrearOportunidad dejaron
@@ -9548,9 +9560,13 @@ function pipePedirMotivo(estatus,cliente,ligada){
 async function pipeComentarioCrmLibre(pipelineId,contenido,vendedorId){
   try{
     window._ultimoCrmLibre='sin_liga';
-    const {data:fila}=await sb.from('pipeline_vendedor').select('oportunidad_crm_id').eq('id',pipelineId).single();
-    if(!fila?.oportunidad_crm_id) return null;
-    const {data:o}=await sb.from('oportunidades_crm').select('crm_potentialid').eq('id',fila.oportunidad_crm_id).single();
+    let {data:fila}=await sb.from('pipeline_vendedor').select('oportunidad_crm_id').eq('id',pipelineId).maybeSingle();
+    let o=null;
+    if(fila?.oportunidad_crm_id){ ({data:o}=await sb.from('oportunidades_crm').select('crm_potentialid').eq('id',fila.oportunidad_crm_id).maybeSingle()); }
+    if(!o?.crm_potentialid){ // quien solo atendió la venta (otro vendedor es el dueño) la lee por RPC
+      const {data:pr}=await sb.rpc('pipeline_para_solicitud',{p_id:pipelineId});
+      if(pr?.oportunidades_crm?.crm_potentialid) o={crm_potentialid:pr.oportunidades_crm.crm_potentialid};
+    }
     if(!o?.crm_potentialid) return null;
     window._ultimoCrmLibre='error';
     const {data:sess}=await sb.auth.getSession();
@@ -9873,6 +9889,46 @@ async function pipeCrearOportunidadParaFilaExistente(){
   renderProyeccion();
 }
 
+async function pipeTransferirAbrir(id){
+  if(!Object.keys(_shpUsuarios||{}).length){const {data:us}=await sb.from('usuarios').select('id,nombre');_shpUsuarios={};(us||[]).forEach(u=>_shpUsuarios[u.id]=u.nombre);}
+  const {data:vend}=await sb.from('usuarios').select('id,nombre,rol').in('rol',['vendedor','telemarketing']).order('nombre');
+  const r=(window._pipeRows||[]).find(x=>x.id===id);
+  const opts=(vend||[]).filter(u=>!r||u.id!==r.usuario_id).map(u=>`<option value="${u.id}">${solEsc(u.nombre)}</option>`).join('');
+  document.getElementById('pipeTransfModal')?.remove();
+  const d=document.createElement('div');d.id='pipeTransfModal';
+  d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  d.innerHTML=`<div style="background:#fff;border-radius:12px;padding:18px;max-width:420px;width:100%;">
+    <div style="font-weight:800;font-size:15px;margin-bottom:6px;">🔁 Transferir venta a otro vendedor</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:10px;">La negociación, la solicitud de factura y la oportunidad del CRM pasan al vendedor elegido. Tú quedas como quien atendió.</div>
+    <select id="pipeTransA" style="${SOL_INPUT_STYLE}"><option value="">— Elige vendedor —</option>${opts}</select>
+    <input id="pipeTransMotivo" placeholder="Motivo (opcional)" style="${SOL_INPUT_STYLE};margin-top:8px;">
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+      <button type="button" onclick="document.getElementById('pipeTransfModal').remove()" style="padding:7px 14px;border:1px solid var(--border);background:#fff;border-radius:8px;cursor:pointer;">Cancelar</button>
+      <button type="button" id="pipeTransBtn" onclick="pipeTransferirConfirmar('${id}')" style="padding:7px 14px;border:none;background:#b45309;color:#fff;border-radius:8px;font-weight:700;cursor:pointer;">Transferir</button>
+    </div></div>`;
+  document.body.appendChild(d);
+}
+async function pipeTransferirConfirmar(id){
+  const a=document.getElementById('pipeTransA').value;
+  if(!a){alert('Elige el vendedor destino.');return;}
+  const motivo=document.getElementById('pipeTransMotivo').value.trim();
+  const btn=document.getElementById('pipeTransBtn');btn.disabled=true;btn.textContent='Transfiriendo…';
+  const {data,error}=await sb.rpc('transferir_venta',{p_pipeline:id,p_a:a,p_motivo:motivo});
+  if(error||!data?.ok){alert('No se pudo transferir: '+(error?.message||'error'));btn.disabled=false;btn.textContent='Transferir';return;}
+  let aviso='';
+  if(data.crm_potentialid){
+    try{
+      const {data:sess}=await sb.auth.getSession();
+      const res=await fetch('/api/crm-actualizar-oportunidad',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({crm_potentialid:data.crm_potentialid,vendedor_usuario_id:a})});
+      const j=await res.json().catch(()=>({}));
+      if(!res.ok||!j.ok) aviso=' (no se pudo cambiar el responsable en el CRM: '+(j.error||res.status)+')';
+    }catch(e){aviso=' (error de conexión al cambiar el responsable en el CRM)';}
+  }
+  document.getElementById('pipeTransfModal')?.remove();
+  uiToast('✅ Venta transferida a '+data.a_nombre+aviso,!aviso);
+  try{document.querySelector('.modal-overlay.open, .modal.open')?.classList.remove('open');}catch(e){}
+  if(typeof renderProyeccion==='function') renderProyeccion();
+}
 async function crmActualizarOportunidad(oportunidadCrmId,fase_venta,probabilidad,tipo_servicio){
   try{
     const {data:o}=await sb.from('oportunidades_crm').select('crm_potentialid').eq('id',oportunidadCrmId).single();
@@ -30567,7 +30623,11 @@ function shpTarjeta(p){
   const btn=(txt,fn,estilo)=>`<button onclick="${fn}" style="${estilo||'border:1px solid var(--border);background:#fff;color:var(--text2);'}border-radius:7px;padding:5px 11px;font-size:11px;font-weight:600;cursor:pointer;">${txt}</button>`;
   const acciones=[];
   if(p.estado==='nuevo') acciones.push(btn('✋ Yo lo atiendo',`shpTomar('${p.id}')`,'background:var(--teal);color:#fff;border:none;'));
-  if(p.estado==='atendiendo'&&(mio||shpEsDir())) acciones.push(btn('🧾 Generar solicitud de factura',`shpFacturar('${p.id}')`,'background:var(--teal);color:#fff;border:none;'),btn('↩️ Devolver a la bandeja',`shpSoltar('${p.id}')`));
+  if(p.estado==='atendiendo'&&(mio||shpEsDir())){
+    if(p.pipeline_vendedor_id) acciones.push(btn('🧾 Generar solicitud de factura',`shpFacturar('${p.id}')`,'background:var(--teal);color:#fff;border:none;'));
+    else acciones.push(btn('📊 Pasar a Proyección',`shpPasarProyeccion('${p.id}')`,'background:#1B4D6E;color:#fff;border:none;'));
+    acciones.push(btn('↩️ Devolver a la bandeja',`shpSoltar('${p.id}')`));
+  }
   if(p.estado!=='enviado_facturar'&&p.estado!=='descartado'&&(p.estado==='nuevo'||mio||shpEsDir())) acciones.push(btn('🗑 Descartar',`shpDescartar('${p.id}')`));
   if(p.estado==='descartado'&&(shpEsDir()||mio)) acciones.push(btn('↩️ Reabrir',`shpSoltar('${p.id}')`));
   return `<div style="background:#fff;border:1px solid var(--border);border-left:4px solid ${pg.c};border-radius:10px;padding:12px 14px;margin-bottom:10px;">
@@ -30578,6 +30638,7 @@ function shpTarjeta(p){
     ${lineas}
     <div style="font-size:12px;font-weight:600;color:${pg.c};margin-top:6px;">${pg.t}</div>
     ${shpClienteHtml(p)}
+    ${p.pipeline_vendedor_id?'<div style="font-size:11px;margin-top:3px;color:#1B4D6E;">📊 <b>En Proyección</b> (negociación y oportunidad del CRM creadas)</div>':(p.estado==='atendiendo'?'<div style="font-size:11px;margin-top:3px;color:#B45309;">⚠️ Antes de facturar debe pasar por Proyección (cuenta + oportunidad en el CRM).</div>':'')}
     <div style="font-size:11px;margin-top:3px;"><span style="color:${est[1]};font-weight:700;">${est[0]}</span>${p.atiende_nombre&&p.estado!=='nuevo'?` · ${solEsc(p.atiende_nombre)}`:''}${p.motivo_descarte?` · ${solEsc(p.motivo_descarte)}`:''}${p.nota?` · Nota del cliente: ${solEsc(p.nota)}`:''}</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;">${acciones.join('')}
       ${wa&&p.estado!=='descartado'?`<a href="${shpWaLink(p,'confirmar')}" target="_blank" rel="noopener" style="text-decoration:none;background:#25D366;color:#fff;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:700;">💬 ${shpPagoInfo(p).pagado?'Confirmar pedido por WhatsApp':'WhatsApp: pago pendiente'}</a><a href="${shpWaLink(p,'fiscal')}" target="_blank" rel="noopener" style="text-decoration:none;border:1px solid #25D366;color:#128C7E;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:700;">🧾 Pedir datos fiscales por WhatsApp</a>`:(!wa&&p.estado!=='descartado'?'<span style="font-size:11px;color:var(--text3);align-self:center;">Sin teléfono: contáctalo por correo</span>':'')}
@@ -30601,6 +30662,154 @@ async function shpDescartar(id){
   if(error) return alert(error.message);
   await shpCargar();
 }
+// ════════════════════════════════════════════════════════════════════════════
+// SHOPIFY → PROYECCIÓN → FACTURACIÓN (Jp, 2026-11-06)
+// Todo pedido de la tienda debe dejar registro: cuenta (si no existe), negociación en Proyección y
+// Oportunidad sincronizada con el CRM, y SOLO ENTONCES se manda a facturación. Se usan los datos del
+// pedido para crear la cuenta y la oportunidad.
+// ════════════════════════════════════════════════════════════════════════════
+function shpTipoServicio(p,concepto){
+  const t=(concepto+' '+(p.lineas||[]).map(l=>l.titulo).join(' ')).toLowerCase();
+  if(/aguinaldo|cierre completo|cierre de a[ñn]o/.test(t)&&!/24\/7/.test(t.replace(/combo[^|]*/g,''))) return 'Curso o Diplomado en Vivo';
+  if(/24\/7|en l[ií]nea|acceso 24/.test(t)) return '24/7';
+  if(/c[ií]rculo|membres/.test(t)) return 'Membresías';
+  if(/aguinaldo|en vivo|diplomado|cierre/.test(t)) return 'Curso o Diplomado en Vivo';
+  if(/timbre|p[oó]liza|suscripci/.test(t)) return /timbre|suscripci/.test(t)?'Suscripción Aspel':'Póliza';
+  return '24/7';
+}
+// Si el concepto se parece a un elemento del catálogo del tipo, se usa el nombre del catálogo
+function shpProductoCatalogo(tipo,concepto){
+  try{
+    let mejor=null,best=0;
+    (typeof catProyItems==='function'?catProyItems(tipo):[]).forEach(c=>{const sc=solSimNombre(concepto,c.nombre);if(sc>best){best=sc;mejor=c;}});
+    return (mejor&&best>=0.7)?mejor.nombre:concepto;
+  }catch(e){return concepto;}
+}
+function shpConceptoDePedido(p){
+  return (p.lineas||[]).map(l=>{const m=_shpMap[shpClave(l)];return (m&&m.concepto)||l.titulo;}).join(' + ')||'Pedido tienda '+p.numero;
+}
+// Pide/confirma los datos de la cuenta nueva (prellenados con los del pedido)
+function shpDatosCuentaNueva(p){
+  return new Promise(resolve=>{
+    document.getElementById('shpCuentaModal')?.remove();
+    const rfcRe=/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/i;
+    const emp=(p.empresa||'').trim();
+    const rfc=rfcRe.test(emp)?emp.toUpperCase():'';
+    const razon=((rfc?'':emp)||p.cliente_nombre||'').toUpperCase();
+    const d=document.createElement('div');d.id='shpCuentaModal';
+    d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10060;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const f=(id,l,v)=>`<div style="margin-top:8px;"><div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:2px;">${l}</div><input id="${id}" value="${solEsc(v||'')}" style="${SOL_INPUT_STYLE}"></div>`;
+    d.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px 22px;width:100%;max-width:460px;box-shadow:0 10px 40px rgba(0,0,0,.3);">
+      <div style="font-size:15px;font-weight:700;color:var(--navy);">🆕 Cliente nuevo: crear la cuenta</div>
+      <div style="font-size:12px;color:var(--text3);margin:4px 0 4px;">El pedido ${solEsc(p.numero)} no coincide con ninguna cuenta de Cartera. Se creará la cuenta en la App y en el CRM con estos datos (revísalos).</div>
+      ${f('shcRazon','Razón social / nombre de la cuenta',razon)}${f('shcRfc','RFC (opcional)',rfc)}${f('shcCorreo','Correo',p.email)}${f('shcTel','Teléfono',p.telefono)}
+      <div id="shcErr" style="font-size:11px;color:#c0392b;min-height:16px;margin-top:4px;"></div>
+      <div style="display:flex;gap:8px;margin-top:2px;"><button id="shcOk" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:8px;padding:9px;font-weight:700;font-size:13px;cursor:pointer;">Crear cuenta y continuar</button><button id="shcNo" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:9px 16px;font-size:13px;cursor:pointer;">Cancelar</button></div></div>`;
+    document.body.appendChild(d);
+    document.getElementById('shcNo').onclick=()=>{d.remove();resolve(null);};
+    document.getElementById('shcOk').onclick=()=>{
+      const v=i=>document.getElementById(i).value.trim();
+      if(v('shcRazon').length<3){document.getElementById('shcErr').textContent='Falta la razón social.';return;}
+      if(v('shcRfc')&&!rfcRe.test(v('shcRfc'))){document.getElementById('shcErr').textContent='Revisa el RFC (12 o 13 caracteres) o déjalo vacío.';return;}
+      d.remove();resolve({razon:v('shcRazon').toUpperCase(),rfc:v('shcRfc').toUpperCase()||null,correo:v('shcCorreo')||null,tel:v('shcTel')||null});};
+  });
+}
+async function shpCrearCuentaDePedido(p){
+  const dat=await shpDatosCuentaNueva(p); if(!dat) return null;
+  if(dat.rfc){ // si ya existe una cuenta con ese RFC, se usa
+    const {data:ex}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente,rfc').eq('rfc',dat.rfc).limit(1);
+    if(ex&&ex.length){ if(confirm(`Ya existe la cuenta ${ex[0].razon_social} (${ex[0].num_cliente||'—'}) con ese RFC. ¿Usarla?`)) return ex[0]; }
+  }
+  const {data:nc,error}=await sb.from('clientes_cartera').insert({razon_social:dat.razon,rfc:dat.rfc,correo_principal:dat.correo,telefono:dat.tel,vendedor_asignado:currentUser.id,origen:'alta_vendedor',num_cliente:'ALT-'+Date.now()}).select().single();
+  if(error){alert('No se pudo crear la cuenta: '+error.message);return null;}
+  const r=await crmCrearCuentaDeAlta(nc.id);
+  if(r.ok){nc.num_cliente=r.num_cliente;window._cartClientes=null;_shpCli=null;uiToast('✅ Cuenta creada también en el CRM ('+r.num_cliente+')',true);}
+  else alert('La cuenta se creó en la App, pero NO en el CRM: '+r.error+'\n\nLa oportunidad del CRM podría no crearse; puedes reintentarlo desde la ficha de la cuenta ("Abrir en CRM").');
+  return nc;
+}
+// ¿La cuenta es de otro vendedor? Pregunta si la venta se registra a nombre del dueño (quien atiende solo cubre).
+async function pipeResolverDueno(cuentaId){
+  const me=userProfile?.id||currentUser.id;
+  if(!cuentaId) return {ok:true,ownerId:me,cubre:false};
+  try{
+    const {data:c}=await sb.from('clientes_cartera').select('razon_social,vendedor_asignado').eq('id',cuentaId).maybeSingle();
+    const dueno=c?.vendedor_asignado;
+    if(!dueno||dueno===me) return {ok:true,ownerId:me,cubre:false};
+    if(!Object.keys(_shpUsuarios||{}).length){const {data:us}=await sb.from('usuarios').select('id,nombre');_shpUsuarios={};(us||[]).forEach(u=>_shpUsuarios[u.id]=u.nombre);}
+    const nom=_shpUsuarios[dueno];
+    if(!nom) return {ok:true,ownerId:me,cubre:false};
+    if(!confirm(`La cuenta ${c.razon_social} es de ${nom}.\n\nAceptar = registrar la venta y la oportunidad A NOMBRE DE ${nom.toUpperCase()} (tú solo atiendes; no te quedas la venta ni el cliente).\nCancelar = no continuar.`)) return {ok:false};
+    return {ok:true,ownerId:dueno,ownerNombre:nom,cubre:true};
+  }catch(e){return {ok:true,ownerId:me,cubre:false};}
+}
+// Crea la oportunidad en el CRM a nombre del dueño (puede ser otro vendedor distinto a quien atiende)
+async function shpCrearOportunidadPedido(fila,ownerId){
+  try{
+    if(!fila.cliente_cartera_id) return {ok:false,error:'sin cuenta de Cartera'};
+    const fase=crmFaseDesdeEstatus(fila.estatus);
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/crm-crear-oportunidad',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({
+      cliente_cartera_id:fila.cliente_cartera_id,nombre_oportunidad:`${fila.cliente||''} | ${fila.producto||''}`.trim(),monto:fila.monto_total,fase_venta:fase,
+      probabilidad:fase==='Cerrada-Ganada'?100:(fila.probabilidad||50),fecha_prevista:fila.fecha_prevista||todayLocal(),vendedor_usuario_id:ownerId,
+      tipo_servicio:TIPOS_CRM.includes(fila.tipo_servicio)?fila.tipo_servicio:undefined})});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok) return {ok:false,error:j.error||('error '+res.status)};
+    await sb.rpc('pipeline_atendido_set_opp',{p_id:fila.id,p_opp:j.oportunidad_crm_id});
+    return {ok:true,oportunidad_crm_id:j.oportunidad_crm_id};
+  }catch(e){return {ok:false,error:String(e.message||e)};}
+}
+let _shpPasando=false;
+async function shpPasarProyeccion(id){
+  if(_shpPasando) return;
+  const p=_shpRows.find(x=>x.id===id); if(!p) return;
+  if(p.pipeline_vendedor_id) return shpFacturar(id);
+  _shpPasando=true;
+  try{
+    await shpCargarClientes();
+    const m=shpBuscarCliente(p);
+    let cuenta=null;
+    if(m&&m.nivel==='fuerte') cuenta=m.c;
+    else if(m&&m.nivel==='posible'){
+      if(confirm(`Posible cliente existente (solo coincide el nombre): ${m.c.razon_social} · #${m.c.num_cliente||''}.\n\n¿Es la misma cuenta?\nAceptar = usar esa cuenta · Cancelar = crear una cuenta nueva.`)) cuenta=m.c;
+    }
+    if(!cuenta){ cuenta=await shpCrearCuentaDePedido(p); if(!cuenta) return; }
+    const concepto=shpConceptoDePedido(p);
+    const pagado=p.estado_pago==='paid';
+    const me=userProfile?.id||currentUser.id;
+    // Quién es el dueño de la venta: el vendedor de la cuenta (quien atiende solo cubre). Cuenta nueva = quien atiende.
+    let ownerId=me, ownerNombre=userProfile?.nombre||'';
+    const dueno=cuenta.vendedor_asignado;
+    if(dueno&&dueno!==me&&_shpUsuarios[dueno]){
+      const nom=_shpUsuarios[dueno];
+      if(!confirm(`La cuenta ${cuenta.razon_social} es de ${nom}.\n\nAceptar = registrar la venta y la oportunidad A NOMBRE DE ${nom.toUpperCase()} (tú solo atiendes; no te quedas la venta ni el cliente).\nCancelar = no continuar.`)) return;
+      ownerId=dueno; ownerNombre=nom;
+    }
+    const tipoSrv=shpTipoServicio(p,concepto);
+    const ownerEsTele=(ownerId===me)?(userProfile?.rol==='telemarketing'):false;
+    const tele=ownerEsTele;
+    const total=Number(p.total)||0;
+    const payload={
+      usuario_id:ownerId,anio:currentYear,mes:currentMonth,
+      tipo_servicio:tipoSrv,producto:shpProductoCatalogo(tipoSrv,concepto),
+      cliente:cuenta.razon_social,cliente_cartera_id:cuenta.id,
+      contacto_nombre:p.cliente_nombre||null,contacto_correo:p.email||null,contacto_telefono:p.telefono||null,
+      monto_total:total,subtotal:Math.round(total/1.16*100)/100,
+      probabilidad:pagado?100:70,fecha_prevista:todayLocal(),
+      estatus:tele?(pagado?'Cerrado-Ganado':'En seguimiento'):(pagado?'Cerrada-Ganada':'Negociación o Revisión con Cliente'),
+      updated_at:new Date().toISOString(),
+    };
+    if(tele) payload.perfil='telemarketing';
+    const {data:fila,error}=await sb.rpc('crear_negociacion_pedido',{p_payload:payload,p_owner:ownerId});
+    if(error||!fila){alert('No se pudo crear la negociación en Proyección: '+(error?.message||'sin respuesta'));return;}
+    await sb.from('shopify_pedidos').update({pipeline_vendedor_id:fila.id}).eq('id',p.id);
+    p.pipeline_vendedor_id=fila.id;
+    const oc=await shpCrearOportunidadPedido(fila,ownerId);
+    uiToast((oc.ok?'✅ Negociación en Proyección y oportunidad creada en el CRM':'📊 Negociación creada en Proyección; la oportunidad del CRM no se pudo crear ('+(oc.error||'error')+')')+(ownerId!==me?` · a nombre de ${ownerNombre}`:''),oc.ok);
+    shpPintar();
+    if(confirm('Listo: el pedido ya quedó registrado en Proyección y el CRM.\n\n¿Generar ahora la solicitud de factura?')) shpFacturar(id);
+  }catch(e){alert('Error: '+(e?.message||e));}
+  finally{_shpPasando=false;}
+}
 function shpFacturar(id){
   window._solPrefill={shopify_id:id};
   if(userProfile?.rol==='telemarketing'&&typeof swT==='function') swT('factura');
@@ -30613,51 +30822,102 @@ function shpSugerir(titulo){
   _shpCat.forEach(c=>{const b=shpTokens(c.nombre);let i=0;a.forEach(w=>{if(b.has(w))i++;});const s=i/Math.max(1,new Set([...a,...b]).size);if(s>best){best=s;mejor=c;}});
   return best>=0.5?mejor:null;
 }
+const SHP_FAM_CURSO=['Cursos','Diplomados','Talleres'],SHP_FAM_SERV=['Servicios por evento'];
+let _shpModo={};
+function shpNivelDeLinea(l){
+  const v=String(l?.variante||'').toLowerCase();
+  return /premium/.test(v)?'premium':/plus/.test(v)?'plus':/esencial|b[aá]sico/.test(v)?'esencial':shpNivelSku(l?.sku);
+}
+function shpEsCursoTitulo(t){return /curso|taller|diplomado|domina|masterclass|combo|aguinaldo|cierre/i.test(t||'');}
+function shpSimGen(titulo,g){const a=shpTokens(titulo),b=shpTokens(g.curso?.nombre||'');let i=0;a.forEach(w=>{if(b.has(w))i++;});return i/Math.max(1,new Set([...a,...b]).size);}
 async function shpPintarMapeo(){
   const box=document.getElementById('shpMapBox');if(!box) return;
   if(!shpEsDir()){box.innerHTML='';return;}
-  if(!_shpCat.length){const {data}=await sb.from('catalogo_items').select('id,nombre').eq('activo',true).order('nombre').limit(500);_shpCat=data||[];}
-  if(!_shpGens.length){const {data}=await sb.from('academia_generaciones').select('id,clave,fecha_inicio,fecha_fin,archivado_manual,curso:curso_id(nombre)').order('fecha_inicio',{ascending:false,nullsFirst:false}).limit(300);_shpGens=data||[];}
-  // claves vistas en pedidos + las ya registradas
-  const vistas={};_shpRows.forEach(p=>(p.lineas||[]).forEach(l=>{const k=shpClave(l);if(!vistas[k]) vistas[k]={clave:k,titulo:l.titulo,sku:l.sku};}));
+  if(!_shpCat.length){const {data}=await sb.from('catalogo_items').select('id,nombre,familia').eq('activo',true).in('familia',[...SHP_FAM_CURSO,...SHP_FAM_SERV]).order('nombre').limit(500);_shpCat=data||[];}
+  // Solo generaciones GRUPALES (taller / desde cero / diplomado en vivo o 24/7). Los cursos empresariales no se venden por Shopify.
+  if(!_shpGens.length){const {data}=await sb.from('academia_generaciones').select('id,clave,fecha_inicio,fecha_fin,archivado_manual,curso:curso_id(nombre,tipo)').order('fecha_inicio',{ascending:false,nullsFirst:false}).limit(400);_shpGens=(data||[]).filter(g=>g.curso&&g.curso.tipo!=='empresarial');}
+  const vistas={};
+  _shpRows.forEach(p=>(p.lineas||[]).forEach(l=>{const k=shpClave(l);if(!vistas[k]) vistas[k]={clave:k,titulo:l.titulo,sku:l.sku,variante:l.variante,precio:l.precio};}));
   Object.values(_shpMap).forEach(m=>{if(!vistas[m.clave]) vistas[m.clave]={clave:m.clave,titulo:m.titulo,sku:m.clave};});
   const todas=Object.values(vistas).sort((a,b)=>String(a.titulo).localeCompare(String(b.titulo)));
   const pend=todas.filter(x=>!_shpMap[x.clave]?.catalogo_item_id&&!(_shpMap[x.clave]?.generacion_ids||[]).length);
-  const fila=x=>{const m=_shpMap[x.clave]||{};if(!_shpGenSel[x.clave]) _shpGenSel[x.clave]=new Set(m.generacion_ids||[]);const sug=m.catalogo_item_id?null:shpSugerir(x.titulo);const sel=m.catalogo_item_id||(sug?sug.id:'');const niv=m.nivel||shpNivelSku(x.sku);
-    return `<div style="display:grid;grid-template-columns:minmax(170px,2fr) minmax(170px,2fr) 100px 150px auto;gap:8px;align-items:center;border-bottom:1px solid var(--border);padding:6px 0;font-size:12px;">
-      <div><b>${solEsc(x.titulo)}</b><div style="font-size:10px;color:var(--text3);">${solEsc(x.clave)}</div></div>
-      <select id="shpM_${solEsc(x.clave)}" style="${SOL_INPUT_STYLE}"><option value="">— elegir del catálogo —</option>${_shpCat.map(c=>`<option value="${c.id}" ${c.id===sel?'selected':''}>${solEsc(c.nombre)}</option>`).join('')}</select>
-      <select id="shpN_${solEsc(x.clave)}" style="${SOL_INPUT_STYLE}"><option value="">nivel…</option>${['esencial','plus','premium'].map(n=>`<option ${n===niv?'selected':''}>${n}</option>`).join('')}</select>
-      <button id="shpG_${solEsc(x.clave)}" onclick="shpGenModal('${solEsc(x.clave).replace(/'/g,"\\'")}')" style="border:1px solid var(--teal);background:#fff;color:var(--teal);border-radius:6px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;">🎓 Generaciones (${_shpGenSel[x.clave].size})</button>
-      <button onclick="shpGuardarMap('${solEsc(x.clave).replace(/'/g,"\\'")}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;">Guardar</button></div>`;};
+  const fila=x=>{
+    const m=_shpMap[x.clave]||{};const kq=solEsc(x.clave).replace(/'/g,"\\'");
+    if(!_shpGenSel[x.clave]) _shpGenSel[x.clave]=new Set(m.generacion_ids||[]);
+    const ngen=_shpGenSel[x.clave].size;
+    const itemMap=_shpCat.find(c=>c.id===m.catalogo_item_id);
+    if(!_shpModo[x.clave]) _shpModo[x.clave]=ngen||(itemMap&&SHP_FAM_CURSO.includes(itemMap.familia))?'curso':(itemMap?'servicio':(shpEsCursoTitulo(x.titulo)?'curso':'servicio'));
+    const modo=_shpModo[x.clave];
+    const niv=m.nivel||shpNivelDeLinea(x);
+    const fams=modo==='curso'?SHP_FAM_CURSO:SHP_FAM_SERV;
+    const opts=_shpCat.filter(c=>fams.includes(c.familia));
+    const sug=m.catalogo_item_id?null:shpSugerir(x.titulo);
+    const sel=m.catalogo_item_id||(sug&&fams.includes(sug.familia)?sug.id:'');
+    const celda=modo==='curso'
+      ?`<div><button id="shpG_${solEsc(x.clave)}" onclick="shpGenModal('${kq}')" style="border:1px solid var(--teal);background:#fff;color:var(--teal);border-radius:6px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;width:100%;">🎓 Generaciones (${ngen})</button></div>`
+      :`<div><button onclick="shpCrearServicio('${kq}')" style="border:1px solid #b45309;background:#fff;color:#b45309;border-radius:6px;padding:5px 8px;font-size:11px;font-weight:700;cursor:pointer;width:100%;">➕ Crear en catálogo</button></div>`;
+    return `<div style="display:grid;grid-template-columns:minmax(170px,2fr) 120px minmax(170px,2fr) 100px 140px auto;gap:8px;align-items:center;border-bottom:1px solid var(--border);padding:6px 0;font-size:12px;">
+      <div><b>${solEsc(x.titulo)}</b>${x.variante?`<div style="font-size:11px;color:var(--navy);">Variante: ${solEsc(x.variante)}</div>`:''}<div style="font-size:10px;color:var(--text3);">${solEsc(x.clave)}</div></div>
+      <select onchange="_shpModo['${kq}']=this.value;shpPintarMapeo()" style="${SOL_INPUT_STYLE}"><option value="curso" ${modo==='curso'?'selected':''}>🎓 Curso</option><option value="servicio" ${modo==='servicio'?'selected':''}>🛠 Servicio</option></select>
+      <select id="shpM_${solEsc(x.clave)}" style="${SOL_INPUT_STYLE}"><option value="">— ${modo==='curso'?'catálogo (opcional, se sugiere por la generación)':'elegir servicio del catálogo'} —</option>${opts.map(c=>`<option value="${c.id}" ${c.id===sel?'selected':''}>${solEsc(c.nombre)}</option>`).join('')}</select>
+      ${modo==='curso'?`<select id="shpN_${solEsc(x.clave)}" style="${SOL_INPUT_STYLE}"><option value="">acceso…</option>${['esencial','plus','premium'].map(n=>`<option ${n===niv?'selected':''}>${n}</option>`).join('')}</select>`:`<span id="shpN_${solEsc(x.clave)}" style="font-size:11px;color:var(--text3);">sin acceso</span>`}
+      ${celda}
+      <button onclick="shpGuardarMap('${kq}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;">Guardar</button></div>`;
+  };
   box.innerHTML=`<details ${pend.length?'open':''} style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px 14px;">
-    <summary style="cursor:pointer;font-size:13px;font-weight:700;color:var(--navy);">🔗 Vincular productos de Shopify al catálogo ${pend.length?`<span style="color:#B45309;">(${pend.length} por vincular)</span>`:'<span style="color:#2E7D32;">(todos vinculados)</span>'}</summary>
-    <div style="font-size:11px;color:var(--text3);margin:6px 0;">El catálogo da el nombre del concepto en la factura; el nivel (esencial/plus/premium) define el acceso en Academia. Se sugiere automáticamente el más parecido; verifícalo.</div>
+    <summary style="cursor:pointer;font-size:13px;font-weight:700;color:var(--navy);">🔗 Vincular productos de Shopify ${pend.length?`<span style="color:#B45309;">(${pend.length} por vincular)</span>`:'<span style="color:#2E7D32;">(todo vinculado)</span>'}</summary>
+    <div style="font-size:11px;color:var(--text3);margin:6px 0;"><b>Curso</b>: se casa con generaciones de Academia (solo grupales: talleres, desde cero y diplomados; los empresariales no aplican) y el acceso (esencial / plus / premium) sale de la variante de Shopify. El pedido llega ya casado y el vendedor y Facturación solo lo confirman. <b>Servicio</b> (ej. diagnósticos): se elige del catálogo o se crea desde lo que trae Shopify.</div>
     ${(pend.length?pend:todas).map(fila).join('')||'<div style="font-size:12px;color:var(--text3);">Aún no hay productos.</div>'}
     ${pend.length&&todas.length>pend.length?`<div style="font-size:11px;color:var(--text3);margin-top:6px;">Mostrando solo los pendientes.</div>`:''}</details>`;
 }
 function shpGenModal(clave){
   const sel=_shpGenSel[clave]||(_shpGenSel[clave]=new Set());
-  const hoy=new Date().toISOString().slice(0,10);
-  const lista=_shpGens.filter(g=>_shpGenVerArch||!g.archivado_manual||sel.has(g.id));
+  const titulo=_shpRows.flatMap(p=>p.lineas||[]).find(l=>shpClave(l)===clave)?.titulo||_shpMap[clave]?.titulo||clave;
+  const lista=_shpGens.filter(g=>_shpGenVerArch||!g.archivado_manual||sel.has(g.id)).sort((a,b)=>(sel.has(b.id)-sel.has(a.id))||(shpSimGen(titulo,b)-shpSimGen(titulo,a)));
   const fmtF=f=>f?solFecha(f):'';
-  const fila=g=>`<label style="display:flex;gap:7px;align-items:flex-start;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;"><input type="checkbox" ${sel.has(g.id)?'checked':''} onchange="shpGenTog('${clave.replace(/'/g,"\\'")}','${g.id}',this.checked)"><span><b>${solEsc(g.curso?.nombre||'(sin curso)')}</b> <span style="color:var(--text3);">· ${solEsc(g.clave)}${g.fecha_inicio?' · '+fmtF(g.fecha_inicio)+(g.fecha_fin&&g.fecha_fin!==g.fecha_inicio?' → '+fmtF(g.fecha_fin):''):' · abierta 24/7'}${g.archivado_manual?' · archivada':''}</span></span></label>`;
+  const fila=g=>`<label style="display:flex;gap:7px;align-items:flex-start;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;"><input type="checkbox" ${sel.has(g.id)?'checked':''} onchange="shpGenTog('${clave.replace(/'/g,"\\'")}','${g.id}',this.checked)"><span>${shpSimGen(titulo,g)>=0.4?'⭐ ':''}<b>${solEsc(g.curso?.nombre||'(sin curso)')}</b> <span style="color:var(--text3);">· ${solEsc(g.clave)}${g.fecha_inicio?' · '+fmtF(g.fecha_inicio)+(g.fecha_fin&&g.fecha_fin!==g.fecha_inicio?' → '+fmtF(g.fecha_fin):''):' · abierta 24/7'}${g.archivado_manual?' · archivada':''}</span></span></label>`;
   solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">🎓 Generaciones de Academia</div>
-    <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">${solEsc(_shpRows.flatMap(p=>p.lineas||[]).find(l=>shpClave(l)===clave)?.titulo||_shpMap[clave]?.titulo||clave)}<br><span style="color:var(--text3);">Marca la(s) generación(es) a las que puede entrar quien compre este producto. Si marcas varias del mismo taller (ej. dos fechas), el vendedor elige la que pide el cliente; en un combo, una por taller.</span></div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">${solEsc(titulo)}<br><span style="color:var(--text3);">Solo generaciones grupales (sin cursos empresariales). Marca la(s) generación(es) a las que puede entrar quien compre este producto. Si marcas varias del mismo taller (ej. dos fechas), el vendedor elige la que pide el cliente; en un combo, una por taller. ⭐ = se parece al nombre del producto.</span></div>
     <label style="font-size:11px;display:block;margin-bottom:6px;"><input type="checkbox" ${_shpGenVerArch?'checked':''} onchange="_shpGenVerArch=this.checked;shpGenModal('${clave.replace(/'/g,"\\'")}')"> Mostrar también generaciones archivadas</label>
     <div style="max-height:360px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:4px 10px;">${lista.map(fila).join('')||'<div style="font-size:12px;color:var(--text3);padding:8px;">No hay generaciones.</div>'}</div>
     <div style="margin-top:10px;"><button onclick="solCerrarModal();shpPintarMapeo();" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Listo</button> <span style="font-size:11px;color:var(--text3);">Después pulsa “Guardar” en la fila del producto.</span></div>`,640);
 }
 function shpGenTog(clave,id,on){const s=_shpGenSel[clave]||(_shpGenSel[clave]=new Set());if(on)s.add(id);else s.delete(id);}
+// Crea un servicio en el catálogo con lo que trae Shopify (solo servicios; los cursos vienen de generaciones)
+async function shpCrearServicio(clave){
+  const lin=_shpRows.flatMap(p=>p.lineas||[]).find(l=>shpClave(l)===clave);
+  const titulo=lin?.titulo||_shpMap[clave]?.titulo||clave;
+  const nombre=prompt('Nombre del servicio en el catálogo:',titulo);
+  if(!nombre||!nombre.trim()) return;
+  const dup=_shpCat.find(c=>solSimNombre(c.nombre,nombre)>=0.9);
+  if(dup&&!confirm(`Ya existe "${dup.nombre}" en el catálogo. ¿Crear otro de todos modos?`)) return;
+  const codigo='EVT-SHOP-'+String(clave).toUpperCase().replace(/[^A-Z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,30);
+  const {data,error}=await sb.from('catalogo_items').insert({codigo,nombre:nombre.trim(),familia:'Servicios por evento',tipo:'servicio',rubro_ingreso:'SERVICIO POR EVENTO',precio_lista:lin?.precio||null,activo:true,revisado:false}).select('id,nombre,familia').single();
+  if(error) return alert('No se pudo crear en el catálogo: '+error.message);
+  _shpCat.push(data);_shpCat.sort((a,b)=>a.nombre.localeCompare(b.nombre));
+  _shpMap[clave]={..._shpMap[clave],clave,titulo,catalogo_item_id:data.id,concepto:data.nombre};
+  await sb.from('shopify_producto_map').upsert({clave,titulo,catalogo_item_id:data.id,concepto:data.nombre,nivel:null,generacion_ids:[],updated_at:new Date().toISOString()});
+  uiToast('✅ Servicio creado en el catálogo y vinculado (revísalo en Catálogo: clave SAE y SAT quedan pendientes)',true);
+  shpPintar();shpPintarMapeo();
+}
 async function shpGuardarMap(clave){
-  const id=document.getElementById('shpM_'+clave)?.value;const niv=document.getElementById('shpN_'+clave)?.value||null;
-  const gens=[...(_shpGenSel[clave]||[])];
-  if(!id&&!gens.length) return alert('Elige el producto del catálogo y/o al menos una generación de Academia.');
+  const modo=_shpModo[clave]||'curso';
+  const id=document.getElementById('shpM_'+clave)?.value||null;
+  const nivSel=document.getElementById('shpN_'+clave);
+  const niv=modo==='curso'?(nivSel?.value||null):null;
+  const gens=modo==='curso'?[...(_shpGenSel[clave]||[])]:[];
+  if(modo==='curso'&&!gens.length) return alert('Un curso se vincula con su(s) generación(es) de Academia. Elige al menos una.');
+  if(modo==='curso'&&!niv) return alert('Elige el acceso (esencial / plus / premium).');
+  if(modo==='servicio'&&!id) return alert('Elige el servicio del catálogo, o créalo con “➕ Crear en catálogo”.');
   const item=_shpCat.find(c=>c.id===id);
   const titulo=_shpRows.flatMap(p=>p.lineas||[]).find(l=>shpClave(l)===clave)?.titulo||_shpMap[clave]?.titulo||clave;
-  const {error}=await sb.from('shopify_producto_map').upsert({clave,titulo,catalogo_item_id:id||null,concepto:item?.nombre||null,nivel:niv,generacion_ids:gens,updated_at:new Date().toISOString()});
+  // Concepto: el del catálogo; si no hay, el nombre del curso de la(s) generación(es)
+  const cursos=[...new Set(gens.map(g=>_shpGens.find(x=>x.id===g)?.curso?.nombre).filter(Boolean))];
+  const concepto=item?.nombre||(cursos.length?cursos.join(' + '):null);
+  const {error}=await sb.from('shopify_producto_map').upsert({clave,titulo,catalogo_item_id:id||null,concepto,nivel:niv,generacion_ids:gens,updated_at:new Date().toISOString()});
   if(error) return alert('No se pudo guardar: '+error.message);
-  _shpMap[clave]={clave,titulo,catalogo_item_id:id||null,concepto:item?.nombre||null,nivel:niv,generacion_ids:gens};
+  _shpMap[clave]={clave,titulo,catalogo_item_id:id||null,concepto,nivel:niv,generacion_ids:gens};
+  uiToast('✅ Producto vinculado',true);
   shpPintar();shpPintarMapeo();
 }
 // ── Aviso de pedidos nuevos: contador en la pestaña + notificación emergente (cada 30 s) ──
@@ -30793,6 +31053,12 @@ async function solAplicarPrefillShopify(id){
   const fila=document.querySelector('.sfAsRow');
   if(fila){const v=(c,x)=>{const e=fila.querySelector(c);if(e&&!e.value) e.value=x||'';};v('.sfAsN',p.cliente_nombre);v('.sfAsC',p.email);v('.sfAsT',p.telefono);}
   if(nivel) set('sfAcadNivel',nivel);
+  // Pedido ya casado con el catálogo: acceso y concepto se confirman, no se reescriben (solo Dirección puede cambiarlos)
+  const casado=ms.length&&ms.every(m=>m&&m.concepto&&(m.nivel||(m.generacion_ids||[]).length===0));
+  if(casado&&!shpEsDir()){
+    const sl=document.getElementById('sfAcadNivel');if(sl&&nivel){sl.disabled=true;sl.title='Viene de la tienda; Dirección puede cambiarlo';}
+    const ce=document.getElementById('sfConcepto');if(ce){ce.readOnly=true;ce.style.background='#f2f5f5';ce.title='Viene de la tienda (producto ya casado con el catálogo)';}
+  }
   // Generaciones vinculadas al producto: las de un taller con una sola opción se marcan solas; las ambiguas se sugieren (⭐)
   const linked=[...new Set(ms.flatMap(m=>m?.generacion_ids||[]))];
   if(linked.length){
@@ -30801,6 +31067,7 @@ async function solAplicarPrefillShopify(id){
     const porCurso={};(gl||[]).forEach(g=>{(porCurso[g.curso_id]=porCurso[g.curso_id]||[]).push(g.id);});
     const auto=Object.values(porCurso).filter(a=>a.length===1).map(a=>a[0]);
     window._solGenSug=new Set(linked);
+    if(!shpEsDir()) window._solGenSolo=new Set(linked);
     const box=document.getElementById('sfAcadGens');
     if(box){box.dataset.sel=auto.join(',');await solAcadCargarGens('sf');}
   }
@@ -30811,7 +31078,7 @@ async function solAplicarPrefillShopify(id){
 async function renderSolFacturaVendedor(){
   const mc=document.getElementById('mainContent');
   mc.classList.remove('full-width');
-  window._sfCliente=null;window._sfFactA=null;window._sfGrupo=null;window._sfPipe=null;window._sfShop=null;window._solGenSug=null;
+  window._sfCliente=null;window._sfFactA=null;window._sfGrupo=null;window._sfPipe=null;window._sfShop=null;window._solGenSug=null;window._solGenSolo=null;
   mc.innerHTML=`
   <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px;">🧾 Solicitar factura</div>
   <div style="font-size:12px;color:var(--text3);margin-bottom:14px;">Llena esta solicitud en lugar de escribir en Telegram. Dirección valida el pago y Administración emite la factura; aquí ves en qué va.</div>
@@ -30952,7 +31219,7 @@ async function solAcadCargarGens(p){
   const box=document.getElementById(p+'AcadGens');if(!box) return;
   if(!window._solGens) await solCargarGeneraciones();
   const sug=window._solGenSug||new Set();
-  const gens=(window._solGens||[]).slice().sort((a,b)=>(sug.has(b.id)-sug.has(a.id))||String(a.fecha_inicio||'9').localeCompare(String(b.fecha_inicio||'9')));
+  const gens=(window._solGens||[]).filter(g=>!window._solGenSolo||window._solGenSolo.has(g.id)||g.__sel).slice().sort((a,b)=>(sug.has(b.id)-sug.has(a.id))||String(a.fecha_inicio||'9').localeCompare(String(b.fecha_inicio||'9')));
   const sel=new Set((box.dataset.sel||'').split(',').filter(Boolean));
   box.innerHTML=gens.length?gens.map(g=>`<label style="display:flex;gap:6px;align-items:flex-start;padding:2px 0;"><input type="checkbox" class="${p}AcadGen" value="${g.id}" ${sel.has(g.id)?'checked':''}><span>${sug.has(g.id)?'⭐ ':''}${g.fecha_inicio?'<b>'+solFecha(g.fecha_inicio)+'</b> · ':''}${solEsc(g.curso?.nombre||'')} <span style="color:var(--text3);">(${solEsc(g.clave||'')})</span></span></label>`).join(''):'<span style="color:var(--text3);">No hay generaciones vigentes en Academia. Pídele a Dirección que las cree (en un combo, una por curso); mientras, puedes enviar sin generación y se asigna después desde la tarjeta.</span>';
 }
@@ -31083,7 +31350,18 @@ async function solLeerCotizacion(input){
 // Prefill desde Proyección (negociación Cerrada-Ganada → "mandar a facturación")
 async function solAplicarPrefill(){
   const p=window._solPrefill;window._solPrefill=null;
-  if(p?.shopify_id) return solAplicarPrefillShopify(p.shopify_id);
+  if(p?.shopify_id){
+    await solAplicarPrefillShopify(p.shopify_id);
+    try{
+      const {data:ped}=await sb.from('shopify_pedidos').select('pipeline_vendedor_id').eq('id',p.shopify_id).single();
+      if(ped?.pipeline_vendedor_id){
+        let {data:n}=await sb.rpc('pipeline_para_solicitud',{p_id:ped.pipeline_vendedor_id});
+        if(!n){ ({data:n}=await sb.from('pipeline_vendedor').select('*, oportunidades_crm(crm_folio,crm_potentialid)').eq('id',ped.pipeline_vendedor_id).maybeSingle()); }
+        if(n) solAplicarNegociacion(n);
+      }
+    }catch(e){console.error('ligar negociación del pedido',e);}
+    return;
+  }
   if(!p?.pipeline_id) return;
   const {data:n}=await sb.from('pipeline_vendedor').select('*, oportunidades_crm(crm_folio,crm_potentialid)').eq('id',p.pipeline_id).single();
   if(!n) return;
@@ -31196,12 +31474,15 @@ async function solClienteElegir(i){
   setc('sfForma',m.forma_pago_pref);setc('sfMetodo',m.metodo_pago_pref);setc('sfUso',m.uso_cfdi);setc('sfReg',m.regimen_fiscal);
   // Negociaciones de Proyección de este vendedor con esta cuenta
   try{
-    const {data:negs}=await sb.from('pipeline_vendedor').select('*, oportunidades_crm(crm_folio,crm_potentialid)').eq('cliente_cartera_id',m.id).eq('usuario_id',currentUser.id).order('updated_at',{ascending:false}).limit(12);
-    window._solNegs=negs||[];
+    // De cualquier vendedor de la cuenta (el que cubre puede facturar la venta de otro sin quedársela)
+    let {data:negs}=await sb.rpc('pipeline_de_cuenta',{p_cuenta:m.id});
+    if(!Array.isArray(negs)){ ({data:negs}=await sb.from('pipeline_vendedor').select('*, oportunidades_crm(crm_folio,crm_potentialid)').eq('cliente_cartera_id',m.id).eq('usuario_id',currentUser.id).order('updated_at',{ascending:false}).limit(12)); }
+    negs=(negs||[]).slice(0,15);
+    window._solNegs=negs;
     const box=document.getElementById('sfPipeBox');
     if(box&&!window._sfPipe&&(negs||[]).length){
       box.style.display='block';
-      box.innerHTML=`<div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:3px;">Ligar a una negociación de Proyección (precarga concepto, monto y liga del CRM)</div><select onchange="solElegirNegociacion(this.value)" style="${SOL_INPUT_STYLE}"><option value="">— sin ligar —</option>${negs.map(n=>`<option value="${n.id}">${solEsc(n.estatus||'')} · ${solEsc(n.producto||'')} · ${fmt(n.monto_total)}</option>`).join('')}</select>`;
+      box.innerHTML=`<div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:3px;">Ligar a una negociación de Proyección (precarga concepto, monto y liga del CRM)</div><select onchange="solElegirNegociacion(this.value)" style="${SOL_INPUT_STYLE}"><option value="">— sin ligar —</option>${negs.map(n=>`<option value="${n.id}">${solEsc(n.estatus||'')} · ${solEsc(n.producto||'')} · ${fmt(n.monto_total)}${n.usuario_id!==(userProfile?.id||currentUser.id)?' · de '+solEsc(n.dueno_nombre||'otro vendedor'):''}</option>`).join('')}</select>`;
     }
   }catch(e){console.error(e);}
   // Reutiliza los datos fiscales de la última solicitud de este cliente (si la cuenta no los tiene)
@@ -31334,6 +31615,8 @@ async function solEnviar(){
       if(cand.length===1&&confirm(`¿Esta solicitud corresponde al pedido ${cand[0].numero} de la tienda (${cand[0].cliente_nombre||''}, ${fmt(cand[0].total)})?\n\nAceptar = se liga y el pedido pasa a "Enviado a facturar".`)) window._sfShop=cand[0];
     }catch(e){console.error('candado pedido',e);}
   }
+  // Pedido de la tienda: debe estar registrado en Proyección (cuenta + oportunidad) antes de facturar
+  if(window._sfShop&&!window._sfShop.pipeline_vendedor_id&&!window._sfPipe) return err('Este pedido de la tienda aún no pasa por Proyección. Ve a la bandeja de pedidos y pulsa "📊 Pasar a Proyección" primero (así queda la cuenta y la oportunidad en el CRM).');
   const btn=document.getElementById('sfEnviar');btn.disabled=true;msg.style.color='var(--teal)';msg.textContent='Enviando...';
   try{
     const id=solUuid();
@@ -31344,7 +31627,8 @@ async function solEnviar(){
     const cf=document.getElementById('sfCotizPdf').files[0];
     if(cf) cotPath=await solSubirArchivo(cf,fid,'cotizacion');
     const row={
-      vendedor_id:userProfile?.id||currentUser.id,vendedor_nombre:userProfile?.nombre||'',
+      vendedor_id:(window._sfPipe?.usuario_id)||userProfile?.id||currentUser.id,vendedor_nombre:(window._sfPipe?.usuario_id&&window._sfPipe.usuario_id!==(userProfile?.id||currentUser.id))?(_shpUsuarios[window._sfPipe.usuario_id]||'(dueño de la venta)'):(userProfile?.nombre||''),
+      atendio_id:(window._sfPipe?.usuario_id&&window._sfPipe.usuario_id!==(userProfile?.id||currentUser.id))?(userProfile?.id||currentUser.id):null,atendio_nombre:(window._sfPipe?.usuario_id&&window._sfPipe.usuario_id!==(userProfile?.id||currentUser.id))?(userProfile?.nombre||''):null,
       cliente_cartera_id:cli?.id||null,num_cliente:cli?.num_cliente||null,cliente_nombre:nombre,rfc:v('sfRfc').toUpperCase(),
       tipo,forma_pago:v('sfForma'),metodo_pago:v('sfMetodo'),uso_cfdi:v('sfUso'),regimen:v('sfReg'),
       cotizacion_sae:v('sfCotiz'),concepto:v('sfConcepto'),monto_total:total,
@@ -31393,7 +31677,7 @@ async function solEnviar(){
     let msgShop='';
     if(window._sfShop&&solId){
       const ped=window._sfShop;const pgi=shpPagoInfo(ped);
-      try{await sb.from('shopify_pedidos').update({estado:'enviado_facturar',solicitud_id:solId,atiende_id:ped.atiende_id||userProfile?.id||currentUser.id,atiende_nombre:ped.atiende_nombre||userProfile?.nombre||''}).eq('id',ped.id);}catch(e){console.error('ligar pedido',e);}
+      try{await sb.from('shopify_pedidos').update({estado:'enviado_facturar',solicitud_id:solId,pipeline_vendedor_id:ped.pipeline_vendedor_id||window._sfPipe?.id||null,atiende_id:ped.atiende_id||userProfile?.id||currentUser.id,atiende_nombre:ped.atiende_nombre||userProfile?.nombre||''}).eq('id',ped.id);}catch(e){console.error('ligar pedido',e);}
       if(pgi.pagado&&pgi.auto&&tipo==='con_pago'){
         try{
           const {data:nr}=await sb.from('solicitudes_factura').select('*').eq('id',solId).single();
@@ -31929,7 +32213,8 @@ function timTarjetaHtml(r,esDir,esVend){
   if(r.timbres_estado==='asignados'){
     const ps=_solTimbres[r.id]||[];
     const claves=ps.map(p=>`<span style="display:inline-flex;align-items:center;gap:5px;margin:2px 8px 2px 0;"><span style="font-family:'JetBrains Mono',monospace;font-weight:700;">${solEsc(p.clave)}</span> <span style="color:var(--text3);">(${timFmtN(p.cantidad)})</span><button onclick="timCopiar('${solEsc(p.clave)}')" style="border:1px solid var(--border);background:#fff;border-radius:5px;font-size:10px;padding:1px 6px;cursor:pointer;">Copiar</button></span>`).join('');
-    return caja('#9fd3d0','#eef6f6',`🎟 <b>Timbres asignados${n?' ('+timFmtN(n)+')':''}:</b> ${claves||'—'}${esDir?` <button onclick="timAsignarManualModal('${r.id}')" style="border:1px solid var(--border);background:#fff;border-radius:5px;font-size:10px;padding:1px 6px;cursor:pointer;">+ otro paquete</button>`:''}`);
+    return caja('#9fd3d0','#eef6f6',`🎟 <b>Timbres asignados${n?' ('+timFmtN(n)+')':''}:</b> ${claves||'—'}${esDir?` <button onclick="timAsignarManualModal('${r.id}')" style="border:1px solid var(--border);background:#fff;border-radius:5px;font-size:10px;padding:1px 6px;cursor:pointer;">+ otro paquete</button>`:''}
+      <div style="margin-top:5px;font-size:11px;color:${r.timbres_correo_at?'#2E7D32':'#B45309'};">${r.timbres_correo_at?'✉️ Correo enviado el '+new Date(r.timbres_correo_at).toLocaleString('es-MX'):'⚠️ Correo al vendedor sin enviar'+(r.timbres_correo_error?' ('+solEsc(r.timbres_correo_error)+')':'')}${esDir?` <button onclick="timReenviarCorreo('${r.id}')" style="border:1px solid var(--teal);background:#fff;color:var(--teal);border-radius:5px;font-size:10px;padding:1px 8px;cursor:pointer;font-weight:700;margin-left:4px;">📧 ${r.timbres_correo_at?'Reenviar':'Enviar'} correo</button>`:''}</div>`);
   }
   if(r.timbres_estado==='pendiente'){
     return caja('#F5A623','#FFF8EC',esVend
@@ -31977,6 +32262,10 @@ async function timAsignar(r,paq){
   (_solTimbres[r.id]=_solTimbres[r.id]||[]).push(got);
   if(r.pipeline_vendedor_id) pipeComentarioCrmLibre(r.pipeline_vendedor_id,`[Facturación] Timbres asignados: ${got.clave} (${timFmtN(got.cantidad)} timbres)`,r.vendedor_id);
   const correo=await timAvisarVendedor(r.id);
+  try{
+    const pc=correo.ok?{timbres_correo_at:new Date().toISOString(),timbres_correo_error:null}:{timbres_correo_error:String(correo.error||'error').slice(0,300)};
+    await sb.from('solicitudes_factura').update(pc).eq('id',r.id);Object.assign(r,pc);
+  }catch(e){}
   return {estado:'asignados',clave:got.clave,correo};
 }
 function timMensajeResultado(r,res){
@@ -31984,6 +32273,16 @@ function timMensajeResultado(r,res){
   if(res.estado==='pendiente') return `⚠️ No hay un paquete disponible de ${timFmtN(res.n)} timbres. La solicitud de ${r.cliente_nombre} quedó pendiente de timbres; cuando des de alta uno se asignará.`;
   if(res.estado==='sin_cantidad') return 'No pude leer la cantidad de timbres del concepto. Asigna el paquete manualmente.';
   return 'No se pudieron asignar los timbres: '+(res.error||'error');
+}
+// Reenvío manual del correo de timbres al vendedor (Jp, 2026-11-06)
+async function timReenviarCorreo(id){
+  const r=_solRows.find(x=>x.id===id);if(!r) return;
+  if(!confirm(`¿Reenviar por correo las claves de timbres a ${r.vendedor_nombre||'el vendedor'}?`)) return;
+  const c=await timAvisarVendedor(id);
+  const pc=c.ok?{timbres_correo_at:new Date().toISOString(),timbres_correo_error:null}:{timbres_correo_error:String(c.error||'error').slice(0,300)};
+  try{await sb.from('solicitudes_factura').update(pc).eq('id',id);Object.assign(r,pc);}catch(e){}
+  alert(c.ok?`✅ Correo reenviado a ${r.vendedor_nombre||'el vendedor'}.`:`⚠️ No se pudo enviar el correo: ${c.error||'error'}\n\nPuedes copiar las claves y mandárselas por otro medio.`);
+  solRefrescar();
 }
 async function timAsignarSolicitudBtn(id){
   const r=_solRows.find(x=>x.id===id);if(!r) return;
