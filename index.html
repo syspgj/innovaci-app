@@ -13290,6 +13290,7 @@ async function renderDirectorSuscripcionesModulo(){
       ${puedeCargarExcel?`<button onclick="swSuscModulo('comision')" id="suscModuloTab_comision" class="cartera-subtab">💰 Comisión Aspel</button>`:''}
       ${puedeCargarExcel?`<button onclick="abrirCargaExcelSuscripciones()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📎 Cargar Excel de renovaciones</button>`:''}
       ${puedeCargarExcel?`<button onclick="abrirVerificarCatalogoAspel()" style="background:#C0392B;color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔍 Verificar catálogo Aspel</button>`:''}
+      ${puedeCargarExcel?`<button onclick="abrirCargarLicenciamientos()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🧩 Cargar licenciamientos</button>`:''}
       ${puedeCargarExcel?`<button onclick="abrirCargarComisionesPagadas()" style="background:#2980B9;color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💳 Cargar comisiones pagadas</button>`:''}
     </div>
   </div>
@@ -14053,6 +14054,151 @@ function suscEsAspelSiigoNoi(s){
   return !SUSC_PATRONES_NO_ASPEL.some(re=>re.test((s.producto||'').trim()));
 }
 
+const licEsc=x=>String(x==null?"":x).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+// ── "🧩 Cargar licenciamientos" (Jp, 2026-11-09): del mismo Excel "Mis Clientes Aspel", las filas
+// Tipo Servicio = LICENCIAMIENTO son sistemas que el cliente COMPRÓ. Se cargan en Sistemas de su cuenta
+// (clientes_cartera_sistemas) y opcionalmente se replican al CRM (Cuenta → sección Sistemas).
+// Los que ya existen en la app NO se pisan solos: se muestran las diferencias y Jp decide.
+window._licState=null;
+function abrirCargarLicenciamientos(){
+  const html=`
+    <div style="margin-bottom:14px;padding:12px 16px;background:rgba(26,127,160,0.07);border:1px dashed var(--teal);border-radius:8px;">
+      <div style="font-size:12px;font-weight:600;color:var(--navy);margin-bottom:8px;">Sube el Excel "Mis Clientes Aspel" (el mismo de Verificar catálogo).</div>
+      <input type="file" id="licExcel" accept=".xlsx,.xls" onchange="procesarLicenciamientos()" style="font-size:12px;width:100%;">
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;">Solo se leen las filas LICENCIAMIENTO. La cuenta se identifica por RFC. Sistema nuevo = se agrega. Ya existe = se muestran las diferencias y tú decides si lo reemplazas (el número de serie y la fecha de compra siempre se guardan).</div>
+    </div>
+    <div id="licResumen"></div>
+    <div id="licDetalle" style="max-height:380px;overflow-y:auto;"></div>`;
+  mkModal('modalLic','🧩 Cargar licenciamientos',html,'aplicarLicenciamientos','Aplicar seleccionados','880px');
+}
+async function procesarLicenciamientos(){
+  const file=document.getElementById('licExcel')?.files?.[0];
+  if(!file) return;
+  const resumen=document.getElementById('licResumen'), detalle=document.getElementById('licDetalle');
+  resumen.innerHTML='<div style="text-align:center;padding:16px;color:var(--text3);">Procesando archivo...</div>';
+  try{
+    const wb=XLSX.read(await file.arrayBuffer(),{type:'array'});
+    const ws=wb.Sheets[wb.SheetNames[0]];
+    xlsxCorregirRango(ws);
+    const filas=XLSX.utils.sheet_to_json(ws,{defval:null});
+    if(!filas.length||!('Tipo Servicio' in filas[0])||!('Información del servicio' in filas[0])){
+      resumen.innerHTML='<div style="color:var(--red);padding:12px;">⚠ No parece el archivo "Mis Clientes Aspel" (faltan columnas Tipo Servicio / Información del servicio).</div>';
+      detalle.innerHTML=''; return;
+    }
+    const clientes=await carteraFetchTodosClientes('*');
+    let sistemasAll=[],desde=0;
+    for(;;){
+      const {data,error}=await sb.from('clientes_cartera_sistemas').select('*').range(desde,desde+999);
+      if(error) throw error;
+      sistemasAll=sistemasAll.concat(data||[]);
+      if(!data||data.length<1000) break;
+      desde+=1000;
+    }
+    const norm=s=>String(s||'').trim().toUpperCase();
+    const items=[];
+    filas.forEach(f=>{
+      if(norm(f['Tipo Servicio'])!=='LICENCIAMIENTO') return;
+      const info=String(f['Información del servicio']||'').trim();
+      const numserie=info.split(/\s+/)[0]||'';
+      const sistema=norm(String(f['Servicio']||'').replace(/^aspel[-\s]*/i,'')).replace(/\s+/g,'');
+      const ver=(info.match(/Versi[oó]n\s+([\d.]+)/i)||[])[1]||'';
+      const usu=(info.match(/Usuarios:\s*(\d+)/i)||[])[1]||'';
+      const verTxt=ver?('v'+(ver.includes('.')?ver:ver+'.0')+' Compra'):'';
+      const usuTxt=usu?(usu+' USU'):'';
+      const rfc=norm(f['RFC']);
+      const cands=clientes.filter(c=>norm(c.rfc)===rfc);
+      const cli=cands.find(c=>!c.cliente_padre_id)||cands[0]||null;
+      const it={sistema,numserie,rfc,empresa:f['Empresa']?String(f['Empresa']).trim():'',verTxt,usuTxt,
+        fecha_compra:parseFechaExcelSerial(f['Contrato']),cli,multiples:cands.length>1};
+      if(!cli) it.estado='sincuenta';
+      else{
+        const ex=sistemasAll.find(s=>s.cliente_cartera_id===cli.id&&norm(s.sistema)===sistema);
+        if(!ex) it.estado='nuevo';
+        else{
+          it.ex=ex;
+          const igualV=norm(ex.version_licencia)===norm(verTxt);
+          const igualU=norm(ex.usuarios)===norm(usuTxt);
+          it.estado=(igualV&&igualU)?'igual':'dif';
+        }
+      }
+      items.push(it);
+    });
+    window._licState={items};
+    const cnt=e=>items.filter(i=>i.estado===e).length;
+    resumen.innerHTML=`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;">
+      <span style="padding:4px 10px;background:#e8f7ee;border-radius:12px;">Nuevos: <b>${cnt('nuevo')}</b></span>
+      <span style="padding:4px 10px;background:#fff4e0;border-radius:12px;">Con diferencias: <b>${cnt('dif')}</b></span>
+      <span style="padding:4px 10px;background:#eee;border-radius:12px;">Ya coinciden: <b>${cnt('igual')}</b></span>
+      <span style="padding:4px 10px;background:#fdecea;border-radius:12px;">Sin cuenta: <b>${cnt('sincuenta')}</b></span></div>
+      <label style="font-size:12px;display:flex;gap:6px;align-items:center;margin-bottom:8px;"><input type="checkbox" id="licCrm" checked> Replicar también en el CRM (sección Sistemas de la cuenta)</label>`;
+    const fila=(i,idx)=>{
+      const chk=(i.estado==='nuevo')?'checked':'';
+      const accion=(i.estado==='nuevo'||i.estado==='dif')
+        ?`<input type="checkbox" class="licChk" data-i="${idx}" ${chk}>`:'';
+      const app=i.ex?`${licEsc(i.ex.version_licencia||'—')} · ${licEsc(i.ex.usuarios||'—')}`:'—';
+      const lbl={nuevo:'🟢 Nuevo',dif:'🟠 Diferencias',igual:'⚪ Coincide',sincuenta:'🔴 Sin cuenta'}[i.estado];
+      return `<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:5px;">${accion}</td>
+        <td style="padding:5px;">${lbl}</td>
+        <td style="padding:5px;"><b>${licEsc(i.cli?i.cli.razon_social:i.empresa)}</b><div style="font-size:10px;color:var(--text3);">${licEsc(i.rfc)}${i.multiples?' · ⚠ varias cuentas con este RFC':''}</div></td>
+        <td style="padding:5px;">${licEsc(i.sistema)}</td>
+        <td style="padding:5px;">${licEsc(i.verTxt)} · ${licEsc(i.usuTxt)}</td>
+        <td style="padding:5px;color:var(--text3);">${app}</td></tr>`;
+    };
+    const orden={dif:0,nuevo:1,sincuenta:2,igual:3};
+    const idxs=items.map((_,k)=>k).sort((a,b)=>orden[items[a].estado]-orden[items[b].estado]);
+    detalle.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:11px;">
+      <thead><tr style="text-align:left;color:var(--text3);"><th></th><th>Estado</th><th>Cuenta</th><th>Sistema</th><th>Aspel (compró)</th><th>En la app hoy</th></tr></thead>
+      <tbody>${idxs.map(k=>fila(items[k],k)).join('')}</tbody></table>
+      <div style="font-size:10px;color:var(--text3);margin-top:8px;">Las filas "Con diferencias" vienen sin marcar: márcalas solo si Aspel tiene la razón. Las "Sin cuenta" no se cargan (primero hay que dar de alta la cuenta).</div>`;
+  }catch(e){
+    resumen.innerHTML=`<div style="color:var(--red);padding:12px;">Error: ${licEsc(e.message||e)}</div>`;
+    detalle.innerHTML='';
+  }
+}
+async function aplicarLicenciamientos(){
+  const st=window._licState; if(!st) return;
+  const marcados=[...document.querySelectorAll('.licChk:checked')].map(c=>st.items[+c.dataset.i]);
+  const replicar=document.getElementById('licCrm')?.checked;
+  const detalle=document.getElementById('licDetalle');
+  // Serie y fecha de compra se guardan siempre en las que coinciden o difieren aunque no se reemplace.
+  const soloMeta=st.items.filter(i=>(i.estado==='dif'||i.estado==='igual')&&!marcados.includes(i));
+  let okN=0,errN=0,log=[];
+  detalle.innerHTML='<div style="padding:16px;color:var(--text3);">Aplicando...</div>';
+  for(const i of soloMeta){
+    const {error}=await sb.from('clientes_cartera_sistemas').update({numserie:i.numserie,fecha_compra:i.fecha_compra,origen_licencia:'aspel_licenciamiento'}).eq('id',i.ex.id);
+    if(error){errN++;log.push(`❌ ${i.empresa} ${i.sistema}: ${error.message}`);}
+  }
+  const porCuenta={};
+  for(const i of marcados){
+    const fila={cliente_cartera_id:i.cli.id,sistema:i.sistema,version_licencia:i.verTxt||null,usuarios:i.usuTxt||null,
+      numserie:i.numserie,fecha_compra:i.fecha_compra,origen_licencia:'aspel_licenciamiento'};
+    const {error}=await sb.from('clientes_cartera_sistemas').upsert(fila,{onConflict:'cliente_cartera_id,sistema'});
+    if(error){errN++;log.push(`❌ ${i.cli.razon_social} · ${i.sistema}: ${error.message}`);continue;}
+    okN++;
+    (porCuenta[i.cli.id]=porCuenta[i.cli.id]||{cli:i.cli,sistemas:[]}).sistemas.push({sistema:i.sistema,version_licencia:i.verTxt,usuarios:i.usuTxt});
+  }
+  let crmOk=0;
+  if(replicar){
+    const {data:sess}=await sb.auth.getSession();
+    const token=sess?.session?.access_token;
+    for(const g of Object.values(porCuenta)){
+      try{
+        const r=await fetch('/api/crm-actualizar-cuenta-sistemas',{method:'POST',
+          headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
+          body:JSON.stringify({cliente_cartera_id:g.cli.id,sistemas:g.sistemas})});
+        const j=await r.json().catch(()=>({}));
+        if(j.ok&&!j.skipped){crmOk++;log.push(`✅ CRM: ${g.cli.razon_social}`);}
+        else if(j.ok&&j.skipped) log.push(`➖ CRM omitido: ${g.cli.razon_social} — ${j.razon||''}`);
+        else log.push(`⚠ CRM no aceptó ${g.cli.razon_social}: ${j.error||r.status}`);
+      }catch(e){log.push(`⚠ CRM ${g.cli.razon_social}: ${e.message}`);}
+    }
+  }
+  detalle.innerHTML=`<div style="padding:8px;font-size:12px;"><b>Listo.</b> Guardados en la app: ${okN}${errN?` · Errores: ${errN}`:''}${replicar?` · Replicados en CRM: ${crmOk}`:''}
+    <div style="margin-top:8px;font-size:11px;line-height:1.6;">${log.map(licEsc).join('<br>')}</div></div>`;
+  try{ if(typeof cargarCartera==='function') cargarCartera(); }catch(_){}
+}
+
 function abrirVerificarCatalogoAspel(){
   const html=`
     <div style="margin-bottom:14px;padding:12px 16px;background:rgba(192,57,43,0.07);border:1px dashed #C0392B;border-radius:8px;">
@@ -14109,7 +14255,7 @@ async function procesarVerificarCatalogoAspel(){
   const filasValidas=[];
   filas.forEach(f=>{
     const tipo=(f['Tipo Servicio']||'').toString().trim().toUpperCase();
-    if(tipo!=='SUSCRIPCIÓN'&&tipo!=='LICENCIAMIENTO') return;
+    if(tipo!=='SUSCRIPCIÓN') return; // LICENCIAMIENTO (compra) se carga en 🧩 Cargar licenciamientos → Sistemas
     const infoServ=f['Información del servicio'];
     const numserie=infoServ?String(infoServ).trim().split(/\s+/)[0]:null;
     if(!numserie) return;
@@ -31968,6 +32114,23 @@ async function solCargarListaVendedor(){
   cont.innerHTML=_solRows.map(r=>solTarjeta(r,'vendedor')).join('');
 }
 
+// ─── PAGO ESPERADO VENCIDO (Jp, 2026-11-09) ──────────────────────────────────
+// Las solicitudes "para liberar pago" llevan la fecha en que el cliente dijo que pagaría. Si esa fecha ya pasó
+// (o es hoy) y el pago no está validado, Facturación/Dirección deben enterarse para decidir si se cancela la factura.
+function solDiasPagoVencido(r){
+  if(!r||r.tipo==='con_pago'||r.pago_validado||!r.fecha_pago_esperada) return null;
+  if(['cancelada','cerrada'].includes(r.estado)) return null;
+  const hoy=new Date(Date.now()-6*3600*1000).toISOString().slice(0,10);
+  return Math.floor((new Date(hoy+'T00:00:00')-new Date(String(r.fecha_pago_esperada).slice(0,10)+'T00:00:00'))/86400000);
+}
+function solAvisoPagoVencido(r,esVend){
+  const d=solDiasPagoVencido(r);
+  if(d===null||d<0) return '';
+  const cuando=d===0?'vence HOY':`venció hace ${d} día${d===1?'':'s'}`;
+  const accion=esVend?'Contacta al cliente: si no paga, Facturación podría cancelar la factura.'
+    :(r.estado==='facturada'?'Ya está facturada y sin pago: valorar cancelar la factura (CFDI) o confirmar con el vendedor.':'Sin pago todavía: valorar cancelar la solicitud o confirmar con el vendedor.');
+  return `<div style="font-size:12px;font-weight:700;color:${d>0?'#c0392b':'#B45309'};background:${d>0?'rgba(192,57,43,.08)':'rgba(245,166,35,.12)'};border-radius:6px;padding:6px 10px;margin-top:6px;">${d>0?'🚨':'⏰'} La fecha de pago prometida ${cuando} (${solFecha(r.fecha_pago_esperada)}) y el pago no está validado. ${accion}</div>`;
+}
 // ─── TARJETA (compartida) ────────────────────────────────────────────────────
 function solTarjeta(r,modo){
   const esDir=modo==='director',esAdm=modo==='admin',esVend=modo==='vendedor';
@@ -31990,7 +32153,7 @@ function solTarjeta(r,modo){
     <div style="font-size:11px;color:var(--text3);margin-top:2px;">${solEsc(r.rfc)} · ${solEsc(r.forma_pago)} · ${solEsc(r.metodo_pago)} · ${solEsc(r.uso_cfdi)} · ${solEsc(r.regimen)}</div>
     ${r.shopify_pedido?`<div style="font-size:11px;color:#5b3fa0;margin-top:3px;">🛍 Pedido de Shopify: <b>${solEsc(r.shopify_pedido)}</b></div>`:''}
     ${String(r.notas||'').startsWith(SOL_PG_MARCA)?`<div style="font-size:11px;font-weight:700;color:#8a6d00;background:#fffbea;border:1px solid #f3dc8a;border-radius:6px;padding:3px 8px;margin-top:5px;display:inline-block;">🧾 FACTURAR A VIOLETA — el cliente no requiere factura · C.P. ${SOL_VIOLETA.cp}</div>`:''}
-    ${pago}${fact}
+    ${pago}${solAvisoPagoVencido(r,esVend)}${fact}
     ${timTarjetaHtml(r,esDir,esVend)}
     ${r.pago_nota?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">Nota de validación: ${solEsc(r.pago_nota)}</div>`:''}
     ${solAcadTarjetaHtml(r)}
@@ -32065,10 +32228,11 @@ async function renderSolFacturaGestion(el){
   const por={validar:_solRows.filter(r=>!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada')),
     facturar:_solRows.filter(r=>r.estado==='pago_validado'||r.estado==='pendiente_pago'),
     pendientes:_solRows.filter(r=>['solicitada','pendiente_pago','pago_validado','facturada'].includes(r.estado)),
+    vencidos:_solRows.filter(r=>{const d=solDiasPagoVencido(r);return d!==null&&d>=0;}),
     todas:_solRows};
   const filtros=esDir
-    ?[['pendientes','Todas las abiertas'],['validar','Por validar pago'],['facturar','Por facturar'],['todas','Historial']]
-    :[['facturar','Por facturar'],['pendientes','Todas las abiertas'],['todas','Historial']];
+    ?[['pendientes','Todas las abiertas'],['validar','Por validar pago'],['facturar','Por facturar'],['vencidos','🚨 Pago prometido vencido'],['todas','Historial']]
+    :[['facturar','Por facturar'],['pendientes','Todas las abiertas'],['vencidos','🚨 Pago prometido vencido'],['todas','Historial']];
   if(!filtros.some(f=>f[0]===_solFiltro)) _solFiltro=filtros[0][0];
   const lista=por[_solFiltro]||[];
   cont.innerHTML=`
@@ -32324,7 +32488,43 @@ function solParseXML(txt){
   if(d.getElementsByTagName('parsererror').length) return null;
   const q=n=>d.getElementsByTagName(n)[0];
   const c=q('cfdi:Comprobante')||d.documentElement;
-  return {serie:c.getAttribute('Serie')||'',folio:c.getAttribute('Folio')||'',total:parseFloat(c.getAttribute('Total')),fecha:c.getAttribute('Fecha')||'',rfcReceptor:q('cfdi:Receptor')?.getAttribute('Rfc')||'',uuid:q('tfd:TimbreFiscalDigital')?.getAttribute('UUID')||''};
+  const rc=q('cfdi:Receptor');
+  return {serie:c.getAttribute('Serie')||'',folio:c.getAttribute('Folio')||'',total:parseFloat(c.getAttribute('Total')),fecha:c.getAttribute('Fecha')||'',rfcReceptor:rc?.getAttribute('Rfc')||'',nombreReceptor:rc?.getAttribute('Nombre')||'',regimenReceptor:rc?.getAttribute('RegimenFiscalReceptor')||'',usoReceptor:rc?.getAttribute('UsoCFDI')||'',cpReceptor:rc?.getAttribute('DomicilioFiscalReceptor')||'',uuid:q('tfd:TimbreFiscalDigital')?.getAttribute('UUID')||''};
+}
+// Jp, 2026-11-09: si el RFC del XML no es el de la solicitud (cliente con varias razones sociales), Administración puede
+// tomar el RFC del XML, registrarlo como razón social de la cuenta y corregir la solicitud, sin salir de esta ventana.
+const SOL_REG_SAT={'601':'Régimen General de Ley Personas Morales','603':'Personas Morales con Fines no Lucrativos','605':'Sueldos y Salarios','612':'Actividades Empresariales y Profesionales (Persona Física)','626':'Régimen Simplificado de Confianza (RESICO)','606':'Arrendamiento','616':'Sin obligaciones fiscales'};
+const SOL_USO_SAT={'G03':'Gastos en general','G01':'Adquisición de mercancías','CP01':'Pagos','P01':'Por definir','S01':'Sin efectos fiscales'};
+async function solRegistrarRazonDelXml(id){
+  const r=_solRows.find(z=>z.id===id),x=window._solXml;
+  const av=document.getElementById('sfxAviso');
+  if(!r||!x||!x.rfcReceptor) return;
+  const btn=document.getElementById('sfxBtnRazon');if(btn){btn.disabled=true;btn.textContent='⏳ Registrando…';}
+  try{
+    const rfc=x.rfcReceptor.toUpperCase();
+    const reg=SOL_REG_SAT[x.regimenReceptor]||'Otro',uso=SOL_USO_SAT[x.usoReceptor]||'Por definir';
+    let cuentaId=r.cliente_cartera_id;
+    if(!cuentaId) throw new Error('La solicitud no está ligada a una cuenta de Cartera.');
+    const {data:cli}=await sb.from('clientes_cartera').select('id,cliente_padre_id,razon_social,rfc').eq('id',cuentaId).maybeSingle();
+    const principalId=cli?.cliente_padre_id||cuentaId;
+    let msg='';
+    if(cli&&cli.rfc&&cli.rfc.toUpperCase()===rfc){ msg='ese RFC ya es el de la cuenta principal'; }
+    else{
+      const {data:ya}=await sb.from('cuenta_razones_sociales').select('id,razon_social').eq('cliente_cartera_id',principalId).ilike('rfc',rfc).limit(1);
+      if(ya&&ya.length) msg=`la razón social "${ya[0].razon_social}" ya estaba registrada con ese RFC`;
+      else{
+        const {error}=await sb.from('cuenta_razones_sociales').insert({cliente_cartera_id:principalId,razon_social:(x.nombreReceptor||'').toUpperCase()||('RFC '+rfc),rfc,regimen_fiscal:reg,uso_cfdi:uso,codigo_postal:x.cpReceptor||null,creado_por:userProfile?.id||currentUser.id});
+        if(error) throw error;
+        msg=`se registró "${(x.nombreReceptor||rfc)}" como razón social de la cuenta`;
+      }
+    }
+    const {error:eu}=await sb.from('solicitudes_factura').update({rfc,regimen:reg,uso_cfdi:uso}).eq('id',id);
+    if(eu) throw eu;
+    r.rfc=rfc;r.regimen=reg;r.uso_cfdi=uso;
+    av.innerHTML=`<span style="color:#2E7D32;">✅ Listo: ${solEsc(msg)} y la solicitud quedó con el RFC ${solEsc(rfc)}. Ahora pulsa "Guardar factura".</span>`;
+  }catch(e){
+    av.innerHTML=`<span style="color:#c0392b;">No se pudo registrar la razón social: ${solEsc(e?.message||e)}</span>`;
+  }
 }
 function solFacturarModal(id){
   const r=_solRows.find(z=>z.id===id);if(!r) return;
@@ -32351,7 +32551,8 @@ async function solFacturarLeerXml(id,input){
   const av2=[];
   if(isFinite(x.total)&&Math.abs(x.total-r.monto_total)>0.5) av2.push(`⚠️ El total del XML (${fmt(x.total)}) no coincide con la solicitud (${fmt(r.monto_total)}).`);
   if(x.rfcReceptor&&r.rfc&&x.rfcReceptor.toUpperCase()!==r.rfc.toUpperCase()) av2.push(`⚠️ El RFC del XML (${solEsc(x.rfcReceptor)}) no coincide con el de la solicitud (${solEsc(r.rfc)}).`);
-  av.innerHTML=av2.length?`<span style="color:#B45309;">${av2.join('<br>')}</span>`:'<span style="color:#2E7D32;">✅ XML leído: total y RFC coinciden.</span>';
+  const rfcDistinto=!!(x.rfcReceptor&&r.rfc&&x.rfcReceptor.toUpperCase()!==r.rfc.toUpperCase());
+  av.innerHTML=av2.length?`<span style="color:#B45309;">${av2.join('<br>')}</span>`+(rfcDistinto?`<div style="margin-top:6px;font-size:11px;color:var(--text2);">Si el cliente tiene varias razones sociales y la factura sí debía ir a <b>${solEsc(x.nombreReceptor||x.rfcReceptor)}</b>, puedes usar el RFC del XML:</div><button id="sfxBtnRazon" onclick="solRegistrarRazonDelXml('${id}')" style="margin-top:4px;background:#fff;color:#1B4D6E;border:1px solid #1B4D6E;border-radius:7px;padding:6px 12px;font-size:11px;font-weight:700;cursor:pointer;">➕ Usar el RFC del XML y registrarlo como razón social de la cuenta</button>`:''):'<span style="color:#2E7D32;">✅ XML leído: total y RFC coinciden.</span>';
 }
 async function solFacturarGuardar(id){
   const r=_solRows.find(z=>z.id===id);if(!r) return;
