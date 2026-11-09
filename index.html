@@ -30692,7 +30692,7 @@ function shpTarjeta(p){
     ${lineas}
     <div style="font-size:12px;font-weight:600;color:${pg.c};margin-top:6px;">${pg.t}</div>
     ${shpClienteHtml(p)}
-    ${p.pipeline_vendedor_id?'<div style="font-size:11px;margin-top:3px;color:#1B4D6E;">📊 <b>En Proyección</b> (negociación y oportunidad del CRM creadas)</div>':(p.estado==='atendiendo'?'<div style="font-size:11px;margin-top:3px;color:#B45309;">⚠️ Antes de facturar debe pasar por Proyección (cuenta + oportunidad en el CRM).</div>':'')}
+    ${p.pipeline_vendedor_id?`<div style="font-size:11px;margin-top:3px;color:#1B4D6E;">📊 <b>En Proyección</b> (negociación y oportunidad del CRM creadas) · <a href="#" onclick="event.preventDefault();shpAbrirEnProyeccion('${p.pipeline_vendedor_id}')" style="color:#1D5FA8;font-weight:700;">Ver en Proyección →</a></div>`:(p.estado==='atendiendo'?'<div style="font-size:11px;margin-top:3px;color:#B45309;">⚠️ Antes de facturar debe pasar por Proyección (cuenta + oportunidad en el CRM).</div>':'')}
     <div style="font-size:11px;margin-top:3px;"><span style="color:${est[1]};font-weight:700;">${est[0]}</span>${p.atiende_nombre&&p.estado!=='nuevo'?` · ${solEsc(p.atiende_nombre)}`:''}${p.motivo_descarte?` · ${solEsc(p.motivo_descarte)}`:''}${p.nota?` · Nota del cliente: ${solEsc(p.nota)}`:''}</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;">${acciones.join('')}
       ${wa&&p.estado!=='descartado'?`<a href="${shpWaLink(p,'confirmar')}" target="_blank" rel="noopener" style="text-decoration:none;background:#25D366;color:#fff;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:700;">💬 ${shpPagoInfo(p).pagado?'Confirmar pedido por WhatsApp':'WhatsApp: pago pendiente'}</a><a href="${shpWaLink(p,'fiscal')}" target="_blank" rel="noopener" style="text-decoration:none;border:1px solid #25D366;color:#128C7E;border-radius:7px;padding:5px 11px;font-size:11px;font-weight:700;">🧾 Pedir datos fiscales por WhatsApp</a>`:(!wa&&p.estado!=='descartado'?'<span style="font-size:11px;color:var(--text3);align-self:center;">Sin teléfono: contáctalo por correo</span>':'')}
@@ -30855,11 +30855,16 @@ function shpProgresoAbrir(titulo,pasos){
     cerrar:()=>document.getElementById('shpProgOv')?.remove(),
   };
 }
-function shpVerEnProyeccion(){
+// Abre Proyección y, si se conoce la negociación, su ficha (la oportunidad) directamente.
+function shpVerEnProyeccion(pid){
   document.getElementById('shpProgOv')?.remove();
-  if(userProfile?.rol==='telemarketing'&&typeof swT==='function') swT('proyeccionTele');
+  const tele=userProfile?.rol==='telemarketing';
+  if(tele&&typeof swT==='function') swT('proyeccionTele');
   else if(typeof swV==='function') swV('proyeccion');
+  if(!pid) return;
+  setTimeout(()=>{try{ if(tele&&typeof editarFilaPipeTele==='function') editarFilaPipeTele(pid); else if(typeof editarFilaPipe==='function') editarFilaPipe(pid); }catch(e){console.error('abrir negociación',e);}},500);
 }
+function shpAbrirEnProyeccion(pid){ shpVerEnProyeccion(pid); }
 async function shpPasarProyeccion(id){
   if(_shpPasando) return;
   const p=_shpRows.find(x=>x.id===id); if(!p) return;
@@ -30925,8 +30930,9 @@ async function shpPasarProyeccion(id){
       cliente:cuenta.razon_social,cliente_cartera_id:cuenta.id,
       contacto_nombre:p.cliente_nombre||null,contacto_correo:p.email||null,contacto_telefono:p.telefono||null,
       monto_total:total,subtotal:Math.round(total/1.16*100)/100,
-      probabilidad:pagado?100:70,fecha_prevista:todayLocal(),
-      estatus:tele?(pagado?'Cerrado-Ganado':'En seguimiento'):(pagado?'Cerrada-Ganada':'Negociación o Revisión con Cliente'),
+      probabilidad:pagado?90:70,fecha_prevista:todayLocal(),
+      // Jp, 2026-11-09: Cerrada-Ganada se marca hasta que se manda a facturación (aunque ya esté pagado).
+      estatus:tele?'En seguimiento':'Negociación o Revisión con Cliente',
       updated_at:new Date().toISOString(),
     };
     if(tele) payload.perfil='telemarketing';
@@ -30948,7 +30954,7 @@ async function shpPasarProyeccion(id){
 
     shpPintar();
     pg.fin([
-      ['📊 Ver en Proyección',shpVerEnProyeccion,'background:#1B4D6E;color:#fff;border:none;'],
+      ['📊 Ver en Proyección',()=>shpVerEnProyeccion(fila.id),'background:#1B4D6E;color:#fff;border:none;'],
       ['🧾 Generar solicitud de factura',()=>{pg.cerrar();shpFacturar(id);},'background:var(--teal);color:#fff;border:none;'],
       ['Cerrar',pg.cerrar],
     ]);
@@ -31921,6 +31927,18 @@ async function solEnviar(){
     let msgShop='';
     if(window._sfShop&&solId){
       const ped=window._sfShop;const pgi=shpPagoInfo(ped);
+      // Jp, 2026-11-09: al mandar a facturación la negociación pasa a Cerrada-Ganada (y la oportunidad del CRM).
+      try{
+        const pidG=ped.pipeline_vendedor_id||window._sfPipe?.id;
+        if(pidG){
+          const {data:pf}=await sb.from('pipeline_vendedor').select('id,estatus,perfil,oportunidad_crm_id').eq('id',pidG).maybeSingle();
+          if(pf&&!/^Cerrad/.test(pf.estatus||'')){
+            const teleG=pf.perfil==='telemarketing';
+            await sb.from('pipeline_vendedor').update({estatus:teleG?'Cerrado-Ganado':'Cerrada-Ganada',probabilidad:100,updated_at:new Date().toISOString()}).eq('id',pidG);
+            if(pf.oportunidad_crm_id){try{await crmActualizarOportunidad(pf.oportunidad_crm_id,'Cerrada-Ganada',100);}catch(e){console.error('CRM Cerrada-Ganada',e);}}
+          }
+        }
+      }catch(e){console.error('cerrar ganada al facturar',e);}
       try{await sb.from('shopify_pedidos').update({estado:'enviado_facturar',solicitud_id:solId,pipeline_vendedor_id:ped.pipeline_vendedor_id||window._sfPipe?.id||null,atiende_id:ped.atiende_id||userProfile?.id||currentUser.id,atiende_nombre:ped.atiende_nombre||userProfile?.nombre||''}).eq('id',ped.id);}catch(e){console.error('ligar pedido',e);}
       if(pgi.pagado&&pgi.auto&&tipo==='con_pago'){
         try{
