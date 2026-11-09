@@ -30765,7 +30765,7 @@ function shpDatosCuentaNueva(p){
       const v=i=>document.getElementById(i).value.trim();
       if(v('shcRazon').length<3){document.getElementById('shcErr').textContent='Falta la razón social.';return;}
       if(v('shcRfc')&&!rfcRe.test(v('shcRfc'))){document.getElementById('shcErr').textContent='Revisa el RFC (12 o 13 caracteres) o déjalo vacío.';return;}
-      d.remove();resolve({razon:v('shcRazon').toUpperCase(),rfc:v('shcRfc').toUpperCase()||null,correo:v('shcCorreo')||null,tel:v('shcTel')||null});};
+      try{const r={razon:v('shcRazon').toUpperCase(),rfc:v('shcRfc').toUpperCase()||null,correo:v('shcCorreo')||null,tel:v('shcTel')||null};d.remove();resolve(r);}catch(e){document.getElementById('shcErr').textContent='Error: '+(e?.message||e);}};
   });
 }
 // 2026-11-09: los errores de este flujo salían con alert(), que el navegador puede silenciar
@@ -30832,20 +30832,79 @@ async function shpCrearOportunidadPedido(fila,ownerId){
   }catch(e){return {ok:false,error:String(e.message||e)};}
 }
 let _shpPasando=false;
+// ── Ventana de avance (Jp, 2026-11-09): "debe haber una ventana que me diga ya se creó esto, esto, esto… y al final
+// una opción de ver en Proyección". Muestra cada paso y, si algo falla, en cuál y por qué.
+function shpProgresoAbrir(titulo,pasos){
+  document.getElementById('shpProgOv')?.remove();
+  const d=document.createElement('div');d.id='shpProgOv';
+  d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10080;display:flex;align-items:center;justify-content:center;padding:16px;';
+  d.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px 22px;width:100%;max-width:480px;box-shadow:0 10px 40px rgba(0,0,0,.3);">
+    <div style="font-size:15px;font-weight:700;color:var(--navy);margin-bottom:10px;">${solEsc(titulo)}</div>
+    <div id="shpProgPasos">${pasos.map(([k,t])=>`<div id="shpPg_${k}" style="display:flex;gap:8px;padding:7px 0;border-top:1px solid var(--border);font-size:12px;"><span class="i" style="width:18px;text-align:center;">⚪</span><div style="flex:1;"><div class="t" style="font-weight:600;color:var(--text2);">${solEsc(t)}</div><div class="d" style="font-size:11px;color:var(--text3);"></div></div></div>`).join('')}</div>
+    <div id="shpProgFin" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;"></div></div>`;
+  document.body.appendChild(d);
+  const set=(k,ico,det,col)=>{const r=document.getElementById('shpPg_'+k);if(!r)return;r.querySelector('.i').textContent=ico;const dd=r.querySelector('.d');dd.textContent=det||'';if(col)dd.style.color=col;};
+  return {
+    corre:(k,det)=>set(k,'⏳',det||'en proceso…'),
+    ok:(k,det)=>set(k,'✅',det||'listo','#2E7D32'),
+    omite:(k,det)=>set(k,'➖',det||'no hacía falta'),
+    avisa:(k,det)=>set(k,'⚠️',det,'#B45309'),
+    falla:(k,det)=>{set(k,'❌',det,'#c0392b');try{console.error('[Shopify→Proyección]',k,det);}catch(_){}},
+    fin:(botones)=>{const f=document.getElementById('shpProgFin');if(!f)return;f.innerHTML='';
+      botones.forEach(([txt,fn,estilo])=>{const b=document.createElement('button');b.textContent=txt;b.style.cssText=(estilo||'background:#fff;border:1px solid var(--border);color:var(--text2);')+'border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;';b.onclick=fn;f.appendChild(b);});},
+    cerrar:()=>document.getElementById('shpProgOv')?.remove(),
+  };
+}
+function shpVerEnProyeccion(){
+  document.getElementById('shpProgOv')?.remove();
+  if(userProfile?.rol==='telemarketing'&&typeof swT==='function') swT('proyeccionTele');
+  else if(typeof swV==='function') swV('proyeccion');
+}
 async function shpPasarProyeccion(id){
   if(_shpPasando) return;
   const p=_shpRows.find(x=>x.id===id); if(!p) return;
   if(p.pipeline_vendedor_id) return shpFacturar(id);
   _shpPasando=true;
+  let pg=null;
   try{
     await shpCargarClientes();
     const m=shpBuscarCliente(p);
-    let cuenta=null;
+    let cuenta=null,cuentaNueva=false;
     if(m&&m.nivel==='fuerte') cuenta=m.c;
     else if(m&&m.nivel==='posible'){
       if(confirm(`Posible cliente existente (solo coincide el nombre): ${m.c.razon_social} · #${m.c.num_cliente||''}.\n\n¿Es la misma cuenta?\nAceptar = usar esa cuenta · Cancelar = crear una cuenta nueva.`)) cuenta=m.c;
     }
-    if(!cuenta){ cuenta=await shpCrearCuentaDePedido(p); if(!cuenta) return; }
+    let dat=null;
+    if(!cuenta){ dat=await shpDatosCuentaNueva(p); if(!dat) return; cuentaNueva=true; }
+
+    pg=shpProgresoAbrir(`Pedido ${p.numero} → Proyección`,[
+      ['sesion','Verificar sesión'],['cuenta','Cuenta en la App (Cartera)'],['cuentaCrm','Cuenta en el CRM'],
+      ['negoc','Registro en Proyección'],['opp','Oportunidad en el CRM']]);
+
+    pg.corre('sesion');
+    const {data:sesChk}=await sb.auth.getSession();
+    if(!sesChk?.session){pg.falla('sesion','Tu sesión expiró. Recarga con Ctrl+F5, inicia sesión y repite.');pg.fin([['Cerrar',pg.cerrar]]);return;}
+    pg.ok('sesion');
+
+    // 1) Cuenta
+    if(cuentaNueva){
+      pg.corre('cuenta','creando…');
+      if(dat.rfc){
+        const {data:ex}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente,rfc,vendedor_asignado').eq('rfc',dat.rfc).limit(1);
+        if(ex&&ex.length&&confirm(`Ya existe la cuenta ${ex[0].razon_social} (${ex[0].num_cliente||'—'}) con ese RFC. ¿Usarla?`)){cuenta=ex[0];cuentaNueva=false;}
+      }
+      if(cuentaNueva){
+        const {data:nc,error}=await sb.from('clientes_cartera').insert({razon_social:dat.razon,rfc:dat.rfc,correo_principal:dat.correo,telefono:dat.tel,vendedor_asignado:currentUser.id,origen:'alta_vendedor',num_cliente:'ALT-'+Date.now()}).select().single();
+        if(error||!nc){pg.falla('cuenta','No se pudo crear: '+(error?.message||'sin respuesta')+(error?.details?' · '+error.details:''));pg.fin([['Cerrar',pg.cerrar]]);return;}
+        cuenta=nc;
+        pg.ok('cuenta',`${nc.razon_social} (creada)`);
+        pg.corre('cuentaCrm','creando en el CRM…');
+        const r=await crmCrearCuentaDeAlta(nc.id);
+        if(r.ok){cuenta.num_cliente=r.num_cliente;window._cartClientes=null;_shpCli=null;pg.ok('cuentaCrm','Cuenta '+r.num_cliente);}
+        else pg.avisa('cuentaCrm','No se creó en el CRM: '+r.error+'. Se continúa; reintenta desde la ficha de la cuenta ("Abrir en CRM").');
+      } else { pg.ok('cuenta',`${cuenta.razon_social} (ya existía, mismo RFC)`); pg.omite('cuentaCrm','ya existe en el CRM'); }
+    } else { pg.ok('cuenta',`${cuenta.razon_social} · #${cuenta.num_cliente||''} (ya existía)`); pg.omite('cuentaCrm','ya existe en el CRM'); }
+
     const concepto=shpConceptoDePedido(p);
     const pagado=p.estado_pago==='paid';
     const me=userProfile?.id||currentUser.id;
@@ -30854,12 +30913,11 @@ async function shpPasarProyeccion(id){
     const dueno=cuenta.vendedor_asignado;
     if(dueno&&dueno!==me&&_shpUsuarios[dueno]){
       const nom=_shpUsuarios[dueno];
-      if(!confirm(`La cuenta ${cuenta.razon_social} es de ${nom}.\n\nAceptar = registrar la venta y la oportunidad A NOMBRE DE ${nom.toUpperCase()} (tú solo atiendes; no te quedas la venta ni el cliente).\nCancelar = no continuar.`)) return;
+      if(!confirm(`La cuenta ${cuenta.razon_social} es de ${nom}.\n\nAceptar = registrar la venta y la oportunidad A NOMBRE DE ${nom.toUpperCase()} (tú solo atiendes; no te quedas la venta ni el cliente).\nCancelar = no continuar.`)){pg.avisa('negoc','Cancelado por ti.');pg.fin([['Cerrar',pg.cerrar]]);return;}
       ownerId=dueno; ownerNombre=nom;
     }
     const tipoSrv=shpTipoServicio(p,concepto);
-    const ownerEsTele=(ownerId===me)?(userProfile?.rol==='telemarketing'):false;
-    const tele=ownerEsTele;
+    const tele=(ownerId===me)?(userProfile?.rol==='telemarketing'):false;
     const total=Number(p.total)||0;
     const payload={
       usuario_id:ownerId,anio:currentYear,mes:currentMonth,
@@ -30872,16 +30930,32 @@ async function shpPasarProyeccion(id){
       updated_at:new Date().toISOString(),
     };
     if(tele) payload.perfil='telemarketing';
-    const {data:fila,error}=await sb.rpc('crear_negociacion_pedido',{p_payload:payload,p_owner:ownerId});
-    if(error||!fila){shpErrorVisible('No se pudo crear la negociación en Proyección',(error?.message||'sin respuesta')+(error?.details?'\n'+error.details:''));return;}
-    uiToast('⏳ Negociación creada. Creando oportunidad en el CRM…',true);
-    await sb.from('shopify_pedidos').update({pipeline_vendedor_id:fila.id}).eq('id',p.id);
+
+    // 2) Proyección
+    pg.corre('negoc','creando…');
+    const {data:fila,error:errN}=await sb.rpc('crear_negociacion_pedido',{p_payload:payload,p_owner:ownerId});
+    if(errN||!fila){pg.falla('negoc','No se pudo crear: '+(errN?.message||'sin respuesta')+(errN?.details?' · '+errN.details:''));pg.fin([['Cerrar',pg.cerrar]]);return;}
+    const {error:errP}=await sb.from('shopify_pedidos').update({pipeline_vendedor_id:fila.id}).eq('id',p.id);
+    if(errP){pg.avisa('negoc','Se creó en Proyección pero no se pudo ligar al pedido: '+errP.message);}
     p.pipeline_vendedor_id=fila.id;
+    pg.ok('negoc',`${fila.producto||concepto} · ${fmt(total)}${ownerId!==me?' · a nombre de '+ownerNombre:''}`);
+
+    // 3) Oportunidad
+    pg.corre('opp','creando en el CRM…');
     const oc=await shpCrearOportunidadPedido(fila,ownerId);
-    uiToast((oc.ok?'✅ Negociación en Proyección y oportunidad creada en el CRM':'📊 Negociación creada en Proyección; la oportunidad del CRM no se pudo crear ('+(oc.error||'error')+')')+(ownerId!==me?` · a nombre de ${ownerNombre}`:''),oc.ok);
+    if(oc.ok) pg.ok('opp','Oportunidad creada en el CRM');
+    else pg.avisa('opp','No se pudo crear: '+(oc.error||'error')+'. La negociación sí quedó en Proyección; puedes reintentar la oportunidad desde ahí.');
+
     shpPintar();
-    if(confirm('Listo: el pedido ya quedó registrado en Proyección y el CRM.\n\n¿Generar ahora la solicitud de factura?')) shpFacturar(id);
-  }catch(e){shpErrorVisible('Error al pasar el pedido a Proyección',e?.message||e);}
+    pg.fin([
+      ['📊 Ver en Proyección',shpVerEnProyeccion,'background:#1B4D6E;color:#fff;border:none;'],
+      ['🧾 Generar solicitud de factura',()=>{pg.cerrar();shpFacturar(id);},'background:var(--teal);color:#fff;border:none;'],
+      ['Cerrar',pg.cerrar],
+    ]);
+  }catch(e){
+    if(pg){pg.falla('negoc','Error inesperado: '+(e?.message||e));pg.fin([['Cerrar',pg.cerrar]]);}
+    else shpErrorVisible('Error al pasar el pedido a Proyección',e?.message||e);
+  }
   finally{_shpPasando=false;}
 }
 function shpFacturar(id){
