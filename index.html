@@ -30830,6 +30830,37 @@ function shpNivelDeLinea(l){
 }
 function shpEsCursoTitulo(t){return /curso|taller|diplomado|domina|masterclass|combo|aguinaldo|cierre/i.test(t||'');}
 function shpSimGen(titulo,g){const a=shpTokens(titulo),b=shpTokens(g.curso?.nombre||'');let i=0;a.forEach(w=>{if(b.has(w))i++;});return i/Math.max(1,new Set([...a,...b]).size);}
+let _shpMapFiltro='pend';
+function shpModoDe(x){
+  const m=_shpMap[x.clave]||{};
+  if(!_shpGenSel[x.clave]) _shpGenSel[x.clave]=new Set(m.generacion_ids||[]);
+  const ngen=_shpGenSel[x.clave].size;
+  const itemMap=_shpCat.find(c=>c.id===m.catalogo_item_id);
+  if(!_shpModo[x.clave]) _shpModo[x.clave]=m.membresia_plan||(itemMap&&SHP_FAM_MEMB.includes(itemMap.familia))||/membres/i.test(x.tipo||x.titulo||'')?'membresia':(ngen||(itemMap&&SHP_FAM_CURSO.includes(itemMap.familia))?'curso':(itemMap?'servicio':(/servicios/i.test(x.tipo||'')?'servicio':(shpEsCursoTitulo(x.titulo)?'curso':'servicio'))));
+  return _shpModo[x.clave];
+}
+// Una variante está "completa" si tiene catálogo y, siendo curso, al menos una generación
+function shpEstadoVinc(x){
+  const m=_shpMap[x.clave]||{};const modo=shpModoDe(x);
+  const cat=!!m.catalogo_item_id,ngen=(m.generacion_ids||[]).length;
+  if(modo==='curso') return cat&&ngen?'completa':(!cat&&!ngen?'nada':(cat?'sin generación':'sin catálogo'));
+  return cat?'completa':'nada';
+}
+function shpExportarMapeo(){
+  const filas=Object.values(_shpMap).map(m=>({clave:m.clave,titulo:m.titulo,variante:m.variante,precio:m.precio,tipo:m.tipo_producto,nivel:m.nivel,plan:m.membresia_plan,catalogo_item_id:m.catalogo_item_id,generacion_ids:m.generacion_ids,sku:m.clave}));
+  const q=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+  const lin=[['Producto Shopify','Variante','Clave/SKU','Precio','Tipo Shopify','Modo','Catálogo vinculado','Acceso / Plan','Generaciones vinculadas','Estado'].map(q).join(',')];
+  filas.sort((a,b)=>String(a.titulo).localeCompare(String(b.titulo))).forEach(m=>{
+    const x={clave:m.clave,titulo:m.titulo,variante:m.variante,precio:m.precio,tipo:m.tipo};
+    const modo=shpModoDe(x),est=shpEstadoVinc(x);
+    const cat=_shpCat.find(c=>c.id===m.catalogo_item_id);
+    const gens=(m.generacion_ids||[]).map(id=>{const g=_shpGens.find(z=>z.id===id);return g?(g.curso?.nombre||'')+' ['+g.clave+']':id;}).join(' | ');
+    lin.push([m.titulo,m.variante,m.clave,m.precio,m.tipo,modo,cat?cat.nombre:'',m.plan||m.nivel||'',gens,est].map(q).join(','));
+  });
+  const blob=new Blob(['\ufeff'+lin.join('\r\n')],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='vinculacion-shopify-'+new Date().toISOString().slice(0,10)+'.csv';
+  document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},500);
+}
 async function shpPintarMapeo(){
   const box=document.getElementById('shpMapBox');if(!box) return;
   if(!shpEsDir()){box.innerHTML='';return;}
@@ -30840,14 +30871,16 @@ async function shpPintarMapeo(){
   _shpRows.forEach(p=>(p.lineas||[]).forEach(l=>{const k=shpClave(l);if(!vistas[k]) vistas[k]={clave:k,titulo:l.titulo,sku:l.sku,variante:l.variante,precio:l.precio};}));
   Object.values(_shpMap).forEach(m=>{if(!vistas[m.clave]) vistas[m.clave]={clave:m.clave,titulo:m.titulo,sku:m.clave}; const v=vistas[m.clave]; if(!v.variante) v.variante=m.variante; if(!v.precio) v.precio=m.precio; v.tipo=m.tipo_producto;});
   const todas=Object.values(vistas).sort((a,b)=>String(a.titulo).localeCompare(String(b.titulo)));
-  const pend=todas.filter(x=>!_shpMap[x.clave]?.catalogo_item_id&&!(_shpMap[x.clave]?.generacion_ids||[]).length);
+  const pend=todas.filter(x=>shpEstadoVinc(x)!=='completa');
+  const comp=todas.length-pend.length;
+  const lista=_shpMapFiltro==='todas'?todas:(_shpMapFiltro==='vinc'?todas.filter(x=>shpEstadoVinc(x)==='completa'):pend);
+  const btnF=(k,t)=>`<button onclick="_shpMapFiltro='${k}';shpPintarMapeo()" style="border:1px solid var(--teal);background:${_shpMapFiltro===k?'var(--teal)':'#fff'};color:${_shpMapFiltro===k?'#fff':'var(--teal)'};border-radius:7px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">${t}</button>`;
   const fila=x=>{
     const m=_shpMap[x.clave]||{};const kq=solEsc(x.clave).replace(/'/g,"\\'");
     if(!_shpGenSel[x.clave]) _shpGenSel[x.clave]=new Set(m.generacion_ids||[]);
     const ngen=_shpGenSel[x.clave].size;
     const itemMap=_shpCat.find(c=>c.id===m.catalogo_item_id);
-    if(!_shpModo[x.clave]) _shpModo[x.clave]=m.membresia_plan||(itemMap&&SHP_FAM_MEMB.includes(itemMap.familia))||/membres/i.test(x.tipo||x.titulo||'')?'membresia':(ngen||(itemMap&&SHP_FAM_CURSO.includes(itemMap.familia))?'curso':(itemMap?'servicio':(/servicios/i.test(x.tipo||'')?'servicio':(shpEsCursoTitulo(x.titulo)?'curso':'servicio'))));
-    const modo=_shpModo[x.clave];
+    const modo=shpModoDe(x);
     const niv=m.nivel||shpNivelDeLinea(x);
     const fams=modo==='curso'?SHP_FAM_CURSO:(modo==='membresia'?SHP_FAM_MEMB:SHP_FAM_SERV);
     const opts=_shpCat.filter(c=>fams.includes(c.familia));
@@ -30869,8 +30902,8 @@ async function shpPintarMapeo(){
     <summary style="cursor:pointer;font-size:13px;font-weight:700;color:var(--navy);">🔗 Vincular productos de Shopify ${pend.length?`<span style="color:#B45309;">(${pend.length} por vincular)</span>`:'<span style="color:#2E7D32;">(todo vinculado)</span>'}</summary>
     <div style="margin:6px 0;"><button onclick="shpSincronizarProductos()" style="border:1px solid var(--teal);background:#fff;color:var(--teal);border-radius:7px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">🔄 Traer productos y variantes de Shopify</button> <span style="font-size:11px;color:var(--text3);">Para vincular una variante (ej. el acceso Plus) aunque nadie la haya comprado todavía.</span></div>
     <div style="font-size:11px;color:var(--text3);margin:6px 0;"><b>Membresía</b>: se liga al plan del catálogo de Círculo (sin generación). <b>Curso</b>: se casa con generaciones de Academia (solo grupales: talleres, desde cero y diplomados; los empresariales no aplican) y el acceso (esencial / plus / premium) sale de la variante de Shopify. El pedido llega ya casado y el vendedor y Facturación solo lo confirman. <b>Servicio</b> (ej. diagnósticos): se elige del catálogo. En los tres casos, si no existe en el catálogo, usa “➕ Crear en catálogo”. <b>Combo</b> (dos talleres): marca TODAS las fechas de ambos talleres; el vendedor elige la fecha del que tenga varias y el otro se marca solo.</div>
-    ${(pend.length?pend:todas).map(fila).join('')||'<div style="font-size:12px;color:var(--text3);">Aún no hay productos.</div>'}
-    ${pend.length&&todas.length>pend.length?`<div style="font-size:11px;color:var(--text3);margin-top:6px;">Mostrando solo los pendientes.</div>`:''}</details>`;
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:8px 0;">${btnF('pend','⏳ Pendientes ('+pend.length+')')}${btnF('vinc','✅ Vinculadas ('+comp+')')}${btnF('todas','Todas ('+todas.length+')')}<button onclick="shpExportarMapeo()" style="border:1px solid #2E7D32;background:#fff;color:#2E7D32;border-radius:7px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;margin-left:auto;">⬇ Exportar a Excel (CSV)</button></div>
+    ${lista.map(fila).join('')||'<div style="font-size:12px;color:var(--text3);">No hay productos en esta vista.</div>'}</details>`;
 }
 function shpGenModal(clave){
   const sel=_shpGenSel[clave]||(_shpGenSel[clave]=new Set());
@@ -31286,7 +31319,7 @@ async function solInscribirAcademia(r,silencioso){
   if(!ac.generaciones?.length) return '🎓 Academia: falta elegir la generación (o generaciones)'+(ac.fecha_texto?' — el vendedor pidió: '+ac.fecha_texto:'')+' — hazlo desde la tarjeta para inscribirlo.';
   const ids=ac.generaciones.map(g=>g.id);
   const {data:gens}=await sb.from('academia_generaciones').select('id,clave,curso:curso_id(nombre,sistema:sistema_id(clave,codigo_clave))').in('id',ids);
-  const out=[];let ok=0,fallos=0,pidPrimero=null;
+  const out=[];let ok=0,fallos=0,pidPrimero=null;const nuevosIdsInsc=[];
   for(const a of ac.asistentes){
     const {data:pid,error:ep}=await sb.rpc('academia_find_or_create_participante',{p_nombre:a.nombre,p_mail:a.correo||null,p_telefono:a.telefono||null,p_cliente_id:r.cliente_cartera_id||null});
     if(ep||!pid){fallos++;out.push(`✖ ${a.nombre}: no se pudo crear el participante (${ep?.message||'sin id'})`);continue;}
@@ -31303,9 +31336,9 @@ async function solInscribirAcademia(r,silencioso){
       const {data:folio,error:ef}=await sb.rpc('academia_generar_folio',{p_sistema:auto?'':(sis+ver),p_generacion:gen.clave,p_acceso:academiaAccesoLetra(ac.nivel)});
       if(ef){fallos++;out.push(`✖ ${a.nombre} / ${gen.clave}: no se pudo generar el folio (${ef.message})`);continue;}
       const filaInsc={participante_id:pid,generacion_id:gen.id,nivel_acceso:ac.nivel||'esencial',tipo:'entero',folio,vendedor_nombre_original:r.vendedor_nombre||null,origen:'facturacion',origen_solicitud_id:r.id};
-      let {error:ei}=await sb.from('academia_inscripciones').insert(filaInsc);
-      if(ei&&/origen/.test(ei.message||'')){delete filaInsc.origen;delete filaInsc.origen_solicitud_id;({error:ei}=await sb.from('academia_inscripciones').insert(filaInsc));} // falta sql_academia_nuevos_asistentes.sql
-      if(ei){fallos++;out.push(`✖ ${a.nombre} / ${gen.clave}: ${ei.message}`);}else{ok++;out.push(`✔ ${a.nombre} → ${gen.clave} (${ac.nivel}) ${folio||''}`);}
+      let {data:insNueva,error:ei}=await sb.from('academia_inscripciones').insert(filaInsc).select('id').single();
+      if(ei&&/origen/.test(ei.message||'')){delete filaInsc.origen;delete filaInsc.origen_solicitud_id;({data:insNueva,error:ei}=await sb.from('academia_inscripciones').insert(filaInsc).select('id').single());} // falta sql_academia_nuevos_asistentes.sql
+      if(ei){fallos++;out.push(`✖ ${a.nombre} / ${gen.clave}: ${ei.message}`);}else{ok++;if(insNueva?.id) nuevosIdsInsc.push(insNueva.id);out.push(`✔ ${a.nombre} → ${gen.clave} (${ac.nivel}) ${folio||''}`);}
     }
   }
   if(!fallos){
@@ -31313,6 +31346,14 @@ async function solInscribirAcademia(r,silencioso){
     const {error}=await sb.from('solicitudes_factura').update({academia:nuevo}).eq('id',r.id);
     if(!error) r.academia=nuevo;
     if(pidPrimero&&r.fact_ingreso_id) await sb.from('fact_ingresos').update({academia_participante_id:pidPrimero}).eq('id',r.fact_ingreso_id);
+  }
+  // Segunda notificación (además del aviso dentro de la app): Telegram al grupo de Capacitación. No bloquea nada.
+  if(nuevosIdsInsc.length){
+    try{
+      const {data:sess}=await sb.auth.getSession();
+      fetch('/api/academia-avisar-asignacion',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solicitud_id:r.id,inscripcion_ids:nuevosIdsInsc})})
+        .then(x=>x.json()).then(j=>{if(!j.ok) console.warn('Aviso Telegram a Capacitación:',j.error);}).catch(e=>console.warn('Aviso Telegram a Capacitación',e));
+    }catch(e){console.warn(e);}
   }
   return `🎓 Academia: ${ok} inscripción(es) ${fallos?'con '+fallos+' problema(s)':'listas'}\n${out.join('\n')}`;
 }
