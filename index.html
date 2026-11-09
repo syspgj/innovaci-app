@@ -22959,6 +22959,22 @@ async function guardarEvidenciaResguardo(id){
 // pasar por SQL, el servidor cloud contratado (para que la periodicidad se
 // derive de su ficha de producto), la carpeta de Dropbox (para activar la
 // validación automática) y/o un override directo de periodicidad en días.
+// Jp, 2026-11-09: revisa Dropbox al momento (misma lógica del cron diario) para una póliza.
+async function revisarDropboxPoliza(id){
+  const btn=document.getElementById('btnRevisarDropbox_'+id);
+  if(btn){btn.disabled=true;btn.textContent='⏳ Revisando Dropbox…';}
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/admin-resguardo-revisar?poliza_id='+encodeURIComponent(id),{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){alert('No se pudo revisar Dropbox: '+(j.error||j.errores?.[0]?.error||res.status));}
+    document.getElementById('modalDetallePoliza')?.remove();
+    abrirDetallePoliza(id);
+  }catch(e){
+    alert('No se pudo revisar Dropbox: '+(e.message||e));
+    if(btn){btn.disabled=false;btn.textContent='🔄 Revisar Dropbox ahora';}
+  }
+}
 async function guardarConfigResguardo(id){
   const servidorSel=document.getElementById('resguardoServidorProducto_'+id);
   const folderInput=document.getElementById('resguardoDropboxFolder_'+id);
@@ -23138,21 +23154,59 @@ async function abrirDetallePoliza(id){
     // resguardo, dónde está el resguardo, necesita revisión": estado de la
     // validación automática contra Dropbox, visible antes que nada más.
     const ultimaEvidenciaDropbox=(evidencias||[]).find(e=>e.origen==='dropbox')||null;
-    const dropboxCubrePeriodoActual=!!(ultimaEvidenciaDropbox&&periodicidadDias&&ultimaEvidenciaDropbox.periodo_fecha===periodoActualParaInput);
+    // Jp, 2026-11-09: en pólizas de resguardo no importan las horas, sino (1) estatus,
+    // (2) último resguardo validado y (3) alerta de si requiere revisión.
+    const mxFecha=(iso)=>iso?new Date(new Date(iso).getTime()-6*3600*1000).toISOString().slice(0,10):null;
+    const hoyMx=mxFecha(new Date().toISOString());
+    const diasEntre=(a,b)=>Math.floor((new Date(b+'T00:00:00')-new Date(a+'T00:00:00'))/86400000);
+    const ultArchFecha=mxFecha(c.dropbox_ultimo_archivo_fecha);
+    const ultArchNombre=c.dropbox_ultimo_archivo?c.dropbox_ultimo_archivo.split('/').pop():null;
+    const ultEvid=(evidencias||[])[0]||null;
+    const candidatos=[];
+    if(ultArchFecha) candidatos.push({fecha:ultArchFecha,origen:'Dropbox',detalle:ultArchNombre});
+    if(ultEvid) candidatos.push({fecha:ultEvid.periodo_fecha,origen:ultEvid.origen==='dropbox'?'Dropbox':'Subida manual',detalle:ultEvid.dropbox_path?ultEvid.dropbox_path.split('/').pop():(ultEvid.nota||null)});
+    candidatos.sort((x,y)=>String(y.fecha).localeCompare(String(x.fecha)));
+    const ultimoValidado=candidatos[0]||null;
+    const diasSin=ultimoValidado?diasEntre(ultimoValidado.fecha,hoyMx):null;
+    // Tolerancia: el respaldo debe tener, a lo más, la periodicidad en días de antigüedad (diario = de ayer o de hoy).
+    const atrasado=!!(periodicidadDias&&ultimoValidado&&diasSin>periodicidadDias);
+    let alertaTxt=null,alertaTipo='ok';
+    if(c.estatus==='CERRADA'){alertaTxt='Póliza cerrada — no se revisa.';alertaTipo='gris';}
+    else if(c.dropbox_revision_error){alertaTxt='No se pudo revisar la carpeta de Dropbox: '+c.dropbox_revision_error;alertaTipo='rojo';}
+    else if(!periodicidadDias){alertaTxt='Falta definir la periodicidad de esta póliza (abajo, en Configuración de resguardo).';alertaTipo='amarillo';}
+    else if(!ultimoValidado){alertaTxt=c.resguardo_dropbox_folder?(c.dropbox_revision_at?'Requiere revisión: no hay ningún respaldo validado todavía.':'Sin revisar aún — pulsa "Revisar Dropbox ahora".'):'Requiere revisión: sin carpeta de Dropbox ni evidencia subida.';alertaTipo=c.dropbox_revision_at||!c.resguardo_dropbox_folder?'rojo':'amarillo';}
+    else if(atrasado){alertaTxt=`Requiere revisión: el último respaldo es de hace ${diasSin} días (se esperaba cada ${periodicidadDias}).`;alertaTipo='rojo';}
+    const alertaColores={ok:['#27AE60','rgba(39,174,96,0.08)'],rojo:['#E84040','rgba(232,64,64,0.08)'],amarillo:['#c47f0a','rgba(245,166,35,0.10)'],gris:['#64748b','rgba(100,116,139,0.08)']};
+    const [alC,alBg]=alertaColores[alertaTipo];
+    const resumenHtml=`<div style="margin-bottom:12px;padding:12px;border:1px solid ${alC}55;background:${alBg};border-radius:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
+        <div style="font-size:11px;font-weight:700;color:var(--navy);">🛡 Estado del resguardo</div>
+        <span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:${est.color}22;color:${est.color};">${est.label}</span>
+      </div>
+      <div style="font-size:12px;margin-bottom:6px;">Último resguardo validado: ${ultimoValidado?`<b>${ultimoValidado.fecha}</b> <span style="color:var(--text3);">(${ultimoValidado.origen}${ultimoValidado.detalle?' · '+ultimoValidado.detalle:''})</span>`:'<b>ninguno</b>'}</div>
+      <div style="font-size:12px;font-weight:700;color:${alC};">${alertaTipo==='ok'?'✅ Al corriente — no requiere revisión':'⚠ '+alertaTxt}</div>
+    </div>`;
     let dropboxEstadoHtml;
     if(!c.resguardo_dropbox_folder) dropboxEstadoHtml=`<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#94a3b822;color:#64748b;white-space:nowrap;">— Sin Dropbox configurado</span>`;
-    else if(dropboxCubrePeriodoActual) dropboxEstadoHtml=`<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#27AE6022;color:#27AE60;white-space:nowrap;">✅ Detectado en Dropbox</span>`;
-    else dropboxEstadoHtml=`<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#F5A62322;color:#c47f0a;white-space:nowrap;">⚠ Pendiente de revisión</span>`;
+    else if(c.dropbox_revision_error) dropboxEstadoHtml=`<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#E8404022;color:#E84040;white-space:nowrap;">❌ Error al revisar</span>`;
+    else if(!c.dropbox_revision_at) dropboxEstadoHtml=`<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#94a3b822;color:#64748b;white-space:nowrap;">⏳ Sin revisar aún</span>`;
+    else if(ultArchFecha&&periodicidadDias&&diasEntre(ultArchFecha,hoyMx)<=periodicidadDias) dropboxEstadoHtml=`<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#27AE6022;color:#27AE60;white-space:nowrap;">✅ Respaldo reciente en Dropbox</span>`;
+    else dropboxEstadoHtml=`<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#F5A62322;color:#c47f0a;white-space:nowrap;">⚠ Sin respaldo reciente</span>`;
+    const revisionTxt=c.dropbox_revision_at?new Date(c.dropbox_revision_at).toLocaleString('es-MX',{timeZone:'America/Mexico_City',dateStyle:'short',timeStyle:'short'}):null;
     const dropboxDetalleHtml=c.resguardo_dropbox_folder
-      ?`<div style="font-size:11px;margin-top:6px;">📂 Carpeta: <span style="font-family:'JetBrains Mono',monospace;">${c.resguardo_dropbox_folder}</span>${ultimaEvidenciaDropbox?`<br>Último detectado: <b>${ultimaEvidenciaDropbox.periodo_fecha}</b> (subido ${(ultimaEvidenciaDropbox.fecha_subida||'').slice(0,10)}) — <span style="color:var(--text3);">${ultimaEvidenciaDropbox.dropbox_path||''}</span>`:`<br>Aún no se detecta ningún archivo del periodo vigente ahí — la revisión automática corre una vez al día; si el archivo ya está en Dropbox y mañana sigue sin verse aquí, repórtalo.`}</div>`
+      ?`<div style="font-size:11px;margin-top:6px;">📂 Carpeta: <span style="font-family:'JetBrains Mono',monospace;">${c.resguardo_dropbox_folder}</span>
+        ${c.dropbox_revision_error?`<br><span style="color:var(--red);">${c.dropbox_revision_error}</span>`:''}
+        ${!c.dropbox_revision_error&&c.dropbox_revision_at?(c.dropbox_ultimo_archivo?`<br>Último archivo en la carpeta: <b>${ultArchFecha}</b> — <span style="color:var(--text3);">${ultArchNombre}</span> <span style="color:var(--text3);">(${c.dropbox_archivos_total} archivos en total)</span>`:'<br>La carpeta no tiene archivos.'):''}
+        <br><span style="color:var(--text3);">${revisionTxt?'Última revisión: '+revisionTxt+' · ':'Nunca revisada · '}corre sola una vez al día.</span></div>`
       :`<div style="font-size:11px;margin-top:6px;color:var(--text3);">Sin carpeta de Dropbox capturada todavía — captúrala en "⚙ Configuración de resguardo" para activar la validación automática. Mientras tanto, sigue subiendo la evidencia manualmente.</div>`;
+    const botonRevisarHtml=c.resguardo_dropbox_folder?`<div style="margin-top:8px;"><button id="btnRevisarDropbox_${id}" onclick="revisarDropboxPoliza('${id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">🔄 Revisar Dropbox ahora</button></div>`:'';
 
-    resguardoBloque=`<div style="margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:8px;">
+    resguardoBloque=`${resumenHtml}<div style="margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:8px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:8px;">
         <div style="font-size:11px;font-weight:700;color:var(--navy);">📂 Validación en Dropbox</div>
         ${dropboxEstadoHtml}
       </div>
-      ${dropboxDetalleHtml}
+      ${dropboxDetalleHtml}${botonRevisarHtml}
     </div>
     <div style="margin-bottom:12px;padding:12px;border:1px solid ${vencido?'var(--red)':'var(--border)'};border-radius:8px;${vencido?'background:rgba(232,64,64,0.05);':''}">
       <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:8px;">🗓 Evidencia de resguardo</div>
@@ -23250,10 +23304,10 @@ async function abrirDetallePoliza(id){
           <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Fecha de conclusión</div>
           <input id="dpFechaVencimiento" type="date" value="${c.fecha_vencimiento||''}" style="${INP}">
         </div>
-        <div>
+        ${c.seccion_manual==='resguardo'?'':`<div>
           <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Horas que incluye la póliza</div>
           <input id="dpHorasTotales" type="number" step="0.5" value="${c.horas_totales>0?c.horas_totales:(c.polizas_catalogo?.horas_incluidas||0)}" style="${INP}">
-        </div>
+        </div>`}
         <div>
           <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Precio contratado</div>
           <input id="dpPrecio" type="number" step="0.01" value="${c.precio_contratado||0}" style="${INP}">
@@ -23270,7 +23324,7 @@ async function abrirDetallePoliza(id){
     </div>`:`<div style="margin-bottom:12px;font-size:11px;color:var(--text3);">Sin tipo de póliza asignado — asígnalo arriba para ver prioridad, horario y beneficios.</div>`}
     ${c.seccion_manual==='resguardo'?'</div><div>':''}${resguardoBloque}${c.seccion_manual==='resguardo'?'</div></div>':''}
 
-    <div style="margin-bottom:12px;padding:10px 12px;background:rgba(41,128,185,0.06);border-radius:6px;">
+    ${c.seccion_manual==='resguardo'?'':`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(41,128,185,0.06);border-radius:6px;">
       <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:6px;">⏱ Horas — con base en los tickets reales${c.poliza_numero_legacy?` (app + historial 2019-2026 de POL${c.poliza_numero_legacy})`:' (app)'}</div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:12px;">
         <div><div style="color:var(--text3);font-size:10px;">Incluidas</div><div style="font-family:'JetBrains Mono',monospace;">${horasReales.total?horasReales.total+'h':'—'}</div><div style="font-size:9px;color:var(--text3);">${horasReales.total?'('+opsHorasAMinutosTexto(horasReales.total)+')':''}</div></div>
@@ -23278,8 +23332,8 @@ async function abrirDetallePoliza(id){
         <div><div style="color:var(--text3);font-size:10px;">Restantes</div><div style="font-family:'JetBrains Mono',monospace;font-weight:700;color:${horasReales.total>0&&horasReales.restante<=horasReales.total*0.15?'#E84040':'var(--text)'};">${horasReales.total?horasReales.restante+'h':'—'}</div><div style="font-size:9px;color:var(--text3);">${horasReales.total?'('+opsHorasAMinutosTexto(horasReales.restante)+')':''}</div></div>
       </div>
       <div style="font-size:10px;color:var(--text3);margin-top:6px;">${(horasReales.minutosApp/60).toFixed(2)}h de tickets en la app${c.poliza_numero_legacy?` + ${(horasReales.minutosHistorico/60).toFixed(2)}h del historial`:''}</div>
-    </div>
-    ${c.horas_referencia_texto?`<div style="margin-bottom:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Referencia de horas (CRM anterior):</b><br>${c.horas_referencia_texto}</div>`:''}
+    </div>`}
+    ${c.horas_referencia_texto&&c.seccion_manual!=='resguardo'?`<div style="margin-bottom:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Referencia de horas (CRM anterior):</b><br>${c.horas_referencia_texto}</div>`:''}
     ${(c.personas_autorizadas||c.contacto_telefono||c.contacto_correo)?`<div style="margin-bottom:8px;font-size:12px;"><b>Contacto:</b> ${c.personas_autorizadas||'—'}${c.contacto_telefono?' · 📞 '+c.contacto_telefono:''}${c.contacto_correo?' · ✉ '+c.contacto_correo:''}</div>`:''}
     ${c.notas?`<div style="margin-bottom:8px;font-size:12px;"><b>Notas:</b> ${c.notas}</div>`:''}
     ${(c.origen==='crm_import'||c.origen==='crm_import_resguardo')?`<div style="margin-bottom:12px;font-size:10px;color:var(--text3);">Importado del CRM anterior${c.numero_proyecto_crm?' · número de póliza '+c.numero_proyecto_crm:''}.</div>`:''}
@@ -23359,10 +23413,10 @@ async function guardarEdicionPoliza(id){
     vendedor:document.getElementById('dpVendedor')?.value||null,
     fecha_inicio:document.getElementById('dpFechaInicio')?.value||null,
     fecha_vencimiento:document.getElementById('dpFechaVencimiento')?.value||null,
-    horas_totales:parseFloat(document.getElementById('dpHorasTotales')?.value)||0,
     precio_contratado:parseFloat(document.getElementById('dpPrecio')?.value)||0,
     updated_at:new Date().toISOString()
   };
+  if(document.getElementById('dpHorasTotales')) payload.horas_totales=parseFloat(document.getElementById('dpHorasTotales').value)||0;
   const {error}=await sb.from('clientes_polizas').update(payload).eq('id',id);
   if(error){alert('Error: '+error.message);return;}
   document.getElementById('modalDetallePoliza')?.remove();
