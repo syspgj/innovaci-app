@@ -30768,17 +30768,36 @@ function shpDatosCuentaNueva(p){
       d.remove();resolve({razon:v('shcRazon').toUpperCase(),rfc:v('shcRfc').toUpperCase()||null,correo:v('shcCorreo')||null,tel:v('shcTel')||null});};
   });
 }
+// 2026-11-09: los errores de este flujo salían con alert(), que el navegador puede silenciar
+// ("impedir cuadros de diálogo") y entonces el pedido "no avanzaba" sin explicación. Ahora el error
+// queda en un cuadro propio que no se puede suprimir.
+function shpErrorVisible(titulo,detalle){
+  try{console.error('[Shopify→Proyección]',titulo,detalle);}catch(_){}
+  document.getElementById('shpErrBox')?.remove();
+  const d=document.createElement('div');d.id='shpErrBox';
+  d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10090;display:flex;align-items:center;justify-content:center;padding:16px;';
+  d.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px 22px;width:100%;max-width:480px;box-shadow:0 10px 40px rgba(0,0,0,.3);border-top:5px solid #E84040;">
+    <div style="font-size:15px;font-weight:700;color:#c0392b;">⚠️ ${solEsc(titulo)}</div>
+    <div style="font-size:12px;color:var(--text2);margin:8px 0 12px;white-space:pre-wrap;word-break:break-word;">${solEsc(String(detalle||'Sin detalle'))}</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">El pedido NO avanzó. Mándale una captura de este mensaje a Dirección.</div>
+    <button onclick="document.getElementById('shpErrBox').remove()" style="background:var(--navy);color:#fff;border:none;border-radius:8px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Entendido</button></div>`;
+  document.body.appendChild(d);
+}
 async function shpCrearCuentaDePedido(p){
   const dat=await shpDatosCuentaNueva(p); if(!dat) return null;
+  uiToast('⏳ Creando la cuenta…',true);
+  const {data:sesChk}=await sb.auth.getSession();
+  if(!sesChk?.session){shpErrorVisible('Tu sesión expiró','Cierra sesión y vuelve a entrar (o recarga con Ctrl+F5) y repite "Pasar a Proyección".');return null;}
   if(dat.rfc){ // si ya existe una cuenta con ese RFC, se usa
     const {data:ex}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente,rfc').eq('rfc',dat.rfc).limit(1);
     if(ex&&ex.length){ if(confirm(`Ya existe la cuenta ${ex[0].razon_social} (${ex[0].num_cliente||'—'}) con ese RFC. ¿Usarla?`)) return ex[0]; }
   }
   const {data:nc,error}=await sb.from('clientes_cartera').insert({razon_social:dat.razon,rfc:dat.rfc,correo_principal:dat.correo,telefono:dat.tel,vendedor_asignado:currentUser.id,origen:'alta_vendedor',num_cliente:'ALT-'+Date.now()}).select().single();
-  if(error){alert('No se pudo crear la cuenta: '+error.message);return null;}
+  if(error){shpErrorVisible('No se pudo crear la cuenta en la App',error.message+(error.details?'\n'+error.details:''));return null;}
+  uiToast('⏳ Cuenta creada en la App. Creándola en el CRM…',true);
   const r=await crmCrearCuentaDeAlta(nc.id);
   if(r.ok){nc.num_cliente=r.num_cliente;window._cartClientes=null;_shpCli=null;uiToast('✅ Cuenta creada también en el CRM ('+r.num_cliente+')',true);}
-  else alert('La cuenta se creó en la App, pero NO en el CRM: '+r.error+'\n\nLa oportunidad del CRM podría no crearse; puedes reintentarlo desde la ficha de la cuenta ("Abrir en CRM").');
+  else uiToast('⚠️ La cuenta se creó en la App pero NO en el CRM ('+r.error+'). Se continúa; puedes reintentar desde la ficha de la cuenta.',false);
   return nc;
 }
 // ¿La cuenta es de otro vendedor? Pregunta si la venta se registra a nombre del dueño (quien atiende solo cubre).
@@ -30854,14 +30873,15 @@ async function shpPasarProyeccion(id){
     };
     if(tele) payload.perfil='telemarketing';
     const {data:fila,error}=await sb.rpc('crear_negociacion_pedido',{p_payload:payload,p_owner:ownerId});
-    if(error||!fila){alert('No se pudo crear la negociación en Proyección: '+(error?.message||'sin respuesta'));return;}
+    if(error||!fila){shpErrorVisible('No se pudo crear la negociación en Proyección',(error?.message||'sin respuesta')+(error?.details?'\n'+error.details:''));return;}
+    uiToast('⏳ Negociación creada. Creando oportunidad en el CRM…',true);
     await sb.from('shopify_pedidos').update({pipeline_vendedor_id:fila.id}).eq('id',p.id);
     p.pipeline_vendedor_id=fila.id;
     const oc=await shpCrearOportunidadPedido(fila,ownerId);
     uiToast((oc.ok?'✅ Negociación en Proyección y oportunidad creada en el CRM':'📊 Negociación creada en Proyección; la oportunidad del CRM no se pudo crear ('+(oc.error||'error')+')')+(ownerId!==me?` · a nombre de ${ownerNombre}`:''),oc.ok);
     shpPintar();
     if(confirm('Listo: el pedido ya quedó registrado en Proyección y el CRM.\n\n¿Generar ahora la solicitud de factura?')) shpFacturar(id);
-  }catch(e){alert('Error: '+(e?.message||e));}
+  }catch(e){shpErrorVisible('Error al pasar el pedido a Proyección',e?.message||e);}
   finally{_shpPasando=false;}
 }
 function shpFacturar(id){
