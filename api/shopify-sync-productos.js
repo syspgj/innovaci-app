@@ -8,8 +8,12 @@
 // variante/precio/tipo de las existentes.
 //
 // Variables de entorno en Vercel (nuevas):
-//   SHOPIFY_SHOP_DOMAIN  → ej. mi-tienda.myshopify.com
-//   SHOPIFY_ADMIN_TOKEN  → token de una app personalizada con permiso read_products
+//   SHOPIFY_SHOP_DOMAIN  → ej. mi-tienda.myshopify.com (el dominio .myshopify.com, no www.innovaci.shop)
+//   Y una de estas dos formas de credencial:
+//   A) App creada en el Dev Dashboard de Shopify (lo normal desde 2026):
+//        SHOPIFY_CLIENT_ID y SHOPIFY_CLIENT_SECRET (scope read_products). El token se pide
+//        solo en cada sincronización (dura 24 h).
+//   B) App personalizada antigua del admin (si ya tenías una): SHOPIFY_ADMIN_TOKEN
 // Ya existentes: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 //
 // Entrada: POST sin cuerpo. Requiere sesión de Dirección (Bearer token).
@@ -18,7 +22,20 @@
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SKEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const SHOP = (process.env.SHOPIFY_SHOP_DOMAIN || '').trim();
-const TOKEN = (process.env.SHOPIFY_ADMIN_TOKEN || '').trim();
+const STATIC_TOKEN = (process.env.SHOPIFY_ADMIN_TOKEN || '').trim();
+const CID = (process.env.SHOPIFY_CLIENT_ID || '').trim();
+const CSEC = (process.env.SHOPIFY_CLIENT_SECRET || '').trim();
+
+async function tokenShopify() {
+  if (STATIC_TOKEN) return STATIC_TOKEN;
+  const r = await fetch(`https://${SHOP}/admin/oauth/access_token`, {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: CID, client_secret: CSEC }).toString(),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.access_token) throw new Error('No se pudo obtener el token de Shopify (' + r.status + '): ' + JSON.stringify(j).slice(0, 200));
+  return j.access_token;
+}
 
 const H = { apikey: SKEY, Authorization: `Bearer ${SKEY}`, 'Content-Type': 'application/json' };
 
@@ -44,9 +61,10 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Método no permitido' });
   try {
     if (!SUPABASE_URL || !SKEY) return res.status(200).json({ ok: false, error: 'Falta SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY' });
-    if (!SHOP || !TOKEN) return res.status(200).json({ ok: false, error: 'Falta configurar SHOPIFY_SHOP_DOMAIN y SHOPIFY_ADMIN_TOKEN en Vercel' });
+    if (!SHOP || !(STATIC_TOKEN || (CID && CSEC))) return res.status(200).json({ ok: false, error: 'Falta configurar en Vercel SHOPIFY_SHOP_DOMAIN y SHOPIFY_CLIENT_ID + SHOPIFY_CLIENT_SECRET (o SHOPIFY_ADMIN_TOKEN)' });
     if (!(await esDirector(req))) return res.status(401).json({ ok: false, error: 'Solo Dirección puede sincronizar productos' });
 
+    const TOKEN = await tokenShopify();
     const productos = [];
     let cursor = null;
     for (let i = 0; i < 10; i++) {
