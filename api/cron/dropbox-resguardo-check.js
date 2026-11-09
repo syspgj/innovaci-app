@@ -179,7 +179,8 @@ async function dropboxAccessToken() {
 // paginación nativa de la API de Dropbox).
 async function dropboxListarArchivos(accessToken, path) {
   let entradas = [];
-  let body = { path, recursive: false, include_deleted: false };
+  // recursive:true — los respaldos reales viven en subcarpetas (ej. ARES/ARES_backup_DAC/…_Full_v1.pbd), 2026-11-09.
+  let body = { path, recursive: true, include_deleted: false };
   let url = 'https://api.dropboxapi.com/2/files/list_folder';
   for (;;) {
     const res = await fetch(url, {
@@ -203,10 +204,14 @@ async function dropboxListarArchivos(accessToken, path) {
 export default async function handler(req, res) {
   const authHeader = req.headers['authorization'];
   const secretHeader = req.headers['x-sync-secret'];
+  // Vercel Cron manda "Authorization: Bearer <CRON_SECRET>" en cada corrida programada
+  // (2026-11-09: sin aceptar CRON_SECRET el cron diario era rechazado con 401 y nunca corría).
+  // Las llamadas manuales siguen usando SYNC_SECRET.
+  const claves = [process.env.SYNC_SECRET, process.env.CRON_SECRET].filter(Boolean);
   if (
-    process.env.SYNC_SECRET &&
-    secretHeader !== process.env.SYNC_SECRET &&
-    authHeader !== `Bearer ${process.env.SYNC_SECRET}`
+    claves.length &&
+    !claves.includes(secretHeader) &&
+    !claves.some((c) => authHeader === `Bearer ${c}`)
   ) {
     return res.status(401).json({ error: 'unauthorized' });
   }

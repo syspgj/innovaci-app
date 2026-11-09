@@ -13,26 +13,25 @@
 // REPORTE_FROM_EMAIL). No se inventó un mecanismo de correo nuevo.
 //
 // Cómo se usa:
-//   1. Coloca este archivo en  api/cron/proyeccion-alertas-seguimiento.js
-//      dentro del repo.
-//   2. No requiere variables de entorno nuevas — reutiliza SUPABASE_URL,
-//      SUPABASE_SERVICE_ROLE_KEY, SYNC_SECRET, RESEND_API_KEY y
-//      (opcional) REPORTE_FROM_EMAIL, todas ya configuradas en Vercel.
-//   3. Agrega la entrada de cron correspondiente en vercel.json (ver
-//      vercel.json actualizado entregado junto con este archivo) — corre
-//      diario a las 7am hora CDMX, igual que los demás sync diarios.
-//   4. Sube los archivos a tu repo como siempre y Vercel despliega solo.
+// 1. Coloca este archivo en api/cron/proyeccion-alertas-seguimiento.js
+//    dentro del repo.
+// 2. No requiere variables de entorno nuevas — reutiliza SUPABASE_URL,
+//    SUPABASE_SERVICE_ROLE_KEY, SYNC_SECRET, CRON_SECRET, RESEND_API_KEY y
+//    (opcional) REPORTE_FROM_EMAIL, todas ya configuradas en Vercel.
+// 3. Agrega la entrada de cron correspondiente en vercel.json — corre
+//    diario a las 7am hora CDMX, igual que los demás sync diarios.
+// 4. Sube los archivos a tu repo como siempre y Vercel despliega solo.
 //
 // Qué hace:
-//   - Busca en pipeline_actividades las actividades NO completadas cuya
-//     fecha_programada es HOY (fecha de México, no UTC — el servidor corre
-//     en UTC y aquí se ajusta).
-//   - Las agrupa por vendedor (pipeline_actividades.usuario_id, o si no
-//     está, pipeline_vendedor.usuario_id de la negociación).
-//   - A cada vendedor con al menos una actividad de hoy le manda UN correo
-//     con la lista completa (hora, tipo, cliente, nota).
-//   - Si un vendedor no tiene email registrado en `usuarios`, se omite y se
-//     reporta en la respuesta (no truena el resto del batch).
+// - Busca en pipeline_actividades las actividades NO completadas cuya
+//   fecha_programada es HOY (fecha de México, no UTC — el servidor corre
+//   en UTC y aquí se ajusta).
+// - Las agrupa por vendedor (pipeline_actividades.usuario_id, o si no
+//   está, pipeline_vendedor.usuario_id de la negociación).
+// - A cada vendedor con al menos una actividad de hoy le manda UN correo
+//   con la lista completa (hora, tipo, cliente, nota).
+// - Si un vendedor no tiene email registrado en `usuarios`, se omite y se
+//   reporta en la respuesta (no truena el resto del batch).
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -99,10 +98,14 @@ function construirHtml(nombreVendedor, actividades) {
 export default async function handler(req, res) {
   const authHeader = req.headers['authorization'];
   const secretHeader = req.headers['x-sync-secret'];
+  // Vercel Cron manda "Authorization: Bearer <CRON_SECRET>" en cada corrida programada
+  // (2026-11-09: sin aceptar CRON_SECRET el cron diario era rechazado con 401 y nunca corría).
+  // Las llamadas manuales siguen usando SYNC_SECRET.
+  const claves = [process.env.SYNC_SECRET, process.env.CRON_SECRET].filter(Boolean);
   if (
-    process.env.SYNC_SECRET &&
-    secretHeader !== process.env.SYNC_SECRET &&
-    authHeader !== `Bearer ${process.env.SYNC_SECRET}`
+    claves.length &&
+    !claves.includes(secretHeader) &&
+    !claves.some((c) => authHeader === `Bearer ${c}`)
   ) {
     return res.status(401).json({ error: 'unauthorized' });
   }

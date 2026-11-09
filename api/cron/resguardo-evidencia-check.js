@@ -213,10 +213,14 @@ function calcularProximoVencimiento(fechaInicioStr, periodicidadDias, ultimaEvid
 export default async function handler(req, res) {
   const authHeader = req.headers['authorization'];
   const secretHeader = req.headers['x-sync-secret'];
+  // Vercel Cron manda "Authorization: Bearer <CRON_SECRET>" en cada corrida programada
+  // (2026-11-09: sin aceptar CRON_SECRET el cron diario era rechazado con 401 y nunca corría).
+  // Las llamadas manuales siguen usando SYNC_SECRET.
+  const claves = [process.env.SYNC_SECRET, process.env.CRON_SECRET].filter(Boolean);
   if (
-    process.env.SYNC_SECRET &&
-    secretHeader !== process.env.SYNC_SECRET &&
-    authHeader !== `Bearer ${process.env.SYNC_SECRET}`
+    claves.length &&
+    !claves.includes(secretHeader) &&
+    !claves.some((c) => authHeader === `Bearer ${c}`)
   ) {
     return res.status(401).json({ error: 'unauthorized' });
   }
