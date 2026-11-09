@@ -31352,7 +31352,7 @@ async function solInscribirAcademia(r,silencioso){
     try{
       const {data:sess}=await sb.auth.getSession();
       fetch('/api/academia-avisar-asignacion',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solicitud_id:r.id,inscripcion_ids:nuevosIdsInsc})})
-        .then(x=>x.json()).then(j=>{if(!j.ok) console.warn('Aviso Telegram a Capacitación:',j.error);}).catch(e=>console.warn('Aviso Telegram a Capacitación',e));
+        .then(x=>x.json()).then(j=>{if(!j.ok) console.warn('Aviso Telegram a Capacitación:',j.error); else if(j.enviado_at){r.telegram_capacitacion_at=j.enviado_at;try{solRefrescar();}catch(e){}}}).catch(e=>console.warn('Aviso Telegram a Capacitación',e));
     }catch(e){console.warn(e);}
   }
   return `🎓 Academia: ${ok} inscripción(es) ${fallos?'con '+fallos+' problema(s)':'listas'}\n${out.join('\n')}`;
@@ -31381,6 +31381,29 @@ async function solAcadGuardar(id){
   solCerrarModal();solRefrescar();
   if(msg) setTimeout(()=>alert(msg),250);
 }
+// Distintivo de "avisado a Capacitación por Telegram" + envío/reenvío manual (nunca se repite solo)
+function solTgCapacitacionHtml(r,ac){
+  if(!ac||!ac.inscrito_at) return '';
+  const fmtTg=t=>{try{return new Date(t).toLocaleString('es-MX',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});}catch(e){return '';}};
+  const btn=(txt,reenv)=>`<button id="tgCap_${r.id}" onclick="solTgCapacitacionEnviar('${r.id}',${reenv})" style="font-size:10px;padding:1px 8px;margin-left:6px;border:1px solid var(--border);background:#fff;border-radius:6px;cursor:pointer;">${txt}</button>`;
+  return r.telegram_capacitacion_at
+    ?`<div style="margin-top:2px;color:#0369a1;"><b>✈️ Enviado a Telegram (Capacitación)</b> · ${fmtTg(r.telegram_capacitacion_at)}${r.telegram_capacitacion_por?' · '+solEsc(r.telegram_capacitacion_por):''}${btn('↻ Reenviar',true)}</div>`
+    :`<div style="margin-top:2px;color:#B45309;"><b>✈️ Aún no enviado a Telegram</b>${btn('Enviar a Telegram',false)}</div>`;
+}
+async function solTgCapacitacionEnviar(id,reenviar){
+  const r=_solRows.find(z=>z.id===id);if(!r) return;
+  if(reenviar&&!confirm('Este aviso ya se envió el '+new Date(r.telegram_capacitacion_at).toLocaleString('es-MX')+'. ¿Volver a enviarlo al canal de Capacitación?')) return;
+  const b=document.getElementById('tgCap_'+id);if(b){b.disabled=true;b.textContent='Enviando…';}
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/academia-avisar-asignacion',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solicitud_id:id,reenviar:!!reenviar})});
+    const j=await res.json().catch(()=>({}));
+    if(!j.ok){alert('No se pudo enviar a Telegram: '+(j.error||res.status));solRefrescar();return;}
+    if(j.yaEnviado) uiToast('Ya estaba enviado; no se repitió.',true);
+    else{r.telegram_capacitacion_at=j.enviado_at||new Date().toISOString();uiToast('✈️ Enviado a Telegram (Capacitación)',true);}
+    solRefrescar();
+  }catch(e){alert('Error: '+(e.message||e));solRefrescar();}
+}
 function solAcadTarjetaHtml(r){
   const ac=r.academia;
   if(!ac&&!r.asistente&&!SOL_RE_CURSO.test(r.concepto||'')) return '';
@@ -31393,7 +31416,7 @@ function solAcadTarjetaHtml(r){
   else if(!gens){estado='⚠️ Falta ligar la generación'+(ac&&ac.fecha_texto?' · fecha pedida: '+solEsc(ac.fecha_texto):'');col='#B45309';}
   else if(!r.pago_validado){estado='⏳ Se inscribe al validar el pago';col='#B45309';}
   else{estado='⚠️ Pago validado, pendiente de inscribir';col='#c0392b';}
-  return `<div style="font-size:11px;margin-top:5px;border-left:3px solid ${col};padding:2px 0 2px 8px;"><b style="color:${col};">🎓 ${estado}</b>${ac&&ac.nivel?` · nivel ${solEsc(ac.nivel)}`:''}${gens?` · ${gens}`:''}${ac&&ac.fecha_texto&&gens?` · 📅 ${solEsc(ac.fecha_texto)}`:''}${lista?`<div style="color:var(--text2);">${lista}</div>`:''} <button onclick="solAcadEditarModal('${r.id}')" style="border:1px solid var(--border);background:#fff;border-radius:6px;padding:2px 8px;font-size:10px;cursor:pointer;">${lista?'Editar':'Capturar'} datos de Academia</button></div>`;
+  return `<div style="font-size:11px;margin-top:5px;border-left:3px solid ${col};padding:2px 0 2px 8px;"><b style="color:${col};">🎓 ${estado}</b>${ac&&ac.nivel?` · nivel ${solEsc(ac.nivel)}`:''}${gens?` · ${gens}`:''}${ac&&ac.fecha_texto&&gens?` · 📅 ${solEsc(ac.fecha_texto)}`:''}${lista?`<div style="color:var(--text2);">${lista}</div>`:''}${solTgCapacitacionHtml(r,ac)} <button onclick="solAcadEditarModal('${r.id}')" style="border:1px solid var(--border);background:#fff;border-radius:6px;padding:2px 8px;font-size:10px;cursor:pointer;">${lista?'Editar':'Capturar'} datos de Academia</button></div>`;
 }
 async function solCargarGeneraciones(){
   const {data}=await sb.from('academia_generaciones').select('id,clave,fecha_inicio,fecha_fin,archivado_manual,curso:curso_id(nombre)').order('fecha_inicio',{ascending:false}).limit(120);
