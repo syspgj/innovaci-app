@@ -12,8 +12,11 @@
 //   lleguen a otro grupo distinto al de Capacitación.
 // El bot debe ser miembro/administrador del grupo. Sin entrada en vercel.json.
 //
-// Entrada (POST JSON, con sesión Bearer): { solicitud_id, inscripcion_ids?: [uuid] }
-// Salida: { ok:true } | { ok:false, error }
+// Entrada (POST JSON, con sesión Bearer): { solicitud_id, inscripcion_ids?: [uuid], reenviar?: boolean }
+// Sin 'reenviar' NUNCA repite: solo avisa las inscripciones que aún no se han avisado
+// (academia_inscripciones.telegram_avisado_at). Con reenviar:true vuelve a mandarlas (botón manual).
+// Registra el envío en solicitudes_factura.telegram_capacitacion_at / _por.
+// Salida: { ok:true, yaEnviado?:true } | { ok:false, error }
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SKEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -26,7 +29,12 @@ async function sesionValida(req) {
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
   if (!token) return false;
   const r = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: { Authorization: `Bearer ${token}`, apikey: SKEY } });
-  return r.ok;
+  if (!r.ok) return false;
+  try { const u = await r.json(); return { email: u.email || '' }; } catch (e) { return { email: '' }; }
+}
+async function sbPatch(path, body) {
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { method: 'PATCH', headers: { apikey: SKEY, Authorization: `Bearer ${SKEY}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error(`Supabase PATCH ${path} -> ${r.status}: ${await r.text()}`);
 }
 async function sbGet(path) {
   const r = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: { apikey: SKEY, Authorization: `Bearer ${SKEY}` } });
@@ -43,19 +51,23 @@ export default async function handler(req, res) {
   try {
     if (!SUPABASE_URL || !SKEY) return res.status(200).json({ ok: false, error: 'Falta SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY' });
     if (!BOT || !CHAT) return res.status(200).json({ ok: false, error: 'Falta TELEGRAM_BOT_TOKEN o TELEGRAM_CAPACITACION_CHAT_ID' });
-    if (!(await sesionValida(req))) return res.status(401).json({ ok: false, error: 'Sesión no válida' });
+    const usuario = await sesionValida(req);
+    if (!usuario) return res.status(401).json({ ok: false, error: 'Sesión no válida' });
 
     const body = req.body && typeof req.body === 'object' ? req.body : JSON.parse(req.body || '{}');
     const sid = String(body.solicitud_id || '');
     if (!UUID.test(sid)) return res.status(400).json({ ok: false, error: 'Falta solicitud_id' });
     const ids = (Array.isArray(body.inscripcion_ids) ? body.inscripcion_ids : []).filter((x) => UUID.test(String(x)));
+    const reenviar = body.reenviar === true;
 
     const s = (await sbGet(`solicitudes_factura?id=eq.${sid}&select=cliente_nombre,concepto,vendedor_nombre,atendio_nombre,factura_serie,factura_folio,shopify_pedido,tipo`))[0];
     if (!s) return res.status(200).json({ ok: false, error: 'No se encontró la solicitud' });
 
     const filtro = ids.length ? `id=in.(${ids.join(',')})` : `origen_solicitud_id=eq.${sid}`;
-    const ins = await sbGet(`academia_inscripciones?${filtro}&select=folio,nivel_acceso,participante:participante_id(nombre,mail,telefono),generacion:generacion_id(clave,fecha_inicio,curso:curso_id(nombre))`);
+    const ins = await sbGet(`academia_inscripciones?${filtro}&select=id,telegram_avisado_at,folio,nivel_acceso,participante:participante_id(nombre,mail,telefono),generacion:generacion_id(clave,fecha_inicio,curso:curso_id(nombre))`);
     if (!ins.length) return res.status(200).json({ ok: false, error: 'No hay inscripciones que avisar' });
+    const porAvisar = reenviar ? ins : ins.filter((i) => !i.telegram_avisado_at);
+    if (!porAvisar.length) return res.status(200).json({ ok: true, yaEnviado: true });
 
     const L = [];
     L.push(`🎓 NUEVO ASISTENTE ASIGNADO — ya pasó por Facturación`);
@@ -66,7 +78,7 @@ export default async function handler(req, res) {
     L.push(`Vendedor: ${s.vendedor_nombre || '—'}${s.atendio_nombre && s.atendio_nombre !== s.vendedor_nombre ? ` (atendió: ${s.atendio_nombre})` : ''}`);
     if (s.factura_folio) L.push(`Factura: ${s.factura_serie || ''}${s.factura_folio}`);
     L.push('');
-    for (const i of ins) {
+    for (const i of porAvisar) {
       const p = i.participante || {};
       const g = i.generacion || {};
       L.push(`👤 ${p.nombre || '—'}${p.mail ? ' · ' + p.mail : ''}${p.telefono ? ' · ' + p.telefono : ''}`);
@@ -81,7 +93,12 @@ export default async function handler(req, res) {
       body: JSON.stringify({ chat_id: CHAT, text: L.join('\n') }),
     });
     if (!r.ok) return res.status(200).json({ ok: false, error: 'Telegram: ' + (await r.text()).slice(0, 300) });
-    return res.status(200).json({ ok: true });
+    const ahora = new Date().toISOString();
+    try {
+      await sbPatch(`academia_inscripciones?id=in.(${porAvisar.map((i) => i.id).join(',')})`, { telegram_avisado_at: ahora });
+      await sbPatch(`solicitudes_factura?id=eq.${sid}`, { telegram_capacitacion_at: ahora, telegram_capacitacion_por: usuario.email || null });
+    } catch (e) { /* el aviso ya salió; solo falló el registro */ }
+    return res.status(200).json({ ok: true, enviado_at: ahora });
   } catch (e) {
     return res.status(200).json({ ok: false, error: String(e.message || e) });
   }
