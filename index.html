@@ -32740,6 +32740,54 @@ function solAvisoPagoVencido(r,esVend){
   return `<div style="font-size:12px;font-weight:700;color:${d>0?'#c0392b':'#B45309'};background:${d>0?'rgba(192,57,43,.08)':'rgba(245,166,35,.12)'};border-radius:6px;padding:6px 10px;margin-top:6px;">${d>0?'🚨':'⏰'} La fecha de pago prometida ${cuando} (${solFecha(r.fecha_pago_esperada)}) y el pago no está validado. ${accion}</div>`;
 }
 // ─── TARJETA (compartida) ────────────────────────────────────────────────────
+// Jp, 2026-11-10: facturadas / enviadas a Finanzas que NO están inscritas en una generación de Academia
+// (se pasaban y había que revisarlas a mano). Solo se vigilan las de los últimos 60 días.
+function solAcadPendienteAsignar(r){
+  if(!r||r.estado==='cancelada') return false;
+  if(!(r.fact_ingreso_id||r.factura_folio)) return false;
+  const ac=r.academia;
+  if(ac&&ac.no_aplica) return false;
+  if(!ac&&!r.asistente&&!SOL_RE_CURSO.test(r.concepto||'')) return false;
+  const gens=ac?(ac.generaciones||[]):[];
+  return !(ac&&ac.inscrito_at&&gens.length);
+}
+function solIrAcadPendientes(){
+  document.getElementById('solAcadPendToast')?.remove();
+  _solFiltro='sin_gen';
+  const rol=userProfile?.rol;
+  if(rol==='administracion'){ if(typeof swAdminTab==='function') swAdminTab('facturacion'); }
+  else{ if(typeof swDArea==='function') swDArea('finanzas'); if(typeof swFin==='function') swFin('facturacion'); }
+}
+let _solAcadPendVistos=null;
+async function solAcadPendTick(){
+  try{
+    if(typeof currentUser==='undefined'||!currentUser||!userProfile) return;
+    if(!['director','administracion'].includes(userProfile.rol)) return;
+    const desde=new Date(Date.now()-60*86400000).toISOString();
+    const {data,error}=await sb.from('solicitudes_factura').select('id,cliente_nombre,concepto,estado,academia,asistente,fact_ingreso_id,factura_folio').neq('estado','cancelada').gte('created_at',desde).or('fact_ingreso_id.not.is.null,factura_folio.not.is.null').limit(400);
+    if(error||!data) return;
+    const pend=data.filter(solAcadPendienteAsignar);
+    const ids=new Set(pend.map(x=>x.id));
+    const nuevos=_solAcadPendVistos===null?pend:pend.filter(x=>!_solAcadPendVistos.has(x.id));
+    if(nuevos.length) solAcadPendNotificar(nuevos,_solAcadPendVistos===null,pend.length);
+    _solAcadPendVistos=ids;
+    window._solAcadPendTotal=pend.length;
+  }catch(e){}
+}
+function solAcadPendNotificar(lista,resumen,total){
+  const nombres=[...new Set(lista.map(x=>x.cliente_nombre).filter(Boolean))];
+  const txt=resumen?`${total} facturada${total>1?'s':''} sin asignar en Academia`:`Falta asignar en Academia: ${nombres.slice(0,2).join(', ')}${nombres.length>2?' y '+(nombres.length-2)+' más':''}`;
+  try{
+    document.getElementById('solAcadPendToast')?.remove();
+    const t=document.createElement('div');t.id='solAcadPendToast';
+    t.style.cssText='position:fixed;top:138px;right:18px;z-index:100002;background:#8a4b00;color:#fff;border-radius:12px;padding:12px 16px;box-shadow:0 8px 24px rgba(0,0,0,.28);max-width:340px;font-size:13px;cursor:pointer;border-left:5px solid #F5A623;';
+    t.innerHTML=`<div style="font-weight:700;margin-bottom:3px;">🎓 ${solEsc(txt)}</div><div style="font-size:11px;opacity:.9;">Ya se facturaron y pasaron a Finanzas, pero no están inscritas en una generación · clic para verlas</div>`;
+    t.onclick=solIrAcadPendientes;document.body.appendChild(t);setTimeout(()=>t.remove(),25000);
+  }catch(e){}
+  try{const C=window.AudioContext||window.webkitAudioContext;if(C){const c=new C(),o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.type='sine';o.frequency.value=520;g.gain.setValueAtTime(.15,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.5);o.start();o.stop(c.currentTime+.5);}}catch(e){}
+  try{if('Notification' in window&&Notification.permission==='granted') new Notification('🎓 Falta asignar en Academia',{body:txt});}catch(e){}
+}
+if(!window._solAcadPendTimer){window._solAcadPendTimer=setInterval(solAcadPendTick,60000);setTimeout(solAcadPendTick,9000);}
 function solTarjeta(r,modo){
   const esDir=modo==='director',esAdm=modo==='admin',esVend=modo==='vendedor';
   const puedeFacturar=(esDir||esAdm)&&(r.estado==='pago_validado'||r.estado==='pendiente_pago');
@@ -32752,20 +32800,21 @@ function solTarjeta(r,modo){
     ?`<div style="font-size:12px;color:var(--text2);">💵 Pago: ${fmt(r.pago_monto)} · ${solFecha(r.pago_fecha)}${r.pago_hora?' '+solEsc(r.pago_hora):''}${r.pago_validado?` · ✅ validado${r.pago_validado_por?' por '+solEsc(r.pago_validado_por):''}`:''}</div>`
     :`<div style="font-size:12px;color:var(--text2);">⏳ Liberar pago · pagará ${solFecha(r.fecha_pago_esperada)}${r.pago_monto?` · comprobante: ${fmt(r.pago_monto)} ${solFecha(r.pago_fecha)}`:''}${r.pago_validado?' · ✅ pago validado':''}</div>`;
   const faltaCrm=(r.estado==='facturada'||r.estado==='cerrada')&&!r.comentario_crm_hecho;
-  return `<div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:13px 16px;margin-bottom:10px;">
+  const cancel=r.estado==='cancelada'; // Jp, 2026-11-10: las canceladas quedan inhabilitadas (solo lectura)
+  return `<div style="background:${cancel?'#f3f4f6':'#fff'};border:1px solid var(--border);border-radius:10px;padding:13px 16px;margin-bottom:10px;${cancel?'opacity:.6;filter:grayscale(1);':''}">
     <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start;">
       <div style="font-size:13px;font-weight:700;color:var(--navy);">${solEsc(r.cliente_nombre)}${r.num_cliente?` <span style="font-weight:400;color:var(--text3);">#${solEsc(r.num_cliente)}</span>`:''}</div>
-      ${solChip(r.estado)}
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${(esDir||esAdm)&&solAcadPendienteAsignar(r)?'<span style="font-size:10.5px;font-weight:700;background:#fff1dc;color:#b45309;border:1px solid #F5A623;border-radius:99px;padding:2px 9px;">🎓 Sin asignar en Academia</span>':''}${solChip(r.estado)}</div>
     </div>
     <div style="font-size:12px;color:var(--text2);margin-top:3px;">${solEsc(r.concepto)} · <b>${fmt(r.monto_total)}</b> · ${solEsc(r.cotizacion_sae)}${!esVend?` · 👤 ${solEsc(r.vendedor_nombre)}`:''} · ${solFecha(r.created_at)}</div>
     <div style="font-size:11px;color:var(--text3);margin-top:2px;">${solEsc(r.rfc)} · ${solEsc(r.forma_pago)} · ${solEsc(r.metodo_pago)} · ${solEsc(r.uso_cfdi)} · ${solEsc(r.regimen)}</div>
     ${r.shopify_pedido?`<div style="font-size:11px;color:#5b3fa0;margin-top:3px;">🛍 Pedido de Shopify: <b>${solEsc(r.shopify_pedido)}</b></div>`:''}
     ${String(r.notas||'').startsWith(SOL_PG_MARCA)?`<div style="font-size:11px;font-weight:700;color:#8a6d00;background:#fffbea;border:1px solid #f3dc8a;border-radius:6px;padding:3px 8px;margin-top:5px;display:inline-block;">🧾 FACTURAR A VIOLETA — el cliente no requiere factura · C.P. ${SOL_VIOLETA.cp}</div>`:''}
     ${pago}${solAvisoPagoVencido(r,esVend)}${fact}
-    ${timTarjetaHtml(r,esDir,esVend)}
-    ${licTarjetaHtml(r,esDir,esVend)}
+    ${cancel?'':timTarjetaHtml(r,esDir,esVend)}
+    ${cancel?'':licTarjetaHtml(r,esDir,esVend)}
     ${r.pago_nota?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">Nota de validación: ${solEsc(r.pago_nota)}</div>`:''}
-    ${solAcadTarjetaHtml(r)}
+    ${cancel?'':solAcadTarjetaHtml(r)}
     ${false&&r.asistente?`<div style="font-size:11px;color:var(--teal);margin-top:3px;">🎓 Asistente: ${solEsc(r.asistente.nombre)} · ${solEsc(r.asistente.correo)} · ${solEsc(r.asistente.telefono)} · ${solEsc(r.asistente.curso)}</div>`:''}
     ${r.notas?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">📝 ${solEsc(r.notas)}</div>`:''}
     ${faltaCrm&&esVend?`<div style="font-size:11px;color:#B45309;margin-top:4px;">⚠️ Falta tu comentario en el CRM. <label style="cursor:pointer;"><input type="checkbox" onchange="solMarcarCrm('${r.id}',this.checked)"> Ya lo dejé</label></div>`:''}
@@ -32773,10 +32822,11 @@ function solTarjeta(r,modo){
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:9px;">
       ${r.comprobante_path?btn('📎 Comprobante',`solVerArchivo('${solEsc(r.comprobante_path)}')`):''}
       ${r.cotizacion_pdf_path?btn('📄 Cotización',`solVerArchivo('${solEsc(r.cotizacion_pdf_path)}')`):''}
-      ${r.crm_link?`<a href="${solEsc(r.crm_link)}" target="_blank" rel="noopener" style="border:1px solid var(--border);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:var(--text2);text-decoration:none;">🔗 CRM</a>`:''}
-      ${(esDir||esAdm)?btn('📋 Copiar datos',`solCopiarDatos('${r.id}')`):''}
-      ${(esDir||esAdm)&&r.factura_folio&&!r.fact_ingreso_id?btn('📊 Registrar en ingresos',`solCargarFinanzasBtn('${r.id}')`,'#1B4D6E'):''}
-      ${(esDir||esAdm)&&r.fact_ingreso_id?'<span style="font-size:11px;color:#2E7D32;font-weight:700;align-self:center;">📊 En Finanzas ✓</span>':''}
+      ${cancel?'<span style="font-size:11px;color:var(--text3);font-weight:600;align-self:center;">🚫 Solicitud cancelada — sin acciones</span>':''}
+      ${!cancel&&r.crm_link?`<a href="${solEsc(r.crm_link)}" target="_blank" rel="noopener" style="border:1px solid var(--border);border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;color:var(--text2);text-decoration:none;">🔗 CRM</a>`:''}
+      ${!cancel&&(esDir||esAdm)?btn('📋 Copiar datos',`solCopiarDatos('${r.id}')`):''}
+      ${!cancel&&(esDir||esAdm)&&r.factura_folio&&!r.fact_ingreso_id?btn('📊 Registrar en ingresos',`solCargarFinanzasBtn('${r.id}')`,'#1B4D6E'):''}
+      ${!cancel&&(esDir||esAdm)&&r.fact_ingreso_id?'<span style="font-size:11px;color:#2E7D32;font-weight:700;align-self:center;">📊 En Finanzas ✓</span>':''}
       ${puedeValidar?btn('✅ Validar pago',`solValidarModal('${r.id}')`,'var(--teal)'):''}
       ${puedeFacturar?btn('🧾 Registrar factura',`solFacturarModal('${r.id}')`,'#1B4D6E'):''}
       ${faltaComprobante?btn('📎 Adjuntar comprobante de pago',`solComprobanteModal('${r.id}')`,'#7C3AED'):''}
@@ -32839,10 +32889,11 @@ async function renderSolFacturaGestion(el){
     facturar:_solRows.filter(r=>r.estado==='pago_validado'||r.estado==='pendiente_pago'),
     pendientes:_solRows.filter(r=>['solicitada','pendiente_pago','pago_validado','facturada'].includes(r.estado)),
     vencidos:_solRows.filter(r=>{const d=solDiasPagoVencido(r);return d!==null&&d>=0;}),
+    sin_gen:_solRows.filter(r=>solAcadPendienteAsignar(r)&&(Date.now()-new Date(r.created_at).getTime())<=60*86400000),
     todas:_solRows};
   const filtros=esDir
-    ?[['pendientes','Todas las abiertas'],['validar','Por validar pago'],['facturar','Por facturar'],['vencidos','🚨 Pago prometido vencido'],['todas','Historial']]
-    :[['facturar','Por facturar'],['pendientes','Todas las abiertas'],['vencidos','🚨 Pago prometido vencido'],['todas','Historial']];
+    ?[['pendientes','Todas las abiertas'],['validar','Por validar pago'],['facturar','Por facturar'],['vencidos','🚨 Pago prometido vencido'],['sin_gen','🎓 Sin asignar en Academia'],['todas','Historial']]
+    :[['facturar','Por facturar'],['pendientes','Todas las abiertas'],['vencidos','🚨 Pago prometido vencido'],['sin_gen','🎓 Sin asignar en Academia'],['todas','Historial']];
   if(!filtros.some(f=>f[0]===_solFiltro)) _solFiltro=filtros[0][0];
   const lista=por[_solFiltro]||[];
   cont.innerHTML=`
@@ -32850,6 +32901,7 @@ async function renderSolFacturaGestion(el){
     <div style="font-size:15px;font-weight:600;color:var(--text);">🧾 Facturación — solicitudes</div>
     ${esDir?`<div><input id="solCapturaInput" type="file" accept="image/*" onchange="solLeerCaptura(this)" style="display:none;"><button onclick="document.getElementById('solCapturaInput').click()" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">📷 Subir captura del banco</button> <input id="solShopInput" type="file" accept="image/*" onchange="solLeerShopify(this)" style="display:none;"><button onclick="document.getElementById('solShopInput').click()" style="background:#fff;color:var(--teal);border:1px solid var(--teal);border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">🛍 Subir captura de Shopify</button> <span id="solCapturaEstado" style="font-size:11px;color:var(--text3);"></span></div>`:''}
   </div>
+  ${por.sin_gen.length&&_solFiltro!=='sin_gen'?`<div onclick="_solFiltro='sin_gen';renderSolFacturaGestion(_solContenedor)" style="cursor:pointer;background:#fff1dc;border:1px solid #F5A623;border-left:5px solid #F5A623;border-radius:10px;padding:9px 14px;margin-bottom:12px;font-size:12.5px;color:#8a4b00;"><b>🎓 ${por.sin_gen.length} solicitud${por.sin_gen.length>1?'es':''} facturada${por.sin_gen.length>1?'s':''} sin asignar en Academia/generación.</b> Clic para verlas.</div>`:''}
   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
     ${filtros.map(([k,l])=>`<button onclick="_solFiltro='${k}';renderSolFacturaGestion(_solContenedor)" style="padding:6px 13px;border-radius:16px;border:1px solid ${_solFiltro===k?'var(--teal)':'var(--border)'};background:${_solFiltro===k?'var(--teal)':'#fff'};color:${_solFiltro===k?'#fff':'var(--text2)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${l} (${(por[k]||[]).length})</button>`).join('')}
   </div>
