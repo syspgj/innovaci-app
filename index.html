@@ -12437,22 +12437,41 @@ const CIRCULO_ESTADO_COLOR={activa:'#27AE60',suspendida:'var(--gold)',cancelada:
 // aparece en los reportes (cambio reciente a Innovaci), la solicitud va primero a Dirección y, al autorizarse,
 // pasa a Capacitación. La compra directa NO usa este botón: sigue por Facturación.
 const CIRC_SOL_ESTADO={pendiente_direccion:['⏳ Esperando autorización de Dirección','#B8740A'],pendiente_capacitacion:['📨 Con Capacitación','#1A7FA0'],dada_de_alta:['✅ Dada de alta','#27AE60'],rechazada:['❌ Rechazada','#C0392B']};
-async function circSolSeriesElegibles(clienteId,especialidad){
-  const {data:subs}=await sb.from('clientes_cartera').select('id').eq('cliente_padre_id',clienteId);
-  const ids=[clienteId,...(subs||[]).map(s=>s.id)];
+// Reglas (Jp, 2026-11-10): solo suscripciones SEMESTRALES o ANUALES. Si además está VERIFICADA por Dirección
+// (aparece en un reporte de Aspel cargado) pasa directo a Capacitación; si no está verificada, requiere autorización
+// de Dirección con evidencia en imagen (correo de cambio de distribuidor). La serie SIEMPRE sale de las suscripciones
+// de la cuenta (principal + subcuentas); si no está, primero hay que agregarla o cargarla desde los reportes.
+// Los datos del socio se agregan como contacto de la cuenta principal.
+function suscEsVerificada(s){return s.origen==='carga_excel'&&!!s.mes_reportado;}
+async function circSolSeriesCuenta(clienteId,especialidad){
+  const {data:c}=await sb.from('clientes_cartera').select('id,cliente_padre_id').eq('id',clienteId).maybeSingle();
+  const rootId=c?.cliente_padre_id||clienteId;
+  const {data:subs}=await sb.from('clientes_cartera').select('id').eq('cliente_padre_id',rootId);
+  const ids=[rootId,...(subs||[]).map(s=>s.id)];
   const {data}=await sb.from('suscripciones_cartera')
-    .select('numserie,periodicidad,producto,estado,fecha_proxima_renovacion,alerta_posible_perdida,cliente_id')
+    .select('numserie,periodicidad,producto,estado,fecha_proxima_renovacion,alerta_posible_perdida,cliente_id,origen,mes_reportado,archivo_origen')
     .in('cliente_id',ids).eq('tipo_producto','suscripcion').ilike('producto',especialidad+'%');
   const hoy=new Date().toISOString().slice(0,10);
-  return (data||[]).filter(s=>(s.periodicidad||'').toLowerCase()!=='mensual'&&!s.alerta_posible_perdida&&s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=hoy&&['reclamada','renovada'].includes(s.estado));
+  const elegibles=[],noAplican=[];
+  (data||[]).forEach(s=>{
+    const per=(s.periodicidad||'').toLowerCase(); let motivo=null;
+    if(per!=='anual'&&per!=='semestral') motivo=per?`Es ${per}: solo aplican semestrales y anuales`:'Sin periodicidad capturada (debe ser semestral o anual)';
+    else if(s.alerta_posible_perdida) motivo='Marcada como posible pérdida con Innovaci';
+    else if(!s.fecha_proxima_renovacion||s.fecha_proxima_renovacion<hoy) motivo='Vencida: primero debe renovarse';
+    else if(!['reclamada','renovada'].includes(s.estado)) motivo='Primero hay que reclamarla o marcarla como renovada';
+    if(motivo) noAplican.push({...s,motivo}); else elegibles.push({...s,verificada:suscEsVerificada(s)});
+  });
+  elegibles.sort((a,b)=>(b.verificada?1:0)-(a.verificada?1:0));
+  return {rootId,elegibles,noAplican};
 }
+async function circSolSeriesElegibles(clienteId,especialidad){return (await circSolSeriesCuenta(clienteId,especialidad)).elegibles;}
 async function abrirSolicitudCirculo(clienteId){
   const c=(window._cartClientes||[]).find(x=>x.id===clienteId);
   let razon=c?.razon_social;
   if(!razon){const {data}=await sb.from('clientes_cartera').select('razon_social').eq('id',clienteId).maybeSingle();razon=data?.razon_social||'';}
   window._circSolCtx={clienteId,razon};
   const html=`
-    <div style="font-size:12px;color:var(--text3);margin-bottom:10px;">Cuenta: <b style="color:var(--navy);">${solEsc(razon)}</b>. Esto es solo para socios que entran por una <b>suscripción Aspel con nosotros</b>. Si es compra directa de la membresía, se vende por Facturación como cualquier otro curso.</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:10px;">Cuenta: <b style="color:var(--navy);">${solEsc(razon)}</b>. Solo para socios que entran por una <b>suscripción Aspel con nosotros</b> (semestral o anual). Si es compra directa de la membresía, se vende por Facturación como cualquier otro curso.</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
       ${fld('Especialidad',`<select id="csEsp" onchange="circSolCargarSeries()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;"><option>NOI</option><option>COI</option><option>SAE</option></select>`)}
       ${fld('Plan','<input value="Socio" disabled style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:#f7f8f9;">')}
@@ -12460,6 +12479,7 @@ async function abrirSolicitudCirculo(clienteId){
       ${fld('Correo',inp('csEmail','email'))}
       ${fld('Teléfono',inp('csTel'))}
     </div>
+    <div style="font-size:11px;color:var(--text3);margin-top:4px;">Estos datos se agregan como contacto de la cuenta principal.</div>
     <div id="csSeries" style="margin-top:12px;"></div>
     <div style="margin-top:10px;">${fld('Nota (opcional)','<textarea id="csNotas" rows="2" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:Inter,sans-serif;"></textarea>')}</div>
     <div id="csMsg" style="margin-top:10px;font-size:12px;"></div>`;
@@ -12469,21 +12489,36 @@ async function abrirSolicitudCirculo(clienteId){
 async function circSolCargarSeries(){
   const box=document.getElementById('csSeries'); if(!box) return;
   const esp=document.getElementById('csEsp').value;
-  box.innerHTML='<div style="font-size:12px;color:var(--text3);">Buscando suscripciones vigentes y pagadas…</div>';
-  const el=await circSolSeriesElegibles(window._circSolCtx.clienteId,esp);
-  window._circSolElegibles=el;
-  const manual=`<label style="display:flex;gap:6px;align-items:flex-start;font-size:12px;margin-top:8px;cursor:pointer;"><input type="radio" name="csModo" value="direccion" onchange="circSolModo()" ${el.length?'':'checked'}> <span><b>Mi suscripción aún no aparece en los reportes</b> (el cliente cambió recientemente con nosotros). Requiere autorización de Dirección.</span></label>`;
-  box.innerHTML=(el.length?`<div style="font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">✅ Suscripciones ${esp} vigentes y pagadas de esta cuenta</div>
-    ${el.map((s,i)=>`<label style="display:flex;gap:8px;align-items:center;font-size:12px;padding:7px 10px;border:1px solid var(--teal);background:#eefaf9;border-radius:8px;margin-bottom:5px;cursor:pointer;"><input type="radio" name="csModo" value="auto:${i}" onchange="circSolModo()" ${i===0?'checked':''}> <span>${solEsc(s.producto||esp)} · serie <b>${solEsc(s.numserie)}</b> (${solEsc(s.periodicidad||'—')}) · vence ${fmtFecha(s.fecha_proxima_renovacion)}${s.cliente_id!==window._circSolCtx.clienteId?' <i style="color:var(--text3);">— subcuenta</i>':''}</span></label>`).join('')}`
-    :`<div style="font-size:12px;background:#fff4e0;border:1px solid #F5A623;border-radius:8px;padding:8px 12px;">Esta cuenta no tiene una suscripción ${esp} semestral/anual vigente y pagada en el sistema.</div>`)+manual+
-    `<div id="csDirBox" style="display:${el.length?'none':'block'};margin-top:8px;">
-      ${fld('Número de serie Aspel',inp('csSerieManual'))}
-      <div style="margin-top:8px;">${fld('Evidencia (obligatoria): fecha de cambio, folio, comprobante…','<textarea id="csEvidencia" rows="2" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:Inter,sans-serif;"></textarea>')}</div>
-    </div>`;
+  box.innerHTML='<div style="font-size:12px;color:var(--text3);">Buscando las suscripciones de la cuenta…</div>';
+  const r=await circSolSeriesCuenta(window._circSolCtx.clienteId,esp);
+  window._circSolElegibles=r.elegibles; window._circSolRoot=r.rootId;
+  const el=r.elegibles;
+  const noApl=r.noAplican.length?`<div style="margin-top:8px;font-size:11px;color:var(--text3);">No aplican: ${r.noAplican.map(s=>`<div style="padding:3px 0;">• <b>${solEsc(s.numserie)}</b> (${solEsc(s.periodicidad||'—')}) — ${solEsc(s.motivo)}</div>`).join('')}</div>`:'';
+  if(!el.length){
+    box.innerHTML=`<div style="font-size:12px;background:#fff4e0;border:1px solid #F5A623;border-radius:8px;padding:10px 12px;line-height:1.5;"><b>No hay una suscripción ${esp} semestral o anual vigente en esta cuenta.</b><br>La serie se toma de las suscripciones de la cuenta, no se captura a mano. Si el cliente ya cambió con nosotros, primero agrega la suscripción a la cuenta (➕ Agregar suscripción) o espera a que se cargue en los reportes; después vuelve a solicitar.</div>${noApl}`;
+    return;
+  }
+  box.innerHTML=`<div style="font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">Suscripciones ${esp} de la cuenta</div>
+    ${el.map((s,i)=>`<label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;padding:8px 10px;border:1px solid ${s.verificada?'var(--teal)':'#F5A623'};background:${s.verificada?'#eefaf9':'#fff8ec'};border-radius:8px;margin-bottom:5px;cursor:pointer;"><input type="radio" name="csSerie" value="${i}" onchange="circSolModo()" ${i===0?'checked':''} style="margin-top:2px;"> <span>${solEsc(s.producto||esp)} · serie <b>${solEsc(s.numserie)}</b> (${solEsc(s.periodicidad)}) · vence ${fmtFecha(s.fecha_proxima_renovacion)}<br>${s.verificada?`<span style="color:#1E8449;font-weight:600;">✔ Verificada por Dirección</span> — pasa directo a Capacitación`:`<span style="color:#B9770E;font-weight:600;">⏳ Sin verificar con reporte Aspel</span> — requiere autorización de Dirección`}</span></label>`).join('')}
+    <div id="csDirBox" style="display:none;margin-top:8px;background:#fff8ec;border:1px solid #F5A623;border-radius:8px;padding:10px 12px;">
+      <div style="font-size:12px;font-weight:600;color:#8a5a00;margin-bottom:4px;">Evidencia obligatoria: imagen del correo de cambio de distribuidor</div>
+      <input type="file" id="csEvidFile" accept="image/*" style="font-size:12px;">
+      <div style="font-size:11px;color:var(--text3);margin-top:3px;">Sube una captura o foto donde se vea el correo. Dirección la revisa para autorizar.</div>
+    </div>${noApl}`;
+  circSolModo();
 }
 function circSolModo(){
-  const v=document.querySelector('input[name=csModo]:checked')?.value||'';
-  const d=document.getElementById('csDirBox'); if(d) d.style.display=v==='direccion'?'block':'none';
+  const v=document.querySelector('input[name=csSerie]:checked')?.value;
+  const s=v!=null?(window._circSolElegibles||[])[+v]:null;
+  const d=document.getElementById('csDirBox'); if(d) d.style.display=(s&&!s.verificada)?'block':'none';
+}
+async function circSolAgregarContacto(rootId,nombre,email,tel){
+  try{
+    const {data:ex}=await sb.from('clientes_cartera_contactos').select('id').eq('cliente_cartera_id',rootId).eq('correo',email).limit(1);
+    if(ex&&ex.length) return 'ya estaba como contacto de la cuenta principal';
+    const {error}=await sb.from('clientes_cartera_contactos').insert({cliente_cartera_id:rootId,nombre,correo:email,telefono:tel||null});
+    return error?('no se pudo agregar como contacto ('+error.message+')'):'agregado como contacto de la cuenta principal';
+  }catch(e){return 'no se pudo agregar como contacto ('+(e.message||e)+')';}
 }
 async function enviarSolicitudCirculo(){
   if(window._circSolEnviando) return;
@@ -12491,38 +12526,62 @@ async function enviarSolicitudCirculo(){
   const msg=document.getElementById('csMsg');
   const nombre=g('csNombre'),email=g('csEmail').toLowerCase(),tel=g('csTel'),esp=g('csEsp');
   if(!nombre||!/^\S+@\S+\.\S+$/.test(email)){msg.innerHTML='<span style="color:var(--red);">Captura el nombre y un correo válido del socio.</span>';return;}
-  const modo=document.querySelector('input[name=csModo]:checked')?.value||'';
-  let numserie,via,evidencia=null;
-  if(modo.startsWith('auto:')){via='automatica';numserie=window._circSolElegibles[+modo.slice(5)].numserie;}
-  else if(modo==='direccion'){
-    via='direccion';numserie=g('csSerieManual').toUpperCase();evidencia=g('csEvidencia');
-    if(!numserie||!evidencia){msg.innerHTML='<span style="color:var(--red);">Para solicitar autorización captura la serie y la evidencia.</span>';return;}
-  }else{msg.innerHTML='<span style="color:var(--red);">Elige una suscripción o la opción de autorización de Dirección.</span>';return;}
+  const idx=document.querySelector('input[name=csSerie]:checked')?.value;
+  const serie=idx!=null?(window._circSolElegibles||[])[+idx]:null;
+  if(!serie){msg.innerHTML='<span style="color:var(--red);">Esta cuenta no tiene una suscripción semestral/anual vigente que elegir. Agrega la suscripción a la cuenta primero.</span>';return;}
+  const via=serie.verificada?'automatica':'direccion';
+  const numserie=serie.numserie;
+  const file=document.getElementById('csEvidFile')?.files?.[0]||null;
+  if(via==='direccion'){
+    if(!file){msg.innerHTML='<span style="color:var(--red);">Sube la imagen del correo de cambio de distribuidor: es obligatoria para pedir autorización.</span>';return;}
+    if(!/^image\//.test(file.type)){msg.innerHTML='<span style="color:var(--red);">La evidencia debe ser una imagen.</span>';return;}
+  }
   const {data:dup}=await sb.from('circulo_altas_solicitud').select('id').eq('email',email).eq('especialidad',esp).in('estado',['pendiente_direccion','pendiente_capacitacion']).limit(1);
   if(dup&&dup.length){msg.innerHTML='<span style="color:var(--red);">Ya hay una solicitud abierta para ese correo y especialidad.</span>';return;}
   window._circSolEnviando=true;
   const btn=[...document.querySelectorAll('#modalCircSol button')].find(b=>/Enviar solicitud/.test(b.textContent));
   if(btn){btn.disabled=true;btn.textContent='Enviando…';}
-  msg.innerHTML='<span style="color:var(--text3);">Guardando la solicitud…</span>';
   try{
     const ctx=window._circSolCtx;
+    let evidencia=null;
+    if(via==='direccion'){
+      msg.innerHTML='<span style="color:var(--text3);">⏳ Subiendo la imagen…</span>';
+      const path=`circulo/cambio-distribuidor/${ctx.clienteId}/${Date.now()}-${file.name.replace(/[^\w.\-]+/g,'_')}`;
+      const {error:upErr}=await sb.storage.from('academia-evidencias').upload(path,file,{upsert:true});
+      if(upErr) throw new Error('No se pudo subir la imagen: '+upErr.message);
+      evidencia='img:'+path;
+    }
+    msg.innerHTML='<span style="color:var(--text3);">⏳ Guardando la solicitud…</span>';
     const fila={cliente_cartera_id:ctx.clienteId,empresa:ctx.razon,especialidad:esp,nombre,email,telefono:tel||null,numserie,via,evidencia,notas:g('csNotas')||null,
       estado:via==='automatica'?'pendiente_capacitacion':'pendiente_direccion',solicitado_por:currentUser?.id||null,solicitado_por_nombre:userProfile?.nombre||null};
     const {data:ins,error}=await sb.from('circulo_altas_solicitud').insert(fila).select('id').single();
     if(error) throw error;
+    msg.innerHTML='<span style="color:var(--text3);">⏳ Agregando el contacto a la cuenta principal…</span>';
+    const contacto=await circSolAgregarContacto(window._circSolRoot||ctx.clienteId,nombre,email,tel);
     let extra='';
     if(via==='automatica'){
-      msg.innerHTML='<span style="color:var(--text3);">Avisando a Capacitación…</span>';
+      msg.innerHTML='<span style="color:var(--text3);">⏳ Avisando a Capacitación…</span>';
       const t=await circSolAvisarTelegram(ins.id);
       extra=t.ok?'Se avisó a Capacitación (app y Telegram).':'Capacitación la verá en su bandeja; el aviso por Telegram no salió ('+solEsc(t.error||'')+').';
     }else extra='Dirección la verá en su aviso. Cuando la autorice pasará a Capacitación.';
     document.getElementById('modalCircSol')?.remove();
-    mkModal('modalCircSolOk','✅ Solicitud enviada',`<div style="font-size:13px;line-height:1.6;">${via==='automatica'?'La suscripción está vigente y pagada: <b>la solicitud pasó directo a Capacitación</b>.':'<b>La solicitud espera la autorización de Dirección.</b>'}<br><span style="font-size:12px;color:var(--text3);">${extra}</span></div>`,null,'Cerrar');
+    mkModal('modalCircSolOk','✅ Solicitud enviada',`<div style="font-size:13px;line-height:1.6;">${via==='automatica'?'La suscripción es semestral/anual y está verificada por Dirección: <b>la solicitud pasó directo a Capacitación</b>.':'<b>La suscripción aún no está verificada: la solicitud espera la autorización de Dirección.</b>'}<br><span style="font-size:12px;color:var(--text3);">${extra}<br>Socio ${solEsc(contacto)}.</span></div>`,null,'Cerrar');
     try{ fcCargarCirculoInnovaci(ctx.clienteId); }catch(_){}
   }catch(e){
     msg.innerHTML=`<span style="color:var(--red);">No se pudo enviar: ${solEsc(e.message||e)}</span>`;
     if(btn){btn.disabled=false;btn.textContent='Enviar solicitud';}
   }finally{window._circSolEnviando=false;}
+}
+async function circSolVerEvidencia(path){
+  const w=window.open('','_blank');
+  const {data,error}=await sb.storage.from('academia-evidencias').createSignedUrl(path,300);
+  if(error||!data?.signedUrl){if(w)w.close();alert('No se pudo abrir la imagen: '+(error?.message||'sin acceso'));return;}
+  if(w) w.location=data.signedUrl; else window.open(data.signedUrl,'_blank');
+}
+function circSolEvidenciaHtml(s){
+  const e=s.evidencia||'';
+  if(e.startsWith('img:')) return `<a href="#" onclick="circSolVerEvidencia('${solEsc(e.slice(4))}');return false;" style="color:var(--teal);font-weight:600;">🖼 Ver imagen del correo de cambio de distribuidor</a>`;
+  return solEsc(e||'—');
 }
 async function circSolAvisarTelegram(id,reenviar){
   try{
@@ -12535,11 +12594,11 @@ async function circSolAvisarTelegram(id,reenviar){
 async function abrirAutorizacionesCirculo(){
   const {data}=await sb.from('circulo_altas_solicitud').select('*').eq('estado','pendiente_direccion').order('created_at');
   const l=data||[];
-  const html=`<div style="font-size:12px;color:var(--text3);margin-bottom:10px;">La suscripción de estas solicitudes aún no aparece en los reportes de Aspel. Al autorizar, pasan a Capacitación (aviso en la app y Telegram) y el sistema las vuelve a revisar en el siguiente corte.</div>
+  const html=`<div style="font-size:12px;color:var(--text3);margin-bottom:10px;">La suscripción de estas solicitudes (semestral/anual) aún no está verificada con los reportes de Aspel; revisa la imagen del correo de cambio de distribuidor. Al autorizar, pasan a Capacitación (aviso en la app y Telegram) y el sistema las vuelve a revisar en el siguiente corte.</div>
   <div style="max-height:60vh;overflow-y:auto;">${l.length?l.map(s=>`<div id="caFila_${s.id}" style="padding:10px 0;border-bottom:1px solid var(--border);">
     <div style="font-size:12.5px;font-weight:700;color:var(--navy);">${solEsc(s.empresa||'')}</div>
     <div style="font-size:11.5px;margin:3px 0;">${solEsc(s.nombre)} · ${solEsc(s.email)} · <b>${solEsc(s.especialidad)}</b> · serie <b>${solEsc(s.numserie||'')}</b></div>
-    <div style="font-size:11px;color:var(--text3);">Evidencia: ${solEsc(s.evidencia||'—')}<br>Solicitó: ${solEsc(s.solicitado_por_nombre||'—')} · ${fmtFecha((s.created_at||'').slice(0,10))}${s.notas?'<br>Nota: '+solEsc(s.notas):''}</div>
+    <div style="font-size:11px;color:var(--text3);">Evidencia: ${circSolEvidenciaHtml(s)}<br>Solicitó: ${solEsc(s.solicitado_por_nombre||'—')} · ${fmtFecha((s.created_at||'').slice(0,10))}${s.notas?'<br>Nota: '+solEsc(s.notas):''}</div>
     <div style="margin-top:6px;display:flex;gap:8px;"><button onclick="circSolAutorizar('${s.id}',true)" style="padding:6px 14px;background:var(--teal);color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">✓ Autorizar y pasar a Capacitación</button>
     <button onclick="circSolAutorizar('${s.id}',false)" style="padding:6px 14px;background:#fff;color:var(--red);border:1px solid var(--red);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">Rechazar</button></div>
     <div id="caMsg_${s.id}" style="font-size:11px;margin-top:4px;"></div></div>`).join(''):'<div style="padding:20px;text-align:center;color:var(--text3);">Nada por autorizar.</div>'}</div>`;
@@ -13917,7 +13976,7 @@ function resolverSistemaDesdeTexto(txt){
 // no cliente-sin-vendedor) — solo aparecía buscando en "Todos los clientes".
 // Esta vista corrige ambos huecos: filtra/busca por la suscripción misma
 // (serie, RFC, razón social, sistema, estado), no por el cliente.
-let suscListFiltroTexto='', suscListFiltroEstado='', suscListFiltroSistema='';
+let suscListFiltroTexto='', suscListFiltroEstado='', suscListFiltroSistema='', suscListFiltroPeriodo='', suscListFiltroVerif='';
 let _suscListFiltroTextoTimeout=null;
 // Jp, 2026-10-30: "pongo una letra y me aparece el resultado y tengo que
 // esperar para poner la siguiente letra" — cada tecla reconstruía TODA la
@@ -13940,6 +13999,13 @@ function suscListSwEstado(scope,estado){
 function suscListSwSistema(scope,sistemaId){
   suscListFiltroSistema=(suscListFiltroSistema===sistemaId)?'':sistemaId;
   renderTodasSuscripciones(scope);
+}
+function suscListSwPeriodo(scope,v){ suscListFiltroPeriodo=(suscListFiltroPeriodo===v)?'':v; renderTodasSuscripciones(scope); }
+function suscListSwVerif(scope,v){ suscListFiltroVerif=(suscListFiltroVerif===v)?'':v; renderTodasSuscripciones(scope); }
+// Jp, 2026-11-10: candidata a Círculo = semestral o anual + verificada por Dirección (+ vigente, sin alerta de pérdida, reclamada/renovada).
+function suscEsCandidataCirculo(s){
+  const per=(s.periodicidad||'').toLowerCase(), hoy=new Date().toISOString().slice(0,10);
+  return (per==='anual'||per==='semestral')&&suscEsVerificada(s)&&!s.alerta_posible_perdida&&!!s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=hoy&&['reclamada','renovada'].includes(s.estado);
 }
 async function renderTodasSuscripciones(scope){
   // Jp, 2026-10-13: Suscripciones salió de Cartera de cuentas — ahora vive en su
@@ -13999,6 +14065,13 @@ async function renderTodasSuscripciones(scope){
       return campos.some(c=>(c||'').toLowerCase().includes(q));
     });
   }
+  // Jp, 2026-11-10: filtros por periodicidad y por verificación (se cuentan sobre el universo ya filtrado por sistema/estado/texto).
+  const suscsPrePer=suscs;
+  const perDe=s=>(s.periodicidad||'').toLowerCase()||'sin';
+  if(suscListFiltroPeriodo) suscs=suscs.filter(s=>perDe(s)===suscListFiltroPeriodo);
+  if(suscListFiltroVerif==='verificada') suscs=suscs.filter(s=>suscEsVerificada(s));
+  else if(suscListFiltroVerif==='sin_verificar') suscs=suscs.filter(s=>!suscEsVerificada(s));
+  else if(suscListFiltroVerif==='candidatas') suscs=suscs.filter(s=>suscEsCandidataCirculo(s));
   const totalSinCta=suscs.filter(s=>!s.cliente_id).length;
   const totalSinVendedor=scope==='director'?suscs.filter(s=>{const cl=s.cliente_id?clientesPorId[s.cliente_id]:null;return cl&&!cl.vendedor_asignado;}).length:0;
   const propiaSusc=s=>{if(scope!=='director'){const cl=s.cliente_id?clientesPorId[s.cliente_id]:null;if(!cl||cl.vendedor_asignado!==currentUser.id)return false;}return true;};
@@ -14054,6 +14127,15 @@ async function renderTodasSuscripciones(scope){
         </button>`).join('');
       })()}
     </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+      <span style="font-size:11px;color:var(--text3);min-width:78px;">Periodicidad:</span>
+      ${[['anual','Anual'],['semestral','Semestral'],['mensual','Mensual'],['sin','Sin periodicidad']].map(([v,l])=>{const n=suscsPrePer.filter(s=>perDe(s)===v).length;const a=suscListFiltroPeriodo===v;return `<button onclick="suscListSwPeriodo('${scope}','${v}')" style="cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;padding:6px 12px;border-radius:99px;border:1.5px solid ${a?'var(--teal)':'var(--border)'};background:${a?'rgba(0,169,157,.12)':'#fff'};color:${a?'var(--teal)':'var(--text2)'};">${l} <span style="opacity:.7;">${n}</span></button>`;}).join('')}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">
+      <span style="font-size:11px;color:var(--text3);min-width:78px;">Verificación:</span>
+      ${[['verificada','✔ Verificadas por Dirección',suscsPrePer.filter(s=>suscEsVerificada(s)).length],['sin_verificar','⏳ Sin verificar',suscsPrePer.filter(s=>!suscEsVerificada(s)).length],['candidatas','🌐 Candidatas a Círculo',suscsPrePer.filter(s=>suscEsCandidataCirculo(s)).length]].map(([v,l,n])=>{const a=suscListFiltroVerif===v;return `<button onclick="suscListSwVerif('${scope}','${v}')" style="cursor:pointer;font-family:'Inter',sans-serif;font-size:12px;font-weight:600;padding:6px 12px;border-radius:99px;border:1.5px solid ${a?'var(--teal)':'var(--border)'};background:${a?'rgba(0,169,157,.12)':'#fff'};color:${a?'var(--teal)':'var(--text2)'};">${l} <span style="opacity:.7;">${n}</span></button>`;}).join('')}
+      <span style="font-size:11px;color:var(--text3);">Candidata = semestral o anual + verificada, vigente.</span>
+    </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin-bottom:14px;">
       ${tarjeta('Vencen este mes',totalVencenMes,'#F5A623','vencen_mes')}
       ${tarjeta('Vencidas desde antes',totalVencidasAntes,'#C0392B','vencidas_antes')}
@@ -14064,7 +14146,7 @@ async function renderTodasSuscripciones(scope){
       ${tarjeta('🚨 Posible pérdida',totalAlertaPerdida,'#8B0000','alerta_perdida')}
     </div>
     ${scope==='director'&&(totalSinVendedor>0||totalSinCta>0)?`<div style="font-size:11px;color:#B8740A;background:rgba(245,166,35,0.1);border:1px solid rgba(245,166,35,0.3);border-radius:var(--radsm);padding:6px 10px;margin-bottom:10px;">⚠ ${totalSinCta>0?`${totalSinCta} sin cuenta ligada (usa "🔗 Vincular"). `:''}${totalSinVendedor>0?`${totalSinVendedor} de cuentas SIN vendedor asignado — nadie las ve en su cartera hoy.`:''}</div>`:''}
-    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${suscs.length} ${suscs.length===1?'suscripción':'suscripciones'}${suscListFiltroEstado||suscListFiltroSistema||q?' (filtradas)':''}</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">${suscs.length} ${suscs.length===1?'suscripción':'suscripciones'}${suscListFiltroEstado||suscListFiltroSistema||suscListFiltroPeriodo||suscListFiltroVerif||q?' (filtradas)':''}</div>
     <div style="display:grid;gap:6px;">
       ${suscs.length?suscs.map(s=>{
         const info=suscSistemaInfo(s);
@@ -14094,6 +14176,8 @@ async function renderTodasSuscripciones(scope){
               <span class="pipe-badge" style="background:${info.color}22;color:${info.color};font-size:10px;">${info.nombre}</span>
               <span style="font-size:13px;font-weight:600;color:var(--text);">${cl?cl.razon_social:(s.razon_social_reportada||'Sin razón social')}</span>
               <span class="pipe-badge" style="font-size:10px;${esAlarma?`background:${estadoInfo[1]};color:#fff;`:`background:${estadoInfo[1]}18;color:${estadoInfo[1]};`}">${esAlarma?'⚠ ':''}${estadoInfo[0]}</span>
+              ${s.periodicidad?`<span class="pipe-badge" style="font-size:10px;background:rgba(13,34,64,.08);color:var(--navy);">${s.periodicidad}</span>`:''}
+              ${suscVerificadaBadgeHtml(s)}
               ${esAlertaPerdida?`<span class="pipe-badge" style="font-size:10px;background:#8B0000;color:#fff;">🚨 Posible pérdida con Innovaci</span>`:''}
               ${esVencida&&!esAlarma?`<span class="pipe-badge" style="font-size:10px;background:${vencidaCritica?'#8B0000':'#E84040'};color:#fff;">⚠ Vencida sin renovar${vencidaCritica?` · +${Math.floor(diasVencida/365)} año(s)`:''}</span>`:''}
               ${!cl?'<span class="pipe-badge" style="font-size:10px;background:rgba(232,64,64,0.1);color:#E84040;">Sin cuenta</span>':!cl.vendedor_asignado&&scope==='director'?'<span class="pipe-badge" style="font-size:10px;background:rgba(245,166,35,0.12);color:#B8740A;">Sin vendedor</span>':''}
