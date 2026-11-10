@@ -1091,6 +1091,7 @@ async function initApp(user){
   else buildVendorUI();
   try{ mostrarNovedades(); }catch(e){ console.error('novedades',e); }
   try{ mostrarAvisoTimbres(); }catch(e){ console.error('timbres',e); }
+  try{ mostrarAvisoLicencias(); }catch(e){ console.error('licencias',e); }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -32632,6 +32633,7 @@ async function solCargarListaVendedor(){
   if(error){cont.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(error.message)}</div>`;return;}
   _solRows=data||[];
   await timCargarDeSolicitudes(_solRows.filter(r=>r.timbres_estado==='asignados').map(r=>r.id));
+  await licCargarDeSolicitudes(_solRows.filter(r=>r.licencia_estado==='asignadas').map(r=>r.id));
   if(!_solRows.length){cont.innerHTML='<div style="font-size:12px;color:var(--text3);">Aún no has enviado solicitudes.</div>';return;}
   cont.innerHTML=_solRows.map(r=>solTarjeta(r,'vendedor')).join('');
 }
@@ -32677,6 +32679,7 @@ function solTarjeta(r,modo){
     ${String(r.notas||'').startsWith(SOL_PG_MARCA)?`<div style="font-size:11px;font-weight:700;color:#8a6d00;background:#fffbea;border:1px solid #f3dc8a;border-radius:6px;padding:3px 8px;margin-top:5px;display:inline-block;">🧾 FACTURAR A VIOLETA — el cliente no requiere factura · C.P. ${SOL_VIOLETA.cp}</div>`:''}
     ${pago}${solAvisoPagoVencido(r,esVend)}${fact}
     ${timTarjetaHtml(r,esDir,esVend)}
+    ${licTarjetaHtml(r,esDir,esVend)}
     ${r.pago_nota?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">Nota de validación: ${solEsc(r.pago_nota)}</div>`:''}
     ${solAcadTarjetaHtml(r)}
     ${false&&r.asistente?`<div style="font-size:11px;color:var(--teal);margin-top:3px;">🎓 Asistente: ${solEsc(r.asistente.nombre)} · ${solEsc(r.asistente.correo)} · ${solEsc(r.asistente.telefono)} · ${solEsc(r.asistente.curso)}</div>`:''}
@@ -32747,6 +32750,7 @@ async function renderSolFacturaGestion(el){
   if(error){cont.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(error.message)}</div>`;return;}
   _solRows=data||[];
   await timCargarDeSolicitudes(_solRows.filter(r=>r.timbres_estado==='asignados').map(r=>r.id));
+  await licCargarDeSolicitudes(_solRows.filter(r=>r.licencia_estado==='asignadas').map(r=>r.id));
   const por={validar:_solRows.filter(r=>!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada')),
     facturar:_solRows.filter(r=>r.estado==='pago_validado'||r.estado==='pendiente_pago'),
     pendientes:_solRows.filter(r=>['solicitada','pendiente_pago','pago_validado','facturada'].includes(r.estado)),
@@ -32983,12 +32987,16 @@ async function solValidarPago(id,mov,nota,desdeCasado,desdeShopify,quien){
   if(!r.timbres_estado&&timCantidadDeConcepto(r.concepto)){
     try{msgTim=timMensajeResultado(r,await timAsignar(r));}catch(e){msgTim='No se pudieron asignar los timbres: '+(e?.message||e);}
   }
+  let msgLic=null;
+  if(!r.licencia_estado&&licPlanDeConcepto(r.concepto)){
+    try{msgLic=await licAsignarAutomatica(r);}catch(e){msgLic='No se pudo asignar la licencia: '+(e?.message||e);}
+  }
   let msgAc='';
   try{ msgAc=await solInscribirAcademia(r); }catch(e){ msgAc='🎓 Academia: no se pudo inscribir ('+(e?.message||e)+'). Hazlo desde la tarjeta.'; }
   if(desdeShopify){if(_solContenedor) renderSolFacturaGestion(_solContenedor).then(()=>{});}
   else if(desdeCasado){solMostrarCasadoTrasValidar();}
   else{solCerrarModal();solRefrescar();}
-  const _m=[msgTim,msgAc].filter(Boolean).join('\n\n');
+  const _m=[msgTim,msgLic,msgAc].filter(Boolean).join('\n\n');
   if(_m) setTimeout(()=>alert(_m),250);
 }
 function solMostrarCasadoTrasValidar(){
@@ -33343,6 +33351,170 @@ async function timBarEntendido(id){
   await sb.from('solicitudes_factura').update({timbres_visto:true}).eq('id',id);
   document.getElementById('timBar_'+id)?.remove();
   const b=document.getElementById('timbresBar');if(b&&!b.children.length) b.remove();
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// LICENCIAS / CLAVES DE PRE-REGISTRO (Jp, 2026-11-10)
+// Igual que Timbres, pero por plan: Aspel manda por correo las claves de cada
+// orden de venta (OV). Dirección pega ese correo en la solicitud; la app lee
+// producto, plan, clave y fecha máxima de activación, las empareja con las
+// solicitudes con pago validado de ese plan y avisa al vendedor (app + correo).
+// Si la clave llega antes que el pago, queda "disponible" y se asigna sola al
+// validar el pago. Tablas: licencias_claves + solicitudes_factura.licencia_*.
+// ════════════════════════════════════════════════════════════════════════════
+let _solLicencias={}, _licParsed=[], _licCands=[];
+function licNormProd(s){return String(s||'').toUpperCase().replace(/SIIGO|ASPEL/g,'').replace(/\s+/g,' ').trim();}
+function licPlanDeConcepto(txt){
+  const t=String(txt||'');
+  const m=t.match(/PLAN\s+(\d+)\s*(?:A|-|–)\s*(\d+)/i); if(!m) return null;
+  const prod=licNormProd(t.slice(0,m.index));
+  if(!/ASISTENTE/.test(prod)) return null;
+  return {prod,min:+m[1],max:+m[2]};
+}
+function licFmtFecha(iso){if(!iso) return '—';const [y,m,d]=String(iso).slice(0,10).split('-');return `${d}/${m}/${y}`;}
+async function licCargarDeSolicitudes(ids){
+  _solLicencias={};
+  if(!ids||!ids.length) return;
+  const {data}=await sb.from('licencias_claves').select('id,clave,producto,plan_min,plan_max,orden_venta,fecha_max_activacion,solicitud_id').in('solicitud_id',ids);
+  (data||[]).forEach(p=>{(_solLicencias[p.solicitud_id]=_solLicencias[p.solicitud_id]||[]).push(p);});
+}
+function licTarjetaHtml(r,esDir,esVend){
+  const plan=licPlanDeConcepto(r.concepto);
+  const caja=(color,bg,html)=>`<div style="background:${bg};border:1px solid ${color};border-radius:8px;padding:7px 10px;margin-top:7px;font-size:12px;">${html}</div>`;
+  if(r.licencia_estado==='asignadas'){
+    const ps=_solLicencias[r.id]||[];
+    const claves=ps.map(p=>`<span style="display:inline-flex;align-items:center;gap:5px;margin:2px 8px 2px 0;"><span style="font-family:'JetBrains Mono',monospace;font-weight:700;">${solEsc(p.clave)}</span> <span style="color:var(--text3);">(activar antes del ${licFmtFecha(p.fecha_max_activacion)}${p.orden_venta?' · OV.'+solEsc(p.orden_venta):''})</span><button onclick="timCopiar('${solEsc(p.clave)}')" style="border:1px solid var(--border);background:#fff;border-radius:5px;font-size:10px;padding:1px 6px;cursor:pointer;">Copiar</button></span>`).join('');
+    return caja('#9fd3d0','#eef6f6',`🔑 <b>Clave de licencia:</b> ${claves||'—'}
+      <div style="margin-top:5px;font-size:11px;color:${r.licencia_correo_at?'#2E7D32':'#B45309'};">${r.licencia_correo_at?'✉️ Correo enviado el '+new Date(r.licencia_correo_at).toLocaleString('es-MX'):'⚠️ Correo al vendedor sin enviar'+(r.licencia_correo_error?' ('+solEsc(r.licencia_correo_error)+')':'')}${esDir?` <button onclick="licReenviarCorreo('${r.id}')" style="border:1px solid var(--teal);background:#fff;color:var(--teal);border-radius:5px;font-size:10px;padding:1px 7px;cursor:pointer;font-weight:600;">${r.licencia_correo_at?'Reenviar':'Enviar'} correo</button>`:''}</div>`);
+  }
+  if(!plan||!r.pago_validado||r.estado==='cancelada') return '';
+  if(esVend) return caja('#F5A623','#FFF8EC','⏳ <b>Licencia por entregar:</b> en cuanto lleguen las claves de Aspel se asignan aquí y te llega el aviso.');
+  return caja('#F5A623','#FFF8EC',`🔑 <b>Licencia ${solEsc(plan.prod)} ${plan.min}-${plan.max} por entregar.</b> <button onclick="licAbrirCorreo('${r.id}')" style="border:1px solid var(--teal);background:var(--teal);color:#fff;border-radius:5px;font-size:11px;padding:3px 10px;cursor:pointer;font-weight:700;">Cargar claves de Aspel</button>`);
+}
+// Lee el correo de Aspel (texto pegado) → [{prod,min,max,vig,ov,fecha,clave}]
+function licParsearCorreo(txt){
+  const t=String(txt||'').replace(/\r/g,'').replace(/ /g,' ');
+  const out=[]; let ini=0; const re=/CLAVE\s*:?\s*([A-Z]?\d{10,})/gi; let m;
+  while((m=re.exec(t))){
+    const seg=t.slice(ini,m.index).replace(/\s+/g,' '); ini=re.lastIndex;
+    const rg=seg.match(/(\d{1,4})\s*[-–]\s*(\d{1,4})/); if(!rg) continue;
+    const words=seg.slice(0,rg.index).trim().split(/\s+/); const pw=[];
+    for(let i=words.length-1;i>=0&&/^[A-ZÁÉÍÓÚÑ]{2,}$/.test(words[i]);i--) pw.unshift(words[i]);
+    const vig=(seg.slice(rg.index+rg[0].length).match(/^\s*(ANUAL|MENSUAL|BIANUAL|TRIANUAL)/i)||[])[1]||'';
+    const ov=(seg.match(/OV\.?\s*(\d+)/i)||[])[1]||'';
+    const f=seg.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    out.push({prod:licNormProd(pw.join(' ')),min:+rg[1],max:+rg[2],vig:vig.toUpperCase(),ov,
+      fecha:f?`${f[3]}-${String(f[2]).padStart(2,'0')}-${String(f[1]).padStart(2,'0')}`:null,clave:m[1].toUpperCase()});
+  }
+  return out;
+}
+async function licAbrirCorreo(solId){
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">🔑 Cargar claves de Aspel</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">Pega aquí el texto del correo "Envío claves de Pre-Registro" (producto, fecha máxima y clave). La app las empareja con las solicitudes pagadas de cada plan.</div>
+    <textarea id="licTxt" rows="9" placeholder="Pega el correo completo…" style="${SOL_INPUT_STYLE};font-family:'JetBrains Mono',monospace;font-size:11px;"></textarea>
+    <div id="licVista" style="margin-top:10px;"></div>
+    <div style="display:flex;gap:8px;margin-top:12px;"><button id="licBtnLeer" onclick="licLeerCorreo('${solId||''}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Leer claves</button><button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`);
+}
+async function licLeerCorreo(solId){
+  const txt=document.getElementById('licTxt')?.value||'';
+  const items=licParsearCorreo(txt); const box=document.getElementById('licVista');
+  if(!items.length){box.innerHTML='<div style="font-size:12px;color:#c0392b;">No encontré claves. Revisa que el texto incluya las líneas "CLAVE:" y el producto con su rango (ej. NOI ASISTENTE 6-25).</div>';return;}
+  box.innerHTML='<div class="loading"><div class="spinner"></div> Buscando solicitudes pagadas…</div>';
+  const {data:ex}=await sb.from('licencias_claves').select('clave').in('clave',items.map(i=>i.clave));
+  const yaClaves=new Set((ex||[]).map(x=>x.clave));
+  const {data:cs}=await sb.from('solicitudes_factura').select('*').eq('pago_validado',true).neq('estado','cancelada').is('licencia_estado',null).ilike('concepto','%asistente%').order('created_at',{ascending:false}).limit(150);
+  const {data:cs2}=await sb.from('solicitudes_factura').select('*').eq('pago_validado',true).neq('estado','cancelada').eq('licencia_estado','pendiente').order('created_at',{ascending:false}).limit(150);
+  _licCands=[...(cs||[]),...(cs2||[])].filter((r,i,a)=>a.findIndex(x=>x.id===r.id)===i);
+  _licParsed=items.map(it=>{
+    const c=_licCands.filter(r=>{const p=licPlanDeConcepto(r.concepto);return p&&p.min===it.min&&p.max===it.max&&(!it.prod||p.prod===it.prod);});
+    return {...it,ya:yaClaves.has(it.clave),cands:c.map(r=>r.id),sel:(solId&&c.find(r=>r.id===solId)?solId:(c[0]?.id||''))};
+  });
+  // evita proponer la misma solicitud para dos claves
+  const usados=new Set(); _licParsed.forEach(p=>{ if(p.ya){p.sel='';return;} if(p.sel&&usados.has(p.sel)){p.sel=p.cands.find(id=>!usados.has(id))||'';} if(p.sel) usados.add(p.sel); });
+  box.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="text-align:left;color:var(--text3);font-size:11px;"><th style="padding:4px 6px;">Clave</th><th style="padding:4px 6px;">Plan</th><th style="padding:4px 6px;">Activar antes de</th><th style="padding:4px 6px;">Asignar a</th></tr></thead><tbody>
+    ${_licParsed.map((p,i)=>`<tr style="border-top:1px solid var(--border);"><td style="padding:6px;font-family:'JetBrains Mono',monospace;font-weight:700;">${solEsc(p.clave)}</td><td style="padding:6px;">${solEsc(p.prod)} ${p.min}-${p.max} ${solEsc(p.vig)}${p.ov?'<br><span style="color:var(--text3);font-size:11px;">OV.'+solEsc(p.ov)+'</span>':''}</td><td style="padding:6px;">${licFmtFecha(p.fecha)}</td><td style="padding:6px;">${p.ya?'<span style="color:#B45309;">Ya estaba cargada</span>':`<select id="licSel_${i}" style="${SOL_INPUT_STYLE}"><option value="">Guardar sin asignar (queda disponible)</option>${p.cands.map(id=>{const r=_licCands.find(x=>x.id===id);return `<option value="${id}" ${id===p.sel?'selected':''}>${solEsc(r.cliente_nombre)} · ${solEsc(r.vendedor_nombre||'')} · ${fmt(r.pago_monto||r.monto_total||0)}</option>`;}).join('')}</select>`}</td></tr>`).join('')}</tbody></table>
+    <div style="margin-top:10px;"><button id="licBtnOk" onclick="licConfirmarCarga()" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar y asignar</button></div>
+    <div id="licProg" style="margin-top:8px;font-size:12px;color:var(--text2);"></div>`;
+  const b=document.getElementById('licBtnLeer'); if(b) b.textContent='Leer de nuevo';
+}
+async function licAvisarVendedor(solId){
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const resp=await fetch('/api/licencias-avisar-vendedor',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solicitud_id:solId})});
+    let d={};try{d=await resp.json();}catch(e){}
+    return (resp.ok&&d.ok)?{ok:true}:{ok:false,error:d.error||('HTTP '+resp.status)};
+  }catch(e){return {ok:false,error:String(e?.message||e)};}
+}
+// Marca la solicitud con la(s) clave(s) ya ligadas, avisa en CRM y por correo.
+async function licCerrarAsignacion(r,clave){
+  const patch={licencia_estado:'asignadas',licencia_visto:false};
+  await sb.from('solicitudes_factura').update(patch).eq('id',r.id); Object.assign(r,patch);
+  if(r.pipeline_vendedor_id) pipeComentarioCrmLibre(r.pipeline_vendedor_id,`[Facturación] Licencia asignada: ${clave}`,r.vendedor_id);
+  const correo=await licAvisarVendedor(r.id);
+  const pc=correo.ok?{licencia_correo_at:new Date().toISOString(),licencia_correo_error:null}:{licencia_correo_error:String(correo.error||'error').slice(0,300)};
+  try{await sb.from('solicitudes_factura').update(pc).eq('id',r.id);Object.assign(r,pc);}catch(e){}
+  return correo;
+}
+async function licConfirmarCarga(){
+  const btn=document.getElementById('licBtnOk'), prog=document.getElementById('licProg');
+  if(btn){btn.disabled=true;btn.style.opacity='.6';btn.textContent='Guardando…';}
+  const log=[]; let n=0;
+  for(let i=0;i<_licParsed.length;i++){
+    const p=_licParsed[i]; if(p.ya) continue; n++;
+    if(prog) prog.innerHTML=`⏳ Procesando clave ${n} de ${_licParsed.filter(x=>!x.ya).length}…`;
+    const solId=document.getElementById('licSel_'+i)?.value||''; const r=solId?_licCands.find(x=>x.id===solId):null;
+    const fila={clave:p.clave,producto:p.prod,plan_min:p.min,plan_max:p.max,vigencia:p.vig||null,orden_venta:p.ov||null,fecha_max_activacion:p.fecha,
+      estatus:r?'asignada':'disponible',solicitud_id:r?r.id:null,asignado_at:r?new Date().toISOString():null,asignado_por:r?(userProfile?.nombre||'Dirección'):null};
+    const {error}=await sb.from('licencias_claves').insert(fila);
+    if(error){log.push(`❌ ${p.clave}: ${error.message}`);continue;}
+    if(r){const c=await licCerrarAsignacion(r,p.clave);log.push(`🔑 ${p.clave} → ${r.cliente_nombre} (aviso a ${r.vendedor_nombre||'vendedor'}${c.ok?' enviado por correo':': el correo no se pudo enviar — '+(c.error||'')})`);}
+    else log.push(`📦 ${p.clave} guardada como disponible (${p.prod} ${p.min}-${p.max}); se asignará sola al validar el pago de ese plan.`);
+  }
+  if(prog) prog.innerHTML='';
+  solCerrarModal();
+  alert(log.length?log.join('\n'):'No había claves nuevas por guardar.');
+  solRefrescar();
+}
+// Al validar un pago: si el concepto es de licencia, asigna una clave disponible del mismo plan.
+async function licAsignarAutomatica(r){
+  const plan=licPlanDeConcepto(r.concepto); if(!plan) return null;
+  const {data}=await sb.from('licencias_claves').select('id,clave,producto').eq('estatus','disponible').eq('plan_min',plan.min).eq('plan_max',plan.max).order('created_at',{ascending:true}).limit(8);
+  const cands=(data||[]).filter(c=>!c.producto||licNormProd(c.producto)===plan.prod);
+  for(const c of cands){
+    const {data:upd,error}=await sb.from('licencias_claves').update({estatus:'asignada',solicitud_id:r.id,asignado_at:new Date().toISOString(),asignado_por:userProfile?.nombre||'Dirección'}).eq('id',c.id).eq('estatus','disponible').select('id,clave');
+    if(!error&&upd&&upd.length){const co=await licCerrarAsignacion(r,upd[0].clave);return `🔑 Licencia asignada a ${r.cliente_nombre}: ${upd[0].clave}.\nSe le avisó a ${r.vendedor_nombre||'el vendedor'}${co.ok?' por correo y en la app':' en la app (el correo no se pudo enviar: '+(co.error||'—')+')'}.`;}
+  }
+  const patch={licencia_estado:'pendiente',licencia_visto:true};
+  await sb.from('solicitudes_factura').update(patch).eq('id',r.id); Object.assign(r,patch);
+  return `⏳ Licencia ${plan.prod} ${plan.min}-${plan.max} de ${r.cliente_nombre}: aún no hay clave de Aspel. Quedó pendiente; usa "Cargar claves de Aspel" en la tarjeta cuando llegue el correo.`;
+}
+async function licReenviarCorreo(id){
+  const r=_solRows.find(x=>x.id===id);if(!r) return;
+  if(!confirm(`¿Enviar por correo la clave de licencia a ${r.vendedor_nombre||'el vendedor'}?`)) return;
+  const c=await licAvisarVendedor(id);
+  const pc=c.ok?{licencia_correo_at:new Date().toISOString(),licencia_correo_error:null}:{licencia_correo_error:String(c.error||'error').slice(0,300)};
+  try{await sb.from('solicitudes_factura').update(pc).eq('id',id);Object.assign(r,pc);}catch(e){}
+  alert(c.ok?`✅ Correo enviado a ${r.vendedor_nombre||'el vendedor'}.`:`⚠️ No se pudo enviar el correo: ${c.error||'error'}`);
+  solRefrescar();
+}
+// Aviso al vendedor al entrar a su dashboard
+async function mostrarAvisoLicencias(){
+  document.getElementById('licenciasBar')?.remove();
+  if(!userProfile||userProfile.rol!=='vendedor') return;
+  const {data:sols}=await sb.from('solicitudes_factura').select('id,cliente_nombre').eq('vendedor_id',userProfile.id).eq('licencia_estado','asignadas').eq('licencia_visto',false);
+  if(!sols||!sols.length) return;
+  await licCargarDeSolicitudes(sols.map(s=>s.id));
+  const cont=document.createElement('div'); cont.id='licenciasBar'; cont.style.cssText='padding:10px 24px 0;';
+  cont.innerHTML=sols.map(s=>`<div id="licBar_${s.id}" style="background:#eef6f6;border:1px solid #9fd3d0;border-left:4px solid var(--teal);border-radius:10px;padding:10px 14px;margin-bottom:8px;font-size:13px;color:var(--text);">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><span style="font-size:18px;">🔑</span><div style="flex:1;min-width:240px;"><b>Ya está la clave de licencia de ${solEsc(s.cliente_nombre)}</b></div>
+    <button onclick="licBarEntendido('${s.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">Entendido</button></div>
+    <div style="margin-top:4px;">${(_solLicencias[s.id]||[]).map(p=>`<span style="display:inline-flex;align-items:center;gap:5px;margin:2px 10px 2px 0;"><span style="font-family:'JetBrains Mono',monospace;font-weight:700;">${solEsc(p.clave)}</span><span style="color:var(--text3);font-size:11px;">(activar antes del ${licFmtFecha(p.fecha_max_activacion)})</span><button onclick="timCopiar('${solEsc(p.clave)}')" style="border:1px solid var(--border);background:#fff;border-radius:5px;font-size:10px;padding:1px 6px;cursor:pointer;">Copiar</button></span>`).join('')}</div></div>`).join('');
+  const tabs=document.getElementById('tabsBar'); if(tabs&&tabs.parentNode) tabs.parentNode.insertBefore(cont,tabs);
+}
+async function licBarEntendido(id){
+  await sb.from('solicitudes_factura').update({licencia_visto:true}).eq('id',id);
+  document.getElementById('licBar_'+id)?.remove();
+  const b=document.getElementById('licenciasBar'); if(b&&!b.children.length) b.remove();
 }
 
 // ─── Finanzas › Timbres ──────────────────────────────────────────────────────
