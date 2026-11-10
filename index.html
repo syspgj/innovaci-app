@@ -6852,7 +6852,8 @@ function _propCursoDeDetalle(d,iva,total,conIva){
   const cu=(window._ceCursos||[]).find(x=>x.clave===d.curso)||{nombre:d.curso};
   return {titulo:'Curso Empresarial — '+cu.nombre,subtitulo:(d.modalidad==='linea'?'En línea':'En sitio')+' · '+d.personas+' personas · '+d.horas+' horas · '+d.sesiones+' sesiones',
     lineas:d.lineas||[],descuento:d.descuento||0,descuentoPct:d.descuento_pct||0,iva:iva||0,total,conIva,
-    resumen:[['Curso',cu.nombre],['Modalidad',d.modalidad==='linea'?'En línea':'En sitio'],['Personas',d.personas],['Duración',d.horas+' horas en '+d.sesiones+' sesiones']]};
+    resumen:[['Curso',cu.nombre],['Modalidad',d.modalidad==='linea'?'En línea':'En sitio'],['Personas',d.personas],['Duración',d.horas+' horas en '+d.sesiones+' sesiones']],
+    cursoClave:d.curso,modalidad:d.modalidad,personas:d.personas,horas:d.horas,sesiones:d.sesiones};
 }
 function propGenerarDeReciente(id){
   const r=(window._cotizRecientesData||[]).find(x=>x.id===id); if(!r){alert('Recarga la pestaña e intenta otra vez.');return;}
@@ -6915,7 +6916,253 @@ td{padding:5px 8px;border-bottom:1px solid #e3e9ef;vertical-align:top}
 .foot{margin-top:auto;display:flex;justify-content:space-between;font-size:9.5px;color:#6b7c8e;border-top:2px solid #00A99D;padding-top:4px}
 @media print{body{background:#fff}.bar{display:none}.page{margin:0;box-shadow:none;min-height:286mm;padding:7mm 15mm 3mm}}`; }
 function _propFoot(P){ return `<div class="foot"><span>Grupo Innovaci · innovaci.com.mx</span><span>${_pesc(P.vendedor||'')}${P.vendedorEmail?' · '+_pesc(P.vendedorEmail):''}</span></div>`; }
+// ── Propuesta PDF de Curso Empresarial (Jp, 2026-11-10) ───────────────────────
+// Estructura: portada → resumen ejecutivo + problema → logros y metodología → temario →
+// laboratorio y academia → alcance, medición e instructora → propuesta económica → por qué Innovaci y siguientes pasos.
+// Contenido de venta basado en los temarios PDF de Capacitación Empresarial; temario por curso en cotizador_cursos_emp.temario.
+const PROP_INSTRUCTORA={nombre:'Karen Hernández',rol:'Instructora de Grupo Innovaci',
+  texto:['Imparte la capacitación empresarial de Grupo Innovaci y acompaña a tu equipo durante todo el curso, con práctica guiada dentro del sistema.',
+    'Al terminar, entrega sus observaciones sobre el desempeño del grupo: análisis general y recomendaciones para seguir mejorando la operación.',
+    'Forma parte del equipo de instructores certificados de Grupo Innovaci.']};
+function _ceTemarioPaginas(mods){
+  const cost=m=>2.7+m[1].reduce((a,t)=>a+Math.ceil(String(t).length/41)*1.0,0)+0.8;
+  const total=mods.reduce((a,m)=>a+cost(m),0), CAPCOL=47;
+  const nPag=Math.max(1,Math.ceil(total/(CAPCOL*2))), target=total/(nPag*2);
+  const cols=[]; let cur=[],used=0;
+  mods.forEach((m,i)=>{const c=cost(m); if(cur.length&&used+c/2>target&&cols.length<nPag*2-1){cols.push(cur);cur=[];used=0;} cur.push({i,m});used+=c;});
+  if(cur.length) cols.push(cur);
+  const pages=[]; for(let k=0;k<cols.length;k+=2) pages.push([cols[k],cols[k+1]||[]]);
+  return pages;
+}
+const PROP_ESCALA=1.25;
+function _ceCssProp(){ return _ceCssBase().replace(/(\d*\.?\d+)px/g,(m,n)=>(Math.round(parseFloat(n)*PROP_ESCALA*10)/10)+'px'); }
+function _ceCssBase(){ return `
+@page{size:A4;margin:0}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:#dfe5ea;font-family:'Inter','Segoe UI',Arial,sans-serif;color:#0b1f33;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.bar{position:sticky;top:0;background:#0b1f33;color:#fff;padding:10px 16px;display:flex;gap:12px;align-items:center;justify-content:space-between;font-size:13px;z-index:9}
+.bar button{background:#12b3a8;color:#fff;border:0;border-radius:8px;padding:8px 16px;font-weight:700;cursor:pointer;font-size:13px}
+.pg{width:210mm;height:297mm;margin:14px auto;background:#fff;position:relative;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,.18);page-break-after:always;break-after:page}
+@media print{html,body{background:#fff}.bar{display:none}.pg{margin:0;box-shadow:none}}
+.dark{background:#0b1f33;background-image:radial-gradient(circle at 12% 10%,rgba(18,179,168,.34) 0%,transparent 46%),radial-gradient(circle at 92% 92%,rgba(18,179,168,.22) 0%,transparent 50%),linear-gradient(160deg,#0b1f33 0%,#0b3b5c 120%);color:#fff}
+.in{position:absolute;inset:0;padding:14mm 17mm 18mm}
+.hd{display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid #12b3a8;padding-bottom:7px;margin-bottom:6mm}
+.hd img{height:24px}.hd span{font-size:9px;color:#6b7c8e;letter-spacing:.08em;text-transform:uppercase;font-weight:700}
+.foot{position:absolute;left:17mm;right:17mm;bottom:8mm;display:flex;justify-content:space-between;font-size:8.5px;color:#8a98a8;border-top:1px solid #e3e9ee;padding-top:5px}
+.dark .foot{color:#8fb3c4;border-color:rgba(255,255,255,.18)}
+.pgn{font-weight:800;color:#12b3a8}
+.eyebrow{font-size:9.5px;letter-spacing:.22em;text-transform:uppercase;font-weight:800;color:#0e8d85}
+.dark .eyebrow{color:#7fe3da}
+h1,h2,h3{line-height:1.14;font-weight:800}
+h2{font-size:23px;margin:5px 0 7px;letter-spacing:-.01em}
+.lead{font-size:12px;line-height:1.55;color:#3b4f63}
+.dark .lead{color:#cfe0ea}
+.quote{font-size:12.5px;font-weight:700;color:#0e8d85;border-left:4px solid #12b3a8;padding:4px 0 4px 12px;margin-top:5mm;line-height:1.4}
+/* portada */
+.cover .frame{position:absolute;inset:9mm;border:1px solid rgba(217,178,95,.55);border-radius:6px}
+.cover .logo{height:36px;filter:brightness(0) invert(1)}
+.cover h1{font-size:40px;letter-spacing:-.02em;margin-top:6mm}
+.cover .sub{font-size:14.5px;color:#cfe0ea;margin-top:9px;line-height:1.45;max-width:150mm}
+.pill{display:inline-block;border:1px solid rgba(217,178,95,.7);color:#e9cd8a;border-radius:99px;padding:6px 16px;font-size:10px;font-weight:800;letter-spacing:.18em;text-transform:uppercase}
+.cbul{margin-top:10mm;display:flex;flex-direction:column;gap:9px}
+.cbul div{font-size:14px;color:#e7f2f7;display:flex;gap:10px;align-items:center}.cbul i{font-style:normal;font-size:17px}
+.para{margin-top:14mm;width:130mm;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);border-radius:12px;padding:12px 18px}
+.para small{display:block;font-size:8.5px;letter-spacing:.2em;text-transform:uppercase;color:#7fe3da;font-weight:800;margin-bottom:4px}
+.para b{font-size:20px}
+.cmeta{position:absolute;left:17mm;right:17mm;bottom:15mm;display:flex;justify-content:space-between;font-size:10px;color:#9fc0cf;line-height:1.5}
+.cmeta b{color:#fff}
+/* resumen */
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:5mm 0 4mm}
+.kpis div{background:#f3f7fa;border-radius:10px;padding:9px 11px;font-size:11.5px;font-weight:700}
+.kpis span{display:block;font-size:8.5px;text-transform:uppercase;letter-spacing:.09em;color:#6b7c8e;font-weight:700;margin-bottom:2px}
+.inv{display:flex;justify-content:space-between;align-items:center;background:#0b1f33;color:#fff;border-radius:12px;padding:12px 16px;margin-bottom:5mm}
+.inv span{font-size:10.5px;color:#9fd8d3;letter-spacing:.06em;text-transform:uppercase;font-weight:700}.inv b{font-size:22px;color:#12d1c3}
+.inv small{display:block;font-size:9.5px;color:#cfe0ea;font-weight:500;margin-top:1px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:3mm}
+.col{border-radius:12px;padding:12px 14px}
+.col.bad{background:#fbf1ee;border:1px solid #f1d4cc}.col.good{background:#eaf8f6;border:1px solid #bfe9e4}
+.col h3{font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px}
+.col.bad h3{color:#b24a33}.col.good h3{color:#0e8d85}
+.col li{list-style:none;font-size:10.8px;line-height:1.4;padding:4px 0 4px 20px;position:relative;border-top:1px solid rgba(11,31,51,.07)}
+.col li:first-of-type{border-top:0}
+.col.bad li:before{content:'✕';position:absolute;left:2px;color:#d8573b;font-weight:800}
+.col.good li:before{content:'✓';position:absolute;left:2px;color:#0e8d85;font-weight:800}
+.prob{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:3mm}
+.prob div{background:#f3f7fa;border-radius:10px;padding:9px 6px;text-align:center;font-size:9.8px;line-height:1.3;font-weight:600;color:#26394d}
+.prob i{display:block;font-style:normal;font-size:18px;margin-bottom:3px}
+/* logros + metodología */
+.log{display:grid;grid-template-columns:1fr;gap:6px;margin-top:3mm}
+.log div{display:flex;gap:11px;align-items:center;background:#f3f7fa;border-radius:10px;padding:9px 13px;font-size:12px;font-weight:600}
+.num{flex:0 0 26px;width:26px;height:26px;border-radius:50%;background:#12b3a8;color:#fff;font-weight:800;font-size:12px;display:flex;align-items:center;justify-content:center}
+.met{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:3mm}
+.met div{border:1.5px solid #12b3a8;border-radius:12px;padding:11px 10px;font-size:10.3px;line-height:1.4;color:#3b4f63;background:#fff}
+.met b{display:block;font-size:12px;color:#0b1f33;margin:4px 0 3px}.met em{font-style:normal;font-size:20px;font-weight:800;color:#12b3a8}
+.camb{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:3mm}
+.camb div{background:#0b1f33;color:#fff;border-radius:10px;padding:10px 6px;text-align:center;font-size:10.3px;font-weight:700;line-height:1.3}
+/* temario */
+.dur{display:flex;gap:12px;align-items:center;background:#eaf8f6;border:1px solid #bfe9e4;border-radius:12px;padding:9px 14px;margin:3mm 0 4mm;font-size:10.3px;color:#26394d;line-height:1.4}
+.dur b{font-size:18px;color:#0e8d85;white-space:nowrap}
+.tcols{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
+.mod{margin-bottom:7px;break-inside:avoid}
+.mod h4{display:flex;gap:8px;align-items:flex-start;font-size:11.6px;line-height:1.25;font-weight:800;color:#0b1f33}
+.mod h4 span{flex:0 0 auto;background:#0b1f33;color:#fff;border-radius:6px;font-size:8.5px;padding:3px 6px;letter-spacing:.05em;margin-top:0}
+.mod ul{margin:3px 0 0 0;padding-left:30px}.mod li{font-size:10.6px;line-height:1.36;color:#3b4f63;margin-bottom:.6px}
+/* lab + academia */
+.card2{border-radius:16px;padding:18px 20px;margin-top:5mm}
+.card2.lab{background:#0b1f33;color:#fff}.card2.aca{background:#eaf8f6;border:1px solid #bfe9e4}
+.card2 h3{font-size:18px;margin-bottom:6px}.card2.lab h3{color:#12d1c3}
+.card2 p{font-size:12.2px;line-height:1.55}.card2.lab p{color:#cfe0ea}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}.chips span{font-size:10.2px;font-weight:700;border-radius:99px;padding:4px 11px;background:rgba(255,255,255,.12)}
+.card2.aca .chips span{background:#fff;border:1px solid #bfe9e4;color:#0b1f33}
+.card2 ul{margin:6px 0 0;padding-left:0;list-style:none}.card2 li{font-size:12px;line-height:1.5;padding:3px 0 3px 18px;position:relative}
+.card2 li:before{content:'✓';position:absolute;left:0;color:#12b3a8;font-weight:800}
+.card2 .q{margin-top:8px;font-weight:700;font-size:11.5px;color:#12d1c3}.card2.aca .q{color:#0e8d85}
+/* alcance */
+.alc{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:3mm}
+.alc div{display:flex;gap:10px;align-items:flex-start;border:1px solid #e1e8ee;border-radius:11px;padding:11px 12px;font-size:11.6px;line-height:1.4}
+.alc b{display:block;font-size:11.5px}
+.kar{display:flex;gap:14px;align-items:flex-start;background:#f3f7fa;border-radius:14px;padding:13px 15px;margin-top:3mm}
+.av{flex:0 0 58px;height:58px;border-radius:50%;background:linear-gradient(135deg,#0b3b5c,#12b3a8);color:#fff;font-weight:800;font-size:20px;display:flex;align-items:center;justify-content:center}
+.kar b{font-size:13px}.kar small{display:block;font-size:10px;color:#0e8d85;font-weight:700;margin-bottom:4px}.kar p{font-size:11.2px;line-height:1.45;color:#3b4f63;margin-top:3px}
+.med{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin-top:3mm}
+.med div{background:#0b1f33;color:#fff;border-radius:10px;padding:9px 9px;font-size:10px;line-height:1.35}.med i{font-style:normal;display:block;font-size:16px;margin-bottom:3px}
+/* inversión */
+table.t{width:100%;border-collapse:collapse;font-size:11px;margin-top:3mm}
+table.t th{background:#0b1f33;color:#fff;text-align:left;padding:7px 9px;font-size:9.5px;text-transform:uppercase;letter-spacing:.05em}
+table.t td{padding:6px 9px;border-bottom:1px solid #e3e9ef;vertical-align:top}.r{text-align:right;white-space:nowrap}
+.tot{margin-left:auto;width:64%;margin-top:8px;font-size:11.5px}.tot div{display:flex;justify-content:space-between;padding:3px 9px}
+.tot .g{background:#12b3a8;color:#fff;font-weight:800;font-size:15px;border-radius:9px;padding:9px 11px;margin-top:4px}
+.cond{font-size:10px;color:#5b6b7d;line-height:1.5;margin-top:6mm;border-top:1px solid #e3e9ef;padding-top:8px}
+.cond li{margin:0 0 3px 14px}
+/* por qué + pasos */
+.why{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:3mm}
+.why div{background:#f3f7fa;border-radius:11px;padding:10px 12px;font-size:10.8px;line-height:1.42;color:#3b4f63}.why b{display:block;color:#0b1f33;font-size:11.5px;margin-bottom:2px}
+.est{display:flex;gap:10px;margin-top:3mm}.est div{flex:1;border:1.5px solid #12b3a8;border-radius:11px;padding:9px 11px;font-size:10.6px;line-height:1.4;font-weight:600;text-align:center}.est span{display:flex;margin:0 auto 5px}
+.steps{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-top:3mm}
+.steps div{background:#fff;border:1px solid #e1e8ee;border-radius:11px;padding:10px 8px;font-size:10.2px;line-height:1.38;text-align:center;color:#3b4f63}.steps .num{margin:0 auto 5px}
+.cta{margin-top:6mm;background:#0b1f33;color:#fff;border-radius:16px;padding:16px 20px;text-align:center}
+.cta b{display:block;font-size:17px;margin-bottom:4px}.cta p{font-size:11.5px;color:#cfe0ea;line-height:1.5}.cta .who{margin-top:9px;font-size:12px;color:#12d1c3;font-weight:700}
+`; }
+function propCursoEmpAbrir(P){
+  const cu=(window._ceCursos||[]).find(x=>x.clave===P.cursoClave)||{nombre:P.titulo||'Curso',horas:P.horas};
+  const sis=cu.nombre;
+  const mods=Array.isArray(cu.temario)?cu.temario:[];
+  const vig=new Date(P.fecha.getTime()+PROP_VIGENCIA_DIAS*86400000);
+  const sumL=(P.lineas||[]).reduce((a,l)=>a+(l.importe||0),0), neto=sumL-(P.descuento||0);
+  const totalFinal=P.conIva?P.total:neto;
+  const modTxt=P.modalidad==='linea'?'En línea':'En sitio';
+  const esc=_pesc, logo=PROP_LOGO;
+  const sesRec=Math.max(1,Math.round((P.horas||0)/4));
+  const hd=sec=>`<div class="hd"><img src="${logo}" alt="Innovaci"><span>${esc(sec)}</span></div>`;
+  const pgs=[];
+  const pg=(cls,inner)=>pgs.push({cls,inner});
+  // 1 Portada
+  pg('dark cover',`<div class="frame"></div><div class="in" style="padding:17mm 20mm;">
+    <img class="logo" src="${logo}" alt="Innovaci">
+    <div style="margin-top:22mm"><span class="pill">Capacitación empresarial</span>
+    <h1>${esc(sis)}</h1>
+    <div class="sub">Propuesta de capacitación para tu equipo · ${esc(modTxt)} · ${esc(P.personas)} personas · ${esc(P.horas)} horas</div></div>
+    <div class="cbul"><div><i>📊</i>Procesos más ordenados y menos errores</div><div><i>⚙️</i>Un equipo que domina el sistema en su operación real</div><div><i>📈</i>Información confiable para decidir</div></div>
+    <div class="para"><small>Preparada para</small><b>${esc(P.cliente||'Tu empresa')}</b></div>
+    <div class="cmeta"><div><b>Propuesta ${esc(P.folio)}</b><br>${_propFechaLarga(P.fecha)}<br>Vigencia hasta el ${_propFechaLarga(vig)}</div><div style="text-align:right"><b>${esc(P.vendedor||'Grupo Innovaci')}</b><br>${esc(P.vendedorEmail||'capacitacion@innovaci.com.mx')}<br>innovaci.com.mx</div></div></div>`);
+  // 2 Resumen ejecutivo + problema
+  pg('',`<div class="in">${hd('Resumen ejecutivo')}
+    <div class="eyebrow">Resumen de la propuesta</div>
+    <h2>Capacitamos a tu equipo para que ${esc(sis)} trabaje a favor de tu operación</h2>
+    <p class="lead">${esc(P.cliente?P.cliente+' ':'Tu empresa ')}puede lograr que su equipo aplique ${esc(sis)} correctamente en el día a día: con práctica guiada, un laboratorio donde equivocarse sin riesgo y acceso permanente a los materiales. Al final recibes un reporte de qué tanto aprovechó el curso cada participante.</p>
+    <div class="kpis"><div><span>Curso</span>${esc(sis)}</div><div><span>Modalidad</span>${esc(modTxt)}</div><div><span>Participantes</span>${esc(P.personas)} personas</div><div><span>Duración</span>${esc(P.horas)} h · ${esc(P.sesiones)} sesión${P.sesiones>1?'es':''}</div></div>
+    <div class="inv"><div><span>Inversión total</span><small>${P.conIva?'IVA incluido':'Más IVA'}${P.descuento>0?' · incluye descuento':''} · detalle en la página de propuesta económica</small></div><b>${_pfmt(totalFinal)}</b></div>
+    <div class="eyebrow">El punto de partida</div>
+    <h2 style="font-size:19px">El problema no es el sistema… es cómo se está usando</h2>
+    <div class="prob"><div><i>🖥</i>Retrasos para obtener información</div><div><i>⚙️</i>Procesos manuales ineficientes</div><div><i>💡</i>Sistema subutilizado</div><div><i>📊</i>Riesgos de cumplimiento</div><div><i>🧪</i>Errores recurrentes</div></div>
+    <div class="two"><div class="col bad"><h3>Lo que cuesta no corregirlo</h3><ul><li>Horas-hombre desperdiciadas</li><li>Reprocesos constantes</li><li>Multas o inconsistencias fiscales</li><li>Información poco confiable</li><li>Decisiones basadas en datos incorrectos</li></ul></div>
+    <div class="col good"><h3>Lo que cambia con la capacitación</h3><ul><li>Procesos ordenados</li><li>Menos errores</li><li>Información confiable</li><li>Cumplimiento fiscal</li><li>Mayor control de la operación</li></ul></div></div>
+    <div class="quote">No es un tema técnico… es un tema de operación.</div></div>`);
+  // 3 Logros + metodología
+  pg('',`<div class="in">${hd('Qué logra tu empresa')}
+    <div class="eyebrow">Capacitación que mejora la operación</div>
+    <h2>¿Qué logra tu empresa al capacitarse correctamente en ${esc(sis)}?</h2>
+    <div class="log"><div><span class="num">1</span>Estandarizar los procesos</div><div><span class="num">2</span>Reducir errores operativos</div><div><span class="num">3</span>Mejorar la calidad de la información</div><div><span class="num">4</span>Optimizar el uso del sistema</div><div><span class="num">5</span>Automatizar tareas clave</div></div>
+    <div class="eyebrow" style="margin-top:7mm">Metodología</div>
+    <h2 style="font-size:19px">No solo capacitamos: logramos que se implemente correctamente</h2>
+    <div class="met"><div><em>01</em><b>Diagnóstico</b>Entendemos cómo trabaja hoy tu equipo y qué necesita reforzar.</div><div><em>02</em><b>Capacitación</b>Sesiones con instructor, adaptadas a tu operación.</div><div><em>03</em><b>Laboratorio</b>Práctica en un entorno controlado, sin afectar tu información real.</div><div><em>04</em><b>Implementación</b>Tu equipo aplica lo aprendido en su operación con acompañamiento.</div></div>
+    <div class="eyebrow" style="margin-top:7mm">Después del curso</div>
+    <div class="camb"><div>Procesos ordenados</div><div>Menos errores</div><div>Información confiable</div><div>Cumplimiento fiscal</div><div>Mayor control</div></div>
+    <div class="quote">El conocimiento se queda en tu empresa, no solo en la cabeza de quien asistió.</div></div>`);
+  // 4.. Temario
+  const tpag=mods.length?_ceTemarioPaginas(mods):[];
+  tpag.forEach((p,pi)=>{
+    const colHtml=col=>`<div>${col.map(({i,m})=>`<div class="mod"><h4><span>MÓD. ${i+1}</span>${esc(m[0])}</h4>${m[1].length?`<ul>${m[1].map(t=>`<li>${esc(t)}</li>`).join('')}</ul>`:''}</div>`).join('')}</div>`;
+    pg('',`<div class="in">${hd('Temario')}
+      <div class="eyebrow">Contenido del curso${tpag.length>1?' · '+(pi+1)+' de '+tpag.length:''}</div>
+      <h2>Temario — ${esc(sis)}</h2>
+      ${pi===0?`<div class="dur"><b>${esc(cu.horas||P.horas)} horas</b><span>Duración del temario base. Para asegurar resultados reales recomendamos sesiones de 4 horas: equilibrio entre explicación, práctica guiada y aplicación directa en el sistema. Cualquier ajuste en los temas se consulta para reajustar el tiempo.</span></div>`:''}
+      <div class="tcols">${colHtml(p[0])}${colHtml(p[1])}</div></div>`);
+  });
+  // Laboratorio + Academia
+  pg('',`<div class="in">${hd('Laboratorio y Academia')}
+    <div class="eyebrow">Practicar y retener</div>
+    <h2>Donde tu equipo aprende a operar… antes de impactar tu empresa</h2>
+    <div class="card2 lab"><h3>Laboratorio Virtual Empresarial</h3>
+      <p>Un entorno controlado donde tu equipo trabaja dentro de ${esc(sis)}, simulando la operación de una empresa real.</p>
+      <div class="chips"><span>Sin riesgo</span><span>Sin afectar información real</span><span>Con acompañamiento experto</span></div>
+      <ul><li>Ejecutan procesos completos de principio a fin.</li><li>Simulan errores reales y aprenden a corregirlos.</li><li>Entienden cómo cada registro impacta la información.</li><li>Practican escenarios reales, no ejercicios aislados.</li><li>Ganan seguridad antes de implementarlo en la empresa.</li></ul>
+      <div class="q">Aquí tu equipo aprende a operar correctamente… antes de impactar tu empresa.</div></div>
+    <div class="card2 aca"><h3 style="color:#0b1f33">Academia Innovaci</h3>
+      <p>Una plataforma donde tu equipo puede volver a consultar el curso, los materiales y los procesos en cualquier momento, para que el conocimiento siga activo en la operación.</p>
+      <div class="chips"><span>🎥 Grabaciones</span><span>📚 Material</span><span>🔁 Reforzamiento</span><span>📊 Seguimiento</span></div>
+      <ul><li>Acceso permanente.</li><li>Reforzamiento continuo.</li><li>Capacitación de nuevos ingresos con el mismo material.</li></ul>
+      <div class="q">El conocimiento se queda en tu empresa.</div></div></div>`);
+  // Alcance + medición + instructora
+  const I=PROP_INSTRUCTORA;
+  pg('',`<div class="in">${hd('Alcance, medición e instructora')}
+    <div class="eyebrow">Todo lo necesario para una implementación efectiva</div>
+    <h2>Alcance de la capacitación</h2>
+    <div class="alc"><div><span class="num">1</span><span><b>${esc(P.horas)} horas en ${esc(P.sesiones)} sesión${P.sesiones>1?'es':''}</b>Con instructor de Grupo Innovaci, ${esc(modTxt.toLowerCase())}, para ${esc(P.personas)} personas.</span></div>
+    <div><span class="num">2</span><span><b>Acceso a Academia Innovaci</b>Grabaciones, material y seguimiento.</span></div>
+    <div><span class="num">3</span><span><b>Manual digital del curso</b>Referencia permanente para el equipo.</span></div>
+    <div><span class="num">4</span><span><b>Laboratorio Virtual</b>Práctica sin riesgo (según modalidad).</span></div>
+    <div><span class="num">5</span><span><b>Guía de prácticas</b>Ejercicios para aplicar lo aprendido.</span></div>
+    <div><span class="num">6</span><span><b>Evaluación</b>Medimos el aprovechamiento de cada participante.</span></div></div>
+    ${mods.length?'':`<p class="lead" style="margin-top:3mm">El temario de este curso se define contigo según la operación de tu equipo y se confirma antes de iniciar.</p>`}
+    <div class="eyebrow" style="margin-top:6mm">Medición real del aprovechamiento</div>
+    <p class="lead" style="margin-top:3px">Al finalizar recibes un reporte del rendimiento de los participantes. No solo sabrás si asistieron: sabrás qué tanto pueden aplicar lo aprendido.</p>
+    <div class="med"><div><i>📈</i>Nivel de aprovechamiento del curso</div><div><i>🧠</i>Comprensión del sistema y los procesos</div><div><i>⚙️</i>Capacidad de aplicación en escenarios reales</div><div><i>📝</i>Observaciones de la instructora sobre el desempeño</div></div>
+    <div class="eyebrow" style="margin-top:6mm">Quién imparte</div>
+    <div class="kar"><div class="av">${esc(I.nombre.split(' ').map(s=>s[0]).slice(0,2).join(''))}</div><div><b>${esc(I.nombre)}</b><small>${esc(I.rol)}</small>${I.texto.map(t=>`<p>${esc(t)}</p>`).join('')}</div></div></div>`);
+  // Propuesta económica
+  pg('',`<div class="in">${hd('Propuesta económica')}
+    <div class="eyebrow">Inversión</div>
+    <h2>Propuesta económica</h2>
+    <p class="lead">${esc(sis)} · ${esc(modTxt)} · ${esc(P.personas)} personas · ${esc(P.horas)} horas en ${esc(P.sesiones)} sesión${P.sesiones>1?'es':''}.</p>
+    <table class="t"><thead><tr><th>Concepto</th><th class="r">Cant.</th><th class="r">P. unitario</th><th class="r">Importe</th></tr></thead><tbody>
+    ${(P.lineas||[]).map(l=>`<tr><td>${esc(l.concepto)}</td><td class="r">${l.cant}</td><td class="r">${_pfmt(l.pu)}</td><td class="r"><b>${_pfmt(l.importe)}</b></td></tr>`).join('')}</tbody></table>
+    <div class="tot"><div><span>Subtotal</span><span>${_pfmt(sumL)}</span></div>
+    ${P.descuento>0?`<div style="color:#0e8d85"><span>Descuento${P.descuentoPct?' ('+Number(P.descuentoPct).toFixed(P.descuentoPct%1?1:0)+'%)':''}</span><span>-${_pfmt(P.descuento)}</span></div><div><span>Subtotal con descuento</span><span>${_pfmt(neto)}</span></div>`:''}
+    <div><span>IVA (16%)</span><span>${P.conIva?_pfmt(P.iva):'No incluido'}</span></div>
+    <div class="g"><span>Total ${P.conIva?'(IVA incluido)':'(más IVA)'}</span><span>${_pfmt(totalFinal)}</span></div></div>
+    <div class="cond"><b>Condiciones</b><ul><li>Precios en pesos mexicanos (MXN). ${P.conIva?'Los importes incluyen IVA.':'Los importes no incluyen IVA.'}</li><li>Propuesta vigente hasta el ${_propFechaLarga(vig)}.</li><li>Las fechas y horarios de las sesiones se acuerdan contigo al confirmar${P.modalidad==='linea'?'':'; los viáticos de la modalidad en sitio ya van considerados en el detalle'}.</li><li>Se recomienda estructurar sesiones de 4 horas (aprox. ${sesRec} sesión${sesRec>1?'es':''} para ${esc(P.horas)} horas).</li><li>Cualquier cambio en alcance, participantes u horarios se reajusta en la propuesta.</li></ul></div></div>`);
+  // Por qué + siguientes pasos
+  pg('',`<div class="in">${hd('Por qué Grupo Innovaci')}
+    <div class="eyebrow">La diferencia no está en el sistema… está en cómo se implementa</div>
+    <h2>¿Por qué Grupo Innovaci?</h2>
+    <p class="lead">La mayoría de las capacitaciones enseñan a usar el sistema. Nosotros nos enfocamos en que tu equipo lo aplique correctamente en la operación.</p>
+    <div class="why"><div><b>Práctica real, no teoría</b>Capacitación basada en escenarios de operación real.</div><div><b>Enfoque en procesos</b>Procesos empresariales, no solo funciones del sistema.</div><div><b>Resultados medibles</b>Reporte de desempeño, no solo asistencia.</div><div><b>Formación que reduce errores</b>Orientada a mejorar la operación de tu empresa.</div><div><b>Distribuidor autorizado Siigo Aspel</b>Conocemos el sistema porque lo implementamos todos los días.</div><div><b>Soporte y comunidad</b>Asesores especializados y Academia Innovaci para seguir aprendiendo.</div></div>
+    <div class="est"><div><span class="num">🏛</span>Diseñada bajo estándares SEP</div><div><span class="num">📜</span>CONOCER (EC0217 / EC0301)</div><div><span class="num">👨‍🏫</span>Instructores certificados</div></div>
+    <div class="eyebrow" style="margin-top:7mm">Siguientes pasos</div>
+    <div class="steps"><div><span class="num">1</span>Confirmas esta propuesta con tu asesor</div><div><span class="num">2</span>Definimos alcance, fechas y participantes</div><div><span class="num">3</span>Hacemos el diagnóstico inicial</div><div><span class="num">4</span>Sesiones y laboratorio con tu equipo</div><div><span class="num">5</span>Recibes el reporte de rendimiento</div></div>
+    <div class="cta"><b>Es momento de tomar el control de tu operación</b><p>${esc(sis)} bien implementado te da control, claridad y seguridad. No se trata de capacitar por cumplir: se trata de asegurar que el sistema funcione correctamente dentro de tu operación.</p>
+    <div class="who">${esc(P.vendedor||'Tu asesor de Grupo Innovaci')}${P.vendedorEmail?' · '+esc(P.vendedorEmail):''} · Propuesta vigente hasta el ${_propFechaLarga(vig)}</div></div></div>`);
+  const N=pgs.length;
+  const body=pgs.map((p,i)=>`<div class="pg ${p.cls}">${p.inner}<div class="foot"><span>Grupo Innovaci · innovaci.com.mx · ${esc(P.cliente||'')}</span><span><span class="pgn">${i+1}</span> / ${N}</span></div></div>`).join('');
+  const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Propuesta ${esc(sis)} — ${esc(P.cliente||'Innovaci')}</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"><style>${_ceCssProp()}</style></head><body>
+<div class="bar"><span>Vista previa de la propuesta — para guardar en PDF elige <b>"Guardar como PDF"</b> como destino.</span><button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>${body}</body></html>`;
+  const w=window.open('','_blank'); if(!w){alert('El navegador bloqueó la ventana. Permite ventanas emergentes para este sitio e intenta otra vez.');return;}
+  w.document.open(); w.document.write(html); w.document.close();
+}
 function propAbrir(P){
+  if(P.slug==='curso-empresarial'&&P.cursoClave) return propCursoEmpAbrir(P);
   const C=PROP_CONTENIDO[P.slug]||{queIncluye:[],para:''};
   const vig=new Date(P.fecha.getTime()+PROP_VIGENCIA_DIAS*86400000);
   const sumL=(P.lineas||[]).reduce((a,l)=>a+(l.importe||0),0);
@@ -7810,6 +8057,7 @@ async function enviarPolizaAProyeccion(polizaId){
           body:JSON.stringify({
             cliente_cartera_id:poliza.cliente_cartera_id,
             nombre_oportunidad:`${poliza.cliente_nombre} | ${nombreProducto}`,
+            cliente_nombre:poliza.cliente_nombre,producto:nombreProducto,
             monto:poliza.precio_contratado||0,
             fase_venta:'Prospectando',
             probabilidad:50,
@@ -9174,6 +9422,7 @@ function modalPipeHTML(r,hoy){
           <input type="text" id="pContactoTelefono" value="${v.contacto_telefono||''}" placeholder="Teléfono" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;">
         </div>
         <div style="font-size:10px;color:var(--text3);margin-top:3px;">Con quién estás negociando (puede ser distinto al titular de la cuenta). Si ligas una cuenta con contactos registrados, la app te sugiere uno — lo puedes cambiar libremente.</div>
+        ${v.id&&v.oportunidad_crm_id?`<div style="margin-top:6px;"><button type="button" id="btnCorregirCrm" onclick="pipeCorregirCrm('${v.id}')" style="padding:5px 12px;border:1px solid var(--teal);background:#fff;color:var(--teal);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">🔧 Corregir nombre y contacto en el CRM</button> <span id="msgCorregirCrm" style="font-size:11px;"></span><div style="font-size:10px;color:var(--text3);margin-top:2px;">Usa lo ya guardado en esta negociación (guarda primero si cambiaste algo).</div></div>`:''}
       </div>
       <div class="form-field">
         <label>Monto Total ($)</label>
@@ -9724,6 +9973,8 @@ async function crmAsegurarOportunidadFila(filaId){
       body:JSON.stringify({
         cliente_cartera_id:fila.cliente_cartera_id,
         nombre_oportunidad:`${fila.cliente||''} | ${fila.producto||''}`.trim(),
+        cliente_nombre:fila.cliente,producto:fila.producto,
+        contacto_nombre:fila.contacto_nombre||undefined,contacto_correo:fila.contacto_correo||undefined,contacto_telefono:fila.contacto_telefono||undefined,
         monto:fila.monto_total,
         fase_venta:fase,
         probabilidad:prob,
@@ -9776,6 +10027,8 @@ async function crmCrearOportunidadDesdeNuevaFila(fila,cuentaId,payload){
       body:JSON.stringify({
         cliente_cartera_id:cuentaId,
         nombre_oportunidad:nombreOportunidad,
+        cliente_nombre:clienteNombre,producto:payload.producto,
+        contacto_nombre:payload.contacto_nombre||undefined,contacto_correo:payload.contacto_correo||undefined,contacto_telefono:payload.contacto_telefono||undefined,
         monto:payload.monto_total,
         fase_venta:payload.estatus,
         probabilidad:payload.probabilidad,
@@ -9827,6 +10080,8 @@ async function sincronizarPipelinesDeProspectoConvertido(prospectoId,clienteCart
         body:JSON.stringify({
           cliente_cartera_id:clienteCarteraId,
           nombre_oportunidad:nombreOportunidad,
+          cliente_nombre:nombreCliente||fila.cliente,producto:fila.producto,
+          contacto_nombre:fila.contacto_nombre||undefined,contacto_correo:fila.contacto_correo||undefined,contacto_telefono:fila.contacto_telefono||undefined,
           monto:fila.monto_total,
           fase_venta:ESTATUS_PIPE.includes(fila.estatus)?fila.estatus:'Prospectando',
           probabilidad:fila.probabilidad||50,
@@ -9982,6 +10237,20 @@ async function pipeTransferirConfirmar(id){
   uiToast('✅ Venta transferida a '+data.a_nombre+aviso,!aviso);
   try{document.querySelector('.modal-overlay.open, .modal.open')?.classList.remove('open');}catch(e){}
   if(typeof renderProyeccion==='function') renderProyeccion();
+}
+async function pipeCorregirCrm(filaId){
+  const btn=document.getElementById('btnCorregirCrm'), msg=document.getElementById('msgCorregirCrm');
+  if(!btn||btn.disabled) return;
+  btn.disabled=true; const t0=btn.textContent; btn.textContent='Corrigiendo en el CRM…';
+  if(msg) msg.innerHTML='<span style="color:var(--text3);">Actualizando nombre y contacto…</span>';
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/crm-crear-oportunidad',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+sess?.session?.access_token},body:JSON.stringify({corregir_pipeline_id:filaId})});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){ if(msg) msg.innerHTML=`<span style="color:var(--red);">❌ ${(j.error||res.status)}</span>`; }
+    else if(msg) msg.innerHTML=`<span style="color:var(--green,#27AE60);">✅ ${j.folio||''} quedó como: <b>${j.nombre_oportunidad}</b>${(j.avisos||[]).length?'<br><span style="color:#B8740A;">⚠ '+j.avisos.join(' · ')+'</span>':''}</span>`;
+  }catch(e){ if(msg) msg.innerHTML=`<span style="color:var(--red);">❌ ${e.message}</span>`; }
+  btn.disabled=false; btn.textContent=t0;
 }
 async function crmActualizarOportunidad(oportunidadCrmId,fase_venta,probabilidad,tipo_servicio){
   try{
@@ -31221,7 +31490,7 @@ async function shpCrearOportunidadPedido(fila,ownerId){
     const fase=crmFaseDesdeEstatus(fila.estatus);
     const {data:sess}=await sb.auth.getSession();
     const res=await fetch('/api/crm-crear-oportunidad',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({
-      cliente_cartera_id:fila.cliente_cartera_id,nombre_oportunidad:`${fila.cliente||''} | ${fila.producto||''}`.trim(),monto:fila.monto_total,fase_venta:fase,
+      cliente_cartera_id:fila.cliente_cartera_id,nombre_oportunidad:`${fila.cliente||''} | ${fila.producto||''}`.trim(),cliente_nombre:fila.cliente,producto:fila.producto,contacto_nombre:fila.contacto_nombre||undefined,contacto_correo:fila.contacto_correo||undefined,contacto_telefono:fila.contacto_telefono||undefined,monto:fila.monto_total,fase_venta:fase,
       probabilidad:fase==='Cerrada-Ganada'?100:(fila.probabilidad||50),fecha_prevista:fila.fecha_prevista||todayLocal(),vendedor_usuario_id:ownerId,
       tipo_servicio:TIPOS_CRM.includes(fila.tipo_servicio)?fila.tipo_servicio:undefined})});
     const j=await res.json().catch(()=>({}));
