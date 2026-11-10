@@ -124,6 +124,14 @@ h2{font-size:14px;font-weight:800;margin-bottom:16px;}
        aviso que manda api/cron/circulo-suscripciones-vencidas-check.js por
        Telegram, pero leído en vivo aquí (no depende de cuándo corrió el
        cron por última vez) — solo informa, NO suspende nada solo. -->
+  <!-- Jp, 2026-11-09 — nuevo proceso: Ventas solicita el alta desde la cuenta (serie ya validada por el sistema,
+       o autorizada por Dirección si aún no sale en los reportes). Capacitación solo REVALIDA y da de alta. -->
+  <div class="card hidden" id="cardSolicitudesAlta" style="border:1px solid var(--teal)">
+    <h2>🆕 Solicitudes de alta (de Ventas)</h2>
+    <div class="sub" style="margin-bottom:14px">Ya vienen ligadas a una suscripción. Pulsa "Revalidar y dar de alta": se llena el formulario de abajo, se vuelve a validar la serie y solo falta confirmar y crear.</div>
+    <div id="listaSolicitudesAlta"></div>
+  </div>
+
   <div class="card hidden" id="cardSuscripcionesRiesgo" style="border:1px solid var(--red)">
     <h2 style="color:var(--red)">⚠️ Suscripciones sin renovar — socios en riesgo</h2>
     <div class="sub" style="margin-bottom:14px">Socios de Círculo ligados a una suscripción Aspel que ya no aparece vigente o pagada en Cartera. Valídalo con el cliente/Suscripciones y, si ya no sigue vigente, suspende al socio desde la tabla de abajo.</div>
@@ -282,6 +290,8 @@ async function reenviarCorreoBienvenida(id){
 }
 
 let clienteCarteraIdActual = null;
+let solicitudAltaActual = null; // Jp, 2026-11-09 — solicitud de Ventas que se está atendiendo en el formulario de alta
+let usuarioActualNombre = '';
 let serieValidadaActual = null; // Jp, 2026-10-29 — serie exacta ya validada, para el tope de personas por suscripción
 
 // Jp, 2026-10-29 — tope de personas por suscripción (misma "tablita" de la
@@ -567,6 +577,8 @@ async function mostrarApp(){
   document.getElementById('appWrap').classList.remove('hidden');
   document.getElementById('quienSoy').textContent=`${u.nombre} · ${cap(u.rol)}`;
   usuarioActualId = sess.session.user.id;
+  usuarioActualNombre = u.nombre || '';
+  cargarSolicitudesAlta();
   toggleOrigen();
   cargarSocios();
   cargarSolicitudes();
@@ -589,7 +601,7 @@ async function cargarSuscripcionesRiesgo(){
   const card=document.getElementById('cardSuscripcionesRiesgo');
   const cont=document.getElementById('listaSuscripcionesRiesgo');
   const {data:socios,error}=await sb.from('circulo_membresias')
-    .select('id,nombre,empresa,especialidad,plan,numserie_aspel,estado')
+    .select('id,nombre,empresa,especialidad,plan,numserie_aspel,estado,autorizada_sin_reporte_hasta')
     .eq('origen','vinculacion_aspel')
     .neq('estado','cancelada')
     .not('numserie_aspel','is',null);
@@ -604,6 +616,8 @@ async function cargarSuscripcionesRiesgo(){
 
   const hoyISO=new Date().toISOString().slice(0,10);
   const enRiesgo=socios.map(s=>{
+    // Autorizados por Dirección sin reporte: no son "riesgo" mientras dure el plazo (siguiente corte).
+    if(!susPorSerie[s.numserie_aspel] && s.autorizada_sin_reporte_hasta && hoyISO<=s.autorizada_sin_reporte_hasta) return null;
     const motivo=motivoRiesgoSuscripcion(susPorSerie[s.numserie_aspel],hoyISO);
     return motivo?{...s,motivo}:null;
   }).filter(Boolean);
@@ -616,6 +630,65 @@ async function cargarSuscripcionesRiesgo(){
       <button type="button" class="btn secondary small" onclick="abrirEdicion('${s.id}')">Revisar socio</button>
     </div>
   `).join('');
+}
+
+// ── Solicitudes de alta que llegan de Ventas (Jp, 2026-11-09) ──
+async function cargarSolicitudesAlta(){
+  const card=document.getElementById('cardSolicitudesAlta');
+  const cont=document.getElementById('listaSolicitudesAlta');
+  if(!card||!cont) return;
+  const {data,error}=await sb.from('circulo_altas_solicitud').select('*').eq('estado','pendiente_capacitacion').order('created_at');
+  if(error||!data||!data.length){ card.classList.add('hidden'); cont.innerHTML=''; return; }
+  card.classList.remove('hidden');
+  cont.innerHTML=data.map(s=>`
+    <div id="solAlta_${s.id}" style="display:flex;justify-content:space-between;align-items:center;gap:10px;background:#eefaf9;border:1px solid var(--teal);border-radius:10px;padding:10px 14px;font-size:12.5px;margin-top:8px">
+      <span><strong>${s.nombre}</strong> · ${s.email}${s.telefono?' · '+s.telefono:''}<br>
+        ${s.empresa||''} — ${s.especialidad} · serie ${s.numserie||'—'}<br>
+        <span style="color:var(--text3)">${s.via==='direccion'?'✅ Autorizada por Dirección'+(s.autorizado_por_nombre?' ('+s.autorizado_por_nombre+')':'')+' — la suscripción aún no sale en reportes':'✅ Suscripción validada por el sistema'} · solicitó ${s.solicitado_por_nombre||'—'}${s.notas?' · Nota: '+s.notas:''}</span></span>
+      <span style="display:flex;gap:6px;flex-shrink:0">
+        <button type="button" class="btn small" onclick="prellenarDesdeSolicitud('${s.id}')">Revalidar y dar de alta</button>
+        <button type="button" class="btn secondary small" onclick="rechazarSolicitudAlta('${s.id}')">Rechazar</button>
+      </span>
+    </div>`).join('');
+}
+async function prellenarDesdeSolicitud(id){
+  const {data:s,error}=await sb.from('circulo_altas_solicitud').select('*').eq('id',id).maybeSingle();
+  if(error||!s||s.estado!=='pendiente_capacitacion'){ alert('Esta solicitud ya no está pendiente.'); cargarSolicitudesAlta(); return; }
+  solicitudAltaActual=s;
+  document.getElementById('nOrigen').value='vinculacion_aspel';
+  toggleOrigen();
+  document.getElementById('nEspecialidad').value=s.especialidad;
+  await seleccionarEmpresa(s.cliente_cartera_id,s.empresa||'');
+  document.getElementById('nEspecialidad').value=s.especialidad;
+  actualizarCosto();
+  document.getElementById('nNombre').value=s.nombre;
+  document.getElementById('nEmail').value=s.email;
+  document.getElementById('nTelefono').value=s.telefono||'';
+  document.getElementById('nNumSerie').value=s.numserie||'';
+  document.getElementById('nNotas').value=s.notas||'';
+  document.getElementById('bannerSolicitudAlta')?.remove();
+  const ban=document.createElement('div');
+  ban.id='bannerSolicitudAlta';
+  ban.style.cssText='background:#eefaf9;border:1px solid var(--teal);border-radius:10px;padding:8px 12px;font-size:12.5px;margin-bottom:12px';
+  ban.innerHTML=`Atendiendo la solicitud de <strong>${s.solicitado_por_nombre||'Ventas'}</strong> para ${s.nombre}. Al crear la membresía la solicitud se cierra sola. <a href="#" onclick="solicitudAltaActual=null;document.getElementById('bannerSolicitudAlta').remove();return false;" style="margin-left:6px">Soltar solicitud</a>`;
+  const fila=document.getElementById('nEmpresa').closest('.row');
+  fila.parentNode.insertBefore(ban,fila);
+  if(s.via==='automatica'){
+    await validarSerie(); // revalida contra Cartera justo ahora
+  }else{
+    // Autorizada por Dirección: la serie aún no sale en reportes, no hay nada que validar contra Cartera.
+    clienteCarteraIdActual=s.cliente_cartera_id;
+    serieValidadaActual=s.numserie;
+    document.getElementById('serieMsg').innerHTML='<span class="serieok">Autorizada por Dirección ✓ — la suscripción aún no aparece en reportes; el sistema la revisará en el siguiente corte.</span>';
+  }
+  ban.scrollIntoView({behavior:'smooth',block:'center'});
+}
+async function rechazarSolicitudAlta(id){
+  const motivo=prompt('Motivo por el que no se puede dar de alta (lo verá Ventas):');
+  if(motivo===null) return;
+  const {error}=await sb.from('circulo_altas_solicitud').update({estado:'rechazada',motivo_rechazo:motivo||'Sin motivo',resuelto_por_nombre:usuarioActualNombre,updated_at:new Date().toISOString()}).eq('id',id).eq('estado','pendiente_capacitacion');
+  if(error){ alert('No se pudo rechazar: '+error.message); return; }
+  cargarSolicitudesAlta();
 }
 
 async function crearMembresia(){
@@ -669,6 +742,8 @@ async function crearMembresia(){
     fecha_activacion: document.getElementById('nFechaActivacion').value||null,
     fecha_vencimiento: document.getElementById('nFechaVencimiento').value||null,
     notas: document.getElementById('nNotas').value.trim()||null,
+    solicitud_alta_id: solicitudAltaActual ? solicitudAltaActual.id : null,
+    autorizada_sin_reporte_hasta: (solicitudAltaActual && solicitudAltaActual.via==='direccion') ? new Date(Date.now()+45*86400000).toISOString().slice(0,10) : null,
     codigo_acceso: generarCodigo(),
     estado: 'activa',
   };
@@ -677,6 +752,15 @@ async function crearMembresia(){
 
   const {data,error}=await sb.from('circulo_membresias').insert(payload).select().single();
   if(error){ msg.innerHTML=`<div class="msg err">No se pudo crear: ${error.message}</div>`; return; }
+  // Jp, 2026-11-09: si venía de una solicitud de Ventas, queda cerrada y ligada a la membresía.
+  if(solicitudAltaActual){
+    try{
+      await sb.from('circulo_altas_solicitud').update({estado:'dada_de_alta',membresia_id:data.id,resuelto_por_nombre:usuarioActualNombre,updated_at:new Date().toISOString()}).eq('id',solicitudAltaActual.id);
+    }catch(eSol){ /* la membresía ya quedó creada; solo falló cerrar la solicitud */ }
+    solicitudAltaActual=null;
+    const ban=document.getElementById('bannerSolicitudAlta'); if(ban) ban.remove();
+    cargarSolicitudesAlta();
+  }
 
   // Jp, 2026-10-20: todo socio del Círculo también debe existir como
   // "alumno" en Academia (App VENTAS) — así, cuando pida su acceso al

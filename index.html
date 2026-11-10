@@ -12161,20 +12161,189 @@ async function abrirFichaClienteModal(clienteId){
 // sin importar el estado, para que se vea también si alguno quedó
 // suspendido o cancelado — no solo los activos.
 const CIRCULO_ESTADO_COLOR={activa:'#27AE60',suspendida:'var(--gold)',cancelada:'var(--red)'};
+// ── Solicitud de alta en Círculo Innovaci desde la cuenta (Jp, 2026-11-09) ──
+// Ventas solicita el alta desde la ficha de la cuenta. El sistema valida la serie (vigente y pagada, de la
+// cuenta o sus subcuentas): si cumple, la solicitud pasa DIRECTO a Capacitación. Si la suscripción aún no
+// aparece en los reportes (cambio reciente a Innovaci), la solicitud va primero a Dirección y, al autorizarse,
+// pasa a Capacitación. La compra directa NO usa este botón: sigue por Facturación.
+const CIRC_SOL_ESTADO={pendiente_direccion:['⏳ Esperando autorización de Dirección','#B8740A'],pendiente_capacitacion:['📨 Con Capacitación','#1A7FA0'],dada_de_alta:['✅ Dada de alta','#27AE60'],rechazada:['❌ Rechazada','#C0392B']};
+async function circSolSeriesElegibles(clienteId,especialidad){
+  const {data:subs}=await sb.from('clientes_cartera').select('id').eq('cliente_padre_id',clienteId);
+  const ids=[clienteId,...(subs||[]).map(s=>s.id)];
+  const {data}=await sb.from('suscripciones_cartera')
+    .select('numserie,periodicidad,producto,estado,fecha_proxima_renovacion,alerta_posible_perdida,cliente_id')
+    .in('cliente_id',ids).eq('tipo_producto','suscripcion').ilike('producto',especialidad+'%');
+  const hoy=new Date().toISOString().slice(0,10);
+  return (data||[]).filter(s=>(s.periodicidad||'').toLowerCase()!=='mensual'&&!s.alerta_posible_perdida&&s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=hoy&&['reclamada','renovada'].includes(s.estado));
+}
+async function abrirSolicitudCirculo(clienteId){
+  const c=(window._cartClientes||[]).find(x=>x.id===clienteId);
+  let razon=c?.razon_social;
+  if(!razon){const {data}=await sb.from('clientes_cartera').select('razon_social').eq('id',clienteId).maybeSingle();razon=data?.razon_social||'';}
+  window._circSolCtx={clienteId,razon};
+  const html=`
+    <div style="font-size:12px;color:var(--text3);margin-bottom:10px;">Cuenta: <b style="color:var(--navy);">${solEsc(razon)}</b>. Esto es solo para socios que entran por una <b>suscripción Aspel con nosotros</b>. Si es compra directa de la membresía, se vende por Facturación como cualquier otro curso.</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      ${fld('Especialidad',`<select id="csEsp" onchange="circSolCargarSeries()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;"><option>NOI</option><option>COI</option><option>SAE</option></select>`)}
+      ${fld('Plan','<input value="Socio" disabled style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:#f7f8f9;">')}
+      ${fld('Nombre completo del socio',inp('csNombre'))}
+      ${fld('Correo',inp('csEmail','email'))}
+      ${fld('Teléfono',inp('csTel'))}
+    </div>
+    <div id="csSeries" style="margin-top:12px;"></div>
+    <div style="margin-top:10px;">${fld('Nota (opcional)','<textarea id="csNotas" rows="2" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:Inter,sans-serif;"></textarea>')}</div>
+    <div id="csMsg" style="margin-top:10px;font-size:12px;"></div>`;
+  mkModal('modalCircSol','➕ Solicitar alta en Círculo Innovaci',html,'enviarSolicitudCirculo','Enviar solicitud','640px');
+  circSolCargarSeries();
+}
+async function circSolCargarSeries(){
+  const box=document.getElementById('csSeries'); if(!box) return;
+  const esp=document.getElementById('csEsp').value;
+  box.innerHTML='<div style="font-size:12px;color:var(--text3);">Buscando suscripciones vigentes y pagadas…</div>';
+  const el=await circSolSeriesElegibles(window._circSolCtx.clienteId,esp);
+  window._circSolElegibles=el;
+  const manual=`<label style="display:flex;gap:6px;align-items:flex-start;font-size:12px;margin-top:8px;cursor:pointer;"><input type="radio" name="csModo" value="direccion" onchange="circSolModo()" ${el.length?'':'checked'}> <span><b>Mi suscripción aún no aparece en los reportes</b> (el cliente cambió recientemente con nosotros). Requiere autorización de Dirección.</span></label>`;
+  box.innerHTML=(el.length?`<div style="font-size:12px;font-weight:600;color:var(--navy);margin-bottom:4px;">✅ Suscripciones ${esp} vigentes y pagadas de esta cuenta</div>
+    ${el.map((s,i)=>`<label style="display:flex;gap:8px;align-items:center;font-size:12px;padding:7px 10px;border:1px solid var(--teal);background:#eefaf9;border-radius:8px;margin-bottom:5px;cursor:pointer;"><input type="radio" name="csModo" value="auto:${i}" onchange="circSolModo()" ${i===0?'checked':''}> <span>${solEsc(s.producto||esp)} · serie <b>${solEsc(s.numserie)}</b> (${solEsc(s.periodicidad||'—')}) · vence ${fmtFecha(s.fecha_proxima_renovacion)}${s.cliente_id!==window._circSolCtx.clienteId?' <i style="color:var(--text3);">— subcuenta</i>':''}</span></label>`).join('')}`
+    :`<div style="font-size:12px;background:#fff4e0;border:1px solid #F5A623;border-radius:8px;padding:8px 12px;">Esta cuenta no tiene una suscripción ${esp} semestral/anual vigente y pagada en el sistema.</div>`)+manual+
+    `<div id="csDirBox" style="display:${el.length?'none':'block'};margin-top:8px;">
+      ${fld('Número de serie Aspel',inp('csSerieManual'))}
+      <div style="margin-top:8px;">${fld('Evidencia (obligatoria): fecha de cambio, folio, comprobante…','<textarea id="csEvidencia" rows="2" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:Inter,sans-serif;"></textarea>')}</div>
+    </div>`;
+}
+function circSolModo(){
+  const v=document.querySelector('input[name=csModo]:checked')?.value||'';
+  const d=document.getElementById('csDirBox'); if(d) d.style.display=v==='direccion'?'block':'none';
+}
+async function enviarSolicitudCirculo(){
+  if(window._circSolEnviando) return;
+  const g=id=>(document.getElementById(id)?.value||'').trim();
+  const msg=document.getElementById('csMsg');
+  const nombre=g('csNombre'),email=g('csEmail').toLowerCase(),tel=g('csTel'),esp=g('csEsp');
+  if(!nombre||!/^\S+@\S+\.\S+$/.test(email)){msg.innerHTML='<span style="color:var(--red);">Captura el nombre y un correo válido del socio.</span>';return;}
+  const modo=document.querySelector('input[name=csModo]:checked')?.value||'';
+  let numserie,via,evidencia=null;
+  if(modo.startsWith('auto:')){via='automatica';numserie=window._circSolElegibles[+modo.slice(5)].numserie;}
+  else if(modo==='direccion'){
+    via='direccion';numserie=g('csSerieManual').toUpperCase();evidencia=g('csEvidencia');
+    if(!numserie||!evidencia){msg.innerHTML='<span style="color:var(--red);">Para solicitar autorización captura la serie y la evidencia.</span>';return;}
+  }else{msg.innerHTML='<span style="color:var(--red);">Elige una suscripción o la opción de autorización de Dirección.</span>';return;}
+  const {data:dup}=await sb.from('circulo_altas_solicitud').select('id').eq('email',email).eq('especialidad',esp).in('estado',['pendiente_direccion','pendiente_capacitacion']).limit(1);
+  if(dup&&dup.length){msg.innerHTML='<span style="color:var(--red);">Ya hay una solicitud abierta para ese correo y especialidad.</span>';return;}
+  window._circSolEnviando=true;
+  const btn=[...document.querySelectorAll('#modalCircSol button')].find(b=>/Enviar solicitud/.test(b.textContent));
+  if(btn){btn.disabled=true;btn.textContent='Enviando…';}
+  msg.innerHTML='<span style="color:var(--text3);">Guardando la solicitud…</span>';
+  try{
+    const ctx=window._circSolCtx;
+    const fila={cliente_cartera_id:ctx.clienteId,empresa:ctx.razon,especialidad:esp,nombre,email,telefono:tel||null,numserie,via,evidencia,notas:g('csNotas')||null,
+      estado:via==='automatica'?'pendiente_capacitacion':'pendiente_direccion',solicitado_por:currentUser?.id||null,solicitado_por_nombre:userProfile?.nombre||null};
+    const {data:ins,error}=await sb.from('circulo_altas_solicitud').insert(fila).select('id').single();
+    if(error) throw error;
+    let extra='';
+    if(via==='automatica'){
+      msg.innerHTML='<span style="color:var(--text3);">Avisando a Capacitación…</span>';
+      const t=await circSolAvisarTelegram(ins.id);
+      extra=t.ok?'Se avisó a Capacitación (app y Telegram).':'Capacitación la verá en su bandeja; el aviso por Telegram no salió ('+solEsc(t.error||'')+').';
+    }else extra='Dirección la verá en su aviso. Cuando la autorice pasará a Capacitación.';
+    document.getElementById('modalCircSol')?.remove();
+    mkModal('modalCircSolOk','✅ Solicitud enviada',`<div style="font-size:13px;line-height:1.6;">${via==='automatica'?'La suscripción está vigente y pagada: <b>la solicitud pasó directo a Capacitación</b>.':'<b>La solicitud espera la autorización de Dirección.</b>'}<br><span style="font-size:12px;color:var(--text3);">${extra}</span></div>`,null,'Cerrar');
+    try{ fcCargarCirculoInnovaci(ctx.clienteId); }catch(_){}
+  }catch(e){
+    msg.innerHTML=`<span style="color:var(--red);">No se pudo enviar: ${solEsc(e.message||e)}</span>`;
+    if(btn){btn.disabled=false;btn.textContent='Enviar solicitud';}
+  }finally{window._circSolEnviando=false;}
+}
+async function circSolAvisarTelegram(id,reenviar){
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const r=await fetch('/api/circulo-solicitud-avisar',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+sess?.session?.access_token},body:JSON.stringify({solicitud_id:id,reenviar:!!reenviar})});
+    return await r.json().catch(()=>({ok:false,error:'Respuesta inválida'}));
+  }catch(e){return {ok:false,error:e.message};}
+}
+// Dirección: autorizar / rechazar
+async function abrirAutorizacionesCirculo(){
+  const {data}=await sb.from('circulo_altas_solicitud').select('*').eq('estado','pendiente_direccion').order('created_at');
+  const l=data||[];
+  const html=`<div style="font-size:12px;color:var(--text3);margin-bottom:10px;">La suscripción de estas solicitudes aún no aparece en los reportes de Aspel. Al autorizar, pasan a Capacitación (aviso en la app y Telegram) y el sistema las vuelve a revisar en el siguiente corte.</div>
+  <div style="max-height:60vh;overflow-y:auto;">${l.length?l.map(s=>`<div id="caFila_${s.id}" style="padding:10px 0;border-bottom:1px solid var(--border);">
+    <div style="font-size:12.5px;font-weight:700;color:var(--navy);">${solEsc(s.empresa||'')}</div>
+    <div style="font-size:11.5px;margin:3px 0;">${solEsc(s.nombre)} · ${solEsc(s.email)} · <b>${solEsc(s.especialidad)}</b> · serie <b>${solEsc(s.numserie||'')}</b></div>
+    <div style="font-size:11px;color:var(--text3);">Evidencia: ${solEsc(s.evidencia||'—')}<br>Solicitó: ${solEsc(s.solicitado_por_nombre||'—')} · ${fmtFecha((s.created_at||'').slice(0,10))}${s.notas?'<br>Nota: '+solEsc(s.notas):''}</div>
+    <div style="margin-top:6px;display:flex;gap:8px;"><button onclick="circSolAutorizar('${s.id}',true)" style="padding:6px 14px;background:var(--teal);color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">✓ Autorizar y pasar a Capacitación</button>
+    <button onclick="circSolAutorizar('${s.id}',false)" style="padding:6px 14px;background:#fff;color:var(--red);border:1px solid var(--red);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">Rechazar</button></div>
+    <div id="caMsg_${s.id}" style="font-size:11px;margin-top:4px;"></div></div>`).join(''):'<div style="padding:20px;text-align:center;color:var(--text3);">Nada por autorizar.</div>'}</div>`;
+  mkModal('modalAutCirc','🔐 Solicitudes de Círculo por autorizar',html,null,'Cerrar',true);
+}
+async function circSolAutorizar(id,ok){
+  const m=document.getElementById('caMsg_'+id);
+  let motivo=null;
+  if(!ok){motivo=prompt('Motivo del rechazo (se le muestra al vendedor):');if(motivo===null) return;}
+  const fila=document.getElementById('caFila_'+id);
+  fila?.querySelectorAll('button').forEach(b=>b.disabled=true);
+  m.innerHTML='<span style="color:var(--text3);">Guardando…</span>';
+  const patch=ok?{estado:'pendiente_capacitacion',autorizado_por:currentUser?.id||null,autorizado_por_nombre:userProfile?.nombre||null,autorizado_en:new Date().toISOString(),updated_at:new Date().toISOString()}
+               :{estado:'rechazada',motivo_rechazo:motivo||'Sin motivo',autorizado_por_nombre:userProfile?.nombre||null,autorizado_en:new Date().toISOString(),updated_at:new Date().toISOString()};
+  const {error}=await sb.from('circulo_altas_solicitud').update(patch).eq('id',id).eq('estado','pendiente_direccion');
+  if(error){m.innerHTML=`<span style="color:var(--red);">${solEsc(error.message)}</span>`;fila?.querySelectorAll('button').forEach(b=>b.disabled=false);return;}
+  if(ok){m.innerHTML='<span style="color:var(--text3);">Avisando a Capacitación…</span>';const t=await circSolAvisarTelegram(id);
+    m.innerHTML=t.ok?'<span style="color:var(--green,#27AE60);">✅ Autorizada. Capacitación avisada.</span>':`<span style="color:#B8740A;">Autorizada. Telegram no salió (${solEsc(t.error||'')}), pero Capacitación la ve en su bandeja.</span>`;}
+  else m.innerHTML='<span style="color:var(--red);">Rechazada.</span>';
+  setTimeout(()=>{fila?.remove();circSolTick();},1500);
+}
+// Avisos emergentes (mismo patrón que Shopify/Academia): Dirección ve lo por autorizar; Capacitación y Dirección ven lo que espera alta.
+let _circSolVistos=null;
+async function circSolTick(){
+  try{
+    if(typeof currentUser==='undefined'||!currentUser||!userProfile) return;
+    const rol=userProfile.rol;
+    if(!['academia','director'].includes(rol)) return;
+    const estados=rol==='director'?['pendiente_direccion','pendiente_capacitacion']:['pendiente_capacitacion'];
+    const {data,error}=await sb.from('circulo_altas_solicitud').select('id,estado,nombre,empresa').in('estado',estados).limit(200);
+    if(error||!data) return;
+    const ids=new Set(data.map(x=>x.id));
+    const nuevos=_circSolVistos===null?data:data.filter(x=>!_circSolVistos.has(x.id));
+    if(nuevos.length) circSolNotificar(nuevos,_circSolVistos===null,data);
+    _circSolVistos=ids;
+  }catch(e){}
+}
+function circSolNotificar(lista,resumen,todos){
+  const aut=lista.filter(x=>x.estado==='pendiente_direccion').length;
+  const cap=lista.filter(x=>x.estado==='pendiente_capacitacion').length;
+  const partes=[];
+  if(aut) partes.push(`${aut} por autorizar`);
+  if(cap) partes.push(`${cap} por dar de alta`);
+  const txt=`Círculo Innovaci: ${resumen?'hay ':'nueva solicitud — '}${partes.join(' · ')}`;
+  try{
+    document.getElementById('circSolToast')?.remove();
+    const t=document.createElement('div');t.id='circSolToast';
+    t.style.cssText='position:fixed;top:78px;right:18px;z-index:100002;background:#0d3b66;color:#fff;border-radius:12px;padding:12px 16px;box-shadow:0 8px 24px rgba(0,0,0,.28);max-width:340px;font-size:13px;cursor:pointer;border-left:5px solid #1A7FA0;';
+    t.innerHTML=`<div style="font-weight:700;margin-bottom:3px;">🌐 ${solEsc(txt)}</div><div style="font-size:11px;opacity:.85;">${aut?'Clic para autorizar':'Clic para abrir Círculo Admin'}</div>`;
+    t.onclick=()=>{t.remove();if(aut&&userProfile?.rol==='director') abrirAutorizacionesCirculo(); else window.open('circulo-admin.html','_blank');};
+    document.body.appendChild(t);setTimeout(()=>t.remove(),20000);
+  }catch(e){}
+  try{const C=window.AudioContext||window.webkitAudioContext;if(C){const c=new C(),o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.type='sine';o.frequency.value=740;g.gain.setValueAtTime(.15,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.5);o.start();o.stop(c.currentTime+.5);}}catch(e){}
+  try{if('Notification' in window&&Notification.permission==='granted') new Notification('🌐 Círculo Innovaci',{body:txt});}catch(e){}
+}
+if(!window._circSolTimer){window._circSolTimer=setInterval(circSolTick,30000);setTimeout(circSolTick,8000);}
+
 async function fcCargarCirculoInnovaci(clienteId){
   const box=document.getElementById('fcCirculoBox');
   if(!box) return;
+  const {data:solsC}=await sb.from('circulo_altas_solicitud').select('*').eq('cliente_cartera_id',clienteId).in('estado',['pendiente_direccion','pendiente_capacitacion','rechazada']).order('created_at',{ascending:false}).limit(10);
+  const encabezadoC=`<div style="display:flex;justify-content:flex-end;margin-bottom:6px;"><button onclick="abrirSolicitudCirculo('${clienteId}')" style="padding:6px 14px;background:var(--teal);color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">➕ Solicitar alta en Círculo</button></div>`+
+    (solsC||[]).map(x=>{const e=CIRC_SOL_ESTADO[x.estado]||[x.estado,'#666'];return `<div style="padding:7px 10px;margin-bottom:5px;border:1px dashed ${e[1]};border-radius:8px;font-size:11.5px;"><b>${solEsc(x.nombre)}</b> · ${solEsc(x.especialidad)} · serie ${solEsc(x.numserie||'')}<br><span style="color:${e[1]};font-weight:700;">${e[0]}</span>${x.estado==='rechazada'&&x.motivo_rechazo?' — '+solEsc(x.motivo_rechazo):''}</div>`;}).join('');
   const {data:socios,error}=await sb.from('circulo_membresias')
     .select('nombre,email,especialidad,plan,estado,numserie_aspel,fecha_activacion,fecha_vencimiento')
     .eq('cliente_cartera_id',clienteId)
     .order('fecha_activacion',{ascending:false});
   if(error){ box.innerHTML=`<div style="font-size:12px;color:var(--red);">No se pudieron cargar (${error.message}).</div>`; return; }
   if(!socios||!socios.length){
-    box.innerHTML=`<div style="font-size:12px;color:var(--text3);font-style:italic;">Esta cuenta no tiene socios de Círculo Innovaci dados de alta.</div>`;
+    box.innerHTML=encabezadoC+`<div style="font-size:12px;color:var(--text3);font-style:italic;">Esta cuenta no tiene socios de Círculo Innovaci dados de alta.</div>`;
     return;
   }
   const ac=(esp)=>esp==='NOI'?{c:'var(--gold)'}:esp==='SAE'?{c:'var(--red)'}:{c:'var(--teal)'};
-  box.innerHTML=`<div style="display:grid;gap:6px;">${socios.map(s=>`
+  box.innerHTML=encabezadoC+`<div style="display:grid;gap:6px;">${socios.map(s=>`
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;background:var(--surface-2,#f8f9fa);border-radius:var(--radsm);font-size:12px;">
       <div>
         <div style="font-weight:600;color:var(--text);">${s.nombre||'—'} <span style="font-weight:400;color:var(--text3);">${s.email||''}</span></div>
