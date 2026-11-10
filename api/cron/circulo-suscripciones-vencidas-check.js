@@ -110,7 +110,7 @@ export default async function handler(req, res) {
     const hoyISO = new Date().toISOString().slice(0, 10);
 
     const socios = await sbGet(
-      `circulo_membresias?origen=eq.vinculacion_aspel&estado=neq.cancelada&numserie_aspel=not.is.null&select=id,nombre,empresa,especialidad,plan,numserie_aspel`
+      `circulo_membresias?origen=eq.vinculacion_aspel&estado=neq.cancelada&numserie_aspel=not.is.null&select=id,nombre,empresa,especialidad,plan,numserie_aspel,autorizada_sin_reporte_hasta`
     );
     if (!socios.length) {
       res.status(200).json({ ok: true, sin_novedades: true });
@@ -127,6 +127,10 @@ export default async function handler(req, res) {
 
     const enRiesgo = socios
       .map((socio) => {
+        // Jp, 2026-11-09: socios autorizados por Dirección porque su suscripción aún no sale en los
+        // reportes — no se avisan como "en riesgo" mientras dure el plazo (hasta el siguiente corte).
+        // Pasado el plazo, si la serie sigue sin aparecer, entran al aviso normal.
+        if (!susPorSerie[socio.numserie_aspel] && socio.autorizada_sin_reporte_hasta && hoyISO <= socio.autorizada_sin_reporte_hasta) return null;
         const motivo = motivoRiesgo(susPorSerie[socio.numserie_aspel], hoyISO);
         return motivo ? { ...socio, motivo } : null;
       })
