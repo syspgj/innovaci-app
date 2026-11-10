@@ -119,6 +119,75 @@ async function vtigerCreate(sessionName, element) {
   return res.result;
 }
 
+// ── Nomenclatura del nombre de la Oportunidad (Jp, 2026-11-10) ─────────────────────────────
+// En el CRM los nombres van en MAYÚSCULAS y con un formato fijo para que Ventas los encuentre:
+//   Póliza:     CLIENTE | POLIZA MI EMPRESA (NOVIEMBRE 2026) | SR
+//   Resguardo:  CLIENTE | RESGUARDO INN 2 - ANUAL (NOVIEMBRE 2026) | NUBE
+//   24/7:       CLIENTE | MEMBRESIA ... (ENERO 2026) | LINEA
+//   Otros:      CLIENTE | PRODUCTO EN MAYUSCULAS
+// El mes/año sale de la fecha prevista de cierre. Sin acentos (como ya están en el CRM), conserva Ñ.
+const MESES = ['ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO','JULIO','AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE'];
+function mayusSinAcentos(t) {
+  return String(t == null ? '' : t)
+    .replace(/ñ/g, '\u0001').replace(/Ñ/g, '\u0001')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toUpperCase().replace(/\u0001/g, 'Ñ')
+    .replace(/\s+/g, ' ').trim();
+}
+function construirNombreOportunidad({ cliente_nombre, producto, tipo_servicio, fecha_prevista, nombre_oportunidad }) {
+  if (!cliente_nombre || !producto) return mayusSinAcentos(nombre_oportunidad || '');
+  const cli = mayusSinAcentos(cliente_nombre);
+  let prod = mayusSinAcentos(producto);
+  const f = fecha_prevista ? new Date(String(fecha_prevista).slice(0, 10) + 'T12:00:00') : new Date();
+  const mesAnio = `(${MESES[(isNaN(f) ? new Date() : f).getMonth()]} ${(isNaN(f) ? new Date() : f).getFullYear()})`;
+  const esPoliza = tipo_servicio === 'Póliza' || tipo_servicio === 'Resguardo';
+  if (esPoliza) {
+    const esResguardo = tipo_servicio === 'Resguardo' || /^(RESGUARDO|PERSONALIZADO)\b/.test(prod);
+    if (esResguardo) {
+      prod = prod.replace(/\s*\(.*?\)\s*$/, '');
+      return `${cli} | ${prod} ${mesAnio} | NUBE`;
+    }
+    prod = prod.replace(/^POLIZA\s+/, '').replace(/\s*\(.*?\)\s*$/, '');
+    return `${cli} | POLIZA ${prod} ${mesAnio} | SR`;
+  }
+  if (tipo_servicio === '24/7') {
+    prod = prod.replace(/\s*\|\s*LINEA\s*$/, '');
+    return /\(\s*[A-ZÑ]+\s+\d{4}\s*\)/.test(prod) ? `${cli} | ${prod} | LINEA` : `${cli} | ${prod} ${mesAnio} | LINEA`;
+  }
+  return `${cli} | ${prod}`;
+}
+
+// ── Contacto de la Oportunidad (campos reales del CRM, tomados de oportunidades ya existentes) ──
+//   cf_970 = Vendedor (texto) · cf_982 = Correo electrónico · cf_980 / cf_984 = Teléfono
+//   contact_id = "Nombre del Contacto" (relación a un Contacto del CRM, de la misma Cuenta)
+async function vtigerQuery(sessionName, q) {
+  const url = `${VTIGER_BASE}?operation=query&sessionName=${encodeURIComponent(sessionName)}&query=${encodeURIComponent(q)}`;
+  const r = await fetch(url).then((x) => x.json());
+  return r.success ? r.result || [] : [];
+}
+const esc1 = (t) => String(t).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+// Devuelve el id del Contacto en el CRM: busca por correo dentro de la misma Cuenta (o por nombre exacto); si no existe, lo crea.
+async function asegurarContactoCrm(sessionName, { crmAccountId, nombre, correo, telefono, assigned_user_id }) {
+  if (!nombre) return null;
+  if (correo) {
+    const ya = await vtigerQuery(sessionName, `select id from Contacts where email='${esc1(correo)}' and account_id='${crmAccountId}' limit 1;`);
+    if (ya[0] && ya[0].id) return ya[0].id;
+  }
+  const partes = nombre.trim().split(/\s+/);
+  const element = {
+    lastname: partes.length > 1 ? partes.slice(1).join(' ') : partes[0],
+    account_id: crmAccountId,
+    assigned_user_id,
+  };
+  if (partes.length > 1) element.firstname = partes[0];
+  if (correo) element.email = correo;
+  if (telefono) { element.mobile = telefono; element.phone = telefono; }
+  const body = new URLSearchParams({ operation: 'create', sessionName, elementType: 'Contacts', element: JSON.stringify(element) });
+  const res = await fetch(VTIGER_BASE, { method: 'POST', body }).then((r) => r.json());
+  if (!res.success) throw new Error('no se pudo crear el Contacto: ' + JSON.stringify(res.error || res));
+  return res.result.id;
+}
+
 async function validarUsuarioSupabase(accessToken) {
   if (!accessToken) return null;
   const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
@@ -168,6 +237,47 @@ export default async function handler(req, res) {
     return res.status(401).json({ ok: false, error: 'sesión inválida — vuelve a iniciar sesión' });
   }
 
+  // ── Modo corrección (Jp, 2026-11-10): Oportunidades ya creadas (p. ej. OP6511) con nombre viejo y sin contacto.
+  // Vuelve a calcular el nombre con la nomenclatura y reenvía contacto/vendedor desde la fila de Proyección.
+  if (req.body && req.body.corregir_pipeline_id) {
+    try {
+      const fila = (await supabaseGet(`pipeline_vendedor?id=eq.${encodeURIComponent(req.body.corregir_pipeline_id)}&select=cliente,producto,tipo_servicio,fecha_prevista,contacto_nombre,contacto_correo,contacto_telefono,usuario_id,cliente_cartera_id,oportunidad_crm_id`))[0];
+      if (!fila || !fila.oportunidad_crm_id) return res.status(400).json({ ok: false, error: 'La negociación no tiene Oportunidad en el CRM' });
+      const opp = (await supabaseGet(`oportunidades_crm?id=eq.${fila.oportunidad_crm_id}&select=id,crm_potentialid,crm_folio`))[0];
+      if (!opp || !opp.crm_potentialid) return res.status(400).json({ ok: false, error: 'No encontré la Oportunidad en el espejo del CRM' });
+      const cuenta = (await supabaseGet(`clientes_cartera?id=eq.${encodeURIComponent(fila.cliente_cartera_id)}&select=num_cliente`))[0];
+      const cuentaCrm = cuenta && (await supabaseGet(`stg_cuentas_crm_raw?account_no=eq.${encodeURIComponent(cuenta.num_cliente)}&select=crm_record_id`))[0];
+      const vend = (await supabaseGet(`usuarios?id=eq.${encodeURIComponent(fila.usuario_id)}&select=crm_user_id,nombre`))[0];
+      const tipoN = TIPOS_SERVICIO_PERMITIDOS.includes(fila.tipo_servicio) ? fila.tipo_servicio : undefined;
+      const nombreNuevo = construirNombreOportunidad({ cliente_nombre: fila.cliente, producto: fila.producto, tipo_servicio: tipoN, fecha_prevista: fila.fecha_prevista });
+      const sessionName = await vtigerLogin();
+      const rec = await fetch(`${VTIGER_BASE}?operation=retrieve&sessionName=${encodeURIComponent(sessionName)}&id=${encodeURIComponent(opp.crm_potentialid)}`).then((r) => r.json());
+      if (!rec.success) throw new Error('retrieve falló: ' + JSON.stringify(rec));
+      const cambios = { potentialname: nombreNuevo };
+      const avisos = [];
+      if (vend && vend.nombre) cambios.cf_970 = vend.nombre;
+      if (fila.contacto_correo) cambios.cf_982 = fila.contacto_correo;
+      if (fila.contacto_telefono) { cambios.cf_980 = fila.contacto_telefono; cambios.cf_984 = fila.contacto_telefono; }
+      if (fila.contacto_nombre && cuentaCrm && cuentaCrm.crm_record_id) {
+        try {
+          const cid = await asegurarContactoCrm(sessionName, { crmAccountId: cuentaCrm.crm_record_id, nombre: fila.contacto_nombre, correo: fila.contacto_correo, telefono: fila.contacto_telefono, assigned_user_id: (vend && vend.crm_user_id) || VTIGER_USUARIO_RESPALDO });
+          if (cid) cambios.contact_id = cid;
+        } catch (e) { avisos.push('Contacto: ' + String((e && e.message) || e)); }
+      }
+      const upd = async (extra) => fetch(VTIGER_BASE, { method: 'POST', body: new URLSearchParams({ operation: 'update', sessionName, element: JSON.stringify({ ...rec.result, ...extra }) }) }).then((r) => r.json());
+      let r1 = await upd(cambios);
+      if (!r1.success) {
+        avisos.push('El CRM rechazó los campos de contacto/vendedor: ' + JSON.stringify(r1.error || r1).slice(0, 300));
+        r1 = await upd({ potentialname: nombreNuevo });
+      }
+      if (!r1.success) return res.status(200).json({ ok: false, error: 'El CRM rechazó el cambio: ' + JSON.stringify(r1.error || r1).slice(0, 300) });
+      await fetch(`${SUPABASE_URL}/rest/v1/oportunidades_crm?id=eq.${opp.id}`, { method: 'PATCH', headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`, 'Content-Type': 'application/json', Prefer: 'return=minimal' }, body: JSON.stringify({ nombre_oportunidad: nombreNuevo }) });
+      return res.status(200).json({ ok: true, folio: opp.crm_folio, nombre_oportunidad: nombreNuevo, enviado: Object.keys(cambios), avisos });
+    } catch (e) {
+      return res.status(500).json({ ok: false, error: String((e && e.message) || e) });
+    }
+  }
+
   const {
     cliente_cartera_id,
     nombre_oportunidad,
@@ -177,6 +287,11 @@ export default async function handler(req, res) {
     fecha_prevista,
     vendedor_usuario_id,
     tipo_servicio,
+    cliente_nombre,
+    producto,
+    contacto_nombre,
+    contacto_correo,
+    contacto_telefono,
   } = req.body || {};
 
   if (!cliente_cartera_id || !nombre_oportunidad || !vendedor_usuario_id) {
@@ -185,7 +300,10 @@ export default async function handler(req, res) {
   if (fase_venta !== undefined && !FASES_PERMITIDAS.includes(fase_venta)) {
     return res.status(400).json({ ok: false, error: 'fase_venta no reconocida: ' + fase_venta });
   }
-  if (tipo_servicio !== undefined && tipo_servicio !== null && tipo_servicio !== '' && !TIPOS_SERVICIO_PERMITIDOS.includes(tipo_servicio)) {
+  // 'Resguardo' lo manda Proyección para pólizas de resguardo: solo afecta al nombre, no al campo Tipo de Servicio del CRM.
+  const tipoParaNombre = tipo_servicio;
+  const tipoCrm = tipo_servicio === 'Resguardo' ? 'Póliza' : tipo_servicio;
+  if (tipoCrm !== undefined && tipoCrm !== null && tipoCrm !== '' && !TIPOS_SERVICIO_PERMITIDOS.includes(tipoCrm)) {
     return res.status(400).json({ ok: false, error: 'tipo_servicio no reconocido: ' + tipo_servicio });
   }
 
@@ -211,16 +329,18 @@ export default async function handler(req, res) {
 
     // 2. Vendedor de la app -> su usuario de Vtiger (o Analisis de respaldo).
     const usuarios = await supabaseGet(
-      `usuarios?id=eq.${encodeURIComponent(vendedor_usuario_id)}&select=crm_user_id`
+      `usuarios?id=eq.${encodeURIComponent(vendedor_usuario_id)}&select=crm_user_id,nombre`
     );
     const crmUserId = usuarios[0]?.crm_user_id;
+    const vendedorNombre = usuarios[0]?.nombre || null;
+    const nombreFinal = construirNombreOportunidad({ cliente_nombre, producto, tipo_servicio: tipoParaNombre, fecha_prevista, nombre_oportunidad });
     const asignadoFallback = !crmUserId;
     const assigned_user_id = crmUserId || VTIGER_USUARIO_RESPALDO;
 
     // 3. Crear en Vtiger.
     const sessionName = await vtigerLogin();
     const element = {
-      potentialname: nombre_oportunidad,
+      potentialname: nombreFinal,
       related_to: crmAccountId,
       assigned_user_id,
       sales_stage: fase_venta || 'Prospectando',
@@ -228,8 +348,29 @@ export default async function handler(req, res) {
     };
     if (monto !== undefined && monto !== null) element.amount = String(monto);
     if (fecha_prevista) element.closingdate = fecha_prevista;
-    if (tipo_servicio) element[CAMPO_TIPO_SERVICIO] = tipo_servicio;
-    const creado = await vtigerCreate(sessionName, element);
+    if (tipoCrm) element[CAMPO_TIPO_SERVICIO] = tipoCrm;
+
+    // Datos de contacto y vendedor (Jp, 2026-11-10): antes no se mandaban y la Oportunidad quedaba con esos campos vacíos.
+    const extras = {};
+    const avisos = [];
+    if (vendedorNombre) extras.cf_970 = vendedorNombre;
+    if (contacto_correo) extras.cf_982 = contacto_correo;
+    if (contacto_telefono) { extras.cf_980 = contacto_telefono; extras.cf_984 = contacto_telefono; }
+    if (contacto_nombre) {
+      try {
+        const contactId = await asegurarContactoCrm(sessionName, { crmAccountId, nombre: contacto_nombre, correo: contacto_correo, telefono: contacto_telefono, assigned_user_id });
+        if (contactId) extras.contact_id = contactId;
+      } catch (e) { avisos.push('Contacto: ' + String((e && e.message) || e)); }
+    }
+    let creado;
+    try {
+      creado = await vtigerCreate(sessionName, { ...element, ...extras });
+    } catch (e1) {
+      // Si el CRM rechaza algún campo extra (p. ej. una lista cerrada), se crea igual sin ellos y se avisa.
+      if (!Object.keys(extras).length) throw e1;
+      avisos.push('El CRM rechazó los campos de contacto/vendedor: ' + String((e1 && e1.message) || e1).slice(0, 300));
+      creado = await vtigerCreate(sessionName, element);
+    }
 
     // 4. Espejo en Supabase. Vtiger regresa el registro recién creado
     // completo, incluyendo potential_no (el folio "bonito", ej. "OP6384")
@@ -238,7 +379,7 @@ export default async function handler(req, res) {
     const nuevaFila = await supabaseInsert('oportunidades_crm', {
       crm_potentialid: creado.id,
       crm_folio: creado.potential_no || null,
-      nombre_oportunidad,
+      nombre_oportunidad: nombreFinal,
       monto: monto ?? null,
       fase_venta: fase_venta || 'Prospectando',
       probabilidad: probabilidad ?? 50,
@@ -256,6 +397,8 @@ export default async function handler(req, res) {
       crm_potentialid: creado.id,
       oportunidad_crm_id: nuevaFila.id,
       asignado_fallback: asignadoFallback,
+      nombre_oportunidad: nombreFinal,
+      avisos,
     });
   } catch (err) {
     console.error('crm-crear-oportunidad failed', err);
