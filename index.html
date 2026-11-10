@@ -16346,7 +16346,7 @@ async function renderDirectorResumenBase(){
     // Bono de mediocridad: depto NO cumplió pero el vendedor SÍ (2% sobre servicios)
     const bonoMed=calcComisionMediocridad(tot.svc,svcMeta,deptoAlcanzado);
     const commTotal=ajusteRes.comisionFinal+(bonoMed.aplica?bonoMed.monto:0);
-    return {u,tot,svcMeta,aspelMeta,rate:ajusteRes.tasaFinal,comm:ajusteRes.comisionFinal,tieneAjuste:ajusteRes.tieneAjuste,bonoMed,commTotal};
+    return {u,tot,svcMeta,aspelMeta,rate:ajusteRes.tasaFinal,comm:ajusteRes.comisionFinal,tieneAjuste:ajusteRes.tieneAjuste,bonoMed,commTotal,rAuto,pctExtra,alcanceBono,cAuto,ajusteU,ajusteRes};
   });
   const totalSvc=vData.reduce((s,v)=>s+v.tot.svc,0);
   const totalAspel=vData.reduce((s,v)=>s+v.tot.aspel,0);
@@ -16525,6 +16525,28 @@ async function renderDirectorResumenBase(){
     ${negTeamNum>0?`<div style="font-size:11px;color:var(--text3);padding-top:10px;border-top:1px solid var(--border);">💼 Además, el equipo tiene <b style="color:var(--text);">${negTeamNum} negociación(es) abiertas</b> por un estimado de <b style="color:var(--text);font-family:'JetBrains Mono',monospace;">${fmt(negTeamMonto)}</b> — no están incluidas en la proyección de arriba (solo cuenta ritmo ya cerrado), pero podrían ayudar a cerrar la brecha si avanzan este mes.</div>`:''}
     <div style="font-size:10px;color:var(--text3);margin-top:8px;">Proyección basada en el ritmo diario de venta hasta hoy (${diasTrans} de ${diasHab} días hábiles), extrapolado a los ${diasRest} días restantes. No es una promesa — es una señal temprana para tomar acción si hace falta.</div>
   </div>
+  ${(()=>{
+    const pc=x=>(x*100).toFixed(1)+'%';
+    const esc=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    const cols=vData.map(v=>{
+      const base=v.tot.svc, filas=[];
+      filas.push(['Servicios facturados y cobrados (base)',fmt(base),'']);
+      filas.push(['Tasa por cumplimiento de meta ('+Math.round((base/(v.svcMeta||1))*100)+'% de '+fmt(v.svcMeta)+')',pc(v.rAuto),fmt(base*v.rAuto)]);
+      filas.push(['Bono KPI (alcance '+Math.round((v.alcanceBono||0)*100)+'%)',(v.pctExtra>=0?'+':'')+pc(v.pctExtra||0),fmt(base*(v.pctExtra||0))]);
+      if(v.tieneAjuste) filas.push(['⭐ Ajuste manual'+(v.ajusteRes?.motivo?' — '+esc(v.ajusteRes.motivo):''),v.ajusteU?.tipo_ajuste==='monto_fijo'?'monto fijo':(v.ajusteU?.valor>=0?'+':'')+(v.ajusteU?.valor||0)+' pts',(v.comm-v.cAuto>=0?'+':'')+fmt(v.comm-v.cAuto)]);
+      filas.push(['Comisión por servicios','tasa '+pc(v.rate),fmt(v.comm)]);
+      if(v.bonoMed?.aplica) filas.push(['Bono de la mediocridad (depto no cumplió, tú sí)','2%',fmt(v.bonoMed.monto)]);
+      return `<div class="card" style="padding:14px 16px;flex:1;min-width:320px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;"><div style="font-size:13px;font-weight:700;">${esc(v.u.nombre)}</div><div style="font-size:11px;color:var(--text3);">Aspel: ${fmt(v.tot.aspel)} · IT: ${fmt(v.tot.it||0)}</div></div>
+        <table style="width:100%;border-collapse:collapse;font-size:11.5px;">
+          <thead><tr style="color:var(--text3);font-size:10px;text-transform:uppercase;"><th style="text-align:left;padding:4px 0;">Concepto</th><th style="text-align:right;">Base / tasa</th><th style="text-align:right;">Importe</th></tr></thead>
+          <tbody>${filas.map(f=>`<tr style="border-top:1px solid var(--border);"><td style="padding:5px 0;">${f[0]}</td><td style="text-align:right;font-family:'JetBrains Mono',monospace;">${f[1]}</td><td style="text-align:right;font-family:'JetBrains Mono',monospace;">${f[2]}</td></tr>`).join('')}</tbody>
+          <tfoot><tr style="border-top:2px solid var(--navy);font-weight:700;"><td style="padding:7px 0;" colspan="2">TOTAL A PAGAR</td><td style="text-align:right;font-family:'JetBrains Mono',monospace;color:#27AE60;font-size:13px;">${fmt(v.commTotal)}</td></tr></tfoot>
+        </table>
+      </div>`;
+    }).join('');
+    return `<div style="margin-bottom:18px;"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px;"><div style="font-size:12px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;">🧾 Desglose de comisiones a pagar — ${getNombreMes(currentMonth)} ${currentYear}</div><div style="font-size:13px;font-weight:700;">Total equipo: <span style="color:#27AE60;font-family:'JetBrains Mono',monospace;">${fmt(totalComm)}</span></div></div><div style="display:flex;gap:14px;flex-wrap:wrap;">${cols}</div><div style="font-size:10px;color:var(--text3);margin-top:6px;">Bonos que se pagan aparte (Aspel/Timbres cruzado, Siigo Fiscal, trimestral, Círculo) se detallan en sus propios módulos; usa "Servicios desglosados" en cada tarjeta para ver las facturas que componen la base.</div></div>`;
+  })()}
   <div class="vgrid">${vData.map(v=>{
     const cc=v.rate>=0.10?'#27AE60':v.rate>=0.09?'#00A99D':v.rate>0?'#F5A623':'#E84040';
     const ini=v.u.nombre.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase();
@@ -26103,8 +26125,12 @@ async function abrirFichaEmpleado(empId){
           ${field('Área',emp.area,true,'text','fi_area')}
           ${field('Fecha de ingreso',emp.fecha_ingreso,true,'date','fi_fing')}
           ${field('Fecha de egreso',emp.fecha_egreso,true,'date','fi_feg')}
+          ${field('Nombre',emp.nombre,true,'text','fi_nombre')}
+          <div><div style="font-size:10px;color:var(--text3);font-weight:500;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;">Tipo de pago</div>
+            <select id="fi_tpago" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:12px;box-sizing:border-box;">${Object.keys(TIPO_PAGO_LABELS).map(k=>`<option value="${k}"${emp.tipo_pago===k?' selected':''}>${TIPO_PAGO_LABELS[k]}</option>`).join('')}</select></div>
+          <div><div style="font-size:10px;color:var(--text3);font-weight:500;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;">Estatus</div>
+            <select id="fi_activo" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:5px;font-size:12px;box-sizing:border-box;"><option value="1"${emp.activo?' selected':''}>Activo</option><option value="0"${!emp.activo?' selected':''}>Inactivo</option></select></div>
           ${field('Tipo de nómina',emp.tipo_nomina,false)}
-          ${field('Tipo de pago',TIPO_PAGO_LABELS[emp.tipo_pago]||emp.tipo_pago,false)}
         </div>
       </div>
       <!-- Compensación -->
@@ -26202,12 +26228,15 @@ async function guardarFichaEmpleado(empId){
     telefono:g('fi_tel'),contacto_emergencia:g('fi_emer'),
     puesto:g('fi_puesto'),area:g('fi_area'),
     fecha_ingreso:g('fi_fing')||null,fecha_egreso:g('fi_feg')||null,
-    activo:!g('fi_feg'),
+    nombre:g('fi_nombre')||undefined,
+    tipo_pago:document.getElementById('fi_tpago')?.value||undefined,
+    activo:document.getElementById('fi_activo')?.value==='1'&&!g('fi_feg'),
     sdi,quincenal_bruto:qb,
     aguinaldo:gn('fi_agui')||0,
     banco:g('fi_banco'),clabe:g('fi_clabe'),
     updated_at:new Date().toISOString()
   };
+  if(document.getElementById('fi_activo')?.value==='0'&&!payload.fecha_egreso) payload.fecha_egreso=new Date().toISOString().slice(0,10);
   const {error}=await sb.from('nomina_empleados').update(payload).eq('id',empId);
   if(error){alert('Error: '+error.message);return;}
   document.getElementById('fichaModal')?.remove();
