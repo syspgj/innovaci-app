@@ -6156,6 +6156,7 @@ async function renderCotizador(){
     sb.from('cotizador_cursos_emp').select('*').eq('activo',true).order('orden'),
   ]);
   window._ceTarifas=ceTar||[]; window._ceCursos=ceCursos||[];
+  await c247Cargar();
   // Jp, 2026-11-05: Timbres toma su descuento de Promociones (sección "Timbres y licencias nuevas"), no de la tabla de distribuidor.
   try{
     const hoyP=todayLocal();
@@ -6252,8 +6253,8 @@ function cotizadorPintar(){
   // muestran desde el primero que alcanza hacia los superiores (Jp, 2026-10-26:
   // "si necesita 3, se le muestra Empresarial, pero también se le puede
   // mostrar Corporativo" — para comparar, no solo el exacto).
-  const esTS=producto.slug==='ts-plus', esCE=producto.slug==='curso-empresarial';
-  const planesAplican=(esTS||esCE)?[]:planesProducto.filter(p=>p.capacidad_cubierta==null||p.capacidad_cubierta>=n);
+  const esTS=producto.slug==='ts-plus', esCE=producto.slug==='curso-empresarial', esC247=producto.slug==='cursos-247';
+  const planesAplican=(esTS||esCE||esC247)?[]:planesProducto.filter(p=>p.capacidad_cubierta==null||p.capacidad_cubierta>=n);
   // Jp, 2026-10-26 (4ta ronda): "no pude seleccionar qué paquete se iba a
   // cotizar" — antes se guardaba el primero que aplicaba sin preguntar. Ahora
   // hay botón "Elegir este plan" en cada tarjeta; si no hay nada elegido
@@ -6284,11 +6285,11 @@ function cotizadorPintar(){
       <div style="font-size:12px;color:var(--text3);">${producto.nombre}</div>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="cartera-subtab" onclick="propCirculoAbrir()">📘 PDF Círculo Innovaci</button>
-    ${esDirector?(esCE?`<button class="cartera-subtab" onclick="ceAbrirAdmin()">⚙️ Tarifas y cursos</button>`:esTS?`<button class="cartera-subtab" onclick="tsAbrirImplAdmin()">⚙️ Servicios de implementación</button>`:(pagoUnico?`<span style="font-size:11px;color:var(--text3);align-self:center;">El descuento de Timbres se configura en Promociones ("Timbres y licencias nuevas")</span>`:`<button class="cartera-subtab" onclick="cotizadorAbrirDescuentos()">⚙️ Descuentos de distribuidor</button>`)):''}</div>
+    ${esDirector?(esC247?`<button class="cartera-subtab" onclick="c247AbrirAdmin()">⚙️ Fichas del PDF</button>`:esCE?`<button class="cartera-subtab" onclick="ceAbrirAdmin()">⚙️ Tarifas y cursos</button>`:esTS?`<button class="cartera-subtab" onclick="tsAbrirImplAdmin()">⚙️ Servicios de implementación</button>`:(pagoUnico?`<span style="font-size:11px;color:var(--text3);align-self:center;">El descuento de Timbres se configura en Promociones ("Timbres y licencias nuevas")</span>`:`<button class="cartera-subtab" onclick="cotizadorAbrirDescuentos()">⚙️ Descuentos de distribuidor</button>`)):''}</div>
   </div>
 
-  ${esTS?tsControlesHtml(producto):''}${esCE?ceControlesHtml(producto):''}
-  ${(esTS||esCE)?'':`<div class="card" style="padding:16px 18px;margin-bottom:16px;">
+  ${esTS?tsControlesHtml(producto):''}${esCE?ceControlesHtml(producto):''}${esC247?c247ControlesHtml(producto):''}
+  ${(esTS||esCE||esC247)?'':`<div class="card" style="padding:16px 18px;margin-bottom:16px;">
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;">
       <div>
         <div style="font-size:11px;color:var(--text3);margin-bottom:4px;">${producto.etiqueta_capacidad||'¿Cuántas empresas (RFCs) necesita el cliente?'}</div>
@@ -6334,7 +6335,7 @@ function cotizadorPintar(){
       <button class="cartera-subtab" onclick="cotizadorGuardar(true)">🎯 Guardar y crear oportunidad en Proyección</button>
       <button class="cartera-subtab" style="background:var(--teal);color:#fff;" onclick="propGenerarActual()">📄 Propuesta PDF</button>
     </div>
-    <div style="font-size:10px;color:var(--text3);margin-top:6px;">Plan que se guarda: <b ${(esTS||esCE)?'data-ts-plan':''}>${esCE?((ceCalcular()||{}).titulo||'—'):esTS?((tsCalcular()||{}).titulo||'— elige una opción'):((planesAplican.find(p=>p.id===cotizPlanSeleccionado)||{}).nombre||'—')}</b> · Si no ligas a nadie, queda como cotización de consulta.</div>
+    <div style="font-size:10px;color:var(--text3);margin-top:6px;">Plan que se guarda: <b ${(esTS||esCE||esC247)?'data-ts-plan':''}>${esC247?((c247Calcular()||{}).titulo||'—'):esCE?((ceCalcular()||{}).titulo||'—'):esTS?((tsCalcular()||{}).titulo||'— elige una opción'):((planesAplican.find(p=>p.id===cotizPlanSeleccionado)||{}).nombre||'—')}</b> · Si no ligas a nadie, queda como cotización de consulta.</div>
   </div>
 
   <div class="card" style="padding:16px 18px;margin-top:16px;">
@@ -6342,6 +6343,7 @@ function cotizadorPintar(){
     <div id="cotizListaRecientes"><div style="font-size:12px;color:var(--text3);">Cargando...</div></div>
   </div>`;
   cotizadorCargarRecientes();
+  if(esC247) c247PreciosVivo();
 }
 async function cotizadorCargarRecientes(){
   const cont=document.getElementById('cotizListaRecientes');
@@ -6451,6 +6453,7 @@ async function cotizadorRecienteCrearOportunidad(cotizId){
   window._cotizVinculandoId=cotizId;
   await agregarFilaPipe();
   const inProducto=document.getElementById('pProducto'), inMonto=document.getElementById('pMonto');
+  if(producto.slug==='cursos-247'){ const pt=document.getElementById('pTipo'); if(pt){ pt.value='24/7'; if(typeof catProyPintar==='function') catProyPintar(productoTxt); } }
   if(inProducto) inProducto.value=productoTxt;
   if(inMonto) inMonto.value=montoTxt.toFixed(2);
   if(r.cliente_cartera_id){
@@ -6736,6 +6739,199 @@ function ceResumenHtml(){
     ${c.licencias>0?`<div style="font-size:10px;color:var(--text3);margin-top:8px;">Incluye ${fmt(c.licencias)} de suscripción (licencias) — al facturar, ese monto es el "costo de licencias" que no cuenta para comisión.</div>`:''}
   </div>`;
 }
+// ══════════════════════════════════════════════════════════════════════════════
+// COTIZADOR — Cursos 24/7 (Jp, 2026-11-11). El vendedor elige curso y acceso (Esencial/Plus) del mismo
+// catálogo que Shopify (shopify_producto_map); el PRECIO se consulta en vivo a Shopify al cotizar
+// (api/shopify-precios-247.js) y, si Shopify no responde, se usa el último precio guardado y se avisa.
+// La ficha corta del PDF vive en cotizador_247_ficha (editable por Dirección). El concepto que se manda
+// a Proyección es el nombre exacto del catálogo, así la solicitud de facturación llega ligada a su generación.
+// ══════════════════════════════════════════════════════════════════════════════
+let c247Titulo=null, c247Nivel='esencial', c247Alumnos=1, c247Dcto=0, c247IvaIncl=true;
+window._c247Items=[]; window._c247Fichas={}; window._c247Live=null; window._c247LiveEstado=''; window._c247LiveAt=0; window._c247LiveMsg='';
+const _c247NivelTxt={esencial:'Acceso Esencial 24/7',plus:'Acceso Plus 24/7',unico:'Acceso 24/7'};
+async function c247Cargar(){
+  try{
+    const [rm,rf,rp]=await Promise.all([
+      sb.from('shopify_producto_map').select('clave,titulo,variante,precio,nivel,concepto,tipo_producto'),
+      sb.from('cotizador_247_ficha').select('*').eq('activo',true),
+      sb.from('cotizador_productos').select('*').eq('slug','cursos-247').maybeSingle(),
+    ]);
+    const porTitulo={};
+    (rm.data||[]).filter(m=>/24\/7|\b247\b/i.test(m.titulo||'')||m.tipo_producto==='24/7').forEach(m=>{
+      const it=porTitulo[m.titulo]=porTitulo[m.titulo]||{titulo:m.titulo,variantes:{},concepto:null};
+      const k=(m.nivel==='plus'||m.nivel==='premium')?'plus':(m.nivel==='esencial'?'esencial':'unico');
+      it.variantes[k]={clave:m.clave,precio:parseFloat(m.precio)||0,variante:m.variante||''};
+      if(m.concepto&&(!it.concepto||k==='esencial'||k==='unico')) it.concepto=m.concepto;
+    });
+    window._c247Items=Object.values(porTitulo).map(i=>({...i,concepto:i.concepto||i.titulo})).sort((a,b)=>a.titulo.localeCompare(b.titulo,'es'));
+    window._c247Fichas={}; (rf.data||[]).forEach(f=>{window._c247Fichas[f.producto_titulo]=f;});
+    if(rp.data&&!(window._cotizProductos||[]).some(p=>p.slug==='cursos-247')) window._cotizProductos.push({...rp.data,activo:true});
+  }catch(e){ console.error('c247Cargar',e); }
+}
+async function c247PreciosVivo(){
+  if(window._c247LiveEstado==='cargando') return;
+  if(window._c247Live&&Date.now()-window._c247LiveAt<300000) return;
+  window._c247LiveEstado='cargando';
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const r=await fetch('/api/shopify-precios-247',{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
+    const j=await r.json().catch(()=>({}));
+    if(j.ok){ window._c247Live=j.precios; window._c247LiveAt=Date.now(); window._c247LiveEstado='vivo'; }
+    else { window._c247LiveEstado='error'; window._c247LiveMsg=j.error||('HTTP '+r.status); }
+  }catch(e){ window._c247LiveEstado='error'; window._c247LiveMsg=e.message||String(e); }
+  c247Repintar();
+}
+function c247Item(){ const l=window._c247Items||[]; if(!c247Titulo||!l.some(i=>i.titulo===c247Titulo)) c247Titulo=l[0]?.titulo||null; return l.find(i=>i.titulo===c247Titulo)||null; }
+function c247Variante(it,nivel){ const v=it.variantes; if(!v.esencial&&!v.plus) return v.unico||null; return v[nivel||c247Nivel]||v.esencial||v.plus||v.unico||null; }
+function c247Precio(v){ const lv=(window._c247Live||{})[v.clave]; return lv?{precio:lv.precio,regular:lv.regular,fuente:'shopify'}:{precio:v.precio,regular:null,fuente:'respaldo'}; }
+function c247Calcular(){
+  const it=c247Item(); if(!it) return {error:'No hay cursos 24/7 configurados todavía.'};
+  const v=c247Variante(it); if(!v) return {error:'Este curso no tiene acceso configurado.'};
+  if(window._c247LiveEstado==='cargando'&&!window._c247Live) return {error:'Consultando el precio vigente en Shopify…',cargando:true};
+  const pr=c247Precio(v); if(!(pr.precio>0)) return {error:'Este acceso no tiene precio en Shopify.'};
+  const nivel=(!it.variantes.esencial&&!it.variantes.plus)?'unico':(it.variantes.plus&&(v===it.variantes.plus)?'plus':'esencial');
+  const N=Math.max(1,parseInt(c247Alumnos)||1), dp=Math.min(100,Math.max(0,parseFloat(c247Dcto)||0));
+  const bruto=pr.precio*N, descuento=bruto*dp/100, neto=bruto-descuento;
+  let subtotal,iva,total;
+  if(c247IvaIncl){ total=neto; subtotal=neto/(1+COTIZ_IVA_PCT/100); iva=total-subtotal; }
+  else { subtotal=neto; iva=neto*COTIZ_IVA_PCT/100; total=neto+iva; }
+  const concepto=it.concepto, nivelTxt=_c247NivelTxt[nivel];
+  const lineas=[{concepto:`${concepto} — ${nivelTxt}`,cant:N,pu:pr.precio,importe:bruto}];
+  const titulo=`${concepto} — ${nivelTxt}${N>1?' · '+N+' alumnos':''}`;
+  return {error:null,titulo,lineas,subtotal:bruto,descuento,descPct:dp,iva,total,neto,pr,N,nivel,nivelTxt,concepto,item:it,variante:v,
+    periodicidadDb:'curso',periodoLabel:'24/7',mensualRef:total,productoTxt:concepto,
+    detalle:{producto:'cursos-247',titulo_producto:it.titulo,concepto,nivel,clave:v.clave,precio_unit:pr.precio,precio_regular:pr.regular,precio_fuente:pr.fuente,
+      alumnos:N,descuento_pct:dp,descuento,subtotal_sin_iva:subtotal,iva_monto:iva,total,iva_incluido:!!c247IvaIncl,con_iva:true,lineas,
+      titulo:'Curso 24/7 — '+titulo,productoTxt:concepto}};
+}
+function c247EstadoPrecioHtml(){
+  const e=window._c247LiveEstado;
+  if(e==='cargando') return '<span style="color:var(--text3);">⏳ Consultando precio en Shopify…</span>';
+  if(e==='vivo'){ const h=new Date(window._c247LiveAt).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'}); return `<span style="color:#27AE60;font-weight:600;">● Precio vigente en Shopify · consultado ${h}</span> <a href="#" onclick="window._c247LiveAt=0;c247PreciosVivo();return false;" style="font-size:10px;">actualizar</a>`; }
+  if(e==='error') return `<span style="color:#c0392b;font-weight:600;">⚠️ No se pudo consultar Shopify</span> <span style="color:var(--text3);">(${(window._c247LiveMsg||'').replace(/</g,'&lt;').slice(0,90)}). Se usa el último precio guardado; confírmalo antes de enviar.</span> <a href="#" onclick="window._c247LiveAt=0;c247PreciosVivo();return false;" style="font-size:10px;">reintentar</a>`;
+  return '';
+}
+function c247ControlesHtml(producto){
+  const it=c247Item(), items=window._c247Items||[];
+  if(!items.length) return `<div class="card" style="padding:16px 18px;margin-bottom:16px;color:var(--text3);font-size:13px;">Todavía no hay cursos 24/7 cargados desde Shopify. Dirección puede sincronizar los productos en Finanzas › Pedidos Shopify.</div>`;
+  const tieneNiv=!!(it&&it.variantes.esencial&&it.variantes.plus);
+  if(it&&!tieneNiv) c247Nivel=it.variantes.plus&&!it.variantes.esencial?'plus':'esencial';
+  const inp=(label,id,val,w)=>`<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">${label}</div><input type="number" min="0" id="${id}" value="${val}" style="width:${w||92}px;padding:7px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;" oninput="${id==='c247AlumnosI'?'c247Alumnos=this.value':'c247Dcto=this.value'};c247Repintar();"></div>`;
+  return `<div class="card" style="padding:16px 18px;margin-bottom:16px;">
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;">
+      <div style="flex:1;min-width:260px;"><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Curso 24/7 (catálogo de la tienda)</div>
+        <select onchange="c247Titulo=this.value;cotizadorPintar();" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;">
+          ${items.map(x=>`<option value="${_pesc(x.titulo)}" ${it&&x.titulo===it.titulo?'selected':''}>${_pesc(x.titulo)}</option>`).join('')}</select></div>
+      ${tieneNiv?`<div><div style="font-size:11px;color:var(--text3);margin-bottom:4px;">Acceso</div><div style="display:flex;gap:6px;">${[['esencial','Esencial'],['plus','Plus']].map(([k,n])=>`<button class="cartera-subtab ${c247Nivel===k?'active':''}" style="${c247Nivel===k?'background:var(--navy);color:#fff;':''}" onclick="c247Nivel='${k}';cotizadorPintar();">${n}</button>`).join('')}</div></div>`:''}
+      ${inp('Alumnos','c247AlumnosI',c247Alumnos,80)}
+      ${inp('% Descuento','c247DctoI',c247Dcto,80)}
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;" title="Si el precio de la tienda ya incluye el IVA, déjalo marcado."><input type="checkbox" ${c247IvaIncl?'checked':''} onchange="c247IvaIncl=this.checked;c247Repintar();"> El precio de la tienda ya incluye IVA</label>
+    </div>
+    <div id="c247Estado" style="font-size:11px;margin-top:10px;">${c247EstadoPrecioHtml()}</div>
+  </div>
+  <div id="c247Resumen" style="margin-bottom:18px;">${c247ResumenHtml()}</div>`;
+}
+function c247Repintar(){
+  const r=document.getElementById('c247Resumen'); if(r) r.innerHTML=c247ResumenHtml();
+  const e=document.getElementById('c247Estado'); if(e) e.innerHTML=c247EstadoPrecioHtml();
+  const lb=document.querySelector('#mainContent [data-ts-plan]'); if(lb){const c=c247Calcular(); lb.textContent=(c&&c.titulo)||'—';}
+}
+function c247ResumenHtml(){
+  const c=c247Calcular(); if(c.error) return `<div style="padding:16px;color:${c.cargando?'var(--text3)':'#c0392b'};">${c.error}</div>`;
+  const f=(window._c247Fichas||{})[c.item.titulo];
+  return `<div class="card" style="padding:16px 18px;max-width:760px;">
+    <div style="font-size:14px;font-weight:700;color:var(--navy);margin-bottom:4px;">${_pesc(c.titulo)}</div>
+    ${f?'':`<div style="font-size:11px;color:#B8740A;margin-bottom:6px;">⚠️ Este curso aún no tiene ficha para el PDF; saldrá con el texto básico. Dirección puede crearla en ⚙️ Fichas del PDF.</div>`}
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="background:var(--bg2,#f5f6f8);"><th style="text-align:left;padding:6px 8px;">Concepto</th><th style="text-align:right;padding:6px 8px;">Cant.</th><th style="text-align:right;padding:6px 8px;">P. unit.</th><th style="text-align:right;padding:6px 8px;">Importe</th></tr></thead>
+      <tbody>${c.lineas.map(l=>`<tr style="border-top:1px solid var(--border);"><td style="padding:6px 8px;">${_pesc(l.concepto)}${c.pr.regular?`<div style="font-size:10px;color:var(--text3);">Precio regular ${fmt(c.pr.regular)}</div>`:''}</td><td style="padding:6px 8px;text-align:right;">${l.cant}</td><td style="padding:6px 8px;text-align:right;">${fmt(l.pu)}</td><td style="padding:6px 8px;text-align:right;font-weight:700;">${fmt(l.importe)}</td></tr>`).join('')}</tbody>
+    </table>
+    <div style="margin-top:10px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:8px;max-width:340px;margin-left:auto;">
+      <div style="display:flex;justify-content:space-between;font-size:12px;"><span>Importe</span><span>${fmt(c.subtotal)}</span></div>
+      ${c.descPct>0?`<div style="display:flex;justify-content:space-between;font-size:12px;color:var(--teal);"><span>Descuento ${c.descPct}%</span><span>-${fmt(c.descuento)}</span></div>`:''}
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);"><span>${c247IvaIncl?'IVA incluido (16%)':'IVA (16%)'}</span><span>${fmt(c.iva)}</span></div>
+      <div style="display:flex;justify-content:space-between;font-size:15px;font-weight:800;color:var(--navy);border-top:1px solid var(--border);padding-top:5px;margin-top:4px;"><span>Total</span><span>${fmt(c.total)}</span></div>
+    </div>
+    <div style="font-size:10px;color:var(--text3);margin-top:8px;">Se guarda con el nombre exacto del catálogo (${_pesc(c.concepto)}); al convertirse en venta, la solicitud de facturación llega ligada a su generación de Academia.</div>
+  </div>`;
+}
+// ── PDF corto (2 páginas) ─────────────────────────────────────────────────────
+function _prop247DeDetalle(d){
+  return {titulo:'Curso 24/7 — '+(d.concepto||''),c247:d,lineas:d.lineas||[],total:d.total,iva:d.iva_monto,conIva:true};
+}
+function prop247Abrir(P){
+  const d=P.c247, esc=_pesc, logo=PROP_LOGO;
+  const f=(window._c247Fichas||{})[d.titulo_producto]||{};
+  const it=(window._c247Items||[]).find(x=>x.titulo===d.titulo_producto);
+  const nivelTxt=_c247NivelTxt[d.nivel]||'Acceso 24/7';
+  const inc=d.nivel==='plus'?(f.incluye_plus||[]):d.nivel==='esencial'?(f.incluye_esencial||[]):(f.incluye_unico||[]);
+  const incFinal=inc.length?inc:['Curso grabado 24/7 en Academia Innovaci','Acceso a tu ritmo, desde cualquier dispositivo'];
+  const apr=f.aprenderas||[];
+  const vig=new Date(P.fecha.getTime()+PROP_VIGENCIA_DIAS*86400000);
+  const bruto=(d.lineas||[]).reduce((a,l)=>a+(l.importe||0),0);
+  // Mejora opcional: si cotiza Esencial y existe Plus, se muestra qué agrega y su precio vigente
+  let upsell='';
+  if(d.nivel==='esencial'&&it&&it.variantes.plus&&(f.incluye_plus||[]).length){
+    const pp=c247Precio(it.variantes.plus).precio;
+    const extra=(f.incluye_plus||[]).filter(t=>!/^todo lo del/i.test(t));
+    if(pp>0&&extra.length) upsell=`<div class="card2 lab" style="margin-top:4mm;padding:13px 16px"><h3 style="font-size:14px">¿Quieres practicar y resolver dudas? Acceso Plus · ${_pfmt(pp)}</h3><ul>${extra.map(t=>`<li>${esc(t)}</li>`).join('')}</ul></div>`;
+  }
+  const hd=sec=>`<div class="hd"><img src="${logo}" alt="Innovaci"><span>${esc(sec)}</span></div>`;
+  const pgs=[];
+  pgs.push({cls:'dark cover',inner:`<div class="frame"></div><div class="in" style="padding:17mm 20mm;">
+    <img class="logo" src="${logo}" alt="Innovaci">
+    <div style="margin-top:20mm"><span class="pill">Academia Innovaci · Curso 24/7</span>
+    <h1 style="font-size:31px">${esc(d.concepto)}</h1>
+    <div class="sub">${esc(f.resumen||'Curso en línea 24/7 de Academia Innovaci: aprende a tu ritmo, desde donde estés.')}</div>
+    <div class="chips" style="margin-top:5mm"><span>${esc(nivelTxt)}</span>${f.duracion?`<span>${esc(f.duracion)}</span>`:''}<span>Estudias a tu ritmo, 24/7</span></div></div>
+    ${apr.length?`<div class="eyebrow" style="margin-top:12mm">Lo que aprenderás</div><div class="cbul" style="margin-top:4mm">${apr.map(a=>`<div><i>✓</i>${esc(a)}</div>`).join('')}</div>`:''}
+    <div class="para" style="margin-top:12mm"><small>Preparada para</small><b>${esc(P.cliente||'Ti')}</b></div>
+    <div class="cmeta"><div><b>Propuesta ${esc(P.folio)}</b><br>${_propFechaLarga(P.fecha)}<br>Vigencia hasta el ${_propFechaLarga(vig)}</div><div style="text-align:right"><b>${esc(P.vendedor||'Grupo Innovaci')}</b><br>${esc(P.vendedorEmail||'')}</div></div></div>`});
+  pgs.push({cls:'',inner:`<div class="in">${hd('Tu acceso e inversión')}
+    <div class="eyebrow">Qué incluye</div>
+    <h2>${esc(nivelTxt)}</h2>
+    <div class="card2 aca" style="margin-top:3mm"><ul>${incFinal.map(t=>`<li>${esc(t)}</li>`).join('')}</ul></div>
+    ${upsell}
+    <div class="eyebrow" style="margin-top:7mm">Inversión</div>
+    <table class="t"><thead><tr><th>Concepto</th><th class="r">Cant.</th><th class="r">P. unitario</th><th class="r">Importe</th></tr></thead><tbody>
+    ${(d.lineas||[]).map(l=>`<tr><td>${esc(l.concepto)}${d.precio_regular?`<div style="font-size:9px;color:#6b7c8e">Precio regular ${_pfmt(d.precio_regular)}</div>`:''}</td><td class="r">${l.cant}</td><td class="r">${_pfmt(l.pu)}</td><td class="r"><b>${_pfmt(l.importe)}</b></td></tr>`).join('')}</tbody></table>
+    <div class="tot">${d.descuento>0?`<div style="color:#0e8d85"><span>Descuento (${Number(d.descuento_pct).toFixed(d.descuento_pct%1?1:0)}%)</span><span>-${_pfmt(d.descuento)}</span></div>`:''}
+    <div><span>${d.iva_incluido?'IVA (16%) incluido':'IVA (16%)'}</span><span>${_pfmt(d.iva_monto)}</span></div>
+    <div class="g"><span>Total (IVA incluido)</span><span>${_pfmt(d.total)}</span></div></div>
+    <div class="cond"><b>Condiciones</b><ul><li>Precios en pesos mexicanos (MXN), IVA incluido.</li><li>Propuesta vigente hasta el ${_propFechaLarga(vig)}; los precios corresponden a los publicados por Grupo Innovaci al momento de la cotización.</li><li>El acceso se activa en Academia Innovaci una vez confirmado el pago; te pedimos nombre, correo y teléfono de cada alumno para darlo de alta.</li></ul></div>
+    <div class="cta" style="margin-top:5mm"><b>¿Listo para empezar?</b><p>Confirma con tu asesor y te enviamos los datos de pago. En cuanto se valida, recibes tu acceso.</p><div class="who">${esc(P.vendedor||'Tu asesor de Grupo Innovaci')}${P.vendedorEmail?' · '+esc(P.vendedorEmail):''}</div></div></div>`});
+  const N=pgs.length;
+  const body=pgs.map((p,i)=>`<div class="pg ${p.cls}">${p.inner}<div class="foot"><span>Grupo Innovaci · innovaci.com.mx · ${esc(P.cliente||'')}</span><span><span class="pgn">${i+1}</span> / ${N}</span></div></div>`).join('');
+  const html=`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Propuesta ${esc(d.concepto)} — ${esc(P.cliente||'Innovaci')}</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet"><style>${_ceCssProp()}</style></head><body>
+<div class="bar"><span>Vista previa de la propuesta — para guardar en PDF elige <b>"Guardar como PDF"</b> como destino.</span><button onclick="window.print()">🖨 Imprimir / Guardar PDF</button></div>${body}</body></html>`;
+  const w=window.open('','_blank'); if(!w){alert('El navegador bloqueó la ventana. Permite ventanas emergentes para este sitio e intenta otra vez.');return;}
+  w.document.open(); w.document.write(html); w.document.close();
+}
+// ── Fichas del PDF (Dirección) ────────────────────────────────────────────────
+function c247AbrirAdmin(){
+  const items=window._c247Items||[]; if(!items.length){alert('Aún no hay cursos 24/7 cargados.');return;}
+  const t0=c247Titulo&&items.some(i=>i.titulo===c247Titulo)?c247Titulo:items[0].titulo;
+  const ta=(id,lbl,rows)=>`<div style="margin-top:8px;"><div style="font-size:11px;color:var(--text3);margin-bottom:3px;">${lbl}</div><textarea id="${id}" rows="${rows}" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;"></textarea></div>`;
+  mkModal('modalC247Admin','⚙️ Fichas del PDF — Cursos 24/7',`<div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Texto corto que sale en la propuesta. Una línea por punto. Los precios NO se editan aquí: salen de Shopify.</div>
+    <select id="c247AdmSel" onchange="c247AdmCargar()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;">${items.map(i=>`<option value="${_pesc(i.titulo)}" ${i.titulo===t0?'selected':''}>${_pesc(i.titulo)}</option>`).join('')}</select>
+    ${ta('c247AdmRes','Resumen (1–2 frases)',3)}${ta('c247AdmApr','Lo que aprenderás (una línea por punto)',4)}
+    <div style="margin-top:8px;"><div style="font-size:11px;color:var(--text3);margin-bottom:3px;">Duración / formato</div><input id="c247AdmDur" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:6px;font-size:12px;"></div>
+    ${ta('c247AdmEsc','Incluye — Acceso Esencial',4)}${ta('c247AdmPlus','Incluye — Acceso Plus',4)}${ta('c247AdmUni','Incluye — Acceso único (si el curso no tiene Esencial/Plus)',3)}`,'c247GuardarAdmin','Guardar ficha','680px');
+  c247AdmCargar();
+}
+function c247AdmCargar(){
+  const t=document.getElementById('c247AdmSel').value, f=(window._c247Fichas||{})[t]||{};
+  const L=a=>(Array.isArray(a)?a:[]).join('\n'), set=(id,v)=>{document.getElementById(id).value=v||'';};
+  set('c247AdmRes',f.resumen); set('c247AdmApr',L(f.aprenderas)); set('c247AdmDur',f.duracion); set('c247AdmEsc',L(f.incluye_esencial)); set('c247AdmPlus',L(f.incluye_plus)); set('c247AdmUni',L(f.incluye_unico));
+}
+async function c247GuardarAdmin(){
+  const g=id=>document.getElementById(id).value, A=id=>g(id).split('\n').map(s=>s.trim()).filter(Boolean), t=g('c247AdmSel');
+  const row={producto_titulo:t,resumen:g('c247AdmRes').trim(),aprenderas:A('c247AdmApr'),duracion:g('c247AdmDur').trim(),incluye_esencial:A('c247AdmEsc'),incluye_plus:A('c247AdmPlus'),incluye_unico:A('c247AdmUni'),activo:true,updated_at:new Date().toISOString()};
+  const {error}=await sb.from('cotizador_247_ficha').upsert(row,{onConflict:'producto_titulo'});
+  if(error){alert('No se pudo guardar: '+error.message+(/cotizador_247_ficha/.test(error.message)?'\n\nFalta correr cotizador_247.sql en Supabase.':''));return;}
+  window._c247Fichas[t]=row; document.getElementById('modalC247Admin')?.remove(); c247Repintar(); if(typeof uiToast==='function') uiToast('Ficha guardada',true);
+}
 function ceAbrirAdmin(){
   const T=window._ceTarifas||[], C=window._ceCursos||[];
   const campos=[['precio_base','Precio base'],['hora_adic','Hora adic.'],['sesion_adic','Sesión adic.'],['persona_adic','Persona adic.'],['hora_especial','Hora especial'],['sabado','Sábado'],['domingo','Domingo'],['viaje_ida','Viaje ida'],['viaje_regreso','Viaje regreso']];
@@ -6824,6 +7020,10 @@ function propGenerarActual(){
       resumen:[['Conexiones solicitadas',c.detalle.conexiones],['Plan de usuarios',tsTierLabel(c.tier)],['Vigencia de la licencia',c.anios+' año'+(c.anios>1?'s':'')]],
       impl:c.impl.map(l=>({nombre:l.concepto,desc:((window._tsImpl||[]).find(x=>x.clave===l.clave)||{}).descripcion||''}))});
   }
+  if(producto.slug==='cursos-247'){
+    const c=c247Calcular(); if(!c||c.error){alert(c?.error||'Elige un curso.');return;}
+    return propAbrir({...base,..._prop247DeDetalle(c.detalle)});
+  }
   if(producto.slug==='curso-empresarial'){
     const c=ceCalcular(); if(!c||c.error){alert(c?.error||'Completa el curso.');return;}
     return propAbrir({...base,..._propCursoDeDetalle(c.detalle,c.iva,c.total,cotizConIva)});
@@ -6867,6 +7067,7 @@ function propGenerarDeReciente(id){
       resumen:[['Conexiones solicitadas',d.conexiones],['Plan de usuarios',tsTierLabel(d.usuarios)],['Vigencia de la licencia',d.anios+' año'+(d.anios>1?'s':'')]],
       impl:(d.impl||[]).map(l=>({nombre:l.concepto,desc:((window._tsImpl||[]).find(x=>x.clave===l.clave)||{}).descripcion||''}))});
   }
+  if(producto.slug==='cursos-247'&&d) return propAbrir({...base,..._prop247DeDetalle(d)});
   if(producto.slug==='curso-empresarial'&&d) return propAbrir({...base,..._propCursoDeDetalle(d,d.iva_monto,d.total,d.con_iva)});
   const plan=(window._cotizPlanes||[]).find(p=>p.id===r.plan_id); if(!plan){alert('Esta cotización no tiene plan asociado.');return;}
   const _dp=parseFloat(r.descuento_pct_aplicado)||0;
@@ -7163,6 +7364,7 @@ function propCursoEmpAbrir(P){
   w.document.open(); w.document.write(html); w.document.close();
 }
 function propAbrir(P){
+  if(P.slug==='cursos-247'&&P.c247) return prop247Abrir(P);
   if(P.slug==='curso-empresarial'&&P.cursoClave) return propCursoEmpAbrir(P);
   const C=PROP_CONTENIDO[P.slug]||{queIncluye:[],para:''};
   const vig=new Date(P.fecha.getTime()+PROP_VIGENCIA_DIAS*86400000);
@@ -7516,8 +7718,9 @@ async function cotizadorGuardar(crearOportunidad){
   // Jp, 2026-10-26 (4ta ronda): se guarda el plan que el usuario eligió con
   // el botón "Elegir este plan" (cotizPlanSeleccionado), no automáticamente
   // el más chico que aplica.
-  const esEspecial=producto.slug==='ts-plus'||producto.slug==='curso-empresarial';
-  const ts=producto.slug==='ts-plus'?tsCalcular():(producto.slug==='curso-empresarial'?ceCalcular():null);
+  const esEspecial=producto.slug==='ts-plus'||producto.slug==='curso-empresarial'||producto.slug==='cursos-247';
+  const ts=producto.slug==='ts-plus'?tsCalcular():(producto.slug==='curso-empresarial'?ceCalcular():(producto.slug==='cursos-247'?c247Calcular():null));
+  if(producto.slug==='cursos-247'&&ts&&!ts.error&&ts.pr.fuente==='respaldo'&&!confirm('No se pudo consultar el precio vigente en Shopify. Se guardará con el ÚLTIMO PRECIO REGISTRADO ('+fmt(ts.pr.precio)+'). ¿Continuar?')) return;
   if(esEspecial&&(!ts||ts.error)){alert(ts?.error||'Completa la cotización primero.');return;}
   const planPrincipal=ts?{id:null,nombre:ts.titulo}:(planesAplican.find(p=>p.id===cotizPlanSeleccionado)||planesAplican[0]);
   if(!planPrincipal){alert('Ningún plan cubre ese número de empresas.');return;}
@@ -7525,7 +7728,7 @@ async function cotizadorGuardar(crearOportunidad){
   const notas=document.getElementById('cotizNotas')?.value||null;
   const payload={
     producto_id:producto.id, plan_id:planPrincipal.id, periodicidad:ts?ts.periodicidadDb:cotizPeriodo,
-    num_empresas_solicitadas:n, incluye_iva:cotizConIva, detalle:ts?ts.detalle:null,
+    num_empresas_solicitadas:(producto.slug==='cursos-247'&&ts?ts.N:n), incluye_iva:(producto.slug==='cursos-247'?true:cotizConIva), detalle:ts?ts.detalle:null,
     precio_mensual_base:ts?ts.subtotal:parseFloat((window._cotizPrecios||[]).find(p=>p.plan_id===planPrincipal.id&&p.periodicidad===cotizPeriodo)?.precio_lista_mensual||0),
     descuento_pct_aplicado:c.descPct, precio_mensual_final:c.precioMensualFinal, precio_total_periodo:c.totalPeriodo,
     ahorro_total:c.ahorro, cliente_cartera_id:window._cotizCuentaId||null, prospecto_app_id:window._cotizProspectoId||null,
