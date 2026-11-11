@@ -8914,6 +8914,20 @@ async function catProyCargar(){
   try{
     const {data,error}=await sb.from('catalogo_proyeccion').select('tipo_servicio,nombre,orden,solo_para,grupo').eq('activo',true).order('orden');
     CAT_PROY=error?[]:(data||[]);
+    // Jp, 2026-11-11: los cursos/talleres/diplomados se eligen del catálogo único (el mismo que Shopify),
+    // para que la solicitud de facturación llegue ya ligada a su generación de Academia.
+    try{
+      const {data:ci}=await sb.from('catalogo_items').select('nombre,familia').eq('activo',true).in('familia',['Cursos','Diplomados','Talleres']).order('nombre').limit(500);
+      if(ci&&ci.length){
+        const vistos=new Set();
+        const nuevos=[];
+        ci.forEach(x=>{
+          const k=x.nombre.trim().toLowerCase(); if(vistos.has(k)) return; vistos.add(k);
+          nuevos.push({tipo_servicio:/24\/7|247/i.test(x.nombre)?'24/7':'Curso o Diplomado en Vivo',nombre:x.nombre,orden:0,solo_para:null,grupo:x.familia});
+        });
+        CAT_PROY=CAT_PROY.filter(c=>c.tipo_servicio!=='24/7'&&c.tipo_servicio!=='Curso o Diplomado en Vivo').concat(nuevos);
+      }
+    }catch(e){console.error('catProy catálogo único',e);}
   }catch(e){CAT_PROY=[];}
   return CAT_PROY;
 }
@@ -32126,6 +32140,7 @@ async function renderSolFacturaVendedor(){
   solCargarListaVendedor();
   solCargarGeneraciones();
   solAplicarPrefill();
+  document.getElementById('sfConcepto')?.addEventListener('change',e=>{ if(typeof solSugerirGensPorConcepto==='function') solSugerirGensPorConcepto('sf',e.target.value); });
   document.getElementById('sfConcepto')?.addEventListener('input',e=>{const n=solAcadNivelDeConcepto(e.target.value);const sl=document.getElementById('sfAcadNivel');if(n&&sl) sl.value=n;});
 }
 // ─── ACADEMIA DESDE LA SOLICITUD (Jp, 2026-11-03) ────────────────────────────
@@ -32302,7 +32317,56 @@ function solAcadEditarModal(id){
     ${solAcadHtml('sa',ac)}
     <div style="display:flex;gap:8px;"><button onclick="solAcadGuardar('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">${r.pago_validado?'Guardar e inscribir':'Guardar'}</button><button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>
     ${r.pago_validado?'':'<div style="font-size:11px;color:var(--text3);margin-top:6px;">La inscripción se hará sola cuando se valide el pago.</div>'}`,680);
-  solAcadCargarGens('sa');
+  // Si la solicitud viene de un pedido de Shopify (o se capturó por Proyección y no trajo la generación),
+  // se toma la generación ligada al producto en el catálogo: se marca sola si es única y se sugiere con ⭐.
+  window._solGenSug=null;window._solGenSolo=null;
+  (async()=>{
+    try{
+      const box=document.getElementById('saAcadGens');
+      if(box&&r.shopify_pedido_id&&!((ac.generaciones||[]).length)){
+        const [{data:p},{data:mp}]=await Promise.all([sb.from('shopify_pedidos').select('lineas').eq('id',r.shopify_pedido_id).single(),sb.from('shopify_producto_map').select('clave,generacion_ids')]);
+        const mapa={};(mp||[]).forEach(m=>mapa[m.clave]=m);
+        const linked=[...new Set((p?.lineas||[]).flatMap(l=>mapa[shpClave(l)]?.generacion_ids||[]))];
+        if(linked.length){
+          if(!window._solGens) await solCargarGeneraciones();
+          const {data:gl}=await sb.from('academia_generaciones').select('id,curso_id').in('id',linked);
+          const porCurso={};(gl||[]).forEach(g=>{(porCurso[g.curso_id]=porCurso[g.curso_id]||[]).push(g.id);});
+          window._solGenSug=new Set(linked);
+          box.dataset.sel=Object.values(porCurso).filter(a=>a.length===1).map(a=>a[0]).join(',');
+        }
+      }
+    }catch(e){console.error('solAcadEditarModal gens',e);}
+    try{ if(!window._solGenSug&&!((ac.generaciones||[]).length)) await solSugerirGensPorConcepto('sa',r.concepto); }catch(e){}
+    solAcadCargarGens('sa');
+  })();
+}
+const _solNorm=t=>String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,' ').trim();
+// Generaciones ligadas en el catálogo al concepto elegido (mismo vínculo que usa Shopify)
+async function solGensDeConcepto(concepto){
+  const n=_solNorm(concepto); if(!n) return [];
+  try{
+    const [{data:ci},{data:mp}]=await Promise.all([sb.from('catalogo_items').select('id,nombre').eq('activo',true).limit(600),sb.from('shopify_producto_map').select('concepto,titulo,catalogo_item_id,generacion_ids')]);
+    const ids=new Set((ci||[]).filter(x=>_solNorm(x.nombre)===n).map(x=>x.id));
+    const out=new Set();
+    (mp||[]).forEach(m=>{ if((m.catalogo_item_id&&ids.has(m.catalogo_item_id))||_solNorm(m.concepto)===n) (m.generacion_ids||[]).forEach(g=>out.add(g)); });
+    return [...out];
+  }catch(e){console.error('solGensDeConcepto',e);return [];}
+}
+async function solMarcarGens(p,linked){
+  const box=document.getElementById(p+'AcadGens'); if(!box||!linked.length) return false;
+  if(!window._solGens) await solCargarGeneraciones();
+  const {data:gl}=await sb.from('academia_generaciones').select('id,curso_id').in('id',linked);
+  const porCurso={};(gl||[]).forEach(g=>{(porCurso[g.curso_id]=porCurso[g.curso_id]||[]).push(g.id);});
+  window._solGenSug=new Set([...(window._solGenSug||[]),...linked]);
+  box.dataset.sel=Object.values(porCurso).filter(a=>a.length===1).map(a=>a[0]).join(',');
+  await solAcadCargarGens(p);
+  return true;
+}
+async function solSugerirGensPorConcepto(p,concepto){
+  const box=document.getElementById(p+'AcadGens'); if(!box) return;
+  if(box.querySelector('input:checked')) return; // ya hay selección: no se pisa
+  const linked=await solGensDeConcepto(concepto);
+  if(linked.length) await solMarcarGens(p,linked);
 }
 async function solAcadGuardar(id){
   const r=_solRows.find(z=>z.id===id);if(!r) return;
@@ -32456,6 +32520,7 @@ function solAplicarNegociacion(n){
   solDocsDePipeline(n.id);
   const set=(id,v)=>{const el=document.getElementById(id);if(el&&v!=null&&v!=='')el.value=v;};
   set('sfConcepto',n.producto);set('sfTotal',n.monto_total);
+  solSugerirGensPorConcepto('sf',n.producto);
   const pid=n.oportunidades_crm?.crm_potentialid;
   if(pid) set('sfCrm',`${CRM_BASE_URL_FE}/index.php?module=Potentials&view=Detail&record=${String(pid).split('x').pop()}&app=SALES`);
   const box=document.getElementById('sfPipeBox');
