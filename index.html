@@ -10078,6 +10078,23 @@ function pipePedirMotivo(estatus,cliente,ligada){
     };
   });
 }
+// Jp, 2026-11-12: el comentario en la oportunidad del CRM debe decir lo mismo
+// que el aviso de Telegram (api/facturacion-avisar-telegram.js).
+function solTextoCrmSolicitud(s){
+  const conPago=s.tipo==='con_pago';
+  const L=[conPago?'[Facturación] 🧾 SOLICITUD DE FACTURA — pago por validar':'[Facturación] 🧾 SOLICITUD DE FACTURA — liberar pago',''];
+  L.push('Vendedor: '+(s.vendedor_nombre||'—'));
+  L.push('Cliente: '+(s.cliente_nombre||'—')+(s.num_cliente?' (#'+s.num_cliente+')':''));
+  if(s.cotizacion_sae) L.push('Cotización: '+s.cotizacion_sae);
+  if(s.concepto) L.push('Concepto: '+s.concepto);
+  L.push('Total a facturar: '+fmt(s.monto_total));
+  if(s.metodo_pago||s.forma_pago) L.push('Pago: '+[s.metodo_pago,s.forma_pago].filter(Boolean).join(' / '));
+  if(s.rfc) L.push('RFC: '+s.rfc+(s.uso_cfdi?' · Uso CFDI: '+s.uso_cfdi:''));
+  if(conPago&&s.pago_monto) L.push('Depósito: '+fmt(s.pago_monto)+' el '+solFecha(s.pago_fecha)+(s.pago_hora?' '+String(s.pago_hora).slice(0,5):''));
+  if(!conPago&&s.fecha_pago_esperada) L.push('Pagará el: '+solFecha(s.fecha_pago_esperada));
+  if(s.notas) L.push('Notas: '+String(s.notas).slice(0,300));
+  return L.join('\n');
+}
 async function pipeComentarioCrmLibre(pipelineId,contenido,vendedorId){
   try{
     window._ultimoCrmLibre='sin_liga';
@@ -12582,6 +12599,10 @@ async function abrirFichaClienteModal(clienteId){
             </div>
           </div>`:''}).join('')}`:''}
       </div>
+      ${seccion('📁 Expediente del cliente (oportunidades, facturas, cursos y ventas)',
+        `<div id="fcExpedienteBox" style="font-size:12px;color:var(--text3);">Cargando expediente...</div>`,
+        'fcSeccionExpediente'
+      )}
       ${seccion('Oportunidades abiertas (este año)',
         `<div id="fcOportunidadesBox" style="font-size:12px;color:var(--text3);">Cargando oportunidades del CRM...</div>`,
         'fcSeccionOportunidades'
@@ -12635,6 +12656,7 @@ async function abrirFichaClienteModal(clienteId){
     selNuevo.innerHTML='<option value="">-- Elegir sistema --</option>'+SISTEMAS_CATALOGO.map(d=>`<option value="${d.key}">${d.label}</option>`).join('');
   }
   window.scrollTo(0,0);
+  fcCargarExpediente(clienteId,(subcuentas||[]).map(x=>x.id));
   fcCargarOportunidadesAbiertas(clienteId);
   fcCargarComentariosCrm(clienteId,cl.num_cliente);
   cargarDocumentosAdjuntos('cuenta',clienteId,'docListCuenta_'+clienteId);
@@ -12947,6 +12969,71 @@ async function fcCargarEventosMasterclass(clienteId){
 // cliente, sus oportunidades abiertas, al menos de este año" — oportunidades_crm
 // ya trae cliente_cartera_id poblado (del sync con el CRM), así que no hace
 // falta ningún endpoint nuevo: se consulta directo desde Supabase.
+// Jp, 2026-11-12: "en cartera es el expediente total del cliente" — historial de
+// oportunidades y su resultado, facturas, asistentes en cursos y ventas
+// acumuladas por rubro (para saber a fin de año quién compró más timbres,
+// cursos, etc.). Incluye las subcuentas de la cuenta.
+async function fcCargarExpediente(clienteId,subIds){
+  const box=document.getElementById('fcExpedienteBox'); if(!box) return;
+  const ids=[clienteId,...(subIds||[])];
+  const esc=t=>String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const f=d=>{if(!d)return '';const p=String(d).slice(0,10).split('-');return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:d;};
+  try{
+    const [rp,rs,rf,rpa]=await Promise.all([
+      sb.from('pipeline_vendedor').select('id,created_at,anio,tipo_servicio,producto,monto_total,subtotal,estatus,motivo_estatus,usuario_id,cliente_cartera_id').in('cliente_cartera_id',ids).order('created_at',{ascending:false}),
+      sb.from('solicitudes_factura').select('id,created_at,concepto,monto_total,estado,pago_validado,factura_serie,factura_folio,pipeline_vendedor_id,fact_ingreso_id,timbres_estado,licencia_estado').in('cliente_cartera_id',ids).order('created_at',{ascending:false}),
+      sb.from('fact_ingresos').select('id,fecha,folio,serie,concepto,rubro,subtotal_final,total,cobrado,estatus,cliente_cartera_id').in('cliente_cartera_id',ids).order('fecha',{ascending:false}),
+      sb.from('academia_participantes').select('id,nombre,mail').in('cliente_cartera_id',ids),
+    ]);
+    const opps=rp.data||[],sols=rs.data||[],facts=(rf.data||[]).filter(x=>(x.estatus||'').toUpperCase()!=='CANCELADA'),parts=rpa.data||[];
+    let insc=[];
+    if(parts.length){
+      const {data}=await sb.from('academia_inscripciones').select('id,participante_id,nivel_acceso,folio,estatus_final,examen_calificacion,generacion:generacion_id(clave,fecha_inicio,fecha_fin,curso:curso_id(nombre))').in('participante_id',parts.map(x=>x.id));
+      insc=data||[];
+    }
+    const nombres={};
+    try{const us=[...new Set(opps.map(o=>o.usuario_id).filter(Boolean))];if(us.length){const {data}=await sb.from('usuarios').select('id,nombre').in('id',us);(data||[]).forEach(u=>nombres[u.id]=u.nombre);}}catch(e){}
+    // Totales
+    const sub=x=>Number(x.subtotal_final)||0;
+    const totalVend=facts.reduce((t,x)=>t+sub(x),0);
+    const porRubro={};facts.forEach(x=>{const k=x.rubro||'SIN RUBRO';(porRubro[k]=porRubro[k]||{n:0,m:0});porRubro[k].n++;porRubro[k].m+=sub(x);});
+    const ganadas=opps.filter(o=>o.estatus==='Cerrada-Ganada'),perdidas=opps.filter(o=>o.estatus==='Cerrada-Perdida'),abiertas=opps.length-ganadas.length-perdidas.length;
+    const kpi=(t,v,c)=>`<div style="flex:1;min-width:120px;background:var(--surface-2,#f8f9fa);border:1px solid var(--border);border-radius:8px;padding:8px 10px;"><div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;">${t}</div><div style="font-size:16px;font-weight:700;color:${c||'var(--navy)'};">${v}</div></div>`;
+    const th='font-size:10px;color:var(--text3);text-transform:uppercase;text-align:left;padding:4px 6px;border-bottom:1px solid var(--border);';
+    const td='font-size:12px;padding:5px 6px;border-bottom:1px solid var(--border);vertical-align:top;';
+    const tabla=(cols,filas,vacio)=>filas.length?`<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;"><thead><tr>${cols.map(c=>`<th style="${th}">${c}</th>`).join('')}</tr></thead><tbody>${filas.join('')}</tbody></table></div>`:`<div style="font-size:12px;color:var(--text3);font-style:italic;">${vacio}</div>`;
+    const tit=t=>`<div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.07em;margin:14px 0 6px;">${t}</div>`;
+    const solPorPipe={};sols.forEach(x=>{if(x.pipeline_vendedor_id&&x.factura_folio&&!solPorPipe[x.pipeline_vendedor_id]) solPorPipe[x.pipeline_vendedor_id]=(x.factura_serie||'')+x.factura_folio;});
+    const solPend=sols.filter(x=>!x.factura_folio&&x.estado!=='descartada'&&x.estado!=='cancelada');
+    const colorEst=e=>e==='Cerrada-Ganada'?'#2E7D32':e==='Cerrada-Perdida'?'#C0392B':'#B45309';
+    const filasOpp=opps.map(o=>`<tr><td style="${td}">${f(o.created_at)}</td><td style="${td}"><b>${esc(o.producto||'—')}</b><div style="font-size:10px;color:var(--text3);">${esc(o.tipo_servicio||'')}${nombres[o.usuario_id]?' · '+esc(nombres[o.usuario_id]):''}</div>${o.motivo_estatus?`<div style="font-size:10px;color:var(--text2);">${esc(o.motivo_estatus)}</div>`:''}</td><td style="${td}text-align:right;">${fmt(o.subtotal>0?o.subtotal:o.monto_total)}</td><td style="${td}color:${colorEst(o.estatus)};font-weight:600;">${esc(o.estatus)}</td><td style="${td}">${solPorPipe[o.id]?'🧾 '+esc(solPorPipe[o.id]):'<span style="color:var(--text3);">—</span>'}</td></tr>`);
+    const filasFact=facts.map(x=>`<tr><td style="${td}">${f(x.fecha)}</td><td style="${td}">${esc((x.serie||'')+(x.folio||''))}</td><td style="${td}">${esc(x.rubro||'')}<div style="font-size:10px;color:var(--text3);">${esc((x.concepto||'').slice(0,70))}</div></td><td style="${td}text-align:right;">${fmt(sub(x))}</td><td style="${td}">${x.cobrado?'✅ cobrada':'⏳ por cobrar'}</td></tr>`);
+    const filasSolPend=solPend.map(x=>`<tr><td style="${td}">${f(x.created_at)}</td><td style="${td}">${esc((x.concepto||'').slice(0,80))}</td><td style="${td}text-align:right;">${fmt(x.monto_total)}</td><td style="${td}">${x.pago_validado?'Pago validado · por facturar':'Pago por validar'}</td></tr>`);
+    const filasInsc=insc.map(i=>{const p=parts.find(z=>z.id===i.participante_id);const g=i.generacion||{};return `<tr><td style="${td}">${esc(p?.nombre||'')}</td><td style="${td}">${esc(g.curso?.nombre||'')}<div style="font-size:10px;color:var(--text3);">${esc(g.clave||'')} · ${esc(i.nivel_acceso||'')}${i.folio?' · '+esc(i.folio):''}</div></td><td style="${td}">${f(g.fecha_inicio)}${g.fecha_fin?' – '+f(g.fecha_fin):''}</td><td style="${td}">${i.estatus_final?esc(i.estatus_final):'En curso / sin resultado'}${i.examen_calificacion!=null?' · Examen: '+esc(i.examen_calificacion):''}</td></tr>`;});
+    const filasRubro=Object.entries(porRubro).sort((a,b)=>b[1].m-a[1].m).map(([k,v])=>`<tr><td style="${td}">${esc(k)}</td><td style="${td}text-align:right;">${v.n}</td><td style="${td}text-align:right;font-weight:600;">${fmt(v.m)}</td></tr>`);
+    box.innerHTML=`
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        ${kpi('Vendido (facturas, sin IVA)',fmt(totalVend),'var(--teal)')}
+        ${kpi('Facturas',facts.length)}
+        ${kpi('Oportunidades',opps.length)}
+        ${kpi('Ganadas / Perdidas / Abiertas',ganadas.length+' / '+perdidas.length+' / '+abiertas)}
+        ${kpi('Asistentes en cursos',parts.length)}
+      </div>
+      ${tit('Ventas por rubro')}
+      ${tabla(['Rubro','Facturas','Vendido (sin IVA)'],filasRubro,'Aún no hay facturas registradas en Finanzas para este cliente.')}
+      ${tit('Oportunidades (Proyección) y su resultado')}
+      ${tabla(['Creada','Negocio','Monto (sin IVA)','Resultado','Factura'],filasOpp,'Sin oportunidades registradas en Proyección.')}
+      ${tit('Facturas')}
+      ${tabla(['Fecha','Folio','Rubro / concepto','Subtotal','Cobro'],filasFact,'Sin facturas.')}
+      ${solPend.length?tit('Solicitudes en proceso (aún sin factura)')+tabla(['Fecha','Concepto','Total','Estado'],filasSolPend,''):''}
+      ${tit('Asistentes en Academia')}
+      ${tabla(['Asistente','Curso','Fechas','Resultado'],filasInsc,'Sin asistentes en cursos.')}
+      <div style="font-size:10px;color:var(--text3);margin-top:10px;">Incluye las subcuentas de esta cuenta. Los totales vienen de las facturas registradas en Finanzas (ingresos).</div>`;
+  }catch(e){
+    console.error('expediente',e);
+    box.innerHTML='<div style="font-size:12px;color:var(--red);">No se pudo cargar el expediente: '+(e.message||e)+'</div>';
+  }
+}
 async function fcCargarOportunidadesAbiertas(clienteId){
   const box=document.getElementById('fcOportunidadesBox');
   if(!box) return;
@@ -32502,6 +32589,11 @@ async function solInscribirAcademia(r,silencioso){
     if(!error) r.academia=nuevo;
     if(pidPrimero&&r.fact_ingreso_id) await sb.from('fact_ingresos').update({academia_participante_id:pidPrimero}).eq('id',r.fact_ingreso_id);
   }
+  // Jp, 2026-11-12: lo que se asigna en Academia queda en la oportunidad del CRM.
+  if(nuevosIdsInsc.length&&r.pipeline_vendedor_id){
+    const ins=out.filter(x=>x.startsWith('✔')).map(x=>'• '+x.slice(2));
+    if(ins.length) pipeComentarioCrmLibre(r.pipeline_vendedor_id,'[Academia] 🎓 Asistentes inscritos\n'+ins.join('\n'),r.vendedor_id);
+  }
   // Segunda notificación (además del aviso dentro de la app): Telegram al grupo de Capacitación. No bloquea nada.
   if(nuevosIdsInsc.length){
     try{
@@ -32970,7 +33062,7 @@ async function solEnviar(){
     // Comentario en el CRM, en la oportunidad ligada a la negociación
     let crmOk=false;
     if(row.pipeline_vendedor_id&&solId){
-      const txt=`[Facturación] Solicitud de factura enviada · Cotización ${row.cotizacion_sae} · ${row.concepto} · Total ${fmt(row.monto_total)} · ${row.metodo_pago}/${row.forma_pago} · Uso CFDI: ${row.uso_cfdi} · RFC ${row.rfc} · ${tipo==='con_pago'?`Pago ${fmt(row.pago_monto)} el ${solFecha(row.pago_fecha)}`:`Liberar pago, pagará ${solFecha(row.fecha_pago_esperada)}`}`;
+      const txt=solTextoCrmSolicitud(row);
       const cid=await pipeComentarioCrmLibre(row.pipeline_vendedor_id,txt,row.vendedor_id);
       if(cid){crmOk=true;await sb.from('solicitudes_factura').update({comentario_crm_hecho:true,crm_comment_id:String(cid)}).eq('id',solId);}
     }
@@ -33414,7 +33506,7 @@ async function solValidarPago(id,mov,nota,desdeCasado,desdeShopify,quien){
   const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
   if(error) return alert('No se pudo validar: '+error.message);
   Object.assign(r,upd);
-  if(r.pipeline_vendedor_id) pipeComentarioCrmLibre(r.pipeline_vendedor_id,`[Facturación] Pago validado · ${fmt(r.pago_monto||r.monto_total)}${r.factura_folio?' · factura '+(r.factura_serie||'')+r.factura_folio:''}`,r.vendedor_id);
+  if(r.pipeline_vendedor_id) pipeComentarioCrmLibre(r.pipeline_vendedor_id,`[Facturación] ✅ PAGO VALIDADO\nMonto: ${fmt(r.pago_monto||r.monto_total)}${r.pago_fecha?' · '+solFecha(r.pago_fecha):''}\nValidado por: ${r.pago_validado_por||'—'}${nota?'\nNota: '+nota:''}${r.factura_folio?'\nFactura: '+(r.factura_serie||'')+r.factura_folio:'\nFactura: pendiente de emitir'}`,r.vendedor_id);
   try{ await solMarcarIngresoCobrado(r,mov); }catch(e){ console.error('ingreso cobrado',e); }
   // Timbres: si el concepto es de timbres, se asigna solo un paquete disponible de esa cantidad.
   let msgTim=null;
@@ -33496,6 +33588,7 @@ function solFacturarModal(id){
   solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">🧾 Registrar factura</div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">${solEsc(r.cliente_nombre)} · ${solEsc(r.concepto)} · <b>${fmt(r.monto_total)}</b></div>
     ${solFld('XML de la factura (recomendado)','<input id="sfxXml" type="file" accept=".xml" onchange="solFacturarLeerXml(\''+id+'\',this)" style="font-size:12px;">','Se llenan serie, folio y UUID, y se verifica total y RFC.')}
+    ${solFld('PDF de la factura (opcional)','<input id="sfxPdf" type="file" accept=".pdf" style="font-size:12px;">','Se adjunta junto con el XML en la oportunidad del CRM.')}
     <div id="sfxAviso" style="font-size:12px;margin-bottom:8px;"></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 12px;">
       ${solFld('Serie','<input id="sfxSerie" value="INN" style="'+SOL_INPUT_STYLE+'">')}
@@ -33531,7 +33624,19 @@ async function solFacturarGuardar(id){
     const upd={factura_serie:serie,factura_folio:folio,factura_uuid:window._solXml?.uuid||null,facturada_at:new Date().toISOString(),facturada_por:userProfile?.nombre||'Administración',estado:r.pago_validado?'cerrada':'facturada'};
     const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
     if(error) throw error;
-    if(r.pipeline_vendedor_id) pipeComentarioCrmLibre(r.pipeline_vendedor_id,`[Facturación] Factura ${serie}${folio} emitida · ${fmt(r.monto_total)}${r.pago_validado?' · pago validado':' · pago pendiente de validar'}`,r.vendedor_id);
+    if(r.pipeline_vendedor_id){
+      const txtF=['[Facturación] 🧾 FACTURA EMITIDA','','Factura: '+serie+folio,'Total: '+fmt(r.monto_total),'Cliente: '+(r.cliente_nombre||'—')+(r.rfc?' · RFC '+r.rfc:''),
+        window._solXml?.uuid?'UUID: '+window._solXml.uuid:null,
+        r.pago_validado?'Pago validado'+(r.pago_validado_por?' por '+r.pago_validado_por:''):'Pago pendiente de validar',
+        'Emitida por: '+(userProfile?.nombre||'Administración')].filter(x=>x!==null).join('\n');
+      const fXml=window._solXmlFile||null,fPdf=document.getElementById('sfxPdf')?.files?.[0]||null,pidF=r.pipeline_vendedor_id,vend=r.vendedor_id;
+      // Se comenta y luego se adjuntan XML y PDF al mismo comentario (no bloquea el guardado).
+      pipeComentarioCrmLibre(pidF,txtF,vend).then(async cid=>{
+        if(!cid) return;
+        if(fXml) await subirDocumentoAdjuntoActividad('oportunidad',pidF,fXml,cid);
+        if(fPdf) await subirDocumentoAdjuntoActividad('oportunidad',pidF,fPdf,cid);
+      }).catch(e=>console.error('comentario factura CRM',e));
+    }
     Object.assign(r,upd);
     let finMsg='';
     if(window._solXmlText){finMsg=solMensajeFinanzas(r,await solRegistrarIngresoFinanzas(r,window._solXmlText));}
@@ -33700,7 +33805,7 @@ async function timAsignar(r,paq){
   if(e2) return {estado:'error',error:e2.message};
   Object.assign(r,patch);
   (_solTimbres[r.id]=_solTimbres[r.id]||[]).push(got);
-  if(r.pipeline_vendedor_id) pipeComentarioCrmLibre(r.pipeline_vendedor_id,`[Facturación] Timbres asignados: ${got.clave} (${timFmtN(got.cantidad)} timbres)`,r.vendedor_id);
+  if(r.pipeline_vendedor_id) pipeComentarioCrmLibre(r.pipeline_vendedor_id,`[Facturación] 📦 TIMBRES ENTREGADOS\nPaquete de ${timFmtN(got.cantidad)} timbres · Serie/clave: ${got.clave}`,r.vendedor_id);
   const correo=await timAvisarVendedor(r.id);
   try{
     const pc=correo.ok?{timbres_correo_at:new Date().toISOString(),timbres_correo_error:null}:{timbres_correo_error:String(correo.error||'error').slice(0,300)};
