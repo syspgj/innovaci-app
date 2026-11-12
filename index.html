@@ -12979,11 +12979,13 @@ async function fcCargarExpediente(clienteId,subIds){
   const esc=t=>String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const f=d=>{if(!d)return '';const p=String(d).slice(0,10).split('-');return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:d;};
   try{
-    const [rp,rs,rf,rpa]=await Promise.all([
+    const [rp,rs,rf,rpa,rpol,rproy]=await Promise.all([
       sb.from('pipeline_vendedor').select('id,created_at,anio,tipo_servicio,producto,monto_total,subtotal,estatus,motivo_estatus,usuario_id,cliente_cartera_id').in('cliente_cartera_id',ids).order('created_at',{ascending:false}),
       sb.from('solicitudes_factura').select('id,created_at,concepto,monto_total,estado,pago_validado,factura_serie,factura_folio,pipeline_vendedor_id,fact_ingreso_id,timbres_estado,licencia_estado').in('cliente_cartera_id',ids).order('created_at',{ascending:false}),
       sb.from('fact_ingresos').select('id,fecha,folio,serie,concepto,rubro,subtotal_final,total,cobrado,estatus,cliente_cartera_id').in('cliente_cartera_id',ids).order('fecha',{ascending:false}),
       sb.from('academia_participantes').select('id,nombre,mail').in('cliente_cartera_id',ids),
+      sb.from('clientes_polizas').select('id,fecha_inicio,fecha_vencimiento,estatus,precio_contratado,horas_totales,horas_consumidas,numero_proyecto_crm,polizas_catalogo(nombre)').in('cliente_cartera_id',ids).order('fecha_vencimiento',{ascending:false}),
+      sb.from('proyectos_crm').select('crm_project_no,nombre_proyecto,tipo_proyecto,estatus_proyecto,fecha_inicio,fecha_fin_prevista,activo').in('cliente_cartera_id',ids).order('fecha_inicio',{ascending:false}),
     ]);
     const opps=rp.data||[],sols=rs.data||[],facts=(rf.data||[]).filter(x=>(x.estatus||'').toUpperCase()!=='CANCELADA'),parts=rpa.data||[];
     let insc=[];
@@ -12991,6 +12993,7 @@ async function fcCargarExpediente(clienteId,subIds){
       const {data}=await sb.from('academia_inscripciones').select('id,participante_id,nivel_acceso,folio,estatus_final,examen_calificacion,generacion:generacion_id(clave,fecha_inicio,fecha_fin,curso:curso_id(nombre))').in('participante_id',parts.map(x=>x.id));
       insc=data||[];
     }
+    const pols=rpol.data||[],proys=rproy.data||[];
     const nombres={};
     try{const us=[...new Set(opps.map(o=>o.usuario_id).filter(Boolean))];if(us.length){const {data}=await sb.from('usuarios').select('id,nombre').in('id',us);(data||[]).forEach(u=>nombres[u.id]=u.nombre);}}catch(e){}
     // Totales
@@ -13026,9 +13029,13 @@ async function fcCargarExpediente(clienteId,subIds){
       ${tit('Facturas')}
       ${tabla(['Fecha','Folio','Rubro / concepto','Subtotal','Cobro'],filasFact,'Sin facturas.')}
       ${solPend.length?tit('Solicitudes en proceso (aún sin factura)')+tabla(['Fecha','Concepto','Total','Estado'],filasSolPend,''):''}
+      ${tit('Pólizas contratadas y proyectos')}
+      ${tabla(['Póliza','Vigencia','Estatus','Horas','Precio','Proyecto CRM'],pols.map(x=>`<tr><td style="${td}">${esc(x.polizas_catalogo?.nombre||'')}</td><td style="${td}">${f(x.fecha_inicio)} – ${f(x.fecha_vencimiento)}</td><td style="${td}">${esc(x.estatus||'')}</td><td style="${td}">${x.horas_totales!=null?esc(x.horas_consumidas||0)+' / '+esc(x.horas_totales):''}</td><td style="${td}text-align:right;">${x.precio_contratado?fmt(x.precio_contratado):''}</td><td style="${td}">${esc(x.numero_proyecto_crm||'')}</td></tr>`),'Sin pólizas contratadas.')}
+      ${proys.length?tit('Proyectos del CRM')+tabla(['Proyecto','Nombre','Tipo','Estatus','Inicio'],proys.map(x=>`<tr><td style="${td}">${esc(x.crm_project_no||'')}</td><td style="${td}">${esc(x.nombre_proyecto||'')}</td><td style="${td}">${esc(x.tipo_proyecto||'')}</td><td style="${td}">${esc(x.estatus_proyecto||'')}${x.activo?'':' (inactivo)'}</td><td style="${td}">${f(x.fecha_inicio)}</td></tr>`),''):''}
       ${tit('Asistentes en Academia')}
       ${tabla(['Asistente','Curso','Fechas','Resultado'],filasInsc,'Sin asistentes en cursos.')}
       <div style="font-size:10px;color:var(--text3);margin-top:10px;">Incluye las subcuentas de esta cuenta. Los totales vienen de las facturas registradas en Finanzas (ingresos).</div>`;
+    try{const _b=document.getElementById('fcSeccionExpediente_body'),_c=document.getElementById('fcSeccionExpediente_chev');if(_b){_b.style.display='block';if(_c)_c.textContent='▾';}}catch(e){}
   }catch(e){
     console.error('expediente',e);
     box.innerHTML='<div style="font-size:12px;color:var(--red);">No se pudo cargar el expediente: '+(e.message||e)+'</div>';
