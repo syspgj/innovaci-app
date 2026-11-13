@@ -19621,7 +19621,7 @@ async function renderProspectos(){
     proyHtmlPros=`<div style="margin-top:6px;font-size:11px;color:var(--text3);">Registra tu primera llamada para ver la proyección de completado.</div>`;
   }
 
-  mc.innerHTML=`${pendHoyHtml}
+  mc.innerHTML=`${pendHoyHtml}${llamadasBarraHtml()}
   <div style="background:var(--teal-bg);border:1px solid rgba(0,169,157,0.25);border-radius:var(--radsm);padding:8px 14px;margin-bottom:14px;font-size:12px;color:var(--teal);font-weight:600;">
     🎯 Campaña activa: ${campanaActiva.nombre}
   </div>
@@ -19688,6 +19688,7 @@ async function renderProspectos(){
 
   // Store data globally for filtering
   window._prospectos = ps;
+  llamadasCargarPanel();
 }
 
 function filaProspecto(p){
@@ -19737,6 +19738,7 @@ function filaProspecto(p){
           : `<button onclick="agregarVtigerUrl('${p.id}')"
               style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">
               + VTiger</button>`}
+        <button onclick="llamadaModal('${p.id}')" title="Pasar a un vendedor con llamada programada" style="background:var(--teal);color:#fff;border:none;border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">📞 A vendedor</button>
         <button onclick="toggleRespondio('${p.id}')" title="¿Actualizado en Respond.io?"
           style="background:${p.respondio_ok?'rgba(39,174,96,0.12)':'var(--surf2)'};color:${p.respondio_ok?'#27AE60':'var(--text3)'};border:1px solid ${p.respondio_ok?'rgba(39,174,96,0.3)':'var(--border)'};border-radius:5px;padding:4px 9px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">
           ${p.respondio_ok?'✓ Respond.io':'Respond.io'}
@@ -19810,7 +19812,7 @@ async function renderProspectosVendedor(){
   const yaClientes=ps.filter(p=>p._cliente||p.cliente_cartera_id).length;
   const eventosUnicos=[...new Set(ps.map(p=>p.evento).filter(Boolean))].sort();
 
-  mc.innerHTML=`
+  mc.innerHTML=`${llamadasBarraHtml()}
   <div style="margin-bottom:16px;">
     <div style="font-size:18px;font-weight:600;color:var(--text);">Prospectos</div>
     <div style="font-size:12px;color:var(--text3);">${total} en total · ${mios} tuyos · ${sinAsignar} sin asignar ${yaClientes?`· <span style="color:var(--gold);font-weight:600;">⚠ ${yaClientes} ya son cliente</span>`:''}</div>
@@ -19850,6 +19852,7 @@ async function renderProspectosVendedor(){
   </div>`;
   window._prospectos=ps; // para que abrirDetalle/registrarLlamada funcionen igual que en el resto del módulo
   window._prospectosVCtx=true; // le dice al modal de detalle que muestre el botón "+ Proyección"
+  llamadasCargarPanel();
 }
 
 // Match por correo/teléfono confirmado por Jp (2026-10-15) — el nombre se
@@ -19923,6 +19926,150 @@ function filtrarProspectosVendedor(){
   if(tbody) tbody.innerHTML=filtrados.map(p=>filaProspectoVendedor(p)).join('');
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// LLAMADAS ASIGNADAS A VENDEDORES (Jp, 2026-11-13)
+// Carolina (telemarketing) atiende conversaciones de Respond/WhatsApp y, cuando
+// un prospecto pide llamada, lo pasa a Manuel o Dulce DESDE LA APP (antes lo
+// hacía por WhatsApp y se perdía el seguimiento). Se da de alta el prospecto
+// (o se usa uno existente), se elige vendedor, fecha y hora → el vendedor recibe
+// correo al instante (copia a quien asigna y a Dirección), correo 5 min antes
+// (api/cron/prospecto-llamadas-recordatorio.js) y aparece en el correo de las
+// 7 am. Tabla: prospecto_llamadas_asignadas.
+// ════════════════════════════════════════════════════════════════════════════
+function llamadasBarraHtml(){
+  return `<div class="card" style="padding:12px 16px;margin-bottom:14px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+      <div style="font-size:13px;font-weight:700;color:var(--navy);">📞 Llamadas asignadas a vendedores</div>
+      <button onclick="llamadaModal(null)" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">＋ Prospecto de WhatsApp → vendedor</button>
+    </div>
+    <div id="llamadasAsignadasBox" style="margin-top:10px;font-size:12px;color:var(--text3);">Cargando...</div>
+  </div>`;
+}
+async function llamadasCargarPanel(){
+  const box=document.getElementById('llamadasAsignadasBox'); if(!box) return;
+  try{
+    const {data,error}=await sb.from('prospecto_llamadas_asignadas').select('*').eq('estado','pendiente').order('fecha',{ascending:true}).order('hora',{ascending:true});
+    if(error) throw error;
+    const yo=currentUser.id, esDir=userProfile?.rol==='director';
+    const lista=(data||[]).filter(l=>esDir||l.vendedor_id===yo||l.asignado_por===yo);
+    if(!lista.length){box.innerHTML='<div style="font-style:italic;">No hay llamadas pendientes.</div>';return;}
+    const pIds=[...new Set(lista.map(l=>l.prospecto_id))];
+    const {data:ps}=await sb.from('prospectos').select('id,nombre,apellidos,telefono,empresa').in('id',pIds);
+    const pm={};(ps||[]).forEach(p=>pm[p.id]=p);
+    const {data:us}=await sb.from('usuarios').select('id,nombre');
+    const um={};(us||[]).forEach(u=>um[u.id]=u.nombre);
+    const hoy=todayLocal();
+    const f=d=>{const x=String(d||'').slice(0,10).split('-');return x.length===3?x[2]+'/'+x[1]:d;};
+    box.innerHTML=lista.map(l=>{
+      const p=pm[l.prospecto_id]||{};const vencida=l.fecha<hoy;
+      const nom=[p.nombre,p.apellidos].filter(Boolean).join(' ')||'Prospecto';
+      const mia=l.vendedor_id===yo;
+      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+        <div style="min-width:220px;"><b style="color:var(--text);">${nom.replace(/</g,'&lt;')}</b>${p.empresa?' · '+String(p.empresa).replace(/</g,'&lt;'):''}
+          <div style="font-size:11px;color:${vencida?'var(--red)':'var(--text3)'};">${vencida?'⚠ Vencida · ':''}${f(l.fecha)}${l.hora?' '+String(l.hora).slice(0,5):''} · Tel. ${p.telefono||'—'} · ${mia?'Asignada por '+(l.asignado_por_nombre||'—'):'Para '+(um[l.vendedor_id]||'—')}</div>
+          ${l.motivo?`<div style="font-size:11px;color:var(--text2);">${String(l.motivo).replace(/</g,'&lt;')}</div>`:''}
+        </div>
+        <div style="display:flex;gap:6px;">
+          ${(mia||esDir)?`<button onclick="llamadaMarcar('${l.id}','hecha')" style="background:#27AE60;color:#fff;border:none;border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer;">✔ Hecha</button>`:''}
+          <button onclick="llamadaMarcar('${l.id}','cancelada')" style="background:var(--surf2);color:var(--text3);border:1px solid var(--border);border-radius:5px;padding:4px 10px;font-size:11px;cursor:pointer;">Cancelar</button>
+        </div></div>`;
+    }).join('');
+  }catch(e){box.innerHTML='<span style="color:var(--red);">No se pudieron cargar las llamadas: '+(e.message||e)+'</span>';}
+}
+async function llamadaMarcar(id,estado){
+  let resultado=null;
+  if(estado==='hecha'){
+    resultado=prompt('¿Cómo salió la llamada? (ej. interesado, mandar cotización, no contestó, no le interesa)');
+    if(resultado===null) return;
+    resultado=resultado.trim();
+    if(resultado.length<3) return alert('Escribe el resultado, aunque sea breve.');
+  } else if(!confirm('¿Cancelar esta llamada programada?')) return;
+  const {data:l}=await sb.from('prospecto_llamadas_asignadas').select('prospecto_id').eq('id',id).maybeSingle();
+  const {error}=await sb.from('prospecto_llamadas_asignadas').update({estado,resultado,hecha_at:estado==='hecha'?new Date().toISOString():null}).eq('id',id);
+  if(error) return alert('No se pudo actualizar: '+error.message);
+  if(estado==='hecha'&&l){
+    try{ await sb.from('prospecto_llamadas').insert({prospecto_id:l.prospecto_id,usuario_id:currentUser.id,fecha:todayLocal(),resultado:'Contactado',notas:resultado}); }catch(e){}
+    try{ await sb.from('prospectos').update({notas:resultado,fecha_contacto:todayLocal(),updated_at:new Date().toISOString()}).eq('id',l.prospecto_id); }catch(e){}
+  }
+  uiToast(estado==='hecha'?'✓ Llamada registrada':'Llamada cancelada');
+  llamadasCargarPanel();
+}
+async function llamadaModal(prospectoId){
+  document.getElementById('modalLlamada')?.remove();
+  const {data:vends}=await sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre');
+  let p=null;
+  if(prospectoId){ p=(window._prospectos||[]).find(x=>x.id===prospectoId); if(!p){const r=await sb.from('prospectos').select('*').eq('id',prospectoId).maybeSingle();p=r.data;} }
+  const inp='width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:\'Inter\',sans-serif;box-sizing:border-box;';
+  const lab='font-size:11px;font-weight:600;color:var(--text3);margin:10px 0 3px;display:block;';
+  const d=document.createElement('div');d.id='modalLlamada';
+  d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+  d.innerHTML=`<div style="background:var(--surface,#fff);border-radius:12px;max-width:460px;width:100%;padding:20px 22px;max-height:92vh;overflow:auto;">
+    <div style="font-size:16px;font-weight:700;color:var(--navy);margin-bottom:2px;">📞 Pasar prospecto a vendedor</div>
+    <div style="font-size:12px;color:var(--text3);">El vendedor recibe correo al instante y un recordatorio 5 min antes.</div>
+    ${p?`<div style="margin-top:10px;padding:8px 10px;background:var(--surf2);border-radius:8px;font-size:13px;"><b>${(p.nombre||'').replace(/</g,'&lt;')} ${(p.apellidos||'').replace(/</g,'&lt;')}</b> · ${p.telefono||'sin teléfono'}</div><input type="hidden" id="llId" value="${p.id}">`
+    :`<label style="${lab}">Nombre *</label><input id="llNombre" style="${inp}" placeholder="Nombre y apellidos">
+      <label style="${lab}">Teléfono / WhatsApp *</label><input id="llTel" style="${inp}" inputmode="tel" placeholder="10 dígitos">
+      <label style="${lab}">Correo</label><input id="llMail" style="${inp}" type="email">
+      <label style="${lab}">Empresa</label><input id="llEmp" style="${inp}">`}
+    <label style="${lab}">Vendedor *</label>
+    <select id="llVend" style="${inp}"><option value="">— Elegir —</option>${(vends||[]).map(v=>`<option value="${v.id}">${v.nombre}</option>`).join('')}</select>
+    <div style="display:flex;gap:10px;"><div style="flex:1;"><label style="${lab}">Fecha de la llamada *</label><input id="llFecha" type="date" value="${todayLocal()}" style="${inp}"></div>
+      <div style="flex:1;"><label style="${lab}">Hora *</label><input id="llHora" type="time" style="${inp}"></div></div>
+    <label style="${lab}">Motivo / qué pidió el cliente *</label>
+    <textarea id="llMotivo" rows="3" style="${inp}" placeholder="Ej. Pidió cotización de NOI, quiere que le llamen por la tarde…"></textarea>
+    <div id="llErr" style="color:var(--red);font-size:12px;margin-top:8px;"></div>
+    <div style="display:flex;gap:8px;margin-top:14px;">
+      <button id="llBtn" onclick="llamadaGuardar()" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:10px;font-size:13px;font-weight:600;cursor:pointer;">Asignar y avisar</button>
+      <button onclick="document.getElementById('modalLlamada').remove()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:10px 16px;font-size:13px;cursor:pointer;">Cancelar</button>
+    </div></div>`;
+  document.body.appendChild(d);
+}
+async function llamadaGuardar(){
+  const err=m=>{document.getElementById('llErr').textContent=m;};
+  const btn=document.getElementById('llBtn');
+  const vend=document.getElementById('llVend').value, fecha=document.getElementById('llFecha').value, hora=document.getElementById('llHora').value, motivo=document.getElementById('llMotivo').value.trim();
+  let pid=document.getElementById('llId')?.value||null;
+  if(!vend) return err('Elige al vendedor.');
+  if(!fecha||!hora) return err('Pon la fecha y la hora de la llamada.');
+  if(motivo.length<5) return err('Escribe qué pidió el cliente (mínimo una frase).');
+  btn.disabled=true;btn.textContent='Guardando...';
+  try{
+    const hoy=todayLocal();
+    if(!pid){
+      const nombre=document.getElementById('llNombre').value.trim(), tel=document.getElementById('llTel').value.trim();
+      if(!nombre||!tel){btn.disabled=false;btn.textContent='Asignar y avisar';return err('Nombre y teléfono son obligatorios.');}
+      const dig=tel.replace(/\D/g,'').slice(-10);
+      if(dig.length>=10){
+        const {data:ya}=await sb.from('prospectos').select('id,nombre,telefono').ilike('telefono','%'+dig).limit(1);
+        if(ya&&ya.length&&confirm('Ya existe un prospecto con ese teléfono: '+ya[0].nombre+'.\n\n¿Usar ese mismo en lugar de crear uno nuevo?')) pid=ya[0].id;
+      }
+      if(!pid){
+        const {data:nuevo,error:e1}=await sb.from('prospectos').insert({nombre,telefono:tel,email:document.getElementById('llMail').value.trim()||null,empresa:document.getElementById('llEmp').value.trim()||null,origen:'WhatsApp-Respond',estatus:'Canalizado a ventas',asignado_a:currentUser.id,vendedor_asignado:vend,respondio_ok:true,fecha_contacto:hoy,notas:motivo,anio:currentYear,mes:currentMonth}).select().single();
+        if(e1) throw e1;
+        pid=nuevo.id;
+      }
+    }
+    const upd={vendedor_asignado:vend,estatus:'Canalizado a ventas',fecha_contacto:hoy,updated_at:new Date().toISOString()};
+    const {error:e2}=await sb.from('prospectos').update(upd).eq('id',pid);
+    if(e2) throw e2;
+    const {data:ll,error:e3}=await sb.from('prospecto_llamadas_asignadas').insert({prospecto_id:pid,vendedor_id:vend,asignado_por:currentUser.id,asignado_por_nombre:userProfile?.nombre||null,fecha,hora,motivo}).select().single();
+    if(e3) throw e3;
+    const p=(window._prospectos||[]).find(x=>x.id===pid); if(p) Object.assign(p,upd);
+    try{ sincronizarProspectoCrm({prospecto_id:pid,estatus:'Canalizado a ventas'}); }catch(e){}
+    document.getElementById('modalLlamada')?.remove();
+    uiToast('✓ Llamada asignada — avisando al vendedor por correo…');
+    try{
+      const {data:sess}=await sb.auth.getSession();
+      fetch('/api/prospecto-llamada-avisar',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({llamada_id:ll.id})})
+        .then(r=>r.json()).then(j=>{ if(j.ok) uiToast('✉ Correo enviado al vendedor'); else alert('La llamada quedó asignada, pero NO se pudo enviar el correo: '+(j.error||'error')+'\n\nAvísale al vendedor directamente.'); })
+        .catch(()=>alert('La llamada quedó asignada, pero no se pudo enviar el correo. Avísale al vendedor directamente.'));
+    }catch(e){}
+    llamadasCargarPanel();
+  }catch(e){
+    btn.disabled=false;btn.textContent='Asignar y avisar';
+    err('No se pudo guardar: '+(e.message||e));
+  }
+}
 // "Tomar" — el vendedor se autoasigna un prospecto sin asignar, sin
 // depender de que telemarketing lo canalice primero (pedido de Jp,
 // 2026-10-15, al ver que casi nada estaba canalizado).
@@ -20920,7 +21067,7 @@ async function renderDirectorCRM(){
   });
   const sinVendedorAsignado=canalizadosConVendedor.length<canalizados?canalizados-canalizadosConVendedor.length:0;
 
-  mc.innerHTML=`
+  mc.innerHTML=`${llamadasBarraHtml()}
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
     <div>
       <div style="font-size:18px;font-weight:600;color:var(--text);">Prospectos del equipo</div>
@@ -21006,6 +21153,7 @@ async function renderDirectorCRM(){
   window._dirUsers=users||[];
   dirRenderHead();
   dirFiltrar();
+  llamadasCargarPanel();
 }
 
 // Jp, 2026-10-16: columnas ordenables con clic (como pidió) — estado global
