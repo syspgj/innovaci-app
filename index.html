@@ -9191,13 +9191,41 @@ async function catProyCargar(){
     // Jp, 2026-11-11: los cursos/talleres/diplomados se eligen del catálogo único (el mismo que Shopify),
     // para que la solicitud de facturación llegue ya ligada a su generación de Academia.
     try{
-      const {data:ci}=await sb.from('catalogo_items').select('nombre,familia').eq('activo',true).in('familia',['Cursos','Diplomados','Talleres']).order('nombre').limit(500);
+      const {data:ci}=await sb.from('catalogo_items').select('id,nombre,familia').eq('activo',true).in('familia',['Cursos','Diplomados','Talleres']).order('nombre').limit(500);
       if(ci&&ci.length){
-        const vistos=new Set();
+        // Jp, 2026-11-14: "Curso o Diplomado en Vivo" solo muestra lo que tiene una generación VIGENTE en Academia
+        // (no archivada y con fecha de fin hoy o después; los 24/7 cuentan mientras no estén archivados).
+        // Se controla desde Academia → Generaciones. Si la consulta falla, no se filtra nada.
+        let vigIds=null,mapaGens=null,gensInfo={};
+        try{
+          const hoy=todayLocal();
+          const [{data:gs},{data:mp}]=await Promise.all([
+            sb.from('academia_generaciones').select('id,fecha_inicio,fecha_fin,archivado_manual,curso:curso_id(modalidad)').limit(600),
+            sb.from('shopify_producto_map').select('catalogo_item_id,generacion_ids')]);
+          if(gs&&mp){
+            vigIds=new Set();
+            gs.forEach(g=>{gensInfo[g.id]=g;if(!g.archivado_manual&&(!g.fecha_fin||g.fecha_fin>=hoy||g.curso?.modalidad==='24_7')) vigIds.add(g.id);});
+            mapaGens={};
+            mp.forEach(m=>{if(!m.catalogo_item_id) return;(mapaGens[m.catalogo_item_id]=mapaGens[m.catalogo_item_id]||new Set());(m.generacion_ids||[]).forEach(i=>mapaGens[m.catalogo_item_id].add(i));});
+          }
+        }catch(e){console.error('catProy vigentes',e);vigIds=null;mapaGens=null;}
+        const fechaCorta=iso=>{try{return new Date(iso+'T12:00:00').toLocaleDateString('es-MX',{day:'numeric',month:'short'}).replace('.','');}catch(e){return iso;}};
+        // Agrupa por nombre (el catálogo repite nombres): un nombre es vigente si CUALQUIERA de sus filas tiene generación vigente
+        const porNombre={};
+        ci.forEach(x=>{const k=x.nombre.trim().toLowerCase();(porNombre[k]=porNombre[k]||{x,ids:new Set()}).ids.add(x.id);});
         const nuevos=[];
-        ci.forEach(x=>{
-          const k=x.nombre.trim().toLowerCase(); if(vistos.has(k)) return; vistos.add(k);
-          nuevos.push({tipo_servicio:/24\/7|247/i.test(x.nombre)?'24/7':'Curso o Diplomado en Vivo',nombre:x.nombre,orden:0,solo_para:null,grupo:x.familia});
+        Object.values(porNombre).forEach(({x,ids})=>{
+          const es247=/24\/7|247/i.test(x.nombre);
+          let etiqueta='';
+          if(!es247&&vigIds&&mapaGens){
+            const ligadas=new Set();ids.forEach(i=>(mapaGens[i]||new Set()).forEach(g=>ligadas.add(g)));
+            const vig=[...ligadas].filter(g=>vigIds.has(g));
+            if(!vig.length) return; // sin generación vigente: no se ofrece
+            if(typeof solEsCombo==='function'&&solEsCombo(x.nombre)&&todayLocal()>=COMBO_NOI_FIN) return; // combo cerrado el 30-nov
+            const fechas=vig.map(g=>gensInfo[g]?.fecha_inicio).filter(Boolean).sort();
+            if(fechas.length) etiqueta=' — '+fechas.map(fechaCorta).join(' + ');
+          }
+          nuevos.push({tipo_servicio:es247?'24/7':'Curso o Diplomado en Vivo',nombre:x.nombre,orden:0,solo_para:null,grupo:x.familia,etiqueta});
         });
         CAT_PROY=CAT_PROY.filter(c=>c.tipo_servicio!=='24/7'&&c.tipo_servicio!=='Curso o Diplomado en Vivo').concat(nuevos);
       }
@@ -9216,7 +9244,7 @@ function catProyPintar(actual){
   if(!items.length){sel.style.display='none'; inp.style.display=''; return;}
   const val=(actual!==undefined?actual:inp.value)||'';
   const grupos=[...new Set(items.map(i=>i.grupo||''))];
-  const opt=i=>`<option value="${i.nombre.replace(/"/g,'&quot;')}" ${i.nombre===val?'selected':''}>${i.nombre}</option>`;
+  const opt=i=>`<option value="${i.nombre.replace(/"/g,'&quot;')}" ${i.nombre===val?'selected':''}>${i.nombre}${i.etiqueta||''}</option>`;
   const enLista=items.some(i=>i.nombre===val);
   sel.innerHTML='<option value="">— Elige —</option>'+grupos.map(g=>g?`<optgroup label="${g}">${items.filter(i=>(i.grupo||'')===g).map(opt).join('')}</optgroup>`:items.filter(i=>!i.grupo).map(opt).join('')).join('')
     +(val&&!enLista?`<option value="__otro" selected>Otro: ${val}</option>`:'')+'<option value="__otro">Otro (escribir)…</option>';
@@ -24273,7 +24301,7 @@ async function revisarDropboxPoliza(id){
     const {data:sess}=await sb.auth.getSession();
     const res=await fetch('/api/admin-resguardo-revisar?poliza_id='+encodeURIComponent(id),{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
     const j=await res.json().catch(()=>({}));
-    if(!res.ok||!j.ok){alert('No se pudo revisar Dropbox: '+(j.error||j.errores?.[0]?.error||res.status));}
+    if(!res.ok||!j.ok){alert(dropboxErrorAmigable(j.error||j.errores?.[0]?.error||res.status,j.errores?.[0]?.carpeta));}
     document.getElementById('modalDetallePoliza')?.remove();
     abrirDetallePoliza(id);
   }catch(e){
@@ -24281,6 +24309,59 @@ async function revisarDropboxPoliza(id){
     if(btn){btn.disabled=false;btn.textContent='🔄 Revisar Dropbox ahora';}
   }
 }
+// Jp, 2026-11-14: mensajes claros cuando falla la revisión de Dropbox (antes salía el error crudo de la API).
+function dropboxErrorAmigable(err,carpeta){
+  const e=String(err||'');
+  if(/not_found/i.test(e)) return `La carpeta «${carpeta||''}» no existe en Dropbox (el nombre no coincide). Pulsa "📂 Buscar carpeta" para elegir la correcta.`;
+  if(/no está configurado|faltan variables/i.test(e)) return 'Dropbox aún no está conectado en el servidor (faltan variables de entorno).';
+  return 'No se pudo revisar la carpeta de Dropbox: '+e.replace(/^Dropbox list_folder \([^)]*\) falló: /,'').slice(0,200);
+}
+// Buscador de carpetas de Dropbox: lista las carpetas reales (un nivel), se puede entrar a subcarpetas y elegir una.
+async function dropboxBuscarCarpeta(id,ruta){
+  const inp=document.getElementById('resguardoDropboxFolder_'+id);
+  let path=ruta;
+  if(path===undefined){ // empieza en la carpeta que contiene a la capturada (o en la raíz)
+    const act=(inp?.value||'').trim().replace(/\/+$/,'');
+    path=act.includes('/')?act.replace(/\/[^/]*$/,''):'';
+  }
+  document.getElementById('modalDropboxCarpetas')?.remove();
+  const d=document.createElement('div');d.id='modalDropboxCarpetas';
+  d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100010;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:30px 12px;';
+  d.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px 20px;width:100%;max-width:560px;box-shadow:0 10px 40px rgba(0,0,0,.3);"><div style="font-size:14px;font-weight:700;">📂 Carpetas de Dropbox</div><div style="margin-top:12px;font-size:12px;color:var(--text3);">Cargando carpetas…</div></div>';
+  d.onclick=e=>{if(e.target===d) d.remove();};
+  document.body.appendChild(d);
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/dropbox-carpetas',{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||''),'content-type':'application/json'},body:JSON.stringify({path})});
+    const j=await res.json().catch(()=>({}));
+    if(!j.ok&&j.error==='not_found'&&path!==''){ d.remove(); return dropboxBuscarCarpeta(id,''); }
+    if(!res.ok||!j.ok){ d.firstChild.innerHTML='<div style="font-size:14px;font-weight:700;">📂 Carpetas de Dropbox</div><div style="margin-top:10px;font-size:12px;color:#c0392b;">'+(j.error||res.status)+'</div><button onclick="document.getElementById(\'modalDropboxCarpetas\').remove()" style="margin-top:12px;border:1px solid var(--border);background:#fff;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;">Cerrar</button>'; return; }
+    window._dbxCarpetas=j.carpetas||[];window._dbxPolizaId=id;window._dbxRuta=j.path||'';
+    const padre=(j.path||'').includes('/')?(j.path||'').replace(/\/[^/]*$/,''):'';
+    const fila=(c,i)=>`<div class="dbxFila" data-n="${String(c.nombre).toLowerCase().replace(/"/g,'')}" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid #eee;"><span style="font-size:12.5px;">📁 ${c.nombre}</span><span style="white-space:nowrap;"><button onclick="dropboxCarpetaIr(${i})" style="border:1px solid var(--border);background:#fff;border-radius:6px;padding:3px 9px;font-size:11px;cursor:pointer;">Abrir ›</button> <button onclick="dropboxCarpetaElegir(${i})" style="border:none;background:var(--teal);color:#fff;border-radius:6px;padding:3px 10px;font-size:11px;font-weight:700;cursor:pointer;">Elegir</button></span></div>`;
+    d.firstChild.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;"><div style="font-size:14px;font-weight:700;">📂 Carpetas de Dropbox</div><button onclick="document.getElementById('modalDropboxCarpetas').remove()" style="border:none;background:none;font-size:18px;cursor:pointer;">✕</button></div>
+      <div style="font-size:11px;color:var(--text3);margin:4px 0 8px;font-family:'JetBrains Mono',monospace;">${j.path||'/ (raíz)'}</div>
+      <div style="display:flex;gap:6px;margin-bottom:8px;">${j.path?`<button onclick="dropboxBuscarCarpeta('${id}',window._dbxPadre)" style="border:1px solid var(--border);background:#fff;border-radius:6px;padding:5px 10px;font-size:11px;cursor:pointer;">⬆ Subir</button>`:''}<input id="dbxFiltro" oninput="dropboxCarpetaFiltrar()" placeholder="Filtrar por nombre…" style="flex:1;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;"></div>
+      <div style="max-height:360px;overflow:auto;">${(j.carpetas||[]).map(fila).join('')||'<div style="padding:14px;font-size:12px;color:var(--text3);">No hay subcarpetas aquí.'+(j.archivos?` (${j.archivos} archivo${j.archivos===1?'':'s'} en este nivel)`:'')+'</div>'}</div>
+      ${j.path?`<div style="margin-top:10px;"><button onclick="dropboxCarpetaElegirActual()" style="border:1px solid var(--teal);background:#fff;color:var(--teal);border-radius:6px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;">Elegir ESTA carpeta (${j.path.split('/').pop()})</button></div>`:''}`;
+    window._dbxPadre=padre;
+  }catch(e){
+    d.firstChild.innerHTML='<div style="font-size:12px;color:#c0392b;">No se pudo consultar Dropbox: '+(e.message||e)+'</div><button onclick="document.getElementById(\'modalDropboxCarpetas\').remove()" style="margin-top:12px;border:1px solid var(--border);background:#fff;border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer;">Cerrar</button>';
+  }
+}
+function dropboxCarpetaFiltrar(){
+  const q=(document.getElementById('dbxFiltro')?.value||'').toLowerCase().trim();
+  document.querySelectorAll('#modalDropboxCarpetas .dbxFila').forEach(f=>{f.style.display=(!q||f.dataset.n.includes(q))?'flex':'none';});
+}
+function dropboxCarpetaIr(i){const c=(window._dbxCarpetas||[])[i];if(c) dropboxBuscarCarpeta(window._dbxPolizaId,c.path);}
+function dropboxCarpetaPoner(path){
+  const inp=document.getElementById('resguardoDropboxFolder_'+window._dbxPolizaId);
+  if(inp){inp.value=path;inp.style.background='#e6f6f5';}
+  document.getElementById('modalDropboxCarpetas')?.remove();
+  uiToast('📂 Carpeta elegida: '+path+' — pulsa "💾 Guardar configuración".',true);
+}
+function dropboxCarpetaElegir(i){const c=(window._dbxCarpetas||[])[i];if(c) dropboxCarpetaPoner(c.path);}
+function dropboxCarpetaElegirActual(){if(window._dbxRuta) dropboxCarpetaPoner(window._dbxRuta);}
 async function guardarConfigResguardo(id){
   const servidorSel=document.getElementById('resguardoServidorProducto_'+id);
   const folderInput=document.getElementById('resguardoDropboxFolder_'+id);
@@ -24478,7 +24559,7 @@ async function abrirDetallePoliza(id){
     const atrasado=!!(periodicidadDias&&ultimoValidado&&diasSin>periodicidadDias);
     let alertaTxt=null,alertaTipo='ok';
     if(c.estatus==='CERRADA'){alertaTxt='Póliza cerrada — no se revisa.';alertaTipo='gris';}
-    else if(c.dropbox_revision_error){alertaTxt='No se pudo revisar la carpeta de Dropbox: '+c.dropbox_revision_error;alertaTipo='rojo';}
+    else if(c.dropbox_revision_error){alertaTxt=dropboxErrorAmigable(c.dropbox_revision_error,c.resguardo_dropbox_folder);alertaTipo='rojo';}
     else if(!periodicidadDias){alertaTxt='Falta definir la periodicidad de esta póliza (abajo, en Configuración de resguardo).';alertaTipo='amarillo';}
     else if(!ultimoValidado){alertaTxt=c.resguardo_dropbox_folder?(c.dropbox_revision_at?'Requiere revisión: no hay ningún respaldo validado todavía.':'Sin revisar aún — pulsa "Revisar Dropbox ahora".'):'Requiere revisión: sin carpeta de Dropbox ni evidencia subida.';alertaTipo=c.dropbox_revision_at||!c.resguardo_dropbox_folder?'rojo':'amarillo';}
     else if(atrasado){alertaTxt=`Requiere revisión: el último respaldo es de hace ${diasSin} días (se esperaba cada ${periodicidadDias}).`;alertaTipo='rojo';}
@@ -24501,8 +24582,8 @@ async function abrirDetallePoliza(id){
     const revisionTxt=c.dropbox_revision_at?new Date(c.dropbox_revision_at).toLocaleString('es-MX',{timeZone:'America/Mexico_City',dateStyle:'short',timeStyle:'short'}):null;
     const dropboxDetalleHtml=c.resguardo_dropbox_folder
       ?`<div style="font-size:11px;margin-top:6px;">📂 Carpeta: <span style="font-family:'JetBrains Mono',monospace;">${c.resguardo_dropbox_folder}</span>
-        ${c.dropbox_revision_error?`<br><span style="color:var(--red);">${c.dropbox_revision_error}</span>`:''}
-        ${!c.dropbox_revision_error&&c.dropbox_revision_at?(c.dropbox_ultimo_archivo?`<br>Último archivo en la carpeta: <b>${ultArchFecha}</b> — <span style="color:var(--text3);">${ultArchNombre}</span> <span style="color:var(--text3);">(${c.dropbox_archivos_total} archivos en total)</span>`:'<br>La carpeta no tiene archivos.'):''}
+        ${c.dropbox_revision_error?`<br><span style="color:var(--red);">${dropboxErrorAmigable(c.dropbox_revision_error,c.resguardo_dropbox_folder)}</span>`:''}
+        ${!c.dropbox_revision_error&&c.dropbox_revision_at?(c.dropbox_ultimo_archivo?`<br>Último archivo en la carpeta: <b>${ultArchFecha}</b> — <span style="color:var(--text3);">${ultArchNombre}</span> <span style="color:var(--text3);">(${c.dropbox_archivos_total} archivos en total)</span>`:'<br><span style="color:#c47f0a;">La carpeta existe pero está vacía: no hay respaldos en Dropbox.</span>'):''}
         <br><span style="color:var(--text3);">${revisionTxt?'Última revisión: '+revisionTxt+' · ':'Nunca revisada · '}corre sola una vez al día.</span></div>`
       :`<div style="font-size:11px;margin-top:6px;color:var(--text3);">Sin carpeta de Dropbox capturada todavía — captúrala en "⚙ Configuración de resguardo" para activar la validación automática. Mientras tanto, sigue subiendo la evidencia manualmente.</div>`;
     const botonRevisarHtml=c.resguardo_dropbox_folder?`<div style="margin-top:8px;"><button id="btnRevisarDropbox_${id}" onclick="revisarDropboxPoliza('${id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">🔄 Revisar Dropbox ahora</button></div>`:'';
@@ -24542,7 +24623,11 @@ async function abrirDetallePoliza(id){
       </div>
       <div style="margin-bottom:8px;">
         <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Carpeta en Dropbox (nombre/ruta exacta de la carpeta del cliente)</div>
-        <input type="text" id="resguardoDropboxFolder_${id}" value="${c.resguardo_dropbox_folder||''}" placeholder="/Clientes/Nombre corto" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;width:100%;">
+        <div style="display:flex;gap:6px;align-items:center;">
+          <input type="text" id="resguardoDropboxFolder_${id}" value="${c.resguardo_dropbox_folder||''}" placeholder="/Espacio familiar/NOMBRE" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;flex:1;min-width:0;">
+          <button type="button" onclick="dropboxBuscarCarpeta('${id}')" style="background:#fff;color:var(--navy);border:1px solid var(--navy);border-radius:6px;padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">📂 Buscar carpeta</button>
+        </div>
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;">Si no sabes cómo se llama, pulsa "Buscar carpeta": verás las carpetas reales de Dropbox y eliges la correcta con un clic. Después pulsa "Guardar configuración".</div>
       </div>
       <div style="margin-bottom:8px;">
         <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Ajuste manual de periodicidad en días (opcional — tiene prioridad sobre servidor y catálogo)</div>
@@ -32572,6 +32657,7 @@ async function solAplicarPrefillShopify(id){
   set('sfForma',/paypal/i.test(p.pasarela||'')?'PayPal':(pg.auto||p.estado_pago!=='paid'&&!/manual/i.test(p.pasarela||'')?'Shopify':'Transferencia'));
   if(document.getElementById('sfForma').value==='Shopify'&&/manual|deposit|dep[oó]sito|transfer|bank/i.test(p.pasarela||'')) set('sfForma','Transferencia');
   set('sfShopPedido',p.numero);set('sfConcepto',concepto);set('sfTotal',p.total);
+  { const ts=document.getElementById('sfTipoServ'); if(ts){ const tt=shpTipoServicio(p,concepto); if([...ts.options].some(o=>o.value===tt)) ts.value=tt; solTipoServCambio(); } }
   set('sfTipo',p.estado_pago==='paid'?'con_pago':'liberar_pago');
   if(typeof solTipoCambio==='function') solTipoCambio();
   if(p.estado_pago==='paid'){
@@ -32596,9 +32682,9 @@ async function solAplicarPrefillShopify(id){
   if(linked.length){
     if(!window._solGens) await solCargarGeneraciones();
     const {data:gl}=await sb.from('academia_generaciones').select('id,curso_id').in('id',linked);
-    const porCurso={};(gl||[]).forEach(g=>{(porCurso[g.curso_id]=porCurso[g.curso_id]||[]).push(g.id);});
+    const porCurso={};(gl||[]).filter(g=>solEsVig(g.id)).forEach(g=>{(porCurso[g.curso_id]=porCurso[g.curso_id]||[]).push(g.id);});
     const auto=Object.values(porCurso).filter(a=>a.length===1).map(a=>a[0]);
-    window._solGenSug=new Set(linked);
+    window._solGenSug=new Set(linked.filter(solEsVig));
     if(!shpEsDir()) window._solGenSolo=new Set(linked);
     const box=document.getElementById('sfAcadGens');
     if(box){box.dataset.sel=auto.join(',');await solAcadCargarGens('sf');}
@@ -32630,7 +32716,8 @@ async function renderSolFacturaVendedor(){
       ${solFld('RFC del cliente',`<input id="sfRfc" style="${SOL_INPUT_STYLE}text-transform:uppercase;">`)}
       ${solFld('Total a facturar (con IVA)',`<input id="sfTotal" type="number" step="0.01" placeholder="0.00" style="${SOL_INPUT_STYLE}">`)}
     </div>
-    ${solFld('Concepto / curso o servicio',`<input id="sfConcepto" list="sfConceptoLista" placeholder="Elige del catálogo o escribe" style="${SOL_INPUT_STYLE}" onfocus="solCargarCatalogoConcepto()"><datalist id="sfConceptoLista"></datalist>`,'Empieza a escribir para ver el catálogo de productos y servicios; también puedes escribirlo libre.')}
+    ${solFld('Tipo de servicio',`<select id="sfTipoServ" onchange="solTipoServCambio()" style="${SOL_INPUT_STYLE}"><option value="">— Elige el tipo —</option>${TIPOS_SERVICIO.map(t=>`<option value="${solEsc(t)}">${solEsc(t)}</option>`).join('')}</select>`,'Elige primero el tipo, igual que en Proyección. Si es Curso o Diplomado en Vivo o 24/7, te pediré los datos del alumno y no podrás enviar sin ellos.')}
+    ${solFld('Concepto / curso o servicio',`<input id="sfConcepto" list="sfConceptoLista" placeholder="Elige del catálogo o escribe" style="${SOL_INPUT_STYLE}" onfocus="solCargarCatalogoConcepto()"><datalist id="sfConceptoLista"></datalist>`,'Empieza a escribir para ver el catálogo del tipo elegido (en vivo: solo los que tienen generación vigente); también puedes escribirlo libre.')}
     ${solFld('Liga de la oportunidad en el CRM',`<input id="sfCrm" placeholder="http://crminn.dynns.com/..." style="${SOL_INPUT_STYLE}">`)}
     <label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;margin-bottom:10px;padding:9px 12px;background:#fffbea;border:1px solid #f3dc8a;border-radius:8px;cursor:pointer;"><input type="checkbox" id="sfPublicoGral" onchange="solPublicoGralCambio()" style="margin-top:2px;"><span><b>El cliente no requiere factura → facturar a Violeta</b><br><span style="color:var(--text3);">Se usan los datos fiscales de Violeta (Tania Violeta Olague Sánchez). El comprador real sigue siendo el cliente que elegiste. Administración lo ve marcado.</span></span></label>
     <div id="sfBloquePago" style="background:#f8fafb;border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;">
@@ -32656,7 +32743,12 @@ async function renderSolFacturaVendedor(){
   solCargarListaVendedor();
   solCargarGeneraciones();
   solAplicarPrefill();
-  document.getElementById('sfConcepto')?.addEventListener('change',e=>{ if(typeof solSugerirGensPorConcepto==='function') solSugerirGensPorConcepto('sf',e.target.value); });
+  document.getElementById('sfConcepto')?.addEventListener('change',async e=>{
+    const ts=document.getElementById('sfTipoServ');
+    if(ts&&!ts.value){const inf=solTipoDeConcepto(e.target.value);if(inf){ts.value=inf;await solTipoServCambio();}}
+    if(typeof solSugerirGensPorConcepto==='function') solSugerirGensPorConcepto('sf',e.target.value);
+  });
+  solTipoServCambio();
   document.getElementById('sfConcepto')?.addEventListener('input',e=>{const n=solAcadNivelDeConcepto(e.target.value);const sl=document.getElementById('sfAcadNivel');if(n&&sl) sl.value=n;});
 }
 // ─── ACADEMIA DESDE LA SOLICITUD (Jp, 2026-11-03) ────────────────────────────
@@ -32665,6 +32757,24 @@ async function renderSolFacturaVendedor(){
 // acceso sin pago verificado). Datos en solicitudes_factura.academia (jsonb):
 // {asistentes:[{nombre,correo,telefono}],generaciones:[{id,clave,curso}],nivel,no_aplica,inscrito_at,resultado}
 const SOL_RE_CURSO=/CURSO|DIPLOMADO|TALLER|COMBO|CIERRE COMPLETO|AGUINALDO|MASTER|24\/7|ACADEMIA|CAPACITACI/i;
+// Jp, 2026-11-14 — Combo NOI 2026 (Aguinaldo 2-dic + Cierre de Año 8-dic): se vende hasta el 29-nov.
+// A partir del 30-nov ya no se puede mandar a facturar; se factura cada taller por separado.
+const COMBO_NOI_FIN='2026-11-30';
+function solEsCombo(c){const t=String(c||'');return /COMBO|CIERRE COMPLETO/i.test(t)&&/AGUINALDO|CIERRE/i.test(t);}
+function solComboCerrado(c){return solEsCombo(c)&&todayLocal()>=COMBO_NOI_FIN;}
+const SOL_MSG_COMBO_CERRADO='El combo NOI 2026 (Aguinaldo + Cierre de Año) dejó de venderse el 30 de noviembre. Factura cada taller por separado.';
+// ¿Este concepto lleva alumno en Academia? Con tipo de servicio elegido manda el tipo (24/7 y en vivo SÍ; lo demás NO);
+// sin tipo (p. ej. al reparar una solicitud vieja) se infiere por el nombre.
+function solRequiereAcademia(concepto,tipo){
+  if(tipo) return tipo==='24/7'||tipo==='Curso o Diplomado en Vivo';
+  return SOL_RE_CURSO.test(concepto||'');
+}
+function solTipoDeConcepto(c){
+  const t=String(c||'');
+  if(!SOL_RE_CURSO.test(t)) return '';
+  return /24\/7|247/.test(t)&&!solEsCombo(t)?'24/7':'Curso o Diplomado en Vivo';
+}
+function solEsVig(id){return !!(window._solGens||[]).find(g=>g.id===id&&g.__vig);}
 function solAcadNivelDeConcepto(c){const t=String(c||'').toUpperCase();return /PREMIUM/.test(t)?'premium':/PLUS/.test(t)?'plus':/ESENCIAL/.test(t)?'esencial':'';}
 function solAcadFilaHtml(p,a){
   a=a||{};
@@ -32676,13 +32786,34 @@ function solAcadFilaHtml(p,a){
 }
 
 // ── Comprobante de pago: elegir directo de la galería / cámara, pegar (Ctrl+V) o arrastrar ──
+// Jp, 2026-11-14: el catálogo de conceptos depende del TIPO elegido (como en Proyección). En vivo = solo lo vigente en Academia.
 async function solCargarCatalogoConcepto(){
-  if(window._solCatConc) return;window._solCatConc=true;
+  const dl=document.getElementById('sfConceptoLista');if(!dl) return;
+  const t=document.getElementById('sfTipoServ')?.value||'';
   try{
-    const {data}=await sb.from('catalogo_items').select('nombre').eq('activo',true).order('nombre').limit(500);
-    const dl=document.getElementById('sfConceptoLista');
-    if(dl) dl.innerHTML=(data||[]).map(x=>`<option value="${solEsc(x.nombre)}"></option>`).join('');
-  }catch(e){window._solCatConc=false;}
+    await catProyCargar();
+    const items=t?catProyItems(t):[];
+    if(items.length){dl.innerHTML=items.map(x=>`<option value="${solEsc(x.nombre)}">${solEsc((x.etiqueta||'').replace(/^ — /,''))}</option>`).join('');return;}
+    if(!window._solCatGen){const {data}=await sb.from('catalogo_items').select('nombre').eq('activo',true).order('nombre').limit(500);window._solCatGen=(data||[]).map(x=>x.nombre);}
+    dl.innerHTML=window._solCatGen.map(n=>`<option value="${solEsc(n)}"></option>`).join('');
+  }catch(e){console.error('catálogo concepto',e);}
+}
+// Al elegir el tipo: se acota el catálogo y, si es curso/diplomado (en vivo o 24/7), se despliega el bloque del alumno
+// sin opción de "no lleva alumnos". Para otros tipos (póliza, IT, etc.) el bloque se oculta.
+async function solTipoServCambio(){
+  const t=document.getElementById('sfTipoServ')?.value||'';
+  const req=t==='24/7'||t==='Curso o Diplomado en Vivo';
+  const caja=document.getElementById('sfAcadBox');
+  if(caja) caja.style.display=(!t||req)?'':'none';
+  const lab=document.getElementById('sfAcadNALabel'),na=document.getElementById('sfAcadNA');
+  if(lab) lab.style.display=req?'none':'';
+  if(na&&req) na.checked=false;
+  const c=document.getElementById('sfConcepto');
+  await solCargarCatalogoConcepto();
+  if(c&&c.value&&t){ // si el concepto ya escrito no corresponde al tipo (p. ej. un curso en vivo que ya no está vigente), se avisa
+    const items=(typeof catProyItems==='function'?catProyItems(t):[]);
+    if(items.length&&!items.some(x=>x.nombre===c.value)&&req) uiToast('Ese concepto no está en el catálogo vigente de "'+t+'". Elige uno de la lista o revisa con Capacitación.',true);
+  }
 }
 function solComprobanteHtml(){
   return `<input id="sfComprobante" type="file" accept="image/*,.pdf" style="display:none;" onchange="solComprobanteCambio(this)">
@@ -32736,8 +32867,8 @@ function solAcadHtml(p,ac){
   const as=(ac.asistentes&&ac.asistentes.length)?ac.asistentes:[{}];
   return `<div id="${p}AcadBox" style="background:#f3fafa;border:1px solid #9fd3d0;border-radius:8px;padding:12px 14px;margin-bottom:12px;">
     <div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:2px;">🎓 Alumno(s) y acceso en Academia</div>
-    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Obligatorio en cursos, talleres, diplomados y combos. El acceso se da solo cuando Dirección valida el pago. Si es un combo, marca las dos generaciones.</div>
-    <label style="font-size:11px;display:flex;gap:6px;align-items:center;margin-bottom:8px;"><input type="checkbox" id="${p}AcadNA" ${ac.no_aplica?'checked':''}> Este concepto no lleva alumnos en Academia</label>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Obligatorio en cursos, talleres y diplomados (en vivo o 24/7). Sin estos datos no se puede enviar a facturación. El acceso se da solo cuando Dirección valida el pago. Si es el combo NOI 2026, las dos generaciones se marcan solas.</div>
+    <label id="${p}AcadNALabel" style="font-size:11px;display:flex;gap:6px;align-items:center;margin-bottom:8px;"><input type="checkbox" id="${p}AcadNA" ${ac.no_aplica?'checked':''}> Este concepto no lleva alumnos en Academia</label>
     <div id="${p}AsLista">${as.map(a=>solAcadFilaHtml(p,a)).join('')}</div>
     <button type="button" onclick="document.getElementById('${p}AsLista').insertAdjacentHTML('beforeend',solAcadFilaHtml('${p}'))" style="border:1px solid var(--border);background:#fff;border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;margin-bottom:8px;">+ Otro asistente</button>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 12px;">
@@ -32752,7 +32883,8 @@ async function solAcadCargarGens(p){
   const box=document.getElementById(p+'AcadGens');if(!box) return;
   if(!window._solGens) await solCargarGeneraciones();
   const sug=window._solGenSug||new Set();
-  const gens=(window._solGens||[]).filter(g=>!window._solGenSolo||window._solGenSolo.has(g.id)||g.__sel).slice().sort((a,b)=>(sug.has(b.id)-sug.has(a.id))||String(a.fecha_inicio||'9').localeCompare(String(b.fecha_inicio||'9')));
+  const selPrev=new Set((box.dataset.sel||'').split(',').filter(Boolean));
+  const gens=(window._solGens||[]).filter(g=>(g.__vig||selPrev.has(g.id))&&(!window._solGenSolo||window._solGenSolo.has(g.id)||g.__sel||selPrev.has(g.id))).slice().sort((a,b)=>(sug.has(b.id)-sug.has(a.id))||String(a.fecha_inicio||'9').localeCompare(String(b.fecha_inicio||'9')));
   const sel=new Set((box.dataset.sel||'').split(',').filter(Boolean));
   box.innerHTML=gens.length?gens.map(g=>`<label style="display:flex;gap:6px;align-items:flex-start;padding:2px 0;"><input type="checkbox" class="${p}AcadGen" value="${g.id}" ${sel.has(g.id)?'checked':''}><span>${sug.has(g.id)?'⭐ ':''}${g.fecha_inicio?'<b>'+solFecha(g.fecha_inicio)+'</b> · ':''}${solEsc(g.curso?.nombre||'')} <span style="color:var(--text3);">(${solEsc(g.clave||'')})</span></span></label>`).join(''):'<span style="color:var(--text3);">No hay generaciones vigentes en Academia. Pídele a Dirección que las cree (en un combo, una por curso); mientras, puedes enviar sin generación y se asigna después desde la tarjeta.</span>';
 }
@@ -32762,19 +32894,23 @@ function solAcadLeer(p){
   const generaciones=ids.map(id=>{const g=(window._solGens||[]).find(x=>x.id===id);return {id,clave:g?.clave||'',curso:g?.curso?.nombre||''};});
   return {asistentes,generaciones,nivel:document.getElementById(p+'AcadNivel')?.value||'esencial',no_aplica:!!document.getElementById(p+'AcadNA')?.checked,fecha_texto:(document.getElementById(p+'AcadFecha')?.value||'').trim()};
 }
-function solAcadValidar(ac,concepto){
-  if(ac.no_aplica) return '';
-  if(!SOL_RE_CURSO.test(concepto||'')&&!ac.asistentes.length) return '';
-  if(!ac.asistentes.length) return 'Captura el nombre, correo y teléfono del asistente (o marca "no lleva alumnos en Academia").';
+function solAcadValidar(ac,concepto,tipo){
+  // Jp, 2026-11-14: candados para que NADA llegue a facturación sin alumno/generación (Academia ya no puede agregarlos a mano).
+  if(solComboCerrado(concepto)) return SOL_MSG_COMBO_CERRADO;
+  if(!solRequiereAcademia(concepto,tipo)) return '';
+  if(ac.no_aplica){
+    // Solo Dirección puede reparar una solicitud vieja marcándola "sin alumnos"; al capturar una nueva no hay escape.
+    if(!tipo&&typeof shpEsDir==='function'&&shpEsDir()) return '';
+    return 'Este concepto es un curso, taller o diplomado: debes capturar al asistente y su generación. No se puede marcar "sin alumnos".';
+  }
+  if(!ac.asistentes.length) return 'Captura el nombre, correo y teléfono del asistente. Sin esos datos no se puede enviar a facturación (Academia ya no puede agregarlos después).';
   const mal=ac.asistentes.find(a=>!a.nombre||!a.correo||!a.telefono);
   if(mal) return 'Cada asistente necesita nombre, correo y teléfono.';
-  const esVivo=/AGUINALDO|CIERRE|TALLER|COMBO/i.test(concepto||'');
-  if(esVivo&&!ac.fecha_texto&&!ac.generaciones.length) return 'Indica la FECHA del taller a la que entrará el cliente (escríbela o elige la generación).';
-  const hayGens=(window._solGens||[]).length>0;
-  if(esVivo&&hayGens&&!ac.fecha_texto){
-    const min=/COMBO/i.test(concepto||'')?2:1;
-    if(ac.generaciones.length<min) return min>1?'Es un combo: marca la fecha (generación) de cada uno de los dos talleres.':'Marca la FECHA en la que entrará el cliente (generación). Es obligatorio en talleres en vivo.';
-  }
+  const esVivo=tipo?tipo==='Curso o Diplomado en Vivo':/AGUINALDO|CIERRE|TALLER|COMBO/i.test(concepto||'');
+  const hayGens=(window._solGens||[]).some(g=>g.__vig);
+  const min=solEsCombo(concepto)?2:1;
+  if(hayGens&&ac.generaciones.length<min) return min>1?'Es el combo: deben ir las dos generaciones (Aguinaldo y Cierre de Año).':(esVivo?'Marca la generación (fecha) en la que entrará el cliente. Es obligatorio en cursos y talleres en vivo.':'Marca la generación del curso 24/7 al que entrará el cliente.');
+  if(!hayGens&&esVivo&&!ac.fecha_texto) return 'Indica la FECHA a la que entrará el cliente (no hay generaciones vigentes en Academia para elegir).';
   const cursos=ac.generaciones.map(g=>g.curso).filter(Boolean);
   if(new Set(cursos).size<cursos.length) return 'Marcaste dos fechas del mismo taller; el cliente entra solo a una. Deja una sola generación por taller.';
   return '';
@@ -32851,8 +32987,8 @@ function solAcadEditarModal(id){
         if(linked.length){
           if(!window._solGens) await solCargarGeneraciones();
           const {data:gl}=await sb.from('academia_generaciones').select('id,curso_id').in('id',linked);
-          const porCurso={};(gl||[]).forEach(g=>{(porCurso[g.curso_id]=porCurso[g.curso_id]||[]).push(g.id);});
-          window._solGenSug=new Set(linked);
+          const porCurso={};(gl||[]).filter(g=>solEsVig(g.id)).forEach(g=>{(porCurso[g.curso_id]=porCurso[g.curso_id]||[]).push(g.id);});
+          window._solGenSug=new Set(linked.filter(solEsVig));
           box.dataset.sel=Object.values(porCurso).filter(a=>a.length===1).map(a=>a[0]).join(',');
         }
       }
@@ -32877,14 +33013,29 @@ async function solMarcarGens(p,linked){
   const box=document.getElementById(p+'AcadGens'); if(!box||!linked.length) return false;
   if(!window._solGens) await solCargarGeneraciones();
   const {data:gl}=await sb.from('academia_generaciones').select('id,curso_id').in('id',linked);
-  const porCurso={};(gl||[]).forEach(g=>{(porCurso[g.curso_id]=porCurso[g.curso_id]||[]).push(g.id);});
-  window._solGenSug=new Set([...(window._solGenSug||[]),...linked]);
+  const porCurso={};(gl||[]).filter(g=>solEsVig(g.id)).forEach(g=>{(porCurso[g.curso_id]=porCurso[g.curso_id]||[]).push(g.id);});
+  window._solGenSug=new Set([...(window._solGenSug||[]),...linked.filter(solEsVig)]);
   box.dataset.sel=Object.values(porCurso).filter(a=>a.length===1).map(a=>a[0]).join(',');
   await solAcadCargarGens(p);
   return true;
 }
 async function solSugerirGensPorConcepto(p,concepto){
   const box=document.getElementById(p+'AcadGens'); if(!box) return;
+  // Jp, 2026-11-14: el combo NOI 2026 ya no tiene elección: la primera fecha (11-nov) pasó, así que siempre son
+  // Aguinaldo (2-dic) + Cierre de Año (8-dic). Se marcan solas (se respetan otras marcadas, p. ej. un curso 24/7 del paquete).
+  if(solEsCombo(concepto)){
+    if(solComboCerrado(concepto)){ uiToast(SOL_MSG_COMBO_CERRADO,true); return; }
+    if(!window._solGens) await solCargarGeneraciones();
+    const pick=re=>(window._solGens||[]).filter(g=>g.__vig&&re.test(g.curso?.nombre||'')).sort((a,b)=>String(a.fecha_inicio||'9').localeCompare(String(b.fecha_inicio||'9')))[0];
+    const ids=[pick(/aguinaldo/i),pick(/cierre de a[ñn]o/i)].filter(Boolean).map(g=>g.id);
+    if(ids.length){
+      const previos=[...box.querySelectorAll('input:checked')].map(i=>i.value);
+      box.dataset.sel=[...new Set([...previos,...ids])].join(',');
+      window._solGenSug=new Set([...(window._solGenSug||[]),...ids]);
+      await solAcadCargarGens(p);
+      return;
+    }
+  }
   if(box.querySelector('input:checked')) return; // ya hay selección: no se pisa
   const linked=await solGensDeConcepto(concepto);
   if(linked.length) await solMarcarGens(p,linked);
@@ -32944,7 +33095,10 @@ async function solCargarGeneraciones(){
   const {data}=await sb.from('academia_generaciones').select('id,clave,fecha_inicio,fecha_fin,archivado_manual,curso:curso_id(nombre)').order('fecha_inicio',{ascending:false}).limit(120);
   const hoy=new Date();hoy.setDate(hoy.getDate()-10);const lim=hoy.toISOString().slice(0,10);
   // Los cursos 24/7 se siguen vendiendo aunque su fecha_fin ya pasó: mientras no estén archivados, siguen disponibles.
-  window._solGens=(data||[]).filter(g=>!g.archivado_manual&&(!g.fecha_fin||g.fecha_fin>=lim||/24\/7|247/i.test((g.curso?.nombre||'')+' '+(g.clave||''))));
+  // Jp, 2026-11-14: solo cuentan como VIGENTES (__vig) las que no han terminado (o 24/7 sin archivar). Las que terminaron
+  // hace <10 días se conservan en la lista solo para poder reparar solicitudes viejas (no se ofrecen en las nuevas).
+  const hoyMx=todayLocal();
+  window._solGens=(data||[]).filter(g=>!g.archivado_manual&&(!g.fecha_fin||g.fecha_fin>=lim||/24\/7|247/i.test((g.curso?.nombre||'')+' '+(g.clave||'')))).map(g=>({...g,__vig:!g.fecha_fin||g.fecha_fin>=hoyMx||/24\/7|247/i.test((g.curso?.nombre||'')+' '+(g.clave||''))}));
   if(document.getElementById('sfAcadGens')) solAcadCargarGens('sf');
 }
 async function solLeerCotizacion(input){
@@ -33041,6 +33195,14 @@ function solAplicarNegociacion(n){
   solDocsDePipeline(n.id);
   const set=(id,v)=>{const el=document.getElementById(id);if(el&&v!=null&&v!=='')el.value=v;};
   set('sfConcepto',n.producto);set('sfTotal',n.monto_total);
+  { // Jp, 2026-11-14: el tipo de la negociación pasa a la solicitud; si es curso en vivo/24-7 se exige alumno y generación
+    const ts=document.getElementById('sfTipoServ');
+    if(ts){
+      if(n.tipo_servicio&&[...ts.options].some(o=>o.value===n.tipo_servicio)) ts.value=n.tipo_servicio;
+      else if(!ts.value) ts.value=solTipoDeConcepto(n.producto)||'';
+      solTipoServCambio();
+    }
+  }
   solSugerirGensPorConcepto('sf',n.producto);
   const pid=n.oportunidades_crm?.crm_potentialid;
   if(pid) set('sfCrm',`${CRM_BASE_URL_FE}/index.php?module=Potentials&view=Detail&record=${String(pid).split('x').pop()}&app=SALES`);
@@ -33222,8 +33384,12 @@ async function solEnviar(){
   } else if(!v('sfEsperada')){
     return err('Indica la fecha en que pagará el cliente.');
   }
+  // Jp, 2026-11-14: el tipo de servicio es obligatorio (decide si lleva alumno en Academia) y el combo se cierra el 30-nov.
+  let tipoServ=document.getElementById('sfTipoServ')?.value||'';
+  if(!tipoServ){const inf=solTipoDeConcepto(v('sfConcepto'));if(inf){tipoServ=inf;const ts=document.getElementById('sfTipoServ');if(ts){ts.value=inf;await solTipoServCambio();}}}
+  if(!tipoServ) return err('Elige el tipo de servicio (antes del concepto).');
   const acad=solAcadLeer('sf');
-  const errAc=solAcadValidar(acad,v('sfConcepto'));
+  const errAc=solAcadValidar(acad,v('sfConcepto'),tipoServ);
   if(errAc) return err(errAc);
   // Candado: si la solicitud se hizo sin pasar por el botón del pedido, se intenta ligar al pedido de Shopify abierto
   if(!window._sfShop){
@@ -33406,8 +33572,12 @@ function solAcadPendNotificar(lista,resumen,total){
 if(!window._solAcadPendTimer){window._solAcadPendTimer=setInterval(solAcadPendTick,60000);setTimeout(solAcadPendTick,9000);}
 function solTarjeta(r,modo){
   const esDir=modo==='director',esAdm=modo==='admin',esVend=modo==='vendedor';
-  const puedeFacturar=(esDir||esAdm)&&(r.estado==='pago_validado'||r.estado==='pendiente_pago');
-  const puedeValidar=esDir&&!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada');
+  // Jp, 2026-11-14: una solicitud DEVUELTA (con motivo) no se puede validar ni facturar hasta que el vendedor la corrija y reenvíe
+  const devuelta=!!r.devuelta_motivo&&!['cancelada','cerrada'].includes(r.estado);
+  const puedeDevolver=(esDir||esAdm)&&!devuelta&&(r.estado==='solicitada'||r.estado==='pendiente_pago')&&!r.factura_folio;
+  const puedeCorregir=esVend&&devuelta&&r.vendedor_id===(userProfile?.id||currentUser.id);
+  const puedeFacturar=(esDir||esAdm)&&!devuelta&&(r.estado==='pago_validado'||r.estado==='pendiente_pago');
+  const puedeValidar=esDir&&!devuelta&&!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada');
   const puedeCancelar=(esDir||(esVend&&r.vendedor_id===(userProfile?.id||currentUser.id)))&&(r.estado==='solicitada'||r.estado==='pendiente_pago');
   const faltaComprobante=esVend&&r.estado==='facturada'&&!r.pago_validado;
   const btn=(txt,fn,color)=>`<button onclick="${fn}" style="background:${color||'#fff'};color:${color?'#fff':'var(--text2)'};border:1px solid ${color||'var(--border)'};border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${txt}</button>`;
@@ -33422,6 +33592,7 @@ function solTarjeta(r,modo){
       <div style="font-size:13px;font-weight:700;color:var(--navy);">${solEsc(r.cliente_nombre)}${r.num_cliente?` <span style="font-weight:400;color:var(--text3);">#${solEsc(r.num_cliente)}</span>`:''}</div>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${(esDir||esAdm)&&solAcadPendienteAsignar(r)?'<span style="font-size:10.5px;font-weight:700;background:#fff1dc;color:#b45309;border:1px solid #F5A623;border-radius:99px;padding:2px 9px;">🎓 Sin asignar en Academia</span>':''}${solChip(r.estado)}</div>
     </div>
+    ${devuelta?`<div style="font-size:12px;font-weight:600;color:#9a3412;background:#fff1e6;border:1px solid #f5a35a;border-left:5px solid #ea580c;border-radius:8px;padding:7px 11px;margin-top:6px;">↩ Devuelta${r.devuelta_por?' por '+solEsc(r.devuelta_por):''} · ${solFecha(r.devuelta_at)}<br><span style="font-weight:500;">Motivo: ${solEsc(r.devuelta_motivo)}</span>${esVend?'<br><span style="font-weight:500;">Corrígela con el botón de abajo; no hace falta crear otra solicitud.</span>':'<br><span style="font-weight:500;color:var(--text3);">Esperando que el vendedor la corrija y reenvíe.</span>'}</div>`:''}
     <div style="font-size:12px;color:var(--text2);margin-top:3px;">${solEsc(r.concepto)} · <b>${fmt(r.monto_total)}</b> · ${solEsc(r.cotizacion_sae)}${!esVend?` · 👤 ${solEsc(r.vendedor_nombre)}`:''} · ${solFecha(r.created_at)}</div>
     <div style="font-size:11px;color:var(--text3);margin-top:2px;">${solEsc(r.rfc)} · ${solEsc(r.forma_pago)} · ${solEsc(r.metodo_pago)} · ${solEsc(r.uso_cfdi)} · ${solEsc(r.regimen)}</div>
     ${r.shopify_pedido?`<div style="font-size:11px;color:#5b3fa0;margin-top:3px;">🛍 Pedido de Shopify: <b>${solEsc(r.shopify_pedido)}</b></div>`:''}
@@ -33446,10 +33617,97 @@ function solTarjeta(r,modo){
       ${puedeValidar?btn('✅ Validar pago',`solValidarModal('${r.id}')`,'var(--teal)'):''}
       ${puedeFacturar?btn('🧾 Registrar factura',`solFacturarModal('${r.id}')`,'#1B4D6E'):''}
       ${faltaComprobante?btn('📎 Adjuntar comprobante de pago',`solComprobanteModal('${r.id}')`,'#7C3AED'):''}
+      ${puedeCorregir?btn('✏️ Corregir y reenviar',`solCorregirModal('${r.id}')`,'#ea580c'):''}
+      ${puedeDevolver?btn('↩ Devolver con motivo',`solDevolverModal('${r.id}')`,'#ea580c'):''}
       ${puedeCancelar?btn('Cancelar',`solCancelar('${r.id}')`):''}
     </div>
   </div>`;
 }
+// ─── DEVOLVER CON MOTIVO / CORREGIR Y REENVIAR (Jp, 2026-11-14) ──────────────
+// Dirección o Administración devuelven la solicitud al vendedor con un motivo; el vendedor la edita y la reenvía
+// sobre la MISMA solicitud (no se crea otra). Mientras está devuelta no se puede validar pago ni facturar.
+function solDevolverModal(id){
+  const r=_solRows.find(x=>x.id===id);if(!r) return;
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">↩ Devolver al vendedor</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(r.cliente_nombre)} · ${solEsc(r.concepto)}<br>${solEsc(r.vendedor_nombre||'')} la corrige y la reenvía; no se crea una solicitud nueva.</div>
+    ${solFld('¿Qué debe corregir?',`<textarea id="sdMotivo" rows="4" placeholder="Ej. Faltan los datos del asistente y la generación de Academia." style="${SOL_INPUT_STYLE}resize:vertical;"></textarea>`)}
+    <div style="display:flex;gap:8px;"><button onclick="solDevolverGuardar('${id}')" style="background:#ea580c;color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Devolver</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`,480);
+}
+async function solDevolverGuardar(id){
+  const m=(document.getElementById('sdMotivo')?.value||'').trim();
+  if(m.length<5) return alert('Escribe el motivo para que el vendedor sepa qué corregir.');
+  const {error}=await sb.from('solicitudes_factura').update({devuelta_motivo:m,devuelta_at:new Date().toISOString(),devuelta_por:userProfile?.nombre||''}).eq('id',id);
+  if(error) return alert('No se pudo devolver: '+error.message);
+  solCerrarModal();solRefrescar();uiToast('↩ Solicitud devuelta al vendedor',true);
+}
+function solCorregirModal(id){
+  const r=_solRows.find(z=>z.id===id);if(!r) return;
+  const ac=r.academia||(r.asistente?{asistentes:[{nombre:r.asistente.nombre,correo:r.asistente.correo,telefono:r.asistente.telefono}],generaciones:[],nivel:solAcadNivelDeConcepto(r.concepto)||'esencial'}:{nivel:solAcadNivelDeConcepto(r.concepto)||'esencial'});
+  const tipoIni=solTipoDeConcepto(r.concepto);
+  window._solGenSug=null;window._solGenSolo=null;
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">✏️ Corregir y reenviar</div>
+    <div style="font-size:12px;color:#9a3412;background:#fff1e6;border:1px solid #f5a35a;border-radius:8px;padding:7px 11px;margin-bottom:10px;"><b>Motivo de la devolución:</b> ${solEsc(r.devuelta_motivo||'')}</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(r.cliente_nombre)}</div>
+    ${solFld('Tipo de servicio',`<select id="srTipoServ" onchange="(function(){const t=document.getElementById('srTipoServ').value;const q=t==='24/7'||t==='Curso o Diplomado en Vivo';const l=document.getElementById('srAcadNALabel');if(l)l.style.display=q?'none':'';if(q){const n=document.getElementById('srAcadNA');if(n)n.checked=false;}})()" style="${SOL_INPUT_STYLE}"><option value="">— Elige el tipo —</option>${TIPOS_SERVICIO.map(t=>`<option value="${solEsc(t)}" ${t===tipoIni?'selected':''}>${solEsc(t)}</option>`).join('')}</select>`)}
+    ${solFld('Concepto / curso o servicio',`<input id="srConcepto" value="${solEsc(r.concepto||'')}" style="${SOL_INPUT_STYLE}" onchange="solSugerirGensPorConcepto('sr',this.value)">`)}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 12px;">
+      ${solFld('Total a facturar (con IVA)',`<input id="srTotal" type="number" step="0.01" value="${solEsc(r.monto_total||'')}" style="${SOL_INPUT_STYLE}">`)}
+      ${solFld('RFC del cliente',`<input id="srRfc" value="${solEsc(r.rfc||'')}" style="${SOL_INPUT_STYLE}text-transform:uppercase;">`)}
+    </div>
+    ${solFld('Notas para facturación (opcional)',`<input id="srNotas" value="${solEsc(r.notas||'')}" style="${SOL_INPUT_STYLE}">`)}
+    ${solAcadHtml('sr',ac)}
+    <div style="display:flex;gap:8px;"><button onclick="solCorregirGuardar('${id}')" style="background:#ea580c;color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar y reenviar</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`,720);
+  (async()=>{
+    try{ if(!window._solGens) await solCargarGeneraciones(); if(!((ac.generaciones||[]).length)) await solSugerirGensPorConcepto('sr',r.concepto); }catch(e){}
+    solAcadCargarGens('sr');
+    const t=document.getElementById('srTipoServ')?.value||'';
+    const l=document.getElementById('srAcadNALabel'); if(l&&(t==='24/7'||t==='Curso o Diplomado en Vivo')) l.style.display='none';
+  })();
+}
+async function solCorregirGuardar(id){
+  const r=_solRows.find(z=>z.id===id);if(!r) return;
+  const v=i=>document.getElementById(i)?.value?.trim()||'';
+  const concepto=v('srConcepto'),total=parseFloat(v('srTotal')),rfc=v('srRfc').toUpperCase();
+  const tipoServ=v('srTipoServ')||solTipoDeConcepto(concepto);
+  if(!concepto) return alert('Falta el concepto.');
+  if(!(total>0)) return alert('Falta el total a facturar.');
+  if(!rfc) return alert('Falta el RFC del cliente.');
+  if(!tipoServ) return alert('Elige el tipo de servicio.');
+  const ac=solAcadLeer('sr');
+  const errAc=solAcadValidar(ac,concepto,tipoServ);
+  if(errAc) return alert(errAc);
+  const nota=v('srNotas');
+  const upd={concepto,monto_total:total,rfc,
+    notas:((nota?nota+' ':'')+`[↩ Corregida el ${todayLocal()} tras devolución: ${r.devuelta_motivo}]`).slice(0,900),
+    asistente:ac.asistentes[0]?{...ac.asistentes[0],curso:ac.generaciones.map(g=>g.clave).join(' + ')}:null,
+    generacion_id:ac.generaciones[0]?.id||null,
+    devuelta_motivo:null,reenviada_at:new Date().toISOString()};
+  if(ac.asistentes.length||ac.generaciones.length||ac.no_aplica) upd.academia=ac;
+  const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
+  if(error) return alert('No se pudo reenviar: '+error.message);
+  try{const {data:sess}=await sb.auth.getSession();fetch('/api/facturacion-avisar-telegram',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solicitud_id:id})}).catch(()=>{});}catch(e){}
+  solCerrarModal();solRefrescar();uiToast('✅ Solicitud corregida y reenviada a Dirección',true);
+}
+// Aviso al vendedor cuando Dirección le devuelve una solicitud (una vez por sesión por solicitud)
+let _solDevVistas=null;
+async function solDevueltasTick(){
+  try{
+    if(typeof currentUser==='undefined'||!currentUser||!userProfile) return;
+    if(['director','administracion'].includes(userProfile.rol)) return;
+    const {data,error}=await sb.from('solicitudes_factura').select('id,cliente_nombre,devuelta_motivo').eq('vendedor_id',userProfile.id||currentUser.id).not('devuelta_motivo','is',null).not('estado','in','(cancelada,cerrada)').limit(30);
+    if(error||!data) return;
+    const nuevos=_solDevVistas===null?data:data.filter(x=>!_solDevVistas.has(x.id));
+    _solDevVistas=new Set(data.map(x=>x.id));
+    if(!nuevos.length) return;
+    document.getElementById('solDevToast')?.remove();
+    const t=document.createElement('div');t.id='solDevToast';
+    t.style.cssText='position:fixed;top:138px;right:18px;z-index:100002;background:#9a3412;color:#fff;border-radius:12px;padding:12px 16px;box-shadow:0 8px 24px rgba(0,0,0,.28);max-width:340px;font-size:13px;cursor:pointer;border-left:5px solid #fb923c;';
+    t.innerHTML=`<div style="font-weight:700;margin-bottom:3px;">↩ Te devolvieron ${nuevos.length>1?nuevos.length+' solicitudes':'una solicitud'} de factura</div><div style="font-size:11px;opacity:.92;">${solEsc(nuevos[0].cliente_nombre||'')}: ${solEsc(String(nuevos[0].devuelta_motivo||'').slice(0,110))} · clic para corregirla</div>`;
+    t.onclick=()=>{t.remove();if(userProfile?.rol==='telemarketing'&&typeof swT==='function') swT('factura'); else if(typeof swV==='function') swV('factura');};
+    document.body.appendChild(t);setTimeout(()=>t.remove(),25000);
+  }catch(e){}
+}
+if(!window._solDevTimer){window._solDevTimer=setInterval(solDevueltasTick,60000);setTimeout(solDevueltasTick,10000);}
 async function solMarcarCrm(id,val){
   await sb.from('solicitudes_factura').update({comentario_crm_hecho:!!val}).eq('id',id);
   solRefrescar();
@@ -33501,15 +33759,16 @@ async function renderSolFacturaGestion(el){
   _solRows=data||[];
   await timCargarDeSolicitudes(_solRows.filter(r=>r.timbres_estado==='asignados').map(r=>r.id));
   await licCargarDeSolicitudes(_solRows.filter(r=>r.licencia_estado==='asignadas').map(r=>r.id));
-  const por={validar:_solRows.filter(r=>!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada')),
-    facturar:_solRows.filter(r=>r.estado==='pago_validado'||r.estado==='pendiente_pago'),
+  const por={validar:_solRows.filter(r=>!r.devuelta_motivo&&!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada')),
+    facturar:_solRows.filter(r=>!r.devuelta_motivo&&(r.estado==='pago_validado'||r.estado==='pendiente_pago')),
+    devueltas:_solRows.filter(r=>r.devuelta_motivo&&!['cancelada','cerrada'].includes(r.estado)),
     pendientes:_solRows.filter(r=>['solicitada','pendiente_pago','pago_validado','facturada'].includes(r.estado)),
     vencidos:_solRows.filter(r=>{const d=solDiasPagoVencido(r);return d!==null&&d>=0;}),
     sin_gen:_solRows.filter(r=>solAcadPendienteAsignar(r)&&(Date.now()-new Date(r.created_at).getTime())<=60*86400000),
     todas:_solRows};
   const filtros=esDir
-    ?[['pendientes','Todas las abiertas'],['validar','Por validar pago'],['facturar','Por facturar'],['vencidos','🚨 Pago prometido vencido'],['sin_gen','🎓 Sin asignar en Academia'],['todas','Historial']]
-    :[['facturar','Por facturar'],['pendientes','Todas las abiertas'],['vencidos','🚨 Pago prometido vencido'],['sin_gen','🎓 Sin asignar en Academia'],['todas','Historial']];
+    ?[['pendientes','Todas las abiertas'],['validar','Por validar pago'],['facturar','Por facturar'],['devueltas','↩ Devueltas al vendedor'],['vencidos','🚨 Pago prometido vencido'],['sin_gen','🎓 Sin asignar en Academia'],['todas','Historial']]
+    :[['facturar','Por facturar'],['pendientes','Todas las abiertas'],['devueltas','↩ Devueltas al vendedor'],['vencidos','🚨 Pago prometido vencido'],['sin_gen','🎓 Sin asignar en Academia'],['todas','Historial']];
   if(!filtros.some(f=>f[0]===_solFiltro)) _solFiltro=filtros[0][0];
   const lista=por[_solFiltro]||[];
   cont.innerHTML=`
