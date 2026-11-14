@@ -1206,11 +1206,35 @@ function renderAcademiaTab(){
 // los ve aquí, hace registro / accesos / grupo de WhatsApp y los marca como
 // atendidos. El cron api/cron/academia-nuevos-asistentes.js manda cada mañana
 // el mismo listado por correo.
+// ── Estados de los nuevos asistentes (Capacitación/CAPA, 2026-11-14) ─────────
+// Pasos que cuentan según el curso: Registro (todos) · Accesos (nivel plus/premium,
+// el esencial no incluye laboratorio) · Grupo de WhatsApp (solo cursos en vivo; los 24/7 no tienen grupo).
+// Estado automático: Pendiente (nada hecho) → En proceso (algo hecho o bienvenida enviada) → Completado (todos los pasos).
+function academiaPasosNuevo(r){
+  const enVivo=r.generacion?.curso?.modalidad==='en_vivo';
+  const p=[['registro','Registro']];
+  if(r.nivel_acceso!=='esencial') p.push(['accesos','Accesos']);
+  if(enVivo) p.push(['whatsapp','Grupo WhatsApp']);
+  return p;
+}
+function academiaEstadoNuevo(r){
+  const at=r.atencion||{};
+  const pasos=academiaPasosNuevo(r);
+  const faltan=pasos.filter(([k])=>!at[k]).map(x=>x[1]);
+  const hechos=pasos.length-faltan.length;
+  const estado=faltan.length===0?'completado':(hechos>0||at.bienvenida_at)?'proceso':'pendiente';
+  return {estado,faltan,hechos,total:pasos.length};
+}
+function academiaChipEstadoNuevo(e){
+  if(e.estado==='completado') return '<span style="display:inline-block;background:#e6f6ee;color:#1e8449;border-radius:10px;padding:2px 9px;font-size:10px;font-weight:700;">✔ Completado</span>';
+  if(e.estado==='proceso') return `<span style="display:inline-block;background:#fdf3dc;color:#9a6b00;border-radius:10px;padding:2px 9px;font-size:10px;font-weight:700;">⏳ En proceso</span> <span style="font-size:10px;color:var(--text3);">falta: ${e.faltan.join(', ')}</span>`;
+  return '<span style="display:inline-block;background:#fde8e6;color:#c0392b;border-radius:10px;padding:2px 9px;font-size:10px;font-weight:700;">● Pendiente</span>';
+}
 async function academiaNuevosAsistentesHtml(){
   let rows=[];
   try{
     const {data,error}=await sb.from('academia_inscripciones')
-      .select('id,nivel_acceso,folio,created_at,atencion,vendedor_nombre_original,participante:participante_id(nombre,mail,telefono),generacion:generacion_id(clave,curso:curso_id(nombre))')
+      .select('id,nivel_acceso,folio,created_at,atencion,vendedor_nombre_original,participante:participante_id(nombre,mail,telefono),generacion:generacion_id(clave,curso:curso_id(nombre,modalidad,tipo))')
       .eq('origen','facturacion').is('atendido_at',null).order('created_at',{ascending:true});
     if(error) return /origen|atendido/.test(error.message||'')?'<div style="margin-bottom:16px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--text3);">Falta correr <b>sql_academia_nuevos_asistentes.sql</b> en Supabase para ver los nuevos asistentes de facturación.</div>':'';
     rows=data||[];
@@ -1222,17 +1246,18 @@ async function academiaNuevosAsistentesHtml(){
   const totalSinFiltro=rows.length;
   if(filtro) rows=rows.filter(r=>claveGen(r)===filtro);
   const esc=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const cnt={pendiente:0,proceso:0,completado:0}; rows.forEach(r=>{cnt[academiaEstadoNuevo(r).estado]++;});
   const chk=(r,k,lbl)=>`<label style="display:inline-flex;align-items:center;gap:3px;margin-right:10px;font-size:11px;cursor:pointer;white-space:nowrap;"><input type="checkbox" ${(r.atencion||{})[k]?'checked':''} onchange="academiaNuevoCheck('${r.id}','${k}',this.checked)"> ${lbl}</label>`;
   const fila=r=>{const p=r.participante||{};const g=r.generacion||{};
     return `<tr style="border-top:1px solid var(--border);">
       <td style="padding:8px 12px;"><b>${esc(p.nombre)}</b><div style="font-size:11px;color:var(--text3);">${esc(p.mail||'sin correo')} · ${esc(p.telefono||'sin teléfono')}</div></td>
       <td>${esc(g.curso?.nombre||'')} · ${esc(g.clave||'')}<div style="font-size:11px;color:var(--text3);">${esc(r.nivel_acceso||'')} ${r.folio?'· '+esc(r.folio):''} ${r.vendedor_nombre_original?'· vende: '+esc(r.vendedor_nombre_original):''}</div></td>
-      <td style="font-size:11px;color:var(--text3);">${new Date(r.created_at).toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}</td>
-      <td>${chk(r,'registro','Registro')}${r.nivel_acceso==='esencial'?'':chk(r,'accesos','Accesos')}${chk(r,'whatsapp','Grupo WhatsApp')}</td>
-      <td style="padding-right:12px;text-align:right;white-space:nowrap;">${(r.atencion||{}).bienvenida_at?`<span title="Bienvenida enviada" style="font-size:11px;color:var(--teal);font-weight:700;margin-right:8px;">✉ Enviada ${new Date(r.atencion.bienvenida_at).toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}</span>`:`<button onclick="academiaEnviarBienvenida('${r.id}',this)" style="background:#fff;color:var(--navy);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;margin-right:6px;">✉ Enviar bienvenida</button>`}<button onclick="academiaNuevoAtendido('${r.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">✔ Atendido</button></td>
+      <td style="font-size:11px;color:var(--text3);">${new Date(r.created_at).toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}${(()=>{const d=Math.floor((Date.now()-new Date(r.created_at).getTime())/86400000);return d>=1?`<div style="${d>=3?'color:#c0392b;font-weight:700;':''}">hace ${d} d</div>`:'';})()}</td>
+      <td>${academiaPasosNuevo(r).map(([k,l])=>chk(r,k,l)).join('')}<div style="margin-top:4px;">${academiaChipEstadoNuevo(academiaEstadoNuevo(r))}${(r.atencion||{}).bienvenida_at?' <span style="font-size:10px;color:var(--teal);" title="Correo de bienvenida enviado">✉</span>':''}</div></td>
+      <td style="padding-right:12px;text-align:right;white-space:nowrap;">${(r.atencion||{}).bienvenida_at?`<span title="Bienvenida enviada" style="font-size:11px;color:var(--teal);font-weight:700;margin-right:8px;">✉ Enviada ${new Date(r.atencion.bienvenida_at).toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}</span>`:`<button onclick="academiaEnviarBienvenida('${r.id}',this)" style="background:#fff;color:var(--navy);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;margin-right:6px;">✉ Enviar bienvenida</button>`}<button onclick="academiaNuevoAtendido('${r.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">${academiaEstadoNuevo(r).estado==='completado'?'✔ Cerrar':'Cerrar sin completar…'}</button></td>
     </tr>`;};
   return `<div id="acadNuevosBox" style="margin-bottom:20px;">
-    <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">🆕 Nuevos asistentes desde facturación (${rows.length}${filtro?' de '+totalSinFiltro:''}) <span style="font-weight:400;color:var(--text3);font-size:11px;">— por atender: registro, accesos y grupo de WhatsApp</span>${userProfile?.rol==='director'?`<button onclick="academiaProbarOdoo(this)" style="margin-left:10px;background:none;border:1px dashed var(--border);border-radius:6px;padding:2px 8px;font-size:10px;color:var(--text3);cursor:pointer;">🔌 Probar conexión Odoo</button>`:''}
+    <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">🆕 Nuevos asistentes desde facturación (${rows.length}${filtro?' de '+totalSinFiltro:''}) <span style="font-weight:400;color:var(--text3);font-size:11px;">— <span style="color:#c0392b;">${cnt.pendiente} pendientes</span> · <span style="color:#9a6b00;">${cnt.proceso} en proceso</span></span>${userProfile?.rol==='director'?`<button onclick="academiaProbarOdoo(this)" style="margin-left:10px;background:none;border:1px dashed var(--border);border-radius:6px;padding:2px 8px;font-size:10px;color:var(--text3);cursor:pointer;">🔌 Probar conexión Odoo</button>`:''}
       ${opcionesGen.length>1||filtro?`<select onchange="academiaNuevosFiltrar(this.value)" style="margin-left:10px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-weight:500;"><option value="">Todos los cursos</option>${opcionesGen.map(([k,l])=>`<option value="${esc(k)}" ${k===filtro?'selected':''}>${esc(l)}</option>`).join('')}</select>`:''}</div>
     <div class="card" style="overflow-x:auto;${rows.length?'border-left:3px solid var(--red);':''}">
       <table style="width:100%;border-collapse:collapse;font-size:12px;">
@@ -1250,7 +1275,7 @@ async function academiaEnviarBienvenida(id,btn){
     const j=await r.json().catch(()=>({}));
     if(!j.ok) throw new Error(j.error||('Error '+r.status));
     uiToast('Bienvenida enviada a '+j.enviado_a,true);
-    renderAcademiaDashboard();
+    academiaRefrescarNuevos();
   }catch(e){
     uiToast('No se pudo enviar: '+(e.message||e),false);
     if(btn){btn.disabled=false;btn.textContent=txt;}
@@ -1269,26 +1294,40 @@ async function academiaProbarOdoo(btn){
 }
 async function academiaNuevosFiltrar(v){
   window._acadNuevosFiltro=v||'';
+  return academiaRefrescarNuevos();
+}
+async function academiaRefrescarNuevos(){
   const box=document.getElementById('acadNuevosBox'); if(!box) return;
   const html=await academiaNuevosAsistentesHtml();
   const tmp=document.createElement('div'); tmp.innerHTML=html;
   const nuevo=tmp.firstElementChild; if(nuevo) box.replaceWith(nuevo);
 }
 async function academiaNuevoCheck(id,k,val){
-  const {data}=await sb.from('academia_inscripciones').select('atencion').eq('id',id).single();
+  const {data}=await sb.from('academia_inscripciones').select('atencion,nivel_acceso,generacion:generacion_id(curso:curso_id(modalidad))').eq('id',id).single();
   const at={...(data?.atencion||{}),[k]:!!val};
-  const {error}=await sb.from('academia_inscripciones').update({atencion:at}).eq('id',id);
-  if(error) uiToast('No se pudo guardar: '+error.message,false);
+  const upd={atencion:at};
+  // Si con este paso quedan todos los pasos del curso, se cierra solo como Completado.
+  const completo=data&&academiaEstadoNuevo({...data,atencion:at}).estado==='completado';
+  if(completo){upd.atendido_at=new Date().toISOString();upd.atendido_por=userProfile?.nombre||'';}
+  const {error}=await sb.from('academia_inscripciones').update(upd).eq('id',id);
+  if(error) return uiToast('No se pudo guardar: '+error.message,false);
+  if(completo) uiToast('✔ Completado: todos los pasos listos, sale de pendientes',true);
+  academiaRefrescarNuevos();
 }
 async function academiaNuevoAtendido(id){
-  const {data}=await sb.from('academia_inscripciones').select('atencion,nivel_acceso').eq('id',id).single();
-  const at=data?.atencion||{};
-  const sinAccesos=data?.nivel_acceso==='esencial'; // el nivel esencial no incluye accesos
-  if(!(at.registro&&(at.accesos||sinAccesos)&&at.whatsapp)&&!confirm('Faltan pasos sin marcar (registro / accesos / grupo de WhatsApp). ¿Marcar como atendido de todos modos?')) return;
-  const {error}=await sb.from('academia_inscripciones').update({atendido_at:new Date().toISOString(),atendido_por:userProfile?.nombre||''}).eq('id',id);
+  const {data}=await sb.from('academia_inscripciones').select('atencion,nivel_acceso,generacion:generacion_id(curso:curso_id(modalidad))').eq('id',id).single();
+  const e=academiaEstadoNuevo(data||{});
+  const upd={atendido_at:new Date().toISOString(),atendido_por:userProfile?.nombre||''};
+  if(e.estado!=='completado'){
+    const motivo=prompt('Faltan pasos ('+e.faltan.join(', ')+').\nEscribe el motivo para cerrarlo sin completar (ej. "no desea grupo de WhatsApp"):');
+    if(motivo===null) return;
+    if(!motivo.trim()) return uiToast('Escribe un motivo para cerrarlo sin completar',false);
+    upd.atencion={...(data?.atencion||{}),cierre_motivo:motivo.trim(),cierre_incompleto:true};
+  }
+  const {error}=await sb.from('academia_inscripciones').update(upd).eq('id',id);
   if(error) return uiToast('No se pudo guardar: '+error.message,false);
-  uiToast('Asistente marcado como atendido',true);
-  renderAcademiaDashboard();
+  uiToast(e.estado==='completado'?'Asistente cerrado como completado':'Cerrado sin completar (motivo guardado)',true);
+  academiaRefrescarNuevos();
 }
 
 async function renderAcademiaDashboard(){
@@ -2370,6 +2409,10 @@ async function academiaAbrirEditarGeneracion(generacionId){
       ${fld('Fecha de conclusión de prácticas (sugerida: +15 días)',inp('egFechaLimitePracticas','date','',g.fecha_limite_practicas||'',`oninput="this.dataset.tocado='1'" ${g.fecha_limite_practicas?`data-tocado="1"`:''}`))}
       ${fld('Fecha de conclusión con extensión (sugerida: +30 días)',inp('egFechaLimitePracticasExt','date','',g.fecha_limite_practicas_extension||'',`oninput="this.dataset.tocado='1'" ${g.fecha_limite_practicas_extension?`data-tocado="1"`:''}`))}
     </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+      ${fld('Enlace del grupo de WhatsApp (va en el correo de bienvenida; solo cursos en vivo)',inp('egWaUrl','url','https://chat.whatsapp.com/…',g.whatsapp_grupo_url||''))}
+      ${fld('Enlace de Zoom de la sesión (opcional)',inp('egZoomUrl','url','https://zoom.us/j/…',g.zoom_url||''))}
+    </div>
     <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:10px;">
       <input type="checkbox" id="egArchivadoManual" ${g.archivado_manual?'checked':''}> Generación archivada (no la muestres entre las vigentes — histórico)
     </label>
@@ -2412,6 +2455,8 @@ async function academiaGuardarEditarGeneracion(generacionId,cursoId){
     fecha_fin:document.getElementById('egFechaFin')?.value||null,
     practicas_totales:parseInt(document.getElementById('egPracticas')?.value)||null,
     archivado_manual:!!document.getElementById('egArchivadoManual')?.checked,
+    whatsapp_grupo_url:document.getElementById('egWaUrl')?.value?.trim()||null,
+    zoom_url:document.getElementById('egZoomUrl')?.value?.trim()||null,
     circulo_disponible:!!document.getElementById('egCirculoDisponible')?.checked,
     formato_texto:document.getElementById('egFormato')?.value?.trim()||null,
     fecha_limite_practicas:document.getElementById('egFechaLimitePracticas')?.value||null,
