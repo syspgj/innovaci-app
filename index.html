@@ -1247,23 +1247,53 @@ async function academiaNuevosAsistentesHtml(){
   if(filtro) rows=rows.filter(r=>claveGen(r)===filtro);
   const esc=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
   const cnt={pendiente:0,proceso:0,completado:0}; rows.forEach(r=>{cnt[academiaEstadoNuevo(r).estado]++;});
-  const chk=(r,k,lbl)=>`<label style="display:inline-flex;align-items:center;gap:3px;margin-right:10px;font-size:11px;cursor:pointer;white-space:nowrap;"><input type="checkbox" ${(r.atencion||{})[k]?'checked':''} onchange="academiaNuevoCheck('${r.id}','${k}',this.checked)"> ${lbl}</label>`;
-  const fila=r=>{const p=r.participante||{};const g=r.generacion||{};
-    return `<tr style="border-top:1px solid var(--border);">
-      <td style="padding:8px 12px;"><b>${esc(p.nombre)}</b><div style="font-size:11px;color:var(--text3);">${esc(p.mail||'sin correo')} · ${esc(p.telefono||'sin teléfono')}</div></td>
-      <td>${esc(g.curso?.nombre||'')} · ${esc(g.clave||'')}<div style="font-size:11px;color:var(--text3);">${esc(r.nivel_acceso||'')} ${r.folio?'· '+esc(r.folio):''} ${r.vendedor_nombre_original?'· vende: '+esc(r.vendedor_nombre_original):''}</div></td>
-      <td style="font-size:11px;color:var(--text3);">${new Date(r.created_at).toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}${(()=>{const d=Math.floor((Date.now()-new Date(r.created_at).getTime())/86400000);return d>=1?`<div style="${d>=3?'color:#c0392b;font-weight:700;':''}">hace ${d} d</div>`:'';})()}</td>
-      <td>${academiaPasosNuevo(r).map(([k,l])=>chk(r,k,l)).join('')}<div style="margin-top:4px;">${academiaChipEstadoNuevo(academiaEstadoNuevo(r))}${(r.atencion||{}).bienvenida_at?' <span style="font-size:10px;color:var(--teal);" title="Correo de bienvenida enviado">✉</span>':''}</div></td>
-      <td style="padding-right:12px;text-align:right;white-space:nowrap;">${(r.atencion||{}).bienvenida_at?`<span title="Bienvenida enviada" style="font-size:11px;color:var(--teal);font-weight:700;margin-right:8px;">✉ Enviada ${new Date(r.atencion.bienvenida_at).toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}</span>`:`<button onclick="academiaEnviarBienvenida('${r.id}',this)" style="background:#fff;color:var(--navy);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;margin-right:6px;">✉ Enviar bienvenida</button>`}<button onclick="academiaNuevoAtendido('${r.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">${academiaEstadoNuevo(r).estado==='completado'?'✔ Cerrar':'Cerrar sin completar…'}</button></td>
-    </tr>`;};
-  return `<div id="acadNuevosBox" style="margin-bottom:20px;">
-    <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">🆕 Nuevos asistentes desde facturación (${rows.length}${filtro?' de '+totalSinFiltro:''}) <span style="font-weight:400;color:var(--text3);font-size:11px;">— <span style="color:#c0392b;">${cnt.pendiente} pendientes</span> · <span style="color:#9a6b00;">${cnt.proceso} en proceso</span></span>${userProfile?.rol==='director'?`<button onclick="academiaProbarOdoo(this)" style="margin-left:10px;background:none;border:1px dashed var(--border);border-radius:6px;padding:2px 8px;font-size:10px;color:var(--text3);cursor:pointer;">🔌 Probar conexión Odoo</button>`:''}
-      ${opcionesGen.length>1||filtro?`<select onchange="academiaNuevosFiltrar(this.value)" style="margin-left:10px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-weight:500;"><option value="">Todos los cursos</option>${opcionesGen.map(([k,l])=>`<option value="${esc(k)}" ${k===filtro?'selected':''}>${esc(l)}</option>`).join('')}</select>`:''}</div>
-    <div class="card" style="overflow-x:auto;${rows.length?'border-left:3px solid var(--red);':''}">
-      <table style="width:100%;border-collapse:collapse;font-size:12px;">
-        <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;"><th style="padding:8px 12px;">Asistente</th><th>Curso / generación</th><th>Alta</th><th>Pasos</th><th></th></tr></thead>
-        <tbody>${rows.map(fila).join('')||'<tr><td colspan="5" style="padding:14px;color:var(--text3);">Sin asistentes nuevos por atender.</td></tr>'}</tbody>
-      </table>
+  // Jp, 2026-11-14: la lista estaba "muy amontonada". Ahora va agrupada por generación, con una tarjeta por asistente
+  // (datos arriba, pasos como botones-pastilla, estado y acciones aparte) y filtros por estado y búsqueda.
+  const filtroEst=window._acadNuevosEst||'', q=(window._acadNuevosQ||'').trim().toLowerCase();
+  if(filtroEst) rows=rows.filter(r=>academiaEstadoNuevo(r).estado===filtroEst);
+  if(q) rows=rows.filter(r=>`${r.participante?.nombre||''} ${r.participante?.mail||''} ${r.participante?.telefono||''}`.toLowerCase().includes(q));
+  const chipPaso=(r,k,lbl)=>{const on=!!(r.atencion||{})[k];return `<label style="display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:14px;border:1px solid ${on?'#9fd8b4':'var(--border)'};background:${on?'#e8f7ee':'#fff'};color:${on?'#1e8449':'var(--text2)'};font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;margin:0 6px 4px 0;"><input type="checkbox" ${on?'checked':''} onchange="academiaNuevoCheck('${r.id}','${k}',this.checked)" style="margin:0;"> ${lbl}</label>`;};
+  const nivelCol={esencial:['#eef1f4','#5b6b7a'],plus:['#ece6fb','#5b3fa0'],premium:['#fff1d6','#9a6b00']};
+  const nivelChip=n=>{const c=nivelCol[n]||nivelCol.esencial;return `<span style="display:inline-block;background:${c[0]};color:${c[1]};border-radius:10px;padding:1px 8px;font-size:10px;font-weight:700;text-transform:capitalize;">${esc(n||'')}</span>`;};
+  const fila=r=>{const p=r.participante||{};const e=academiaEstadoNuevo(r);const at=r.atencion||{};
+    const d=Math.floor((Date.now()-new Date(r.created_at).getTime())/86400000);
+    const alta=new Date(r.created_at).toLocaleDateString('es-MX',{day:'2-digit',month:'short'}).replace('.','');
+    return `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px 18px;align-items:center;padding:11px 16px;border-top:1px solid var(--border);">
+      <div style="min-width:0;">
+        <div style="font-weight:700;color:var(--navy);font-size:13px;">${esc(p.nombre)}</div>
+        <div style="font-size:11px;color:var(--text3);overflow-wrap:anywhere;margin-top:1px;">${esc(p.mail||'sin correo')} · ${esc(p.telefono||'sin teléfono')}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px;">${nivelChip(r.nivel_acceso)} ${r.vendedor_nombre_original?'· vende '+esc(r.vendedor_nombre_original):''} · alta ${alta} <span style="${d>=3?'color:#c0392b;font-weight:700;':''}">(${d>=1?'hace '+d+' d':'hoy'})</span></div>
+      </div>
+      <div>
+        <div>${academiaPasosNuevo(r).map(([k,l])=>chipPaso(r,k,l)).join('')}</div>
+        <div style="margin-top:2px;">${academiaChipEstadoNuevo(e)}</div>
+      </div>
+      <div style="display:flex;gap:6px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
+        ${at.bienvenida_at?`<span title="Bienvenida enviada" style="font-size:11px;color:var(--teal);font-weight:700;">✉ Enviada ${new Date(at.bienvenida_at).toLocaleDateString('es-MX',{day:'2-digit',month:'short'}).replace('.','')}</span>`:`<button onclick="academiaEnviarBienvenida('${r.id}',this)" style="background:#fff;color:var(--navy);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;">✉ Enviar bienvenida</button>`}
+        <button onclick="academiaNuevoAtendido('${r.id}')" style="background:${e.estado==='completado'?'var(--teal)':'#fff'};color:${e.estado==='completado'?'#fff':'var(--text2)'};border:1px solid ${e.estado==='completado'?'var(--teal)':'var(--border)'};border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;">${e.estado==='completado'?'✔ Cerrar':'Cerrar sin completar'}</button>
+      </div>
+    </div>`;};
+  // Agrupado por generación
+  const grupos=new Map();
+  rows.forEach(r=>{const k=claveGen(r);if(!grupos.has(k)) grupos.set(k,{nombre:r.generacion?.curso?.nombre||'',clave:k,filas:[]});grupos.get(k).filas.push(r);});
+  const gruposHtml=[...grupos.values()].sort((a,b)=>(a.nombre+a.clave).localeCompare(b.nombre+b.clave)).map(g=>`
+    <div style="background:var(--bg2,#f5f6f8);padding:9px 16px;font-size:12px;font-weight:700;color:var(--navy);border-top:1px solid var(--border);">🎓 ${esc(g.nombre)} <span style="font-weight:500;color:var(--text3);">· ${esc(g.clave)} · ${g.filas.length} asistente${g.filas.length===1?'':'s'}</span></div>
+    ${g.filas.map(fila).join('')}`).join('');
+  const pill=(k,l,n,col)=>`<button onclick="academiaNuevosFiltroEstado('${k}')" style="padding:5px 12px;border-radius:16px;border:1px solid ${filtroEst===k?col:'var(--border)'};background:${filtroEst===k?col:'#fff'};color:${filtroEst===k?'#fff':'var(--text2)'};font-size:11.5px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${l} (${n})</button>`;
+  return `<div id="acadNuevosBox" style="margin-bottom:22px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+      <div style="font-size:14px;font-weight:700;color:var(--navy);">🆕 Nuevos asistentes desde facturación <span style="font-weight:500;color:var(--text3);font-size:12px;">(${totalSinFiltro})</span></div>
+      ${userProfile?.rol==='director'?`<button onclick="academiaProbarOdoo(this)" style="background:none;border:1px dashed var(--border);border-radius:6px;padding:3px 9px;font-size:10px;color:var(--text3);cursor:pointer;">🔌 Probar conexión Odoo</button>`:''}
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+      ${pill('','Todos',cnt.pendiente+cnt.proceso+cnt.completado,'var(--navy)')}
+      ${pill('pendiente','● Pendientes',cnt.pendiente,'#c0392b')}
+      ${pill('proceso','⏳ En proceso',cnt.proceso,'#b7791f')}
+      <input id="acadNuevosQ" value="${esc(window._acadNuevosQ||'')}" oninput="academiaNuevosBuscar(this.value)" placeholder="Buscar asistente…" style="padding:6px 10px;border:1px solid var(--border);border-radius:16px;font-size:12px;min-width:170px;">
+      ${opcionesGen.length>1||filtro?`<select onchange="academiaNuevosFiltrar(this.value)" style="padding:6px 10px;border:1px solid var(--border);border-radius:16px;font-size:11.5px;"><option value="">Todos los cursos</option>${opcionesGen.map(([k,l])=>`<option value="${esc(k)}" ${k===filtro?'selected':''}>${esc(l)}</option>`).join('')}</select>`:''}
+    </div>
+    <div class="card" style="overflow:hidden;padding:0;${rows.length?'border-left:3px solid var(--red);':''}">
+      ${gruposHtml||'<div style="padding:16px;color:var(--text3);font-size:12px;">Sin asistentes nuevos por atender con este filtro.</div>'}
     </div></div>`;
 }
 async function academiaEnviarBienvenida(id,btn){
@@ -1287,7 +1317,14 @@ async function academiaProbarOdoo(btn){
     const {data:sess}=await sb.auth.getSession();
     const r=await fetch('/api/odoo-probar',{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
     const j=await r.json().catch(()=>({}));
-    if(!j.ok){alert('Odoo: no conectó.\n'+(j.error||('Error '+r.status)));return;}
+    if(!j.ok){
+      const dg=j.diagnostico;
+      alert('Odoo: no conectó.\n'+(j.error||('Error '+r.status))
+        +(dg?`\n\nDiagnóstico (sin mostrar secretos):\n• Servidor: ${dg.url}\n• Base: ${dg.bd}\n• Login guardado: ${dg.login_enmascarado} (${dg.login_longitud} caracteres, ${dg.login_parece_correo?'parece correo':'NO parece correo'})\n• Clave guardada: ${dg.clave_longitud} caracteres (${dg.clave_formato_odoo?'formato correcto de 40':'formato NO es de 40 hex'})`:'')
+        +((j.pistas||[]).length?'\n\nPosible causa:\n- '+j.pistas.join('\n- '):''));
+      return;
+    }
+    if(j.aviso) alert('⚠ '+j.aviso);
     alert('✅ Odoo conectado\nVersión: '+j.version+'\nCursos de eLearning: '+j.cursos_total+'\nPuede inscribir alumnos: '+(j.puede_inscribir_alumnos?'sí':'no')+'\nÚltimos: '+(j.cursos_muestra||[]).map(c=>c.name).join(' | '));
   }catch(e){alert('Odoo: '+(e.message||e));}
   finally{if(btn){btn.disabled=false;btn.textContent=txt;}}
@@ -1296,11 +1333,15 @@ async function academiaNuevosFiltrar(v){
   window._acadNuevosFiltro=v||'';
   return academiaRefrescarNuevos();
 }
+function academiaNuevosFiltroEstado(v){window._acadNuevosEst=v||'';return academiaRefrescarNuevos();}
+function academiaNuevosBuscar(v){window._acadNuevosQ=v||'';clearTimeout(window._acadNQT);window._acadNQT=setTimeout(academiaRefrescarNuevos,250);}
 async function academiaRefrescarNuevos(){
   const box=document.getElementById('acadNuevosBox'); if(!box) return;
   const html=await academiaNuevosAsistentesHtml();
   const tmp=document.createElement('div'); tmp.innerHTML=html;
   const nuevo=tmp.firstElementChild; if(nuevo) box.replaceWith(nuevo);
+  const qi=document.getElementById('acadNuevosQ'); // el buscador se reemplaza con la lista: se devuelve el cursor
+  if(qi&&window._acadNuevosQ&&document.activeElement===document.body){qi.focus();try{qi.setSelectionRange(qi.value.length,qi.value.length);}catch(e){}}
 }
 async function academiaNuevoCheck(id,k,val){
   const {data}=await sb.from('academia_inscripciones').select('atencion,nivel_acceso,generacion:generacion_id(curso:curso_id(modalidad))').eq('id',id).single();
@@ -1315,17 +1356,41 @@ async function academiaNuevoCheck(id,k,val){
   academiaRefrescarNuevos();
 }
 async function academiaNuevoAtendido(id){
+  const {data}=await sb.from('academia_inscripciones').select('atencion,nivel_acceso,participante:participante_id(nombre),generacion:generacion_id(clave,curso:curso_id(modalidad))').eq('id',id).single();
+  const e=academiaEstadoNuevo(data||{});
+  if(e.estado==='completado') return academiaNuevoCerrarGuardar(id,'');
+  // Jp, 2026-11-14: antes solo salía un cuadro de texto. Ahora se avisa con claridad qué falta, que el asistente
+  // SALE de pendientes y no vuelve a aparecer, y se pide un motivo (quedan guardados quién y por qué).
+  document.getElementById('modalAcadCerrar')?.remove();
+  const d=document.createElement('div');d.id='modalAcadCerrar';
+  d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100010;display:flex;align-items:center;justify-content:center;padding:16px;';
+  const esc=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const motivos=['No desea grupo de WhatsApp','Ya tenía acceso / usuario','No requiere laboratorio','Se atendió por otro medio'];
+  d.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px 22px;width:100%;max-width:460px;box-shadow:0 10px 40px rgba(0,0,0,.3);">
+    <div style="font-size:15px;font-weight:700;color:var(--navy);margin-bottom:6px;">¿Cerrar sin completar?</div>
+    <div style="font-size:12.5px;color:var(--text2);margin-bottom:8px;"><b>${esc(data?.participante?.nombre||'')}</b> todavía tiene pasos pendientes: <b style="color:#c0392b;">${esc(e.faltan.join(', '))}</b>.</div>
+    <div style="font-size:12px;color:#9a6b00;background:#fdf3dc;border-radius:8px;padding:7px 10px;margin-bottom:10px;">Si lo cierras, <b>sale de la lista de pendientes</b> y deja de aparecer en el correo diario. Quedará registrado quién lo cerró y el motivo.</div>
+    <div style="font-size:11px;font-weight:600;margin-bottom:4px;">Motivo (obligatorio)</div>
+    <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px;">${motivos.map(m=>`<button type="button" onclick="document.getElementById('acadCierreMotivo').value=this.textContent" style="border:1px solid var(--border);background:#fff;border-radius:12px;padding:3px 9px;font-size:11px;cursor:pointer;">${m}</button>`).join('')}</div>
+    <textarea id="acadCierreMotivo" rows="2" placeholder="Escribe por qué se cierra sin completar" style="width:100%;box-sizing:border-box;padding:7px 9px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;"></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+      <button onclick="document.getElementById('modalAcadCerrar').remove()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;">Volver</button>
+      <button onclick="academiaNuevoCerrarGuardar('${id}',document.getElementById('acadCierreMotivo').value)" style="background:#c0392b;color:#fff;border:none;border-radius:7px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;">Sí, cerrar sin completar</button>
+    </div></div>`;
+  d.onclick=ev=>{if(ev.target===d) d.remove();};
+  document.body.appendChild(d);
+}
+async function academiaNuevoCerrarGuardar(id,motivo){
   const {data}=await sb.from('academia_inscripciones').select('atencion,nivel_acceso,generacion:generacion_id(curso:curso_id(modalidad))').eq('id',id).single();
   const e=academiaEstadoNuevo(data||{});
   const upd={atendido_at:new Date().toISOString(),atendido_por:userProfile?.nombre||''};
   if(e.estado!=='completado'){
-    const motivo=prompt('Faltan pasos ('+e.faltan.join(', ')+').\nEscribe el motivo para cerrarlo sin completar (ej. "no desea grupo de WhatsApp"):');
-    if(motivo===null) return;
-    if(!motivo.trim()) return uiToast('Escribe un motivo para cerrarlo sin completar',false);
-    upd.atencion={...(data?.atencion||{}),cierre_motivo:motivo.trim(),cierre_incompleto:true};
+    if(!String(motivo||'').trim()) return uiToast('Escribe un motivo para cerrarlo sin completar',false);
+    upd.atencion={...(data?.atencion||{}),cierre_motivo:String(motivo).trim(),cierre_incompleto:true};
   }
   const {error}=await sb.from('academia_inscripciones').update(upd).eq('id',id);
   if(error) return uiToast('No se pudo guardar: '+error.message,false);
+  document.getElementById('modalAcadCerrar')?.remove();
   uiToast(e.estado==='completado'?'Asistente cerrado como completado':'Cerrado sin completar (motivo guardado)',true);
   academiaRefrescarNuevos();
 }
@@ -33574,7 +33639,7 @@ function solTarjeta(r,modo){
   const esDir=modo==='director',esAdm=modo==='admin',esVend=modo==='vendedor';
   // Jp, 2026-11-14: una solicitud DEVUELTA (con motivo) no se puede validar ni facturar hasta que el vendedor la corrija y reenvíe
   const devuelta=!!r.devuelta_motivo&&!['cancelada','cerrada'].includes(r.estado);
-  const puedeDevolver=(esDir||esAdm)&&!devuelta&&(r.estado==='solicitada'||r.estado==='pendiente_pago')&&!r.factura_folio;
+  const puedeDevolver=(esDir||esAdm)&&!devuelta&&(r.estado==='solicitada'||r.estado==='pendiente_pago'||r.estado==='pago_validado')&&!r.factura_folio;
   const puedeCorregir=esVend&&devuelta&&r.vendedor_id===(userProfile?.id||currentUser.id);
   const puedeFacturar=(esDir||esAdm)&&!devuelta&&(r.estado==='pago_validado'||r.estado==='pendiente_pago');
   const puedeValidar=esDir&&!devuelta&&!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada');
@@ -33686,7 +33751,14 @@ async function solCorregirGuardar(id){
   const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
   if(error) return alert('No se pudo reenviar: '+error.message);
   try{const {data:sess}=await sb.auth.getSession();fetch('/api/facturacion-avisar-telegram',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solicitud_id:id})}).catch(()=>{});}catch(e){}
+  // Si el pago ya estaba validado, al corregir se inscribe en Academia de inmediato (igual que "Guardar e inscribir").
+  let msgAc='';
+  if(r.pago_validado&&upd.academia&&!upd.academia.no_aplica){
+    r.academia={...upd.academia};delete r.academia.inscrito_at;
+    try{msgAc=await solInscribirAcademia(r);}catch(e){msgAc='🎓 Academia: '+(e.message||e);}
+  }
   solCerrarModal();solRefrescar();uiToast('✅ Solicitud corregida y reenviada a Dirección',true);
+  if(msgAc) setTimeout(()=>alert(msgAc),300);
 }
 // Aviso al vendedor cuando Dirección le devuelve una solicitud (una vez por sesión por solicitud)
 let _solDevVistas=null;
