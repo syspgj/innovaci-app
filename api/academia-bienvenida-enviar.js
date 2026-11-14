@@ -15,7 +15,7 @@
 const SURL = process.env.SUPABASE_URL || 'https://ydwouspzneacxfixlmmv.supabase.co';
 const SKEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const RESEND = process.env.RESEND_API_KEY;
-const FROM = process.env.ACADEMIA_BIENVENIDA_FROM || 'Academia Innovaci <academia@innovaci.com.mx>';
+const FROM = process.env.ACADEMIA_BIENVENIDA_FROM || 'Academia Innovaci <academia@os.innovaci.com.mx>';
 const CAPA = process.env.CAPACITACION_EMAIL || 'capacitacion@innovaci.com.mx';
 // Dirección pública de la Academia que ve el asistente. Hoy: academia-innovaci.com;
 // cuando se migre al subdominio, basta cambiar ACADEMIA_PUBLICA_URL en Vercel (sin tocar código).

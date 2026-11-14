@@ -36,6 +36,7 @@ export default async function handler(req, res) {
     if (!SKEY) return res.status(200).json({ ok: false, error: 'Falta SUPABASE_SERVICE_ROLE_KEY' });
     if (!(await sesionValida(req))) return res.status(401).json({ ok: false, error: 'Sesión no válida' });
 
+    let KEY_USADA = '', LOGIN_USADO = '';
     const URL_ = String(process.env.ODOO_URL || '').trim().replace(/\/+$/, '');
     const DB = String(process.env.ODOO_DB || '').trim();
     const LOGIN = String(process.env.ODOO_LOGIN || '').trim();
@@ -44,17 +45,39 @@ export default async function handler(req, res) {
     if (faltan.length) return res.status(200).json({ ok: false, error: 'Faltan variables en Vercel: ' + faltan.join(', ') });
 
     const ver = await rpc(URL_, 'common', 'version', []);
-    const uid = await rpc(URL_, 'common', 'authenticate', [DB, LOGIN, KEY, {}]);
-    if (!uid) return res.status(200).json({ ok: false, version: ver && ver.server_version, error: 'Odoo rechazó el login/clave (revisa ODOO_LOGIN y ODOO_API_KEY)' });
+    // Diagnóstico SIN revelar secretos: ayuda a ver si la variable quedó mal pegada en Vercel.
+    const enmascarar = (t) => { const [u, d] = String(t).split('@'); return u.slice(0, 2) + '***' + (d ? '@' + d : ''); };
+    const diag = {
+      url: URL_, bd: DB,
+      login_enmascarado: enmascarar(LOGIN), login_longitud: LOGIN.length,
+      login_parece_correo: /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(LOGIN),
+      clave_longitud: KEY.length,
+      clave_formato_odoo: /^[0-9a-f]{40}$/i.test(KEY), // las API keys de Odoo son 40 caracteres hexadecimales
+      clave_con_comillas_o_espacios: /["'\s]/.test(KEY),
+    };
+    // Primer intento tal cual; si falla se prueban variantes comunes de error al pegar (mayúsculas/minúsculas, comillas).
+    let uid = await rpc(URL_, 'common', 'authenticate', [DB, LOGIN, KEY, {}]);
+    let variante = null;
+    if (!uid && LOGIN !== LOGIN.toLowerCase()) { uid = await rpc(URL_, 'common', 'authenticate', [DB, LOGIN.toLowerCase(), KEY, {}]); if (uid) variante = 'El login funciona en minúsculas: ponlo en minúsculas en ODOO_LOGIN.'; }
+    const keyLimpia = KEY.replace(/["'\s]/g, '');
+    if (!uid && keyLimpia !== KEY) { uid = await rpc(URL_, 'common', 'authenticate', [DB, LOGIN, keyLimpia, {}]); if (uid) variante = 'La clave tenía comillas o espacios: vuelve a pegarla sin ellos.'; }
+    if (!uid) {
+      const pistas = [];
+      if (!diag.login_parece_correo) pistas.push('ODOO_LOGIN no parece un correo: debe ser el correo (login) exacto del usuario de Odoo dueño de la clave.');
+      if (!diag.clave_formato_odoo) pistas.push(`ODOO_API_KEY mide ${KEY.length} caracteres y las claves de Odoo son de 40 (letras a-f y números): probablemente quedó incompleta o es otra cosa.`);
+      if (diag.clave_formato_odoo && diag.login_parece_correo) pistas.push('El formato de ambos se ve bien: lo más probable es que la clave esté revocada/borrada en Odoo, o pertenezca a otro usuario distinto al de ODOO_LOGIN. Genera una clave nueva con ese mismo usuario (Preferencias → Seguridad de la cuenta → Nueva clave API) y vuelve a pegarla.');
+      return res.status(200).json({ ok: false, version: ver && ver.server_version, error: 'Odoo rechazó el login/clave (revisa ODOO_LOGIN y ODOO_API_KEY)', diagnostico: diag, pistas });
+    }
+    KEY_USADA = variante ? keyLimpia : KEY; LOGIN_USADO = variante && /minúsculas/.test(variante) ? LOGIN.toLowerCase() : LOGIN;
 
-    const call = (model, m, a, kw) => rpc(URL_, 'object', 'execute_kw', [DB, uid, KEY, model, m, a, kw || {}]);
+    const call = (model, m, a, kw) => rpc(URL_, 'object', 'execute_kw', [DB, uid, KEY_USADA, model, m, a, kw || {}]);
     const total = await call('slide.channel', 'search_count', [[]]);
     const muestra = await call('slide.channel', 'search_read', [[]], { fields: ['name', 'enroll', 'total_slides'], limit: 5, order: 'id desc' });
     let permisoInscribir = null;
     try { permisoInscribir = await call('slide.channel.partner', 'check_access_rights', ['create', false]); } catch (e) { permisoInscribir = 'no verificable'; }
 
     return res.status(200).json({
-      ok: true, version: ver && ver.server_version, uid,
+      ok: true, version: ver && ver.server_version, uid, aviso: variante,
       cursos_total: total, cursos_muestra: muestra,
       puede_inscribir_alumnos: permisoInscribir,
     });
