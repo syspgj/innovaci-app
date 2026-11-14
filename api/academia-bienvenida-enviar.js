@@ -10,14 +10,16 @@
 //
 // Entrada (POST JSON): { inscripcion_id }  — requiere sesión (Bearer token).
 // Variables: SUPABASE_SERVICE_ROLE_KEY, RESEND_API_KEY, ACADEMIA_BIENVENIDA_FROM (opcional),
-//            CAPACITACION_EMAIL (opcional), ODOO_URL (para el enlace de registro).
+//            CAPACITACION_EMAIL (opcional), ACADEMIA_PUBLICA_URL (opcional, enlace de registro).
 
 const SURL = process.env.SUPABASE_URL || 'https://ydwouspzneacxfixlmmv.supabase.co';
 const SKEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const RESEND = process.env.RESEND_API_KEY;
 const FROM = process.env.ACADEMIA_BIENVENIDA_FROM || 'Academia Innovaci <academia@innovaci.com.mx>';
 const CAPA = process.env.CAPACITACION_EMAIL || 'capacitacion@innovaci.com.mx';
-const ACADEMIA_URL = String(process.env.ODOO_URL || 'https://academia-innovaci.odoo.com').replace(/\/+$/, '');
+// Dirección pública de la Academia que ve el asistente. Hoy: academia-innovaci.com;
+// cuando se migre al subdominio, basta cambiar ACADEMIA_PUBLICA_URL en Vercel (sin tocar código).
+const ACADEMIA_URL = String(process.env.ACADEMIA_PUBLICA_URL || 'https://academia-innovaci.com').replace(/\/+$/, '');
 
 // Enlaces de tutoriales/manuales: Jp los pasará después. Formato: { titulo, url }.
 const TUTORIALES = [];
