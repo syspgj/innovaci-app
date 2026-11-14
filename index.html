@@ -1229,10 +1229,10 @@ async function academiaNuevosAsistentesHtml(){
       <td>${esc(g.curso?.nombre||'')} · ${esc(g.clave||'')}<div style="font-size:11px;color:var(--text3);">${esc(r.nivel_acceso||'')} ${r.folio?'· '+esc(r.folio):''} ${r.vendedor_nombre_original?'· vende: '+esc(r.vendedor_nombre_original):''}</div></td>
       <td style="font-size:11px;color:var(--text3);">${new Date(r.created_at).toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}</td>
       <td>${chk(r,'registro','Registro')}${r.nivel_acceso==='esencial'?'':chk(r,'accesos','Accesos')}${chk(r,'whatsapp','Grupo WhatsApp')}</td>
-      <td style="padding-right:12px;text-align:right;"><button onclick="academiaNuevoAtendido('${r.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">✔ Atendido</button></td>
+      <td style="padding-right:12px;text-align:right;white-space:nowrap;">${(r.atencion||{}).bienvenida_at?`<span title="Bienvenida enviada" style="font-size:11px;color:var(--teal);font-weight:700;margin-right:8px;">✉ Enviada ${new Date(r.atencion.bienvenida_at).toLocaleDateString('es-MX',{day:'2-digit',month:'short'})}</span>`:`<button onclick="academiaEnviarBienvenida('${r.id}',this)" style="background:#fff;color:var(--navy);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;margin-right:6px;">✉ Enviar bienvenida</button>`}<button onclick="academiaNuevoAtendido('${r.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">✔ Atendido</button></td>
     </tr>`;};
   return `<div id="acadNuevosBox" style="margin-bottom:20px;">
-    <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">🆕 Nuevos asistentes desde facturación (${rows.length}${filtro?' de '+totalSinFiltro:''}) <span style="font-weight:400;color:var(--text3);font-size:11px;">— por atender: registro, accesos y grupo de WhatsApp</span>
+    <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">🆕 Nuevos asistentes desde facturación (${rows.length}${filtro?' de '+totalSinFiltro:''}) <span style="font-weight:400;color:var(--text3);font-size:11px;">— por atender: registro, accesos y grupo de WhatsApp</span>${userProfile?.rol==='director'?`<button onclick="academiaProbarOdoo(this)" style="margin-left:10px;background:none;border:1px dashed var(--border);border-radius:6px;padding:2px 8px;font-size:10px;color:var(--text3);cursor:pointer;">🔌 Probar conexión Odoo</button>`:''}
       ${opcionesGen.length>1||filtro?`<select onchange="academiaNuevosFiltrar(this.value)" style="margin-left:10px;padding:4px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-weight:500;"><option value="">Todos los cursos</option>${opcionesGen.map(([k,l])=>`<option value="${esc(k)}" ${k===filtro?'selected':''}>${esc(l)}</option>`).join('')}</select>`:''}</div>
     <div class="card" style="overflow-x:auto;${rows.length?'border-left:3px solid var(--red);':''}">
       <table style="width:100%;border-collapse:collapse;font-size:12px;">
@@ -1240,6 +1240,32 @@ async function academiaNuevosAsistentesHtml(){
         <tbody>${rows.map(fila).join('')||'<tr><td colspan="5" style="padding:14px;color:var(--text3);">Sin asistentes nuevos por atender.</td></tr>'}</tbody>
       </table>
     </div></div>`;
+}
+async function academiaEnviarBienvenida(id,btn){
+  if(!confirm('¿Enviar el correo de bienvenida a este asistente? Se manda con copia a Capacitación.')) return;
+  const txt=btn?btn.textContent:''; if(btn){btn.disabled=true;btn.textContent='Enviando…';}
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const r=await fetch('/api/academia-bienvenida-enviar',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({inscripcion_id:id})});
+    const j=await r.json().catch(()=>({}));
+    if(!j.ok) throw new Error(j.error||('Error '+r.status));
+    uiToast('Bienvenida enviada a '+j.enviado_a,true);
+    renderAcademiaDashboard();
+  }catch(e){
+    uiToast('No se pudo enviar: '+(e.message||e),false);
+    if(btn){btn.disabled=false;btn.textContent=txt;}
+  }
+}
+async function academiaProbarOdoo(btn){
+  const txt=btn?btn.textContent:''; if(btn){btn.disabled=true;btn.textContent='Probando…';}
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const r=await fetch('/api/odoo-probar',{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
+    const j=await r.json().catch(()=>({}));
+    if(!j.ok){alert('Odoo: no conectó.\n'+(j.error||('Error '+r.status)));return;}
+    alert('✅ Odoo conectado\nVersión: '+j.version+'\nCursos de eLearning: '+j.cursos_total+'\nPuede inscribir alumnos: '+(j.puede_inscribir_alumnos?'sí':'no')+'\nÚltimos: '+(j.cursos_muestra||[]).map(c=>c.name).join(' | '));
+  }catch(e){alert('Odoo: '+(e.message||e));}
+  finally{if(btn){btn.disabled=false;btn.textContent=txt;}}
 }
 async function academiaNuevosFiltrar(v){
   window._acadNuevosFiltro=v||'';
