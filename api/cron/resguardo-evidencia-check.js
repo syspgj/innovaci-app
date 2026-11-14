@@ -229,7 +229,7 @@ export default async function handler(req, res) {
 
   try {
     const polizas = await sbGet(
-      `clientes_polizas?estatus=neq.CERRADA&select=id,cliente_nombre,fecha_inicio,resguardo_periodicidad_dias_override,servidor_cloud_id,numero_proyecto_crm,polizas_catalogo!inner(nombre,categoria,resguardo_periodicidad_dias)&polizas_catalogo.categoria=eq.RESGUARDO`
+      `clientes_polizas?estatus=neq.CERRADA&select=id,cliente_nombre,fecha_inicio,resguardo_periodicidad_dias_override,servidor_cloud_id,numero_proyecto_crm,resguardo_dropbox_folder,dropbox_revision_at,dropbox_revision_error,dropbox_ultimo_archivo,dropbox_ultimo_archivo_fecha,polizas_catalogo!inner(nombre,categoria,resguardo_periodicidad_dias)&polizas_catalogo.categoria=eq.RESGUARDO`
     );
     if (!polizas.length) {
       return res.status(200).json({ ok: true, hoy, mensaje: 'Sin pólizas de resguardo activas.' });
@@ -246,11 +246,15 @@ export default async function handler(req, res) {
 
     const polizaIds = polizas.map((p) => p.id);
     const evidencias = await sbGet(
-      `resguardo_evidencias?cliente_poliza_id=in.(${polizaIds.join(',')})&select=cliente_poliza_id,periodo_fecha&order=periodo_fecha.desc`
+      `resguardo_evidencias?cliente_poliza_id=in.(${polizaIds.join(',')})&select=cliente_poliza_id,periodo_fecha,origen,fecha_subida&order=periodo_fecha.desc`
     );
     const ultimaEvidenciaPorPoliza = {};
+    const ultimaEvidenciaInfo = {}; // origen (dropbox/manual) y fecha real de subida, para el correo
     evidencias.forEach((e) => {
-      if (!ultimaEvidenciaPorPoliza[e.cliente_poliza_id]) ultimaEvidenciaPorPoliza[e.cliente_poliza_id] = e.periodo_fecha;
+      if (!ultimaEvidenciaPorPoliza[e.cliente_poliza_id]) {
+        ultimaEvidenciaPorPoliza[e.cliente_poliza_id] = e.periodo_fecha;
+        ultimaEvidenciaInfo[e.cliente_poliza_id] = e;
+      }
     });
 
     const incidenciasAbiertas = await sbGet(
@@ -261,8 +265,13 @@ export default async function handler(req, res) {
     let folioContador = await sbCount(`servicios_ejecutados?created_at=gte.${hoy.slice(0, 4)}-01-01`);
     const anio = hoy.slice(0, 4);
 
-    const avisosVencidas = [];
-    const avisosProximas = []; // vence en los próximos 3 días, sin incidencia todavía
+    // Jp, 2026-11-14 — el correo se reorganizó para que se entienda de un vistazo:
+    //   🔴 FALTA EVIDENCIA  → nunca subida, atrasada o del periodo vigente aún sin registrar, con el MOTIVO
+    //                          (sin carpeta de Dropbox, carpeta no encontrada, carpeta vacía, archivo viejo…).
+    //   ✅ AL CORRIENTE     → ya tiene la evidencia del periodo; se avisa cuándo toca la siguiente (en ≤ 3 días).
+    // La lógica de tickets para Soporte no cambia (se crea uno cuando la evidencia está vencida y no hay uno abierto).
+    const filasFalta = [];
+    const filasAlCorriente = [];
     let ticketsCreados = 0;
     let comentariosCrm = 0;
 
@@ -274,53 +283,88 @@ export default async function handler(req, res) {
       if (!periodicidadDias || !p.fecha_inicio) continue; // sin datos suficientes para calcular — se deja visible en el detalle de la póliza, no se puede alertar sin esto
 
       const ultimaEvidencia = ultimaEvidenciaPorPoliza[p.id] || null;
+      const periodoActual = calcularPeriodoActual(p.fecha_inicio, periodicidadDias, hoy);
+      const cubierto = !!(ultimaEvidencia && ultimaEvidencia >= periodoActual);
       const proximoVencimiento = calcularProximoVencimiento(p.fecha_inicio, periodicidadDias, ultimaEvidencia, hoy);
       const diasParaVencer = Math.floor((new Date(proximoVencimiento + 'T00:00:00') - new Date(hoy + 'T00:00:00')) / 86400000);
+      const nombrePoliza = p.polizas_catalogo?.nombre || 'Resguardo';
+      const info = ultimaEvidenciaInfo[p.id];
+      const origenTxt = info ? (info.origen === 'dropbox' ? 'detectada en Dropbox' : 'subida a mano') : '';
+      const ultimaTxt = ultimaEvidencia
+        ? `Última evidencia registrada: ${ultimaEvidencia}${origenTxt ? ' (' + origenTxt + ')' : ''}.`
+        : 'Nunca se ha registrado evidencia de esta póliza.';
 
-      if (diasParaVencer < 0 && !yaTieneIncidenciaAbierta.has(p.id)) {
-        // Vencida y sin incidencia abierta todavía: crear el ticket.
-        folioContador++;
-        const folio = `TCK-${anio}-${String(folioContador).padStart(5, '0')}`;
-        const descripcion = `Evidencia de resguardo no subida — póliza ${p.polizas_catalogo?.nombre || ''} de ${p.cliente_nombre}, periodicidad cada ${periodicidadDias} día${periodicidadDias === 1 ? '' : 's'}, debió subirse el ${proximoVencimiento}. Generado automático por el sistema de alertas de resguardo.`;
-        await sbPost('servicios_ejecutados', {
-          folio_ticket: folio,
-          cliente_poliza_id: p.id,
-          tipo_servicio: 'INCIDENCIA_RESGUARDO',
-          cliente_nombre: p.cliente_nombre,
-          solicitado_por: 'Sistema (alerta automática de resguardo)',
-          descripcion_solicitud: descripcion,
-          estatus: 'PENDIENTE',
-        });
-        ticketsCreados++;
-
-        if (p.numero_proyecto_crm) {
-          const ok = await comentarEnProyectoCrm(p.numero_proyecto_crm, `⚠ ${descripcion} (ticket ${folio})`);
-          if (ok) comentariosCrm++;
+      if (!cubierto) {
+        // Motivo por el que no hay evidencia, según lo que encontró (o no) la revisión de Dropbox.
+        let motivo;
+        const carpeta = p.resguardo_dropbox_folder;
+        if (!carpeta) {
+          motivo = 'La póliza no tiene carpeta de Dropbox capturada, así que la app no puede buscar el respaldo. Captúrala (⚙ Configuración de resguardo) o sube la evidencia a mano.';
+        } else if (p.dropbox_revision_error) {
+          motivo = /not_found/i.test(p.dropbox_revision_error)
+            ? `La carpeta «${carpeta}» no se encontró en Dropbox (el nombre no coincide). Corrígela con el botón 📂 Buscar carpeta.`
+            : `No se pudo revisar la carpeta «${carpeta}» en Dropbox: ${String(p.dropbox_revision_error).slice(0, 140)}`;
+        } else if (!p.dropbox_revision_at) {
+          motivo = `La carpeta «${carpeta}» todavía no se ha revisado en Dropbox.`;
+        } else if (!p.dropbox_ultimo_archivo) {
+          motivo = `La carpeta «${carpeta}» existe en Dropbox pero está vacía: no hay respaldos.`;
+        } else {
+          const f = p.dropbox_ultimo_archivo_fecha ? String(p.dropbox_ultimo_archivo_fecha).slice(0, 10) : '';
+          motivo = `El último archivo en Dropbox es del ${f} y es anterior al periodo vigente (desde el ${periodoActual}).`;
         }
 
-        avisosVencidas.push({
+        let ticketTxt = '';
+        if (diasParaVencer < 0 && !yaTieneIncidenciaAbierta.has(p.id)) {
+          // Vencida y sin incidencia abierta todavía: crear el ticket.
+          folioContador++;
+          const folio = `TCK-${anio}-${String(folioContador).padStart(5, '0')}`;
+          const descripcion = `Evidencia de resguardo no subida — póliza ${nombrePoliza} de ${p.cliente_nombre}, periodicidad cada ${periodicidadDias} día${periodicidadDias === 1 ? '' : 's'}, debió subirse el ${proximoVencimiento}. Generado automático por el sistema de alertas de resguardo.`;
+          await sbPost('servicios_ejecutados', {
+            folio_ticket: folio,
+            cliente_poliza_id: p.id,
+            tipo_servicio: 'INCIDENCIA_RESGUARDO',
+            cliente_nombre: p.cliente_nombre,
+            solicitado_por: 'Sistema (alerta automática de resguardo)',
+            descripcion_solicitud: descripcion,
+            estatus: 'PENDIENTE',
+          });
+          ticketsCreados++;
+          ticketTxt = `Se creó el ticket ${folio} para Soporte.`;
+
+          if (p.numero_proyecto_crm) {
+            const ok = await comentarEnProyectoCrm(p.numero_proyecto_crm, `⚠ ${descripcion} (ticket ${folio})`);
+            if (ok) comentariosCrm++;
+          }
+        } else if (diasParaVencer < 0) {
+          ticketTxt = 'Ya tiene un ticket abierto en Soporte.';
+        }
+
+        const cuando = diasParaVencer < 0
+          ? `Debió subirse el ${proximoVencimiento} (cada ${periodicidadDias} día${periodicidadDias === 1 ? '' : 's'}).`
+          : `Vence hoy (cada ${periodicidadDias} día${periodicidadDias === 1 ? '' : 's'}).`;
+        filasFalta.push({
           cliente: p.cliente_nombre,
-          detalle: `${p.polizas_catalogo?.nombre || 'Resguardo'} — evidencia vencida desde el ${proximoVencimiento} (cada ${periodicidadDias}d). Ticket ${folio} creado para Soporte.`,
+          detalle: `${nombrePoliza} — ${cuando} ${ultimaTxt}<br><b>Motivo:</b> ${motivo}${ticketTxt ? '<br>' + ticketTxt : ''}`,
         });
       } else if (diasParaVencer >= 0 && diasParaVencer <= 3) {
-        avisosProximas.push({
+        filasAlCorriente.push({
           cliente: p.cliente_nombre,
-          detalle: `${p.polizas_catalogo?.nombre || 'Resguardo'} — evidencia debida el ${proximoVencimiento} (en ${diasParaVencer} día${diasParaVencer === 1 ? '' : 's'}).`,
+          detalle: `${nombrePoliza} — evidencia del periodo ya registrada. ${ultimaTxt} Próxima evidencia: <b>${proximoVencimiento}</b> (en ${diasParaVencer} día${diasParaVencer === 1 ? '' : 's'}).`,
         });
       }
     }
 
     let correoEnviado = false;
-    if (avisosVencidas.length || avisosProximas.length) {
+    if (filasFalta.length || filasAlCorriente.length) {
       await enviarCorreo({
         to: ADMIN_EMAIL,
-        subject: `🗓 Evidencia de resguardo — ${avisosVencidas.length} vencida${avisosVencidas.length !== 1 ? 's' : ''}${avisosProximas.length ? `, ${avisosProximas.length} por vencer` : ''}`,
+        subject: `🗓 Resguardo — ${filasFalta.length ? `🔴 ${filasFalta.length} sin evidencia` : '✅ todas con evidencia'}${filasAlCorriente.length ? `, ${filasAlCorriente.length} al corriente (próxima en ≤3 días)` : ''}`,
         html: plantillaAviso({
           titulo: 'Evidencia de resguardo',
-          introVencidas: `${avisosVencidas.length} póliza${avisosVencidas.length !== 1 ? 's' : ''} sin evidencia de resguardo, con incidencia ya creada para Soporte:`,
-          filasVencidas: avisosVencidas,
-          intro: `${avisosProximas.length} póliza${avisosProximas.length !== 1 ? 's' : ''} con evidencia por vencer en los próximos 3 días:`,
-          filas: avisosProximas,
+          introVencidas: `🔴 FALTA EVIDENCIA (${filasFalta.length}) — estas pólizas no tienen la evidencia del periodo vigente:`,
+          filasVencidas: filasFalta,
+          intro: `✅ AL CORRIENTE (${filasAlCorriente.length}) — ya tienen su evidencia; solo se avisa cuándo toca la siguiente:`,
+          filas: filasAlCorriente,
         }),
       });
       correoEnviado = true;
