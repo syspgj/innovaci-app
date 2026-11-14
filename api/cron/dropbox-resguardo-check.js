@@ -70,6 +70,20 @@ async function sbGet(path) {
   return res.json();
 }
 
+async function sbPatch(path, body) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    method: 'PATCH',
+    headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Supabase PATCH ${path} -> ${res.status}: ${await res.text()}`);
+}
+
+// Fecha (YYYY-MM-DD) en hora de México de un timestamp ISO UTC.
+function fechaMexico(iso) {
+  return new Date(new Date(iso).getTime() - 6 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
 async function sbPost(path, body) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method: 'POST',
@@ -123,6 +137,18 @@ async function vtigerLogin() {
   return loginJson.result.sessionName;
 }
 
+// Vtiger invalida el "challenge" de un usuario cuando otro proceso pide uno nuevo al mismo tiempo. Los crons de
+// sincronización con el CRM corren a las :05, :07 y :10 (14, 17, 19, 21 y 1 h UTC), justo cuando corría este cron, y por
+// eso el login fallaba a veces con INVALID_USER_CREDENTIALS (visto en los logs de Vercel el 2026-11-14 14:10).
+// 2026-11-14: se reintenta hasta 3 veces con espera, y el cron se movió a una hora sin choques.
+async function vtigerLoginConReintento() {
+  let ultimo;
+  for (let n = 0; n < 3; n++) {
+    try { return await vtigerLogin(); } catch (e) { ultimo = e; await new Promise((r) => setTimeout(r, 2500 + n * 2500)); }
+  }
+  throw ultimo;
+}
+
 // Comenta en el Proyecto CRM espejado de la póliza — Jp, 2026-10-26: "cada
 // subida de evidencia, ya sea que lo hagamos automáticamente porque
 // detectamos en el Dropbox algo, o porque subieron los de mesa de control
@@ -136,7 +162,7 @@ async function comentarEnProyectoCrm(numeroProyectoCrm, comentario) {
     const rows = await sbGet(`proyectos_crm?crm_project_no=eq.${encodeURIComponent('PROJ' + numero)}&select=crm_projectid`);
     const crmid = rows?.[0]?.crm_projectid;
     if (!crmid) return null;
-    const sessionName = await vtigerLogin();
+    const sessionName = await vtigerLoginConReintento();
     const record = { commentcontent: comentario, related_to: crmid };
     const body = new URLSearchParams({ operation: 'create', sessionName, element: JSON.stringify(record), elementType: 'ModComments' });
     const json = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body }).then((r) => r.json());
@@ -223,8 +249,10 @@ export default async function handler(req, res) {
   const hoy = hoyMexico();
 
   try {
+    // 2026-11-09: ?poliza_id=<uuid> revisa solo esa póliza (botón "Revisar Dropbox ahora" del detalle).
+    const soloId = req.query && req.query.poliza_id ? `&id=eq.${encodeURIComponent(req.query.poliza_id)}` : '';
     const polizas = await sbGet(
-      `clientes_polizas?estatus=neq.CERRADA&resguardo_dropbox_folder=not.is.null&select=id,cliente_nombre,fecha_inicio,resguardo_periodicidad_dias_override,resguardo_dropbox_folder,servidor_cloud_id,numero_proyecto_crm,polizas_catalogo!inner(nombre,categoria,resguardo_periodicidad_dias)&polizas_catalogo.categoria=eq.RESGUARDO`
+      `clientes_polizas?estatus=neq.CERRADA&resguardo_dropbox_folder=not.is.null${soloId}&select=id,cliente_nombre,fecha_inicio,resguardo_periodicidad_dias_override,resguardo_dropbox_folder,servidor_cloud_id,numero_proyecto_crm,polizas_catalogo!inner(nombre,categoria,resguardo_periodicidad_dias)&polizas_catalogo.categoria=eq.RESGUARDO`
     );
     if (!polizas.length) {
       return res.status(200).json({ ok: true, hoy, mensaje: 'Sin pólizas de resguardo con carpeta de Dropbox capturada.' });
@@ -249,23 +277,37 @@ export default async function handler(req, res) {
     let registrosCreados = 0;
     let errores = [];
 
+    const detalle = [];
     for (const p of polizas) {
       const periodicidadDias = p.resguardo_periodicidad_dias_override || p.polizas_catalogo?.resguardo_periodicidad_dias
         || (p.servidor_cloud_id && servidorMap[p.servidor_cloud_id]?.productos_servidores?.specs
           ? parsearPeriodicidadBackupSpecs(servidorMap[p.servidor_cloud_id].productos_servidores.specs)
           : null);
-      if (!periodicidadDias || !p.fecha_inicio) continue;
+      if (!periodicidadDias || !p.fecha_inicio) {
+        detalle.push({ cliente: p.cliente_nombre, resultado: 'sin periodicidad definida' });
+        continue;
+      }
 
       const periodoActual = calcularPeriodoActual(p.fecha_inicio, periodicidadDias, hoy);
-      if (periodosYaCubiertos.has(`${p.id}|${periodoActual}`)) continue; // ya tiene evidencia de este periodo (manual o Dropbox) — no hace falta consultar Dropbox
+      const yaCubierto = periodosYaCubiertos.has(`${p.id}|${periodoActual}`);
 
       try {
         if (!accessToken) accessToken = await dropboxAccessToken();
+        // Se consulta Dropbox siempre (aunque el periodo ya esté cubierto) para dejar
+        // registrado cuál es el último archivo real de la carpeta.
         const archivos = await dropboxListarArchivos(accessToken, p.resguardo_dropbox_folder);
-        if (!archivos.length) continue;
+        const masReciente = archivos.length ? archivos.reduce((a, b) => (a.server_modified > b.server_modified ? a : b)) : null;
+        await sbPatch(`clientes_polizas?id=eq.${p.id}`, {
+          dropbox_revision_at: new Date().toISOString(),
+          dropbox_ultimo_archivo: masReciente ? masReciente.path_display : null,
+          dropbox_ultimo_archivo_fecha: masReciente ? masReciente.server_modified : null,
+          dropbox_archivos_total: archivos.length,
+          dropbox_revision_error: null,
+        });
+        if (!masReciente) { detalle.push({ cliente: p.cliente_nombre, resultado: 'carpeta sin archivos' }); continue; }
+        if (yaCubierto) { detalle.push({ cliente: p.cliente_nombre, resultado: 'periodo ya cubierto', ultimo: masReciente.path_display }); continue; }
 
-        const masReciente = archivos.reduce((a, b) => (a.server_modified > b.server_modified ? a : b));
-        const fechaArchivo = masReciente.server_modified.slice(0, 10); // server_modified es ISO UTC
+        const fechaArchivo = fechaMexico(masReciente.server_modified);
         if (fechaArchivo >= periodoActual) {
           let crmComentarioId = null;
           if (p.numero_proyecto_crm) {
@@ -284,9 +326,16 @@ export default async function handler(req, res) {
             nota: `Detectado automático en Dropbox (${p.resguardo_dropbox_folder}) — archivo "${masReciente.name}" del ${fechaArchivo}.`,
           });
           registrosCreados++;
+          detalle.push({ cliente: p.cliente_nombre, resultado: 'evidencia registrada', archivo: masReciente.name, fecha: fechaArchivo });
+        } else {
+          detalle.push({ cliente: p.cliente_nombre, resultado: 'sin archivo del periodo', ultimo: masReciente.path_display, fecha: fechaArchivo, periodo: periodoActual });
         }
       } catch (e) {
         errores.push({ poliza_id: p.id, cliente: p.cliente_nombre, carpeta: p.resguardo_dropbox_folder, error: e.message });
+        detalle.push({ cliente: p.cliente_nombre, resultado: 'error', error: e.message });
+        try {
+          await sbPatch(`clientes_polizas?id=eq.${p.id}`, { dropbox_revision_at: new Date().toISOString(), dropbox_revision_error: String(e.message).slice(0, 400) });
+        } catch (_) { /* no bloquea el resto */ }
       }
     }
 
@@ -296,6 +345,7 @@ export default async function handler(req, res) {
       polizas_revisadas: polizas.length,
       registros_creados: registrosCreados,
       errores,
+      detalle,
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message || 'Error desconocido.' });

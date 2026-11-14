@@ -154,6 +154,18 @@ async function vtigerLogin() {
   return loginJson.result.sessionName;
 }
 
+// Vtiger invalida el "challenge" de un usuario cuando otro proceso pide uno nuevo al mismo tiempo. Los crons de
+// sincronización con el CRM corren a las :05, :07 y :10 (14, 17, 19, 21 y 1 h UTC), justo cuando corría este cron, y por
+// eso el login fallaba a veces con INVALID_USER_CREDENTIALS (visto en los logs de Vercel el 2026-11-14 14:10).
+// 2026-11-14: se reintenta hasta 3 veces con espera, y el cron se movió a una hora sin choques.
+async function vtigerLoginConReintento() {
+  let ultimo;
+  for (let n = 0; n < 3; n++) {
+    try { return await vtigerLogin(); } catch (e) { ultimo = e; await new Promise((r) => setTimeout(r, 2500 + n * 2500)); }
+  }
+  throw ultimo;
+}
+
 // Comenta en el Proyecto CRM espejado de la póliza (mismo criterio que
 // api/crm-comentarios.js tipo='proyecto') — se duplica aquí porque ese
 // endpoint exige un token de sesión de usuario (llamada desde la app), y
@@ -165,7 +177,7 @@ async function comentarEnProyectoCrm(numeroProyectoCrm, comentario) {
     const rows = await sbGet(`proyectos_crm?crm_project_no=eq.${encodeURIComponent('PROJ' + numero)}&select=crm_projectid`);
     const crmid = rows?.[0]?.crm_projectid;
     if (!crmid) return false;
-    const sessionName = await vtigerLogin();
+    const sessionName = await vtigerLoginConReintento();
     const record = { commentcontent: comentario, related_to: crmid };
     const body = new URLSearchParams({ operation: 'create', sessionName, element: JSON.stringify(record), elementType: 'ModComments' });
     const json = await fetch(`${VTIGER_BASE_URL}/webservice.php`, { method: 'POST', body }).then((r) => r.json());
