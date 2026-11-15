@@ -2443,6 +2443,8 @@ async function academiaAbrirEditarGeneracion(generacionId){
   window._academiaSesFechasExistentes['eg']=sesFechasMap;
   const {data:firmantes}=await sb.from('academia_firmantes').select('id,nombre,cargo').order('nombre');
   window._academiaCache.firmantes=firmantes||[];
+  const {data:odooLig}=await sb.from('academia_generacion_odoo').select('odoo_channel_id,odoo_nombre').eq('generacion_id',generacionId);
+  window._egOdoo=(odooLig||[]).map(x=>({id:x.odoo_channel_id,name:x.odoo_nombre||('Curso #'+x.odoo_channel_id)}));
   const html=`
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DEL CURSO</div>
     <div style="margin-bottom:10px;">${fld('Nombre del curso / generación',inp('egNombreCurso','text','',c.nombre||''))}</div>
@@ -2478,6 +2480,14 @@ async function academiaAbrirEditarGeneracion(generacionId){
       ${fld('Enlace del grupo de WhatsApp (va en el correo de bienvenida; solo cursos en vivo)',inp('egWaUrl','url','https://chat.whatsapp.com/…',g.whatsapp_grupo_url||''))}
       ${fld('Enlace de Zoom de la sesión (opcional)',inp('egZoomUrl','url','https://zoom.us/j/…',g.zoom_url||''))}
     </div>
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin:14px 0 6px;">🔌 CURSOS EN ODOO (donde se inscribe a los alumnos de esta generación)</div>
+    <div id="egOdooLista" style="margin-bottom:8px;"></div>
+    <div style="display:flex;gap:6px;margin-bottom:6px;">
+      <input id="egOdooQ" type="text" placeholder="Buscar curso en Odoo (ej. Aguinaldo, SAE, COI)…" onkeydown="if(event.key==='Enter'){event.preventDefault();egOdooBuscar();}" style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;">
+      <button type="button" class="btn btn-outline btn-sm" onclick="egOdooBuscar()">Buscar</button>
+    </div>
+    <div id="egOdooResultados" style="max-height:170px;overflow:auto;"></div>
+    <div style="font-size:11px;color:var(--text3);margin:4px 0 10px;">Puedes ligar uno o varios cursos (ej. un taller con dos cursos en Odoo). Se guardan al dar "Guardar".</div>
     <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text2);cursor:pointer;margin-bottom:10px;">
       <input type="checkbox" id="egArchivadoManual" ${g.archivado_manual?'checked':''}> Generación archivada (no la muestres entre las vigentes — histórico)
     </label>
@@ -2490,6 +2500,7 @@ async function academiaAbrirEditarGeneracion(generacionId){
     <div style="font-size:11px;color:var(--text3);margin-top:10px;">El método de evaluación y el criterio de acreditación no se capturan aquí: la constancia los calcula solos según el tipo (Esencial → asistencia a sesiones · Plus/Premium → prácticas de laboratorio), porque en una misma generación aplican los dos a la vez.</div>
     ${academiaBloqueFechasSesion('eg')}`;
   mkModal('modalEditarGen','Editar generación',html,`academiaGuardarEditarGeneracion('${generacionId}','${c.id}')`,'Guardar','900px');
+  egOdooPintar();
   // Precarga inmediata de las fechas de sesión que ya existieran, sin
   // necesidad de dar clic en "Generar fechas".
   if(Object.keys(sesFechasMap).length) academiaGenerarFechasSesionUI('eg',sesFechasMap);
@@ -2497,6 +2508,39 @@ async function academiaAbrirEditarGeneracion(generacionId){
   // esto, al reabrir el modal se vería como si no hubiera nada ligado aunque
   // sí lo esté (Jp, Lote 28).
   academiaClienteCarteraPrecargar('eg',g.cliente_cartera||null);
+}
+
+// ── CURSOS EN ODOO (Jp 2026-11-15): liga la generación con uno o varios cursos
+// de eLearning de Odoo, para después inscribir ahí a los alumnos nuevos.
+function egOdooPintar(){
+  const el=document.getElementById('egOdooLista'); if(!el) return;
+  const l=window._egOdoo||[];
+  el.innerHTML=l.length?l.map(x=>`<span style="display:inline-flex;align-items:center;gap:6px;background:var(--teal-light,#e6f4f1);color:var(--teal);border-radius:14px;padding:3px 10px;font-size:12px;margin:0 6px 6px 0;">${solEsc(x.name)}<button type="button" onclick="egOdooQuitar(${x.id})" title="Quitar" style="border:none;background:none;cursor:pointer;color:var(--teal);font-size:13px;line-height:1;">✕</button></span>`).join(''):'<div style="font-size:12px;color:var(--text3);">Sin cursos ligados todavía.</div>';
+}
+function egOdooQuitar(id){ window._egOdoo=(window._egOdoo||[]).filter(x=>x.id!==id); egOdooPintar(); }
+function egOdooAgregar(id,name){
+  window._egOdoo=window._egOdoo||[];
+  if(!window._egOdoo.some(x=>x.id===id)) window._egOdoo.push({id,name});
+  egOdooPintar(); egOdooPintarResultados();
+}
+async function egOdooBuscar(){
+  const box=document.getElementById('egOdooResultados'); if(!box) return;
+  box.innerHTML='<div style="font-size:12px;color:var(--text3);">Buscando en Odoo…</div>';
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const q=document.getElementById('egOdooQ')?.value||'';
+    const r=await fetch('/api/odoo-cursos',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({q})});
+    const j=await r.json().catch(()=>({}));
+    if(!j.ok){ box.innerHTML=`<div style="font-size:12px;color:#c0392b;">${solEsc(j.error||('Error '+r.status))}</div>`; return; }
+    window._egOdooRes=j.cursos||[];
+    egOdooPintarResultados();
+  }catch(e){ box.innerHTML=`<div style="font-size:12px;color:#c0392b;">${solEsc(e.message||'Error de red')}</div>`; }
+}
+function egOdooPintarResultados(){
+  const box=document.getElementById('egOdooResultados'); if(!box) return;
+  const res=window._egOdooRes||[]; const ya=new Set((window._egOdoo||[]).map(x=>x.id));
+  if(!res.length){ box.innerHTML='<div style="font-size:12px;color:var(--text3);">Sin resultados.</div>'; return; }
+  box.innerHTML=res.map(c=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 8px;border-bottom:1px solid var(--border);font-size:12px;"><span>${solEsc(c.name)}</span>${ya.has(c.id)?'<span style="color:var(--teal);">✓ ligado</span>':`<button type="button" class="btn btn-outline btn-sm" onclick="egOdooAgregar(${c.id},decodeURIComponent('${encodeURIComponent(c.name)}'))">+ Ligar</button>`}</div>`).join('');
 }
 
 async function academiaGuardarEditarGeneracion(generacionId,cursoId){
@@ -2532,6 +2576,14 @@ async function academiaGuardarEditarGeneracion(generacionId,cursoId){
   }).eq('id',generacionId);
   if(errGen){alert('Error al actualizar la generación: '+errGen.message);return;}
 
+  // Cursos en Odoo ligados a la generación (reemplazo completo)
+  if(Array.isArray(window._egOdoo)){
+    await sb.from('academia_generacion_odoo').delete().eq('generacion_id',generacionId);
+    if(window._egOdoo.length){
+      const {error:eOd}=await sb.from('academia_generacion_odoo').insert(window._egOdoo.map(x=>({generacion_id:generacionId,odoo_channel_id:x.id,odoo_nombre:x.name})));
+      if(eOd) alert('La generación se guardó, pero no se pudieron guardar los cursos de Odoo: '+eOd.message);
+    }
+  }
   // Fechas de sesión (opcional, Jp 2026-09-17): se reemplazan por completo
   // con lo que quedó capturado en el modal (borra + inserta).
   await academiaGuardarFechasSesion(generacionId,academiaLeerFechasSesion('eg'));
