@@ -1111,6 +1111,7 @@ const ACADEMIA_SUBTABS=[
   {id:'dashboard',label:'📊 Resumen'},
   {id:'generaciones',label:'🎓 Generaciones'},
   {id:'asistentes',label:'👤 Asistentes'},
+  {id:'odoo',label:'🔌 Alumnos Odoo'},
   {id:'practicas',label:'🧪 Prácticas'},
   {id:'evaluaciones',label:'⏱️ Evaluaciones'},
   {id:'accesos',label:'🔐 Accesos'},
@@ -1187,6 +1188,7 @@ function renderAcademiaTab(){
   if(currentAcademiaTab==='dashboard') renderAcademiaDashboard();
   else if(currentAcademiaTab==='generaciones') renderAcademiaGeneraciones();
   else if(currentAcademiaTab==='asistentes') renderAcademiaAsistentes();
+  else if(currentAcademiaTab==='odoo') renderAcademiaOdoo();
   else if(currentAcademiaTab==='practicas') renderAcademiaPracticasHome();
   else if(currentAcademiaTab==='evaluaciones') renderAcademiaEvaluaciones();
   else if(currentAcademiaTab==='accesos') renderAcademiaAccesos();
@@ -5111,6 +5113,131 @@ async function academiaEliminarFirmante(firmanteId){
 // ── ASISTENTES (Lote 10): un expediente por PERSONA, no por inscripción ────
 // Jp: "cuando me aparezca en la lista de asistentes solamente me va a
 // aparecer un solo Marco Antonio y que asistió a los dos [cursos]".
+
+// ── ALUMNOS EN ODOO (Jp, 2026-11-16): todos los alumnos inscritos en los cursos
+// de Odoo (eLearning), por curso y por sistema, cruzados con asistentes de
+// Academia y cuentas de Cartera. Se llena con /api/odoo-alumnos-sync.
+let academiaOdooFiltro={sistema:'',q:'',sinCuenta:false};
+async function academiaOdooCargarTodo(){
+  const filas=[]; 
+  for(let d=0;d<30;d++){
+    const {data,error}=await sb.from('odoo_alumnos_cursos').select('*').order('id').range(d*1000,d*1000+999);
+    if(error) throw error;
+    filas.push(...(data||[]));
+    if(!data||data.length<1000) break;
+  }
+  const ids=[...new Set(filas.map(f=>f.cuenta_cartera_id).filter(Boolean))];
+  const cuentas={};
+  for(let i=0;i<ids.length;i+=80){
+    const {data}=await sb.from('cuentas_cartera').select('id,razon_social').in('id',ids.slice(i,i+80));
+    (data||[]).forEach(c=>{cuentas[c.id]=c.razon_social;});
+  }
+  return {filas,cuentas};
+}
+async function renderAcademiaOdoo(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando alumnos de Odoo...</div>';
+  let r; try{ r=await academiaOdooCargarTodo(); }catch(e){ mc.innerHTML=`<div style="padding:20px;color:#c0392b;">Error: ${solEsc(e.message||e)}</div>`; return; }
+  window._odooAl=r;
+  mc.innerHTML=`
+  <div style="margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+    <div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);">Alumnos en Odoo</div>
+      <div id="odooSyncInfo" style="font-size:12px;color:var(--text3);"></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-outline btn-sm" onclick="academiaOdooExportar()">⬇ Exportar CSV</button>
+      <button class="btn btn-primary btn-sm" id="odooSyncBtn" onclick="academiaOdooSync(this)">🔄 Sincronizar con Odoo</button>
+    </div>
+  </div>
+  <div id="odooResumen"></div>
+  <div id="odooContenido"></div>`;
+  academiaOdooPintar();
+}
+function academiaOdooPintar(){
+  const {filas,cuentas}=window._odooAl||{filas:[],cuentas:{}};
+  const info=document.getElementById('odooSyncInfo'), res=document.getElementById('odooResumen'), cont=document.getElementById('odooContenido');
+  if(!cont) return;
+  if(!filas.length){
+    if(info) info.textContent='Aún no se ha sincronizado.';
+    cont.innerHTML='<div class="card" style="padding:20px;font-size:13px;color:var(--text2);">Todavía no hay alumnos cargados. Pulsa <b>🔄 Sincronizar con Odoo</b> para traer a todos los alumnos inscritos en los cursos.</div>';
+    if(res) res.innerHTML=''; return;
+  }
+  const ult=filas.reduce((m,f)=>f.sync_at>m?f.sync_at:m,'');
+  if(info) info.textContent='Última sincronización: '+new Date(ult).toLocaleString('es-MX');
+  const clave=f=>f.partner_id?('p'+f.partner_id):(f.email||('i'+f.id));
+  const unicos=new Set(filas.map(clave)).size;
+  const conCuenta=new Set(filas.filter(f=>f.cuenta_cartera_id).map(clave)).size;
+  const completaron=filas.filter(f=>f.completado).length;
+  const kpi=(t,v,sub)=>`<div class="card" style="padding:12px 16px;min-width:150px;flex:1;"><div style="font-size:11px;color:var(--text3);">${t}</div><div style="font-size:22px;font-weight:700;color:var(--text);">${v}</div>${sub?`<div style="font-size:11px;color:var(--text3);">${sub}</div>`:''}</div>`;
+  const cursosSet=new Set(filas.map(f=>f.channel_id));
+  res.innerHTML=`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+    ${kpi('Inscripciones',filas.length,'alumno × curso')}
+    ${kpi('Alumnos únicos',unicos,'personas distintas')}
+    ${kpi('Cursos con alumnos',cursosSet.size,'')}
+    ${kpi('Concluyeron',completaron,Math.round(completaron*100/filas.length)+'% de inscripciones')}
+    ${kpi('Ligados a una cuenta',conCuenta,Math.round(conCuenta*100/unicos)+'% de los alumnos')}
+  </div>`;
+  // Por sistema
+  const porSis={};
+  filas.forEach(f=>{ const k=f.sistema||'Otro'; const o=porSis[k]||(porSis[k]={n:0,u:new Set(),c:0}); o.n++; o.u.add(clave(f)); if(f.completado)o.c++; });
+  const sisOrden=Object.keys(porSis).sort((a,b)=>porSis[b].n-porSis[a].n);
+  // Por curso (con filtros)
+  const q=(academiaOdooFiltro.q||'').trim().toLowerCase();
+  let vis=filas.filter(f=>(!academiaOdooFiltro.sistema||f.sistema===academiaOdooFiltro.sistema));
+  if(academiaOdooFiltro.sinCuenta) vis=vis.filter(f=>!f.cuenta_cartera_id);
+  if(q) vis=vis.filter(f=>[f.nombre,f.email,f.empresa,f.channel_nombre].some(x=>(x||'').toLowerCase().includes(q)));
+  const porCurso={};
+  vis.forEach(f=>{ const o=porCurso[f.channel_id]||(porCurso[f.channel_id]={id:f.channel_id,nombre:f.channel_nombre,sistema:f.sistema,n:0,c:0,cu:0}); o.n++; if(f.completado)o.c++; if(f.cuenta_cartera_id)o.cu++; });
+  const cursos=Object.values(porCurso).sort((a,b)=>b.n-a.n);
+  const chip=(v,l,act)=>`<button type="button" onclick="academiaOdooFiltro.sistema='${v}';academiaOdooPintar();" style="border:1px solid var(--border);background:${act?'var(--teal)':'#fff'};color:${act?'#fff':'var(--text2)'};border-radius:14px;padding:4px 12px;font-size:12px;cursor:pointer;">${l}</button>`;
+  cont.innerHTML=`
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center;">
+    ${chip('','Todos',!academiaOdooFiltro.sistema)}
+    ${sisOrden.map(k=>chip(k,`${k} · ${porSis[k].u.size} alumnos`,academiaOdooFiltro.sistema===k)).join('')}
+  </div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;align-items:center;">
+    <input id="odooQ" type="text" placeholder="Buscar alumno, correo, empresa o curso…" value="${solEsc(academiaOdooFiltro.q)}" oninput="academiaOdooFiltro.q=this.value;academiaOdooPintarDebounce();" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;min-width:280px;">
+    <label style="font-size:12px;color:var(--text2);display:flex;gap:6px;align-items:center;cursor:pointer;"><input type="checkbox" ${academiaOdooFiltro.sinCuenta?'checked':''} onchange="academiaOdooFiltro.sinCuenta=this.checked;academiaOdooPintar();"> Solo sin cuenta ligada</label>
+  </div>
+  <div class="card" style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;">
+    <thead><tr style="background:var(--bg2,#f5f6f8);text-align:left;"><th style="padding:10px 12px;">Curso en Odoo</th><th>Sistema</th><th style="text-align:right;">Inscritos</th><th style="text-align:right;">Concluyeron</th><th style="text-align:right;">Con cuenta</th><th></th></tr></thead>
+    <tbody>${cursos.map(c=>`<tr style="border-top:1px solid var(--border);"><td style="padding:8px 12px;">${solEsc(c.nombre||('Curso #'+c.id))}</td><td>${solEsc(c.sistema||'')}</td><td style="text-align:right;">${c.n}</td><td style="text-align:right;">${c.c}</td><td style="text-align:right;">${c.cu}</td><td style="text-align:right;padding-right:10px;"><button class="cartera-subtab" onclick="academiaOdooVerCurso(${c.id})">Ver alumnos</button></td></tr>`).join('')||'<tr><td colspan="6" style="padding:16px;color:var(--text3);">Sin resultados.</td></tr>'}</tbody>
+  </table></div>`;
+  const qi=document.getElementById('odooQ'); if(qi&&document.activeElement!==qi&&window._odooRefocus){qi.focus();qi.setSelectionRange(qi.value.length,qi.value.length);}
+}
+let _odooT=null;
+function academiaOdooPintarDebounce(){ clearTimeout(_odooT); _odooT=setTimeout(()=>{window._odooRefocus=true;academiaOdooPintar();window._odooRefocus=false;},250); }
+function academiaOdooVerCurso(channelId){
+  const {filas,cuentas}=window._odooAl;
+  const l=filas.filter(f=>f.channel_id===channelId).sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||'','es'));
+  const tit=l[0]?.channel_nombre||('Curso #'+channelId);
+  const tipo={asistente:'Asistente de Academia',correo_cuenta:'Correo de la cuenta',dominio:'Dominio de la empresa'};
+  const html=`<div style="font-size:12px;color:var(--text3);margin-bottom:8px;">${l.length} alumnos inscritos</div>
+  <div style="max-height:60vh;overflow:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;">
+  <thead><tr style="text-align:left;background:var(--bg2,#f5f6f8);"><th style="padding:8px;">Alumno</th><th>Correo</th><th>Teléfono</th><th>Avance</th><th>Cuenta en la app</th></tr></thead>
+  <tbody>${l.map(f=>`<tr style="border-top:1px solid var(--border);"><td style="padding:6px 8px;">${solEsc(f.nombre||'—')}${f.empresa?`<div style="font-size:10px;color:var(--text3);">${solEsc(f.empresa)}</div>`:''}</td><td>${solEsc(f.email||'—')}</td><td>${solEsc(f.telefono||'—')}</td><td>${f.completado?'✅ Concluyó':(f.avance!=null?Math.round(f.avance)+'%':'—')}</td><td>${f.cuenta_cartera_id?`${solEsc(cuentas[f.cuenta_cartera_id]||'(cuenta)')}<div style="font-size:10px;color:var(--text3);">${tipo[f.match_tipo]||''}</div>`:'<span style="color:var(--text3);">Sin ligar</span>'}</td></tr>`).join('')}</tbody></table></div>`;
+  mkModal('modalOdooCurso',tit,html,'document.getElementById("modalOdooCurso")?.remove()','Cerrar','900px');
+}
+function academiaOdooExportar(){
+  const {filas,cuentas}=window._odooAl||{filas:[],cuentas:{}};
+  const e=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+  const rows=[['Curso','Sistema','Alumno','Correo','Teléfono','Empresa Odoo','Estado','Avance','Concluyó','Cuenta en la app','Cómo se ligó']].concat(filas.map(f=>[f.channel_nombre,f.sistema,f.nombre,f.email,f.telefono,f.empresa,f.estado,f.avance,f.completado?'Sí':'No',cuentas[f.cuenta_cartera_id]||'',f.match_tipo||'']));
+  const blob=new Blob(['﻿'+rows.map(r=>r.map(e).join(',')).join('\n')],{type:'text/csv;charset=utf-8'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='alumnos_odoo_'+todayLocal()+'.csv'; a.click();
+}
+async function academiaOdooSync(btn){
+  const txt=btn.textContent; btn.disabled=true; btn.textContent='Sincronizando… (puede tardar un minuto)';
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const r=await fetch('/api/odoo-alumnos-sync',{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
+    const j=await r.json().catch(()=>({}));
+    if(!j.ok){ alert('No se pudo sincronizar con Odoo.\n'+(j.error||('Error '+r.status))); }
+    else{ uiToast(`Listo: ${j.inscripciones} inscripciones de ${j.alumnos_unicos} alumnos en ${j.cursos} cursos.`,true); await renderAcademiaOdoo(); return; }
+  }catch(e){ alert('Error de red: '+(e.message||e)); }
+  btn.disabled=false; btn.textContent=txt;
+}
+
 async function renderAcademiaAsistentes(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando asistentes...</div>';
