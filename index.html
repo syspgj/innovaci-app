@@ -32175,6 +32175,21 @@ const SHP_ESTADO={nuevo:['Nuevo','#1976D2'],atendiendo:['En atención','#B45309'
 function shpClave(l){return l.sku||('var-'+(l.variante_id||l.producto_id||''));}
 function shpNivelSku(sku){const s=String(sku||'').toUpperCase();return /AE$/.test(s)?'esencial':/AP$/.test(s)?'plus':'';}
 function shpEsDir(){return userProfile?.rol==='director';}
+// Nivel de acceso que el cliente compró en la tienda (por SKU/variante de las líneas del pedido). '' si no se puede saber.
+async function solNivelDeTienda(pedidoId){
+  if(!pedidoId) return '';
+  try{
+    const {data:p}=await sb.from('shopify_pedidos').select('lineas').eq('id',pedidoId).single();
+    if(!p) return '';
+    const {data:mp}=await sb.from('shopify_producto_map').select('clave,nivel');const mapa={};(mp||[]).forEach(m=>mapa[m.clave]=m);
+    for(const l of (p.lineas||[])){
+      const m=mapa[shpClave(l)]; if(m?.nivel) return m.nivel;
+      const ns=shpNivelSku(l.sku); if(ns) return ns;
+      const v=String(l.variante||'').toLowerCase(); const nv=/premium/.test(v)?'premium':/plus/.test(v)?'plus':/esencial/.test(v)?'esencial':''; if(nv) return nv;
+    }
+  }catch(e){}
+  return '';
+}
 function shpAutoPasarela(p){return !/manual|deposit|dep[oó]sito|transfer|bank|cash|efectivo/i.test(p.pasarela||'');}
 function shpPagoInfo(p){
   const pas=solEsc(String(p.pasarela||'').replace(/_/g,' '));
@@ -32917,8 +32932,12 @@ async function solAplicarPrefillShopify(id){
   if(nivel) set('sfAcadNivel',nivel);
   // Pedido ya casado con el catálogo: acceso y concepto se confirman, no se reescriben (solo Dirección puede cambiarlos)
   const casado=ms.length&&ms.every(m=>m&&m.concepto&&(m.nivel||(m.generacion_ids||[]).length===0));
+  // El nivel de acceso (Esencial/Plus/Premium) que compró el cliente en la tienda SIEMPRE queda bloqueado para
+  // ventas, aunque el producto no esté casado con el catálogo (Jp 2026-11-16, caso ACC1517). Solo Dirección lo cambia.
+  if(nivel&&!shpEsDir()){
+    const sl=document.getElementById('sfAcadNivel');if(sl){sl.value=nivel;sl.disabled=true;sl.title='Lo compró así el cliente en la tienda; solo Dirección puede cambiarlo';}
+  }
   if(casado&&!shpEsDir()){
-    const sl=document.getElementById('sfAcadNivel');if(sl&&nivel){sl.disabled=true;sl.title='Viene de la tienda; Dirección puede cambiarlo';}
     const ce=document.getElementById('sfConcepto');if(ce){ce.readOnly=true;ce.style.background='#f2f5f5';ce.title='Viene de la tienda (producto ya casado con el catálogo)';}
   }
   // Generaciones vinculadas al producto: las de un taller con una sola opción se marcan solas; las ambiguas se sugieren (⭐)
@@ -33904,6 +33923,11 @@ function solCorregirModal(id){
   (async()=>{
     try{ if(!window._solGens) await solCargarGeneraciones(); if(!((ac.generaciones||[]).length)) await solSugerirGensPorConcepto('sr',r.concepto); }catch(e){}
     solAcadCargarGens('sr');
+    if(r.shopify_pedido_id&&!shpEsDir()){
+      const nt=await solNivelDeTienda(r.shopify_pedido_id);
+      const sl=document.getElementById('srAcadNivel');
+      if(nt&&sl){sl.value=nt;sl.disabled=true;sl.title='Lo compró así el cliente en la tienda; solo Dirección puede cambiarlo';}
+    }
     const t=document.getElementById('srTipoServ')?.value||'';
     const l=document.getElementById('srAcadNALabel'); if(l&&(t==='24/7'||t==='Curso o Diplomado en Vivo')) l.style.display='none';
   })();
@@ -33918,6 +33942,7 @@ async function solCorregirGuardar(id){
   if(!rfc) return alert('Falta el RFC del cliente.');
   if(!tipoServ) return alert('Elige el tipo de servicio.');
   const ac=solAcadLeer('sr');
+  if(r.shopify_pedido_id&&!shpEsDir()){ const nt=await solNivelDeTienda(r.shopify_pedido_id); if(nt) ac.nivel=nt; }
   const errAc=solAcadValidar(ac,concepto,tipoServ);
   if(errAc) return alert(errAc);
   const nota=v('srNotas');
