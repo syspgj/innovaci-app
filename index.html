@@ -34277,6 +34277,21 @@ async function solEnviar(){
   }
   // Pedido de la tienda: debe estar registrado en Proyección (cuenta + oportunidad) antes de facturar
   if(window._sfShop&&!window._sfShop.pipeline_vendedor_id&&!window._sfPipe) return err('Este pedido de la tienda aún no pasa por Proyección. Ve a la bandeja de pedidos y pulsa "📊 Pasar a Proyección" primero (así queda la cuenta y la oportunidad en el CRM).');
+  // Jp, 2026-11-17: control de precio contra el catálogo y el descuento máximo vigente (Promociones)
+  let precioCampos={};
+  if(!window._sfShop){
+    const cp=await solControlPrecio({concepto:v('sfConcepto'),tipoServ,total,pagoMonto:tipo==='con_pago'?pagoMonto:null,pagoFecha,nivel:acad.nivel,asistentes:acad.asistentes});
+    if(cp.nivel==='bloqueo'){
+      const esDirP=userProfile?.rol==='director';
+      if(esDirP){
+        if(!confirm('⛔ '+cp.resumen+'\n\nEres Dirección: ¿autorizas este descuento y envías la solicitud?')) return;
+        precioCampos={precio_alerta:'autorizado',precio_detalle:cp,precio_autorizado_por:userProfile?.nombre||'',precio_autorizado_at:new Date().toISOString(),precio_autorizado_motivo:'Autorizado por Dirección al capturar'};
+      } else {
+        if(!confirm('⛔ NO PUEDE PASAR A FACTURACIÓN CON ESTE MONTO.\n\n'+cp.resumen+'\n\nAceptar = enviarla a Dirección para que autorice el descuento (no se podrá validar ni facturar hasta entonces).\nCancelar = regresar a corregir el monto.')) return;
+        precioCampos={precio_alerta:'requiere_autorizacion',precio_detalle:cp};
+      }
+    } else if(cp.nivel==='alto'&&!confirm('⚠️ '+cp.resumen+'\n\n¿Enviar de todos modos?')) return;
+  }
   const btn=document.getElementById('sfEnviar');btn.disabled=true;msg.style.color='var(--teal)';msg.textContent='Enviando...';
   try{
     const id=solUuid();
@@ -34297,14 +34312,16 @@ async function solEnviar(){
       asistente:acad.asistentes[0]?{...acad.asistentes[0],curso:acad.generaciones.map(g=>g.clave).join(' + ')}:null,
       generacion_id:acad.generaciones[0]?.id||null,shopify_pedido_id:window._sfShop?.id||null,pipeline_vendedor_id:window._sfPipe?.id||null,
       estado:tipo==='con_pago'?'solicitada':'pendiente_pago',
+      ...precioCampos,
     };
     if(shopPedido) row.shopify_pedido=shopPedido; // columna nueva (sql_shopify_pedido.sql)
     if(acad.asistentes.length||acad.generaciones.length||acad.no_aplica) row.academia=acad; // columna nueva (sql_academia_solicitud.sql)
     if(solId) row.id=solId;
     let {error}=await sb.from('solicitudes_factura').insert(row);
-    for(let k=0;k<4&&error;k++){
+    for(let k=0;k<6&&error;k++){
       const m=error.message||'';
-      if(/academia/.test(m)&&'academia' in row) delete row.academia;
+      if(/precio_/.test(m)&&('precio_alerta' in row)){['precio_alerta','precio_detalle','precio_autorizado_por','precio_autorizado_at','precio_autorizado_motivo'].forEach(c=>delete row[c]);}
+      else if(/academia/.test(m)&&'academia' in row) delete row.academia;
       else if(/shopify_pedido_id/.test(m)&&'shopify_pedido_id' in row) delete row.shopify_pedido_id;
       else if(/shopify_pedido/.test(m)&&'shopify_pedido' in row) delete row.shopify_pedido;
       else break;
@@ -34451,8 +34468,9 @@ function solTarjeta(r,modo){
   const devuelta=!!r.devuelta_motivo&&!['cancelada','cerrada'].includes(r.estado);
   const puedeDevolver=(esDir||esAdm)&&!devuelta&&(r.estado==='solicitada'||r.estado==='pendiente_pago'||r.estado==='pago_validado')&&!r.factura_folio;
   const puedeCorregir=esVend&&devuelta&&r.vendedor_id===(userProfile?.id||currentUser.id);
-  const puedeFacturar=(esDir||esAdm)&&!devuelta&&(r.estado==='pago_validado'||r.estado==='pendiente_pago');
-  const puedeValidar=esDir&&!devuelta&&!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada');
+  const bloqPrecio=r.precio_alerta==='requiere_autorizacion';
+  const puedeFacturar=(esDir||esAdm)&&!devuelta&&!bloqPrecio&&(r.estado==='pago_validado'||r.estado==='pendiente_pago');
+  const puedeValidar=esDir&&!devuelta&&!bloqPrecio&&!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada');
   const puedeCancelar=(esDir||(esVend&&r.vendedor_id===(userProfile?.id||currentUser.id)))&&(r.estado==='solicitada'||r.estado==='pendiente_pago');
   const faltaComprobante=esVend&&r.estado==='facturada'&&!r.pago_validado;
   const btn=(txt,fn,color)=>`<button onclick="${fn}" style="background:${color||'#fff'};color:${color?'#fff':'var(--text2)'};border:1px solid ${color||'var(--border)'};border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${txt}</button>`;
@@ -34473,6 +34491,7 @@ function solTarjeta(r,modo){
     ${r.shopify_pedido?`<div style="font-size:11px;color:#5b3fa0;margin-top:3px;">🛍 Pedido de Shopify: <b>${solEsc(r.shopify_pedido)}</b></div>`:''}
     ${String(r.notas||'').startsWith(SOL_PG_MARCA)?`<div style="font-size:11px;font-weight:700;color:#8a6d00;background:#fffbea;border:1px solid #f3dc8a;border-radius:6px;padding:3px 8px;margin-top:5px;display:inline-block;">🧾 FACTURAR A VIOLETA — el cliente no requiere factura · C.P. ${SOL_VIOLETA.cp}</div>`:''}
     ${pago}${solAvisoPagoVencido(r,esVend)}${fact}
+    ${solPrecioBannerHtml(r,esDir)}${solCancelBannerHtml(r,esDir,esAdm)}
     ${cancel?'':timTarjetaHtml(r,esDir,esVend)}
     ${cancel?'':licTarjetaHtml(r,esDir,esVend)}
     ${r.pago_nota?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">Nota de validación: ${solEsc(r.pago_nota)}</div>`:''}
@@ -34495,6 +34514,7 @@ function solTarjeta(r,modo){
       ${puedeCorregir?btn('✏️ Corregir y reenviar',`solCorregirModal('${r.id}')`,'#ea580c'):''}
       ${puedeDevolver?btn('↩ Devolver con motivo',`solDevolverModal('${r.id}')`,'#ea580c'):''}
       ${puedeCancelar?btn('Cancelar',`solCancelar('${r.id}')`):''}
+      ${cancel?'':solCancelFactBotones(r,esDir,esAdm,esVend,btn)}
     </div>
   </div>`;
 }
@@ -34564,6 +34584,18 @@ async function solCorregirGuardar(id){
     generacion_id:ac.generaciones[0]?.id||null,
     devuelta_motivo:null,reenviada_at:new Date().toISOString()};
   if(ac.asistentes.length||ac.generaciones.length||ac.no_aplica) upd.academia=ac;
+  if(!r.shopify_pedido_id){
+    const cp=await solControlPrecio({concepto,tipoServ,total,pagoMonto:r.tipo==='con_pago'?Number(r.pago_monto)||null:null,pagoFecha:r.pago_fecha,nivel:ac.nivel,asistentes:ac.asistentes});
+    if(cp.nivel==='bloqueo'&&!(r.precio_alerta==='autorizado'&&Number(r.monto_total)===total)){
+      if(userProfile?.rol==='director'){
+        if(!confirm('⛔ '+cp.resumen+'\n\n¿Autorizas este descuento?')) return;
+        Object.assign(upd,{precio_alerta:'autorizado',precio_detalle:cp,precio_autorizado_por:userProfile?.nombre||'',precio_autorizado_at:new Date().toISOString(),precio_autorizado_motivo:'Autorizado por Dirección al corregir'});
+      } else {
+        if(!confirm('⛔ NO PUEDE PASAR A FACTURACIÓN CON ESTE MONTO.\n\n'+cp.resumen+'\n\nAceptar = enviarla a Dirección para autorización. Cancelar = corregir el monto.')) return;
+        Object.assign(upd,{precio_alerta:'requiere_autorizacion',precio_detalle:cp});
+      }
+    } else if(cp.nivel!=='bloqueo'&&r.precio_alerta==='requiere_autorizacion') Object.assign(upd,{precio_alerta:null,precio_detalle:null});
+  }
   const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
   if(error) return alert('No se pudo reenviar: '+error.message);
   try{const {data:sess}=await sb.auth.getSession();fetch('/api/facturacion-avisar-telegram',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solicitud_id:id})}).catch(()=>{});}catch(e){}
@@ -34610,6 +34642,229 @@ async function solCancelar(id){
   const {error}=await sb.from('solicitudes_factura').update({estado:'cancelada'}).eq('id',id);
   if(error) return alert('No se pudo cancelar: '+error.message);
   solRefrescar();
+}
+// ─── CONTROL DE PRECIOS DE LA SOLICITUD (Jp, 2026-11-17) ─────────────────────
+// El monto que se factura no puede ser menor al precio de lista menos el MAYOR descuento vigente que Dirección
+// capturó en Promociones (promociones_config: permanente = el último capturado; temporal = dentro de su vigencia).
+// Fuentes de precio: tienda (shopify_producto_map), pólizas Aspel / Aliado / Resguardo (polizas_catalogo) y
+// servidores (productos_servidores). Conceptos sin precio de lista (timbres, Siigo, cursos empresariales a medida,
+// licencias, servicios) no se bloquean. Si queda por debajo: se envía a Dirección, que autoriza con motivo.
+let _solPrecios=null,_solPromos=null,_solPreciosTs=0;
+async function solPreciosCargar(){
+  if(_solPrecios&&_solPromos&&Date.now()-_solPreciosTs<300000) return;
+  const [a,b,c,d]=await Promise.all([
+    sb.from('shopify_producto_map').select('clave,titulo,variante,nivel,precio'),
+    sb.from('polizas_catalogo').select('categoria,nombre,modalidad,precio,activo').eq('activo',true),
+    sb.from('productos_servidores').select('categoria,nombre,rdp_usuarios,precio_mensual,activo').eq('activo',true),
+    sb.from('promociones_config').select('seccion,descuento,permanente,fecha_inicio,fecha_fin,anio,mes,updated_at').eq('activo',true)]);
+  _solPrecios={tienda:a.data||[],polizas:b.data||[],servidores:c.data||[]};
+  _solPromos=d.data||[];_solPreciosTs=Date.now();
+}
+function solDescMax(secciones,fecha){
+  const f=fecha||todayLocal();let m=0;
+  secciones.forEach(sec=>{
+    const rows=(_solPromos||[]).filter(p=>p.seccion===sec);
+    const perm=rows.filter(p=>p.permanente).sort((x,y)=>((y.anio||0)*100+(y.mes||0))-((x.anio||0)*100+(x.mes||0))||String(y.updated_at||'').localeCompare(String(x.updated_at||'')))[0];
+    if(perm) m=Math.max(m,parseFloat(perm.descuento)||0);
+    rows.filter(p=>!p.permanente&&(!p.fecha_inicio||p.fecha_inicio<=f)&&(!p.fecha_fin||p.fecha_fin>=f)).forEach(p=>{m=Math.max(m,parseFloat(p.descuento)||0);});
+  });
+  return m;
+}
+const SOL_STOP=new Set(['de','del','la','el','los','las','con','en','y','al','sin','para','a','por','aspel','siigo','linea','edicion','acceso']);
+function solNrmTxt(t){return String(t||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');}
+function solTok(t){return solNrmTxt(t).replace(/24\s*\/\s*7/g,' ').replace(/[^a-z0-9]+/g,' ').split(' ').filter(w=>w&&!SOL_STOP.has(w)&&!/^20\d\d$/.test(w));}
+function solMatchTienda(concepto,tipoServ,nivelPref){
+  const ct=new Set(solTok(concepto)),es247=/24\s*\/\s*7/.test(concepto)||tipoServ==='24/7';
+  const grupos={};(_solPrecios.tienda||[]).forEach(r=>{if(/^c[ií]rculo/i.test(r.titulo)||!(Number(r.precio)>0)) return;(grupos[r.titulo]=grupos[r.titulo]||[]).push(r);});
+  let hits=[];
+  for(const [tit,rows] of Object.entries(grupos)){const tk=solTok(tit);if(tk.length&&tk.every(w=>ct.has(w))) hits.push({tit,tk,rows,t247:/24\s*\/\s*7/.test(tit)});}
+  hits=hits.filter(h=>!hits.some(o=>o!==h&&o.tk.length>h.tk.length&&h.tk.every(w=>o.tk.includes(w))));
+  const usar=hits.length>=2?hits:hits.filter(h=>!h.t247||es247);
+  if(!usar.length) return null;
+  const nvC=/plus|premium/i.test(concepto)?'plus':/esencial/i.test(concepto)?'esencial':(nivelPref||null);
+  const items=usar.map(h=>{
+    const precios=h.rows.map(r=>Number(r.precio));
+    let sel=h.rows.filter(r=>r.nivel===nvC);
+    if(h.rows.length===1) sel=h.rows;
+    const ps=(sel.length?sel:h.rows).map(r=>Number(r.precio));
+    return {nombre:h.tit,lista:Math.min(...ps),listaMax:Math.max(...ps)};
+  });
+  return {fuente:'Tienda',items,secs:['cursos_linea'],extraDesc:0,porUnidad:true};
+}
+function solMatchPoliza(concepto){
+  const c=solNrmTxt(concepto),P=_solPrecios.polizas||[];
+  if(/upgrade|mejora de nivel|cambio de nivel/.test(c)) return null;
+  const al=/aliado\s+(core|empresa|prime)/.exec(c);
+  if(al){
+    const nom='Aliado '+al[1][0].toUpperCase()+al[1].slice(1);
+    let rows=P.filter(p=>p.categoria==='ALIADO'&&p.nombre===nom&&Number(p.precio)>0);
+    const mod=/mensual/.test(c)?'MENSUAL':/semestral/.test(c)?'SEMESTRAL':/anual|12 meses/.test(c)?'ANUAL':null;
+    const rm=mod?rows.filter(p=>p.modalidad===mod):[];
+    if(rm.length) rows=rm;
+    if(!rows.length) return null;
+    const ps=rows.map(p=>Number(p.precio));
+    return {fuente:'Catálogo de pólizas',items:[{nombre:nom+(mod?' ('+mod.toLowerCase()+')':''),lista:Math.min(...ps),listaMax:Math.max(...ps)}],secs:[],extraDesc:0,porUnidad:false};
+  }
+  const rg=/resguardo\s*(?:inn\s*)?([123])\b/.exec(c);
+  if(rg){
+    const r=P.find(p=>p.categoria==='RESGUARDO'&&p.nombre==='Resguardo INN'+rg[1]&&Number(p.precio)>0);
+    if(!r) return null;
+    return {fuente:'Catálogo de pólizas',items:[{nombre:r.nombre,lista:Number(r.precio),listaMax:Number(r.precio)}],secs:['resguardo_in'+rg[1]],extraDesc:0,porUnidad:false};
+  }
+  const tm=/(emprendedor|profesionista|mi empresa|infinito|elite)/.exec(c);
+  if(tm&&!/(curso|taller|diplomado|timbre|renta|asistente|visita|servidor|cloud|actualiz)/.test(c)){
+    const tag={emprendedor:'emp',profesionista:'pro','mi empresa':'emp2',infinito:'inf',elite:'eli'}[tm[1]];
+    const r=P.find(p=>p.categoria==='ASPEL'&&solNrmTxt(p.nombre)===tm[1]&&Number(p.precio)>0);
+    if(!r) return null;
+    return {fuente:'Catálogo de pólizas',items:[{nombre:'Póliza '+r.nombre,lista:Number(r.precio),listaMax:Number(r.precio)}],secs:['polizas_nuevas_','polizas_renov_','polizas_recup_','polizas_upgrade_'].map(s=>s+tag),extraDesc:0,porUnidad:false};
+  }
+  return null;
+}
+function solMatchServidor(concepto){
+  const c=solNrmTxt(concepto),m=/cloud\s*(innoxl|esencial)\s*(\d+)?/.exec(c);
+  if(!m) return null;
+  const nom=('CLOUD '+m[1].toUpperCase()+(m[2]?' '+m[2]:(m[1]==='esencial'?' 2':''))).trim();
+  const r=(_solPrecios.servidores||[]).find(s=>String(s.nombre).toUpperCase()===nom&&Number(s.precio_mensual)>0);
+  if(!r) return null;
+  // Es precio MENSUAL: el cliente puede pagar varios meses (con descuento por periodo de hasta 10%), así que solo se vigila el piso.
+  return {fuente:'Catálogo de servidores',items:[{nombre:r.nombre+' (precio mensual)',lista:Number(r.precio_mensual),listaMax:null}],secs:[],extraDesc:10,porUnidad:false};
+}
+async function solControlPrecio(o){
+  try{
+    await solPreciosCargar();
+    const concepto=o.concepto||'';
+    const m=solMatchTienda(concepto,o.tipoServ,o.nivel)||solMatchPoliza(concepto)||solMatchServidor(concepto);
+    if(!m) return {nivel:'sin_precio'};
+    const lq=/^\s*(\d{1,2})\s+[A-Za-zÁ-ú]/.exec(concepto);
+    const k=m.porUnidad?Math.max(1,lq?parseInt(lq[1],10):((o.asistentes||[]).length||1)):1;
+    const lista=m.items.reduce((a,i)=>a+i.lista,0)*k;
+    const hayMax=m.items.every(i=>i.listaMax!=null);
+    const listaMax=m.items.reduce((a,i)=>a+(i.listaMax||i.lista),0)*k;
+    const hoy=todayLocal();
+    const descMax=Math.max(solDescMax(m.secs,o.pagoFecha||hoy),solDescMax(m.secs,hoy))+m.extraDesc;
+    const minimo=Math.round(lista*(1-descMax/100)*100)/100;
+    const pagado=(o.pagoMonto>0&&o.total>0)?Math.min(o.total,o.pagoMonto):o.total;
+    const tol=1*k;
+    const detalle=m.items.map(i=>`${i.nombre}: ${fmt(i.lista)}${i.listaMax!==i.lista&&i.listaMax!=null?' a '+fmt(i.listaMax):''}`).join(' + ')+(k>1?` × ${k}`:'');
+    const base={fuente:m.fuente,lista,minimo,descMax,pagado,k,detalle,fecha:hoy};
+    if(pagado<minimo-tol){
+      const dReal=lista>0?Math.round((1-pagado/lista)*1000)/10:0;
+      const resumen=`Cobrado ${fmt(pagado)}; precio de lista ${fmt(lista)} (${detalle}). Descuento máximo vigente: ${descMax}% → mínimo permitido ${fmt(minimo)}. El descuento aplicado fue ${dReal}%.`;
+      return {...base,nivel:'bloqueo',descReal:dReal,resumen};
+    }
+    if(hayMax&&o.total>listaMax+tol){
+      return {...base,nivel:'alto',resumen:`El total (${fmt(o.total)}) es mayor al precio de lista (${fmt(listaMax)}: ${detalle}). ¿Falta quitar una partida o el monto está mal?`};
+    }
+    return {...base,nivel:'ok'};
+  }catch(e){console.error('control de precio',e);return {nivel:'sin_precio'};}
+}
+function solPrecioBannerHtml(r,esDir){
+  const d=r.precio_detalle||{};
+  if(r.precio_alerta==='requiere_autorizacion'){
+    return `<div style="font-size:12px;font-weight:600;color:#991b1b;background:#fef2f2;border:1px solid #f1a1a1;border-left:5px solid #dc2626;border-radius:8px;padding:7px 11px;margin-top:6px;">⛔ Monto por debajo del permitido — requiere autorización de Dirección<br><span style="font-weight:500;">${solEsc(d.resumen||'')}</span>${esDir?`<div style="margin-top:6px;"><button onclick="solAutorizarPrecioModal('${r.id}')" style="background:#dc2626;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">✅ Autorizar descuento</button></div>`:'<div style="font-weight:500;margin-top:3px;">No se puede validar el pago ni facturar hasta que Dirección lo autorice.</div>'}</div>`;
+  }
+  if(r.precio_alerta==='autorizado') return `<div style="font-size:11px;color:#166534;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:3px 9px;margin-top:5px;display:inline-block;">✅ Descuento autorizado${r.precio_autorizado_por?' por '+solEsc(r.precio_autorizado_por):''}${r.precio_autorizado_motivo?' · '+solEsc(r.precio_autorizado_motivo):''}</div>`;
+  return '';
+}
+function solAutorizarPrecioModal(id){
+  const r=_solRows.find(x=>x.id===id);if(!r) return;
+  const d=r.precio_detalle||{};
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">✅ Autorizar descuento fuera de política</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(r.cliente_nombre)} · ${solEsc(r.concepto)}<br>${solEsc(d.resumen||'')}</div>
+    ${solFld('Motivo de la autorización',`<textarea id="spaMotivo" rows="3" placeholder="Ej. Cliente recurrente, cierre de cuota del mes…" style="${SOL_INPUT_STYLE}resize:vertical;"></textarea>`)}
+    <div style="display:flex;gap:8px;"><button onclick="solAutorizarPrecioGuardar('${id}')" style="background:#dc2626;color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Autorizar</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`);
+}
+async function solAutorizarPrecioGuardar(id){
+  const m=(document.getElementById('spaMotivo')?.value||'').trim();
+  if(m.length<5) return alert('Escribe el motivo de la autorización.');
+  const {error}=await sb.from('solicitudes_factura').update({precio_alerta:'autorizado',precio_autorizado_por:userProfile?.nombre||'',precio_autorizado_at:new Date().toISOString(),precio_autorizado_motivo:m}).eq('id',id);
+  if(error) return alert('No se pudo autorizar: '+error.message);
+  solCerrarModal();solRefrescar();uiToast('✅ Descuento autorizado: ya se puede validar y facturar',true);
+}
+// ─── CANCELACIÓN DE FACTURA YA EMITIDA (Jp, 2026-11-17) ──────────────────────
+// Ventas (o Dirección/Administración) solicitan con motivo → Administración la cancela en SAE/SAT y la registra aquí →
+// la factura pasa a CANCELADA en Finanzas y la solicitud se cierra. Si el pago ya estaba validado, solo Dirección la registra.
+async function solAvisarEvento(id,evento){
+  try{const {data:sess}=await sb.auth.getSession();await fetch('/api/facturacion-avisar-telegram',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solicitud_id:id,evento})});}catch(e){console.error('aviso',evento,e);}
+}
+function solPuedeSolCancelFact(r,esDir,esAdm,esVend){
+  if(!r.factura_folio||!['facturada','cerrada'].includes(r.estado)||r.cancelacion_estado) return false;
+  return !!(esDir||esAdm||(esVend&&r.vendedor_id===(userProfile?.id||currentUser.id)));
+}
+function solCancelBannerHtml(r,esDir,esAdm){
+  if(r.cancelacion_estado==='solicitada'){
+    return `<div style="font-size:12px;font-weight:600;color:#9a3412;background:#fff7ed;border:1px solid #fdba74;border-left:5px solid #ea580c;border-radius:8px;padding:7px 11px;margin-top:6px;">🚫 Cancelación de factura solicitada${r.cancelacion_solicitada_por?' por '+solEsc(r.cancelacion_solicitada_por):''}${r.cancelacion_solicitada_at?' · '+solFecha(r.cancelacion_solicitada_at):''}<br><span style="font-weight:500;">Motivo: ${solEsc(r.cancelacion_motivo||'')}${r.cancelacion_sustituye?' · Se emitirá una factura nueva que la sustituye.':''}</span>${(esDir||esAdm)?'':'<div style="font-weight:500;margin-top:3px;">Administración la cancelará en SAE/SAT y la registrará aquí.</div>'}${r.pago_validado&&!(esDir)?'<div style="font-weight:500;margin-top:3px;">⚠️ El pago ya estaba validado: solo Dirección puede registrar esta cancelación.</div>':''}</div>`;
+  }
+  if(r.cancelacion_estado==='cancelada'){
+    return `<div style="font-size:11px;color:var(--text2);margin-top:5px;">🚫 Factura cancelada${r.cancelada_at?' el '+solFecha(r.cancelada_at):''}${r.cancelada_por?' por '+solEsc(r.cancelada_por):''} · Motivo SAT: ${solEsc(r.cancelacion_sat_motivo||'—')}${r.cancelacion_folio_sustituto?' · Sustituida por '+solEsc(r.cancelacion_folio_sustituto):''}<br>Motivo: ${solEsc(r.cancelacion_motivo||'')}</div>`;
+  }
+  return '';
+}
+function solCancelFactBotones(r,esDir,esAdm,esVend,btn){
+  let h='';
+  if(solPuedeSolCancelFact(r,esDir,esAdm,esVend)) h+=btn('🚫 Solicitar cancelación de factura',`solCancelFactModal('${r.id}')`,'#b91c1c');
+  if(r.cancelacion_estado==='solicitada'&&(esDir||esAdm)){
+    const bloq=r.pago_validado&&!esDir;
+    h+=bloq?'<span style="font-size:11px;color:#9a3412;font-weight:600;align-self:center;">Pago validado: la registra Dirección</span>':btn('✅ Registrar cancelación (ya cancelada en SAE/SAT)',`solCancelFactAplicarModal('${r.id}')`,'#b91c1c');
+    h+=btn('Rechazar solicitud',`solCancelFactRechazar('${r.id}')`);
+  }
+  return h;
+}
+function solCancelFactModal(id){
+  const r=_solRows.find(x=>x.id===id);if(!r) return;
+  const ins=r.academia&&r.academia.inscrito_at;
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">🚫 Solicitar cancelación de factura</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(r.cliente_nombre)} · ${solEsc(r.concepto)}<br>Factura <b>${solEsc((r.factura_serie||'')+(r.factura_folio||''))}</b> · ${fmt(r.monto_total)}</div>
+    ${r.pago_validado?'<div style="font-size:12px;color:#9a3412;background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:7px 11px;margin-bottom:10px;">⚠️ El pago de esta factura ya fue validado. Solo Dirección podrá registrar la cancelación y habrá que aplicar ese pago a la factura nueva.</div>':''}
+    ${ins?'<div style="font-size:12px;color:#9a3412;background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:7px 11px;margin-bottom:10px;">🎓 Ya hay alumnos inscritos en Academia con esta solicitud: Capacitación deberá revisar su acceso.</div>':''}
+    ${solFld('Razón',solSelect('scfRazon',['Cambió el servicio (ej. de curso a póliza)','Datos fiscales o de cliente incorrectos','Monto o concepto incorrecto','El cliente no pagó / ya no comprará','Otro'],''))}
+    ${solFld('Explica qué pasó',`<textarea id="scfMotivo" rows="3" placeholder="Ej. El cliente ya no tomará el diplomado; en su lugar contratará una póliza." style="${SOL_INPUT_STYLE}resize:vertical;"></textarea>`)}
+    <label style="font-size:12px;display:flex;gap:6px;align-items:center;margin-bottom:12px;"><input type="checkbox" id="scfSustituye"> Se emitirá una factura nueva que la sustituya</label>
+    <div style="display:flex;gap:8px;"><button onclick="solCancelFactGuardar('${id}')" style="background:#b91c1c;color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Enviar solicitud</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cerrar</button></div>`);
+}
+async function solCancelFactGuardar(id){
+  const r=_solRows.find(x=>x.id===id);if(!r) return;
+  const det=(document.getElementById('scfMotivo')?.value||'').trim();
+  if(det.length<10) return alert('Explica brevemente qué pasó (mínimo 10 letras) para que Administración sepa qué cancelar y por qué.');
+  const motivo=(document.getElementById('scfRazon')?.value||'')+' — '+det;
+  const {error}=await sb.from('solicitudes_factura').update({cancelacion_estado:'solicitada',cancelacion_motivo:motivo,cancelacion_sustituye:!!document.getElementById('scfSustituye')?.checked,cancelacion_solicitada_at:new Date().toISOString(),cancelacion_solicitada_por:userProfile?.nombre||''}).eq('id',id);
+  if(error) return alert('No se pudo enviar la solicitud: '+(/cancelacion_/.test(error.message)?'falta correr el SQL solicitudes_precio_y_cancelacion.sql. ':'')+error.message);
+  solAvisarEvento(id,'cancelacion');
+  solCerrarModal();solRefrescar();uiToast('🚫 Solicitud de cancelación enviada a Administración y Dirección',true);
+}
+function solCancelFactAplicarModal(id){
+  const r=_solRows.find(x=>x.id===id);if(!r) return;
+  const ins=r.academia&&r.academia.inscrito_at;
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">✅ Registrar cancelación de factura</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(r.cliente_nombre)} · Factura <b>${solEsc((r.factura_serie||'')+(r.factura_folio||''))}</b> · ${fmt(r.monto_total)}<br>Motivo del vendedor: ${solEsc(r.cancelacion_motivo||'')}</div>
+    ${ins?'<div style="font-size:12px;color:#9a3412;background:#fff7ed;border:1px solid #fdba74;border-radius:8px;padding:7px 11px;margin-bottom:10px;">🎓 Hay alumnos inscritos en Academia: avisa a Capacitación para revisar su acceso.</div>':''}
+    ${solFld('Motivo de cancelación ante el SAT',solSelect('scaSat',['01 — Comprobante emitido con errores con relación','02 — Comprobante emitido con errores sin relación','03 — No se llevó a cabo la operación','04 — Operación nominativa relacionada en una factura global'],''),'Decídelo con tu contador si tienes duda.')}
+    ${solFld('Folio de la factura que la sustituye (si aplica)',`<input id="scaSust" style="${SOL_INPUT_STYLE}" placeholder="Ej. INN-690">`)}
+    <label style="font-size:12px;display:flex;gap:6px;align-items:flex-start;margin-bottom:12px;"><input type="checkbox" id="scaOk" style="margin-top:2px;"> Ya la cancelé en SAE/SAT y el SAT la aceptó</label>
+    <div style="display:flex;gap:8px;"><button onclick="solCancelFactAplicar('${id}')" style="background:#b91c1c;color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Registrar cancelación</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cerrar</button></div>`);
+}
+async function solCancelFactAplicar(id){
+  const r=_solRows.find(x=>x.id===id);if(!r) return;
+  if(r.pago_validado&&userProfile?.rol!=='director') return alert('El pago ya estaba validado: solo Dirección puede registrar esta cancelación.');
+  if(!document.getElementById('scaOk')?.checked) return alert('Marca que ya la cancelaste en SAE/SAT.');
+  const ahora=new Date().toISOString(),quien=userProfile?.nombre||'';
+  const {error}=await sb.from('solicitudes_factura').update({estado:'cancelada',cancelacion_estado:'cancelada',cancelacion_sat_motivo:document.getElementById('scaSat').value,cancelacion_folio_sustituto:(document.getElementById('scaSust')?.value||'').trim()||null,cancelada_at:ahora,cancelada_por:quien}).eq('id',id);
+  if(error) return alert('No se pudo registrar: '+error.message);
+  let msgF='';
+  if(r.fact_ingreso_id){
+    const {error:ef}=await sb.from('fact_ingresos').update({estatus:'CANCELADA'}).eq('id',r.fact_ingreso_id);
+    msgF=ef?' (la solicitud quedó cancelada, pero no se pudo marcar CANCELADA en Finanzas: '+ef.message+')':' Finanzas la marcó como CANCELADA.';
+  } else msgF=' Esta factura no estaba registrada en Finanzas.';
+  solCerrarModal();solRefrescar();uiToast('🚫 Factura cancelada.'+msgF,true);
+}
+async function solCancelFactRechazar(id){
+  const m=prompt('Motivo por el que NO se cancela la factura (lo verá el vendedor):');
+  if(m===null) return;
+  if(m.trim().length<5) return alert('Escribe el motivo.');
+  const r=_solRows.find(x=>x.id===id);
+  const {error}=await sb.from('solicitudes_factura').update({cancelacion_estado:null,notas:(((r&&r.notas)?r.notas+' ':'')+`[Cancelación de factura rechazada por ${userProfile?.nombre||''} el ${todayLocal()}: ${m.trim()}]`).slice(0,900)}).eq('id',id);
+  if(error) return alert('No se pudo rechazar: '+error.message);
+  solRefrescar();uiToast('Solicitud de cancelación rechazada',true);
 }
 function solCopiarDatos(id){
   const r=_solRows.find(x=>x.id===id);if(!r) return;
