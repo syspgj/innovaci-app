@@ -1419,13 +1419,13 @@ async function academiaNuevosAsistentesHtml(){
   let rows=[];
   try{
     const {data,error}=await sb.from('academia_inscripciones')
-      .select('id,nivel_acceso,folio,created_at,atencion,vendedor_nombre_original,participante:participante_id(nombre,mail,telefono),generacion:generacion_id(clave,curso:curso_id(nombre,modalidad,tipo))')
+      .select('id,generacion_id,nivel_acceso,folio,created_at,atencion,vendedor_nombre_original,participante:participante_id(nombre,mail,telefono),generacion:generacion_id(clave,curso:curso_id(nombre,modalidad,tipo))')
       .eq('origen','facturacion').is('atendido_at',null).order('created_at',{ascending:true});
     if(error) return /origen|atendido/.test(error.message||'')?'<div style="margin-bottom:16px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--text3);">Falta correr <b>sql_academia_nuevos_asistentes.sql</b> en Supabase para ver los nuevos asistentes de facturación.</div>':'';
     rows=data||[];
   }catch(e){return '';}
   // Filtro por curso/generación (Capacitación, 2026-11-04)
-  const claveGen=r=>`${r.generacion?.clave||''}`;
+  const claveGen=r=>`${r.generacion_id||r.generacion?.clave||''}`; // por generación (id), no por clave: hay claves repetidas entre cursos (ej. 247-2026)
   const opcionesGen=[...new Map(rows.map(r=>[claveGen(r),`${r.generacion?.curso?.nombre||''} · ${r.generacion?.clave||''}`])).entries()].sort((a,b)=>a[1].localeCompare(b[1]));
   const filtro=window._acadNuevosFiltro||'';
   const totalSinFiltro=rows.length;
@@ -1460,7 +1460,7 @@ async function academiaNuevosAsistentesHtml(){
     </div>`;};
   // Agrupado por generación
   const grupos=new Map();
-  rows.forEach(r=>{const k=claveGen(r);if(!grupos.has(k)) grupos.set(k,{nombre:r.generacion?.curso?.nombre||'',clave:k,filas:[]});grupos.get(k).filas.push(r);});
+  rows.forEach(r=>{const k=claveGen(r);if(!grupos.has(k)) grupos.set(k,{nombre:r.generacion?.curso?.nombre||'',clave:r.generacion?.clave||'',filas:[]});grupos.get(k).filas.push(r);});
   const gruposHtml=[...grupos.values()].sort((a,b)=>(a.nombre+a.clave).localeCompare(b.nombre+b.clave)).map(g=>`
     <div style="background:var(--bg2,#f5f6f8);padding:9px 16px;font-size:12px;font-weight:700;color:var(--navy);border-top:1px solid var(--border);">🎓 ${esc(g.nombre)} <span style="font-weight:500;color:var(--text3);">· ${esc(g.clave)} · ${g.filas.length} asistente${g.filas.length===1?'':'s'}</span></div>
     ${g.filas.map(fila).join('')}`).join('');
