@@ -33,7 +33,8 @@ async function sesionValida(req) {
 
 const PROMPT = `Este documento es una cotización de un sistema Aspel SAE de un proveedor mexicano de software.
 Responde SOLO con un objeto JSON (sin texto adicional ni markdown):
-{"folio":"folio de la cotización tal como aparece, por ejemplo C-INN13309, o null","total":número total con IVA sin símbolos ni comas, o null,"cliente":"nombre del cliente o null","concepto":"descripción breve del producto o servicio principal cotizado, o null"}
+{"folio":"folio de la cotización tal como aparece, por ejemplo C-INN13309, o null","total":número total con IVA sin símbolos ni comas, o null,"subtotal":número del subtotal ANTES de IVA sin símbolos ni comas, o null,"cliente":"nombre del cliente o null","concepto":"descripción breve de TODO lo cotizado (une las partidas con ' + '), o null","partidas":[{"descripcion":"descripción de la partida tal como aparece","cantidad":número o 1,"importe":importe de la partida antes de IVA, o null}]}
+"partidas" lleva UNA entrada por cada renglón de producto o servicio de la cotización (puede haber varias en una misma cotización). Si no se distinguen, usa [].
 No inventes datos: si algo no se ve con claridad, usa null.`;
 
 export default async function handler(req, res) {
@@ -58,7 +59,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: MODELO,
-        max_tokens: 600,
+        max_tokens: 1500,
         messages: [{ role: 'user', content: [bloque, { type: 'text', text: PROMPT }] }],
       }),
     });
@@ -80,7 +81,13 @@ export default async function handler(req, res) {
         folio: d.folio ? String(d.folio).slice(0, 40) : null,
         total: Number.isFinite(total) && total > 0 ? total : null,
         cliente: d.cliente ? String(d.cliente).slice(0, 200) : null,
-        concepto: d.concepto ? String(d.concepto).slice(0, 300) : null,
+        concepto: d.concepto ? String(d.concepto).slice(0, 500) : null,
+        subtotal: Number.isFinite(Number(d.subtotal)) && Number(d.subtotal) > 0 ? Number(d.subtotal) : null,
+        partidas: (Array.isArray(d.partidas) ? d.partidas : []).slice(0, 20).map((x) => ({
+          descripcion: String((x && x.descripcion) || '').slice(0, 300),
+          cantidad: Number.isFinite(Number(x && x.cantidad)) && Number(x.cantidad) > 0 ? Number(x.cantidad) : 1,
+          importe: Number.isFinite(Number(x && x.importe)) ? Number(x.importe) : null,
+        })).filter((x) => x.descripcion),
       },
     });
   } catch (e) {
