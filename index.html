@@ -1075,10 +1075,10 @@ async function initApp(user){
   try{catProyCargar();}catch(e){}
   document.getElementById('userName').textContent=userProfile.nombre;
   document.getElementById('userAv').textContent=userProfile.nombre.substring(0,2).toUpperCase();
-  document.getElementById('viewLabel').textContent=userProfile.rol==='director'?'Vista Director':userProfile.rol==='telemarketing'?'Telemarketing':userProfile.rol==='administracion'?'Administración':userProfile.rol==='academia'?'Academia':'Mi Mes';
+  document.getElementById('viewLabel').textContent=userProfile.rol==='director'?'Vista Director':userProfile.rol==='telemarketing'?'Telemarketing':userProfile.rol==='administracion'?'Administración':userProfile.rol==='academia'?'Academia':userProfile.rol==='gerente_operaciones'?'Gerencia de Operaciones':userProfile.rol==='mesa_control'?'Mesa de Control':userProfile.rol==='asesor'?'Soporte':'Mi Mes';
   // Month selector (Academia no depende de mes, igual que Asesor)
   const msel=document.getElementById('monthSel');
-  msel.style.display=(userProfile.rol==='academia')?'none':'block';
+  msel.style.display=(userProfile.rol==='academia'||userProfile.rol==='gerente_operaciones')?'none':'block';
   const meses=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
   msel.innerHTML=meses.map((m,i)=>`<option value="${i+1}" ${i+1===currentMonth?'selected':''}>${m} ${currentYear}</option>`).join('');
   // Build UI by role
@@ -1086,6 +1086,7 @@ async function initApp(user){
   else if(userProfile.rol==='telemarketing') buildTeleUI();
   else if(userProfile.rol==='administracion') buildAdminUI();
   else if(userProfile.rol==='mesa_control') buildMesaControlUI();
+  else if(userProfile.rol==='gerente_operaciones') buildGerenteOpsUI();
   else if(userProfile.rol==='academia') buildAcademiaUI();
   else if(userProfile.rol==='asesor') buildAsesorUI();
   else buildVendorUI();
@@ -1102,6 +1103,146 @@ function buildMesaControlUI(){
   if(_t2){_t2.style.display='none';_t2.innerHTML='';}
   document.getElementById('tabsBar').innerHTML=`<div class="tab active">🛠 Mesa de Control</div>`;
   renderDirectorOperaciones();
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Jp, 2026-11-17 — Roles de Operaciones:
+//   · gerente_operaciones (Violeta): dashboard propio + todo el módulo de Operaciones / Mesa de Control.
+//   · mesa_control (Coordinación): su dashboard de Mesa de Control (sin cambios).
+//   · asesor (Ana, Adriana — Soporte): "Mis servicios" + vista de solo lectura de Resguardos.
+// ══════════════════════════════════════════════════════════════════════════════
+const RESGUARDO_DIAS_PRIORITARIA=7; // mismo umbral que el correo diario (api/cron/resguardo-evidencia-check.js)
+function opsParsePerBackupSpecs(specs){
+  if(!specs) return null;
+  const arr=Array.isArray(specs)?specs:[specs];
+  const l=arr.find(s=>/backup/i.test(s)); if(!l) return null;
+  if(/quincenal/i.test(l)) return 15; if(/semanal/i.test(l)) return 7; if(/mensual/i.test(l)) return 30;
+  const m=l.match(/cada\s*(\d+)\s*d[ií]as/i); if(m) return parseInt(m[1],10);
+  if(/diari/i.test(l)) return 1; return null;
+}
+// Estado de evidencia de todas las pólizas de resguardo activas (misma lógica que el correo diario).
+async function opsResguardoEstadoCargar(){
+  const pols=await gAll('clientes_polizas','id,cliente_nombre,fecha_inicio,estatus,resguardo_periodicidad_dias_override,servidor_cloud_id,resguardo_dropbox_folder,dropbox_ultimo_archivo_fecha,polizas_catalogo(nombre,categoria,resguardo_periodicidad_dias)',q=>q.neq('estatus','CERRADA'));
+  const resg=pols.filter(p=>p.polizas_catalogo?.categoria==='RESGUARDO');
+  const sids=[...new Set(resg.map(p=>p.servidor_cloud_id).filter(Boolean))];
+  const srv={};
+  if(sids.length){ try{ const {data}=await sb.from('clientes_servidores_cloud').select('id,productos_servidores(specs)').in('id',sids); (data||[]).forEach(s=>{srv[s.id]=s;}); }catch(e){} }
+  let evid=[];
+  if(resg.length) evid=await gAll('resguardo_evidencias','cliente_poliza_id,periodo_fecha,origen,fecha_subida',q=>q.in('cliente_poliza_id',resg.map(p=>p.id)).order('periodo_fecha',{ascending:false}));
+  const ult={}; evid.forEach(e=>{ if(!ult[e.cliente_poliza_id]) ult[e.cliente_poliza_id]=e; });
+  const hoy=todayLocal();
+  const lista=[], sinPer=[];
+  resg.forEach(p=>{
+    const per=p.resguardo_periodicidad_dias_override||p.polizas_catalogo?.resguardo_periodicidad_dias||(p.servidor_cloud_id&&srv[p.servidor_cloud_id]?opsParsePerBackupSpecs(srv[p.servidor_cloud_id].productos_servidores?.specs):null);
+    if(!per||!p.fecha_inicio){ sinPer.push(p); return; }
+    const periodo=calcularPeriodoActualResguardo(p.fecha_inicio,per);
+    const u=ult[p.id]||null;
+    const ok=!!(u&&u.periodo_fecha>=periodo);
+    const prox=calcularProximoVencimientoResguardo(p.fecha_inicio,per,u?u.periodo_fecha:null);
+    const diasPara=gDiasEntre(hoy,prox);
+    const atraso=(!ok&&diasPara<0)?-diasPara:0;
+    const nunca=!u;
+    lista.push({p,per,u,ok,prox,diasPara,atraso,nunca,prioritaria:!ok&&(atraso>=RESGUARDO_DIAS_PRIORITARIA||(nunca&&atraso>0))});
+  });
+  lista.sort((a,b)=>(b.prioritaria-a.prioritaria)||((!a.ok)===(!b.ok)?0:(!a.ok?-1:1))||(b.atraso-a.atraso)||(a.diasPara-b.diasPara));
+  return {lista,sinPer};
+}
+function opsResguardoPanelHtml(d){
+  const esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  const pri=d.lista.filter(x=>x.prioritaria).length, falta=d.lista.filter(x=>!x.ok&&!x.prioritaria).length, ok=d.lista.filter(x=>x.ok).length;
+  const chip=(n,t,bg,fg)=>`<div style="flex:1;min-width:120px;background:${bg};color:${fg};border-radius:10px;padding:10px 12px;text-align:center;"><div style="font-size:24px;font-weight:700;">${n}</div><div style="font-size:11px;">${t}</div></div>`;
+  const badge=x=>x.prioritaria?`<span style="background:#fdeaea;color:#b00000;border-radius:10px;padding:2px 9px;font-size:10.5px;font-weight:700;">🔴 PRIORITARIA${x.nunca?' · nunca':' · '+x.atraso+' d'}</span>`
+    :!x.ok?`<span style="background:#fff4e0;color:#c77700;border-radius:10px;padding:2px 9px;font-size:10.5px;font-weight:700;">🟠 Falta evidencia${x.atraso?' · '+x.atraso+' d':''}</span>`
+    :`<span style="background:#e6f7ee;color:#0a7a3d;border-radius:10px;padding:2px 9px;font-size:10.5px;font-weight:700;">🟢 Al corriente</span>`;
+  return `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+      ${chip(pri,'Prioritarias (≥'+RESGUARDO_DIAS_PRIORITARIA+' días o nunca)',pri?'#fdeaea':'#f1f3f5',pri?'#b00000':'#777')}
+      ${chip(falta,'Falta evidencia',falta?'#fff4e0':'#f1f3f5',falta?'#c77700':'#777')}
+      ${chip(ok,'Al corriente','#e6f7ee','#0a7a3d')}
+    </div>
+    <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="background:var(--navy);color:#fff;"><th style="padding:6px 8px;text-align:left;">Cliente</th><th style="padding:6px 8px;text-align:left;">Póliza</th><th style="padding:6px 8px;">Cada</th><th style="padding:6px 8px;">Última evidencia</th><th style="padding:6px 8px;">Próxima / venció</th><th style="padding:6px 8px;">Estado</th></tr></thead>
+      <tbody>${d.lista.map(x=>`<tr style="border-bottom:1px solid var(--border);${x.prioritaria?'background:rgba(232,64,64,0.05);':''}">
+        <td style="padding:6px 8px;font-weight:600;">${esc(x.p.cliente_nombre)}</td>
+        <td style="padding:6px 8px;color:var(--text2);">${esc(x.p.polizas_catalogo?.nombre||'Resguardo')}</td>
+        <td style="padding:6px 8px;text-align:center;">${x.per} d</td>
+        <td style="padding:6px 8px;text-align:center;">${x.u?esc(x.u.periodo_fecha)+' <span style="color:var(--text3);font-size:10px;">('+(x.u.origen==='dropbox'?'Dropbox':'manual')+')</span>':'<span style="color:var(--red);">nunca</span>'}</td>
+        <td style="padding:6px 8px;text-align:center;">${esc(x.prox)}</td>
+        <td style="padding:6px 8px;text-align:center;">${badge(x)}</td></tr>`).join('')||'<tr><td colspan="6" style="padding:14px;text-align:center;color:var(--text3);">Sin pólizas de resguardo activas.</td></tr>'}</tbody>
+    </table></div>
+    ${d.sinPer.length?`<div style="font-size:11px;color:var(--text3);margin-top:8px;">⚠ ${d.sinPer.length} póliza(s) sin periodicidad o fecha de inicio: ${d.sinPer.map(p=>esc(p.cliente_nombre)).join(', ')}.</div>`:''}`;
+}
+// Pestaña de solo lectura para Soporte (Ana / Adriana)
+async function renderAsesorResguardos(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div></div>';
+  try{
+    const d=await opsResguardoEstadoCargar();
+    mc.innerHTML=`<div style="font-size:18px;font-weight:700;color:var(--navy);margin-bottom:2px;">🗄 Resguardos</div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:14px;">Estado de la evidencia de cada póliza de resguardo (solo consulta). Cuando falta evidencia el sistema crea un ticket de Soporte.</div>${opsResguardoPanelHtml(d)}`;
+  }catch(e){ mc.innerHTML=`<div style="padding:20px;color:var(--red);">Error: ${e.message}</div>`; }
+}
+function swAsesorTab(t){
+  document.querySelectorAll('#tabsBar .tab').forEach(x=>x.classList.toggle('active',x.dataset.t===t));
+  if(t==='resg') renderAsesorResguardos(); else renderAsesorServicios();
+}
+// Gerente de Operaciones (Violeta)
+function buildGerenteOpsUI(){
+  const _t2=document.getElementById('tabsBar2');
+  if(_t2){_t2.style.display='none';_t2.innerHTML='';}
+  document.getElementById('tabsBar').innerHTML=`
+    <div class="tab active" data-t="dash" onclick="swGerenteOps('dash')">📊 Mi dashboard</div>
+    <div class="tab" data-t="ops" onclick="swGerenteOps('ops')">🛠 Operaciones / Mesa de Control</div>`;
+  renderGerenteOpsDashboard();
+}
+function swGerenteOps(t){
+  document.querySelectorAll('#tabsBar .tab').forEach(x=>x.classList.toggle('active',x.dataset.t===t));
+  const mc=document.getElementById('mainContent');
+  if(t==='ops') renderDirectorOperaciones(); else { mc.classList.remove('full-width'); renderGerenteOpsDashboard(); }
+}
+async function renderGerenteOpsDashboard(){
+  const mc=document.getElementById('mainContent');
+  mc.innerHTML='<div class="loading"><div class="spinner"></div> Armando tu dashboard…</div>';
+  const hoy=todayLocal(), en30=gSumaDias(hoy,30), hace7=gSumaDias(hoy,-7);
+  const [rg,pols,tks,tg,asesores]=await Promise.all([
+    gSafe(opsResguardoEstadoCargar(),{lista:[],sinPer:[]}),
+    gSafe(gAll('clientes_polizas','id,cliente_nombre,estatus,fecha_vencimiento,polizas_catalogo(nombre,categoria)',q=>q.neq('estatus','CERRADA')),[]),
+    gSafe(gAll('servicios_ejecutados','id,estatus,asesor_id,fecha_asignada,fecha_solicitud,tipo_servicio,folio_ticket,cliente_nombre',q=>q.in('estatus',['PENDIENTE','ASIGNADO','EN_CURSO'])),[]),
+    gSafe(gAll('mesa_control_telegram_solicitudes','id,created_at',q=>q.eq('estado','pendiente')),[]),
+    gSafe(gAll('usuarios','id,nombre',q=>q.eq('rol','asesor').eq('activo',true)),[]),
+  ]);
+  const venc=pols.filter(p=>p.estatus==='VIGENTE'&&p.fecha_vencimiento&&p.fecha_vencimiento<hoy);
+  const porVencer=pols.filter(p=>p.estatus==='VIGENTE'&&p.fecha_vencimiento&&p.fecha_vencimiento>=hoy&&p.fecha_vencimiento<=en30).sort((a,b)=>a.fecha_vencimiento.localeCompare(b.fecha_vencimiento));
+  const sinAsignar=tks.filter(t=>t.estatus==='PENDIENTE'), activos=tks.filter(t=>t.estatus==='ASIGNADO'||t.estatus==='EN_CURSO');
+  const atrasados=activos.filter(t=>t.fecha_asignada&&t.fecha_asignada<hoy);
+  const tgViejos=tg.filter(t=>String(t.created_at).slice(0,10)<=hace7);
+  const pri=rg.lista.filter(x=>x.prioritaria), falta=rg.lista.filter(x=>!x.ok&&!x.prioritaria);
+  const kpi=(t,v,sub,col,nav)=>`<div class="card" style="padding:14px 16px;border-top:3px solid ${col};cursor:${nav?'pointer':'default'};" ${nav?`onclick="${nav}"`:''}><div style="font-size:11px;color:var(--text3);">${t}</div><div style="font-size:26px;font-weight:700;color:var(--text);line-height:1.15;">${v}</div><div style="font-size:11px;color:var(--text3);">${sub}</div></div>`;
+  const R='#E84040',A='#F5A623',G='#27AE60';
+  const carga=asesores.map(a=>{const mios=activos.filter(t=>t.asesor_id===a.id);return {n:a.nombre,total:mios.length,atr:mios.filter(t=>t.fecha_asignada&&t.fecha_asignada<hoy).length};}).sort((a,b)=>b.total-a.total);
+  const esc=t=>String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  mc.innerHTML=`
+    <div style="margin-bottom:14px;"><div style="font-size:18px;font-weight:700;color:var(--navy);">📊 Dashboard de Operaciones</div>
+      <div style="font-size:12px;color:var(--text3);">Resguardos, pólizas, tickets de Soporte y solicitudes de Mesa de Control — al ${hoy}.</div></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:16px;">
+      ${kpi('🔴 Resguardos prioritarios',pri.length,'≥'+RESGUARDO_DIAS_PRIORITARIA+' días sin evidencia o nunca',pri.length?R:G,"document.getElementById('dashResg')?.scrollIntoView({behavior:'smooth'})")}
+      ${kpi('🟠 Resguardos sin evidencia',falta.length,'del periodo vigente',falta.length?A:G,"document.getElementById('dashResg')?.scrollIntoView({behavior:'smooth'})")}
+      ${kpi('Pólizas vencidas (marcadas vigentes)',venc.length,'renovar o cerrar',venc.length?R:G,"swGerenteOps('ops');setTimeout(()=>swOps('contratos'),50)")}
+      ${kpi('Pólizas por vencer (30 días)',porVencer.length,'seguimiento de renovación',porVencer.length?A:G,"swGerenteOps('ops');setTimeout(()=>swOps('contratos'),50)")}
+      ${kpi('Tickets sin asignar',sinAsignar.length,'pendientes de asesor',sinAsignar.length?A:G,"swGerenteOps('ops');setTimeout(()=>swOps('tickets'),50)")}
+      ${kpi('Tickets atrasados',atrasados.length,activos.length+' activos en total',atrasados.length?R:G,"swGerenteOps('ops');setTimeout(()=>swOps('tickets'),50)")}
+      ${kpi('Solicitudes Telegram',tg.length,tgViejos.length+' con más de 7 días',tgViejos.length?R:tg.length?A:G,"swGerenteOps('ops');setTimeout(()=>swOps('resumen'),50)")}
+    </div>
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;align-items:start;margin-bottom:16px;" class="gerops-grid">
+      <div class="card" style="padding:16px;" id="dashResg"><div style="font-size:14px;font-weight:700;margin-bottom:10px;">🗄 Resguardos — qué revisar hoy</div>${opsResguardoPanelHtml(rg)}</div>
+      <div style="display:flex;flex-direction:column;gap:16px;">
+        <div class="card" style="padding:16px;"><div style="font-size:14px;font-weight:700;margin-bottom:8px;">🎫 Carga de Soporte</div>
+          ${carga.length?carga.map(c=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-top:1px solid var(--border);"><span>${esc(c.n)}</span><span><b>${c.total}</b> activos${c.atr?` · <b style="color:var(--red);">${c.atr} atrasados</b>`:''}</span></div>`).join(''):'<div style="font-size:12px;color:var(--text3);">Sin asesores activos.</div>'}
+          <div style="font-size:11px;color:var(--text3);margin-top:6px;">${sinAsignar.length} ticket(s) esperan asignación.</div></div>
+        <div class="card" style="padding:16px;"><div style="font-size:14px;font-weight:700;margin-bottom:8px;">⏳ Próximas pólizas a vencer</div>
+          ${porVencer.slice(0,8).map(p=>`<div style="font-size:12px;padding:5px 0;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:8px;"><span>${esc(p.cliente_nombre)} <span style="color:var(--text3);">· ${esc(p.polizas_catalogo?.nombre||'')}</span></span><b>${p.fecha_vencimiento}</b></div>`).join('')||'<div style="font-size:12px;color:var(--text3);">Ninguna en los próximos 30 días.</div>'}</div>
+      </div>
+    </div>`;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -5928,7 +6069,7 @@ async function academiaToggleEnviada(constanciaId,valor,inscripcionId){
 function buildAsesorUI(){
   const _t2=document.getElementById('tabsBar2');
   if(_t2){_t2.style.display='none';_t2.innerHTML='';}
-  document.getElementById('tabsBar').innerHTML=`<div class="tab active">🎫 Mis servicios</div>`;
+  document.getElementById('tabsBar').innerHTML=`<div class="tab active" data-t="serv" onclick="swAsesorTab('serv')">🎫 Mis servicios</div><div class="tab" data-t="resg" onclick="swAsesorTab('resg')">🗄 Resguardos</div>`;
   renderAsesorServicios();
 }
 
@@ -6024,7 +6165,7 @@ async function guardarTicketAsesor(){
 }
 
 // ─── MONTH SELECT ─────────────────────────────────────────────────────────────
-function setMonth(m){currentMonth=parseInt(m);if(userProfile.rol==='director')renderDirector();else if(userProfile.rol==='telemarketing')renderTeleActual();else if(userProfile.rol==='administracion')renderAdminActual();else if(userProfile.rol==='mesa_control')renderDirectorOperaciones();else if(userProfile.rol==='asesor'){/* sin dependencia de mes por ahora */}else renderVendor();}
+function setMonth(m){currentMonth=parseInt(m);if(userProfile.rol==='director')renderDirector();else if(userProfile.rol==='telemarketing')renderTeleActual();else if(userProfile.rol==='administracion')renderAdminActual();else if(userProfile.rol==='mesa_control')renderDirectorOperaciones();else if(userProfile.rol==='gerente_operaciones'){/* sin dependencia de mes */}else if(userProfile.rol==='asesor'){/* sin dependencia de mes por ahora */}else renderVendor();}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // VENDOR VIEW
@@ -18747,7 +18888,7 @@ function buildTeleUI(){
   document.getElementById('tabsBar').innerHTML=`
     <div class="tab active" onclick="swT('miMes')">Mi actividad</div>
     <div class="tab" onclick="swT('prospectos')">Mis prospectos</div>
-    <div class="tab" onclick="swT('clientes')">📋 Clientes</div>
+    <div class="tab" onclick="swT('clientes')">📋 Campañas a clientes</div>
     <div class="tab" onclick="swT('cartera')">🗂 Cartera de cuentas</div>
     <div class="tab" onclick="swT('registro')">Registrar día</div>
     <div class="tab" onclick="swT('cotizador')">🧮 Cotizador</div>
@@ -20197,7 +20338,7 @@ async function renderProspectos(){
   // veía "0 asignados" aunque sí tenía prospectos en la campaña activa.
   // Se consulta en lotes de 200 ids (seleccionarPorLotesIds, definida junto
   // a aplicarAsignacionProspectosCampana) y se ordena en memoria.
-  const prospectos=await seleccionarPorLotesIds('prospectos','*',idsCampana,q=>q.eq('asignado_a',currentUser.id));
+  const prospectos=await seleccionarPorLotesIds('prospectos','*',idsCampana,q=>q.eq('asignado_a',currentUser.id).or('no_contactar.is.null,no_contactar.eq.false')); // Jp 2026-11-17: ⛔ No volver a contactar sale de la lista de llamadas
   const ps=(prospectos||[]).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
   const porEstatus={};
   for(const p of ps) porEstatus[p.estatus]=(porEstatus[p.estatus]||0)+1;
@@ -20998,15 +21139,22 @@ async function abrirDetalle(id){
         </div>
         <div>
           <div style="color:var(--text3);margin-bottom:2px;">Origen</div>
-          <select id="editOrigen" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
+          <select id="editOrigen" ${prospOrigenBloqueado()?'disabled title="El origen solo lo cambia Dirección o Administración"':''} style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;${prospOrigenBloqueado()?'background:var(--surf2);color:var(--text3);cursor:not-allowed;':''}">
             ${opcionesPicklist(PROSPECTO_ORIGENES,p.origen,false)}
           </select>
+          ${prospOrigenBloqueado()?'<div style="font-size:10px;color:var(--text3);margin-top:2px;">🔒 Solo Dirección/Administración</div>':''}
         </div>
         <div>
           <div style="color:var(--text3);margin-bottom:2px;">Interés</div>
           <select id="editInteres" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:'Inter',sans-serif;">
             ${opcionesPicklist(PROSPECTO_INTERESES,p.interes,true)}
           </select>
+        </div>
+        <div style="grid-column:1/-1;">
+          <div style="color:var(--text3);margin-bottom:4px;">Sistemas de interés <span style="font-size:10px;">(marca uno o varios — se guardan con "Guardar datos")</span></div>
+          <div id="editInteresSistemas" style="display:flex;flex-wrap:wrap;gap:6px;">
+            ${SISTEMAS_ASPEL_LIST.map(x=>{const on=(p.interes_aspel||[]).includes(x.v);return `<label style="display:flex;align-items:center;gap:4px;padding:4px 10px;border:1px solid ${on?'var(--teal)':'var(--border)'};background:${on?'var(--teal-bg)':'#fff'};border-radius:14px;font-size:11px;cursor:pointer;"><input type="checkbox" value="${x.v}" ${on?'checked':''} style="accent-color:var(--teal);" onchange="this.parentElement.style.borderColor=this.checked?'var(--teal)':'var(--border)';this.parentElement.style.background=this.checked?'var(--teal-bg)':'#fff';">${x.l}</label>`;}).join('')}
+          </div>
         </div>
         ${p.segmento?`
         <div style="grid-column:1/-1;">
@@ -21199,6 +21347,10 @@ async function abrirDetalle(id){
             style="background:#8E44AD;color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">
             🏢 Convertir a cuenta
           </button>`:''}
+          <button onclick="llamadaModal('${p.id}')" title="Pasar este prospecto a un vendedor con llamada programada (el vendedor recibe correo y recordatorio)"
+            style="background:var(--teal-bg);color:var(--teal);border:1px solid var(--teal);border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">
+            📞 A vendedor
+          </button>
           <a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}" target="_blank"
             style="background:#25D366;color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;white-space:nowrap;">
             WhatsApp
@@ -21354,6 +21506,18 @@ async function registrarLlamada(prospecto_id){
   }).select().single();
   if(error){alert('Error al guardar: '+error.message);return;}
   await guardarRespuestasLlamada('prospecto',llamadaIns.id,prospecto_id,respuestasPreguntas);
+  // Jp, 2026-11-17: con 2 o más "No le interesa" se ofrece marcarlo ⛔ No volver a contactar (queda fuera de campañas y listas de llamadas).
+  if(resultado==='No le interesa'){
+    try{
+      const {count:nNo}=await sb.from('prospecto_llamadas').select('id',{count:'exact',head:true}).eq('prospecto_id',prospecto_id).eq('resultado','No le interesa');
+      const yaMarcado=(window._prospectos||[]).find(x=>x.id===prospecto_id)?.no_contactar;
+      if((nNo||0)>=2&&!yaMarcado&&confirm('Este prospecto ya dijo "No le interesa" '+nNo+' veces.\n\n¿Marcarlo como ⛔ NO VOLVER A CONTACTAR?\nYa no aparecerá en campañas ni se le volverá a marcar. Dirección puede reactivarlo.')){
+        const {error:eNc}=await sb.from('prospectos').update({no_contactar:true,estatus:'No interesado',updated_at:new Date().toISOString()}).eq('id',prospecto_id);
+        if(!eNc){ const pp=(window._prospectos||[]).find(x=>x.id===prospecto_id); if(pp){pp.no_contactar=true;pp.estatus='No interesado';} const chk=document.getElementById('chkNoContactar'); if(chk) chk.checked=true; sincronizarProspectoCrm({prospecto_id,estatus:'No interesado'}); uiToast('⛔ Marcado como No volver a contactar'); }
+        else alert('No se pudo marcar: '+eNc.message);
+      }
+    }catch(e){ console.error('no_contactar auto',e); }
+  }
   // Jp, 2026-10-16: "poderme habilitar programar una actividad... que le
   // aparezca en el dashboard tus actividades del lunes" — primero se cierra
   // cualquier seguimiento pendiente de antes (p.ej. "volver a llamar el
@@ -21413,6 +21577,8 @@ async function registrarLlamada(prospecto_id){
   onResultadoLlamadaChange();
 }
 
+// Jp, 2026-11-17: el origen (p. ej. Facebook = campaña de Meta) solo lo cambia Dirección/Administración.
+function prospOrigenBloqueado(){ const r=userProfile?.rol; return !(r==='director'||r==='administracion'); }
 async function guardarDatosProspecto(id){
   const nombre=document.getElementById('editNombre')?.value.trim();
   const apellidos=document.getElementById('editApellidos')?.value.trim()||null;
@@ -21422,15 +21588,19 @@ async function guardarDatosProspecto(id){
   const puesto=document.getElementById('editPuesto')?.value.trim()||null;
   const origen=document.getElementById('editOrigen')?.value||null;
   const interes=document.getElementById('editInteres')?.value||null;
+  const interesAspel=[...document.querySelectorAll('#editInteresSistemas input:checked')].map(x=>x.value);
   const msg=document.getElementById('datosMsg');
   if(!nombre){if(msg){msg.style.color='var(--red)';msg.textContent='El nombre no puede quedar vacío';}return;}
   const upd={nombre,apellidos,telefono,email,empresa,puesto,origen,interes,updated_at:new Date().toISOString()};
-  const {error}=await sb.from('prospectos').update(upd).eq('id',id);
+  if(prospOrigenBloqueado()) delete upd.origen; // candado: Telemarketing/Ventas no cambian el origen
+  upd.interes_aspel=interesAspel;
+  let {error}=await sb.from('prospectos').update(upd).eq('id',id);
+  if(error&&/interes_aspel/.test(error.message||'')){ delete upd.interes_aspel; ({error}=await sb.from('prospectos').update(upd).eq('id',id)); if(!error&&msg) setTimeout(()=>{msg.style.color='var(--gold)';msg.textContent='Guardado, pero falta correr prospectos_interes_sistemas.sql para los sistemas de interés';},50); }
   if(error){if(msg){msg.style.color='var(--red)';msg.textContent='Error: '+error.message;}return;}
   const p=window._prospectos?.find(p=>p.id===id);
   if(p) Object.assign(p,upd);
   if(msg){msg.style.color='var(--green)';msg.textContent='✓ Guardado';}
-  sincronizarProspectoCrm({prospecto_id:id,nombre,apellidos,empresa,puesto,telefono,email,origen,interes});
+  sincronizarProspectoCrm({prospecto_id:id,nombre,apellidos,empresa,puesto,telefono,email,...(prospOrigenBloqueado()?{}:{origen}),interes});
   // Actualizar nombre visible en el header del modal y en la fila de tabla
   const headerNombre=document.getElementById('modalNombreHeader');
   if(headerNombre) headerNombre.textContent=nombre;
@@ -23761,7 +23931,7 @@ async function renderDirectorMetaAspel(){
   if(error){mc.innerHTML=`<div style="padding:20px;color:var(--red);">Error: ${error.message}. ¿Ya corriste el SQL de Meta Aspel?</div>`;return;}
 
   const porMes=Array(13).fill(null);
-  (rows||[]).forEach(r=>{porMes[r.mes]=r;});
+  (rows||[]).forEach(r=>{ ['cuota_acv','real_acv','cuota_renov','real_renov'].forEach(k=>{r[k]=Number(r[k])||0;}); porMes[r.mes]=r;});
 
   const calc=r=>{
     if(!r) return null;
@@ -23792,6 +23962,9 @@ async function renderDirectorMetaAspel(){
 
   const cerrados=(rows||[]).filter(r=>r.cerrado).map(calc);
   const promedioYTD=cerrados.length?cerrados.reduce((s,r)=>s+r.total,0)/cerrados.length:0;
+  // Acumulado del año calculado como Aspel: sobre la SUMA de cuotas y reales de los meses cerrados (no promedio de porcentajes).
+  const acumA={ca:0,ra:0,cr:0,rr:0}; (rows||[]).filter(r=>r.cerrado).forEach(r=>{acumA.ca+=r.cuota_acv;acumA.ra+=r.real_acv;acumA.cr+=r.cuota_renov;acumA.rr+=r.real_renov;});
+  const acumAnual=(acumA.ca>0&&acumA.cr>0)?((acumA.ra/acumA.ca)*75+(acumA.rr/acumA.cr)*25):null;
   const mejor=cerrados.length?cerrados.reduce((a,b)=>b.total>a.total?b:a):null;
   const peor=cerrados.length?cerrados.reduce((a,b)=>b.total<a.total?b:a):null;
 
@@ -23814,7 +23987,7 @@ async function renderDirectorMetaAspel(){
     const acvAlcance=cuotaAcv>0?(realAcvProy/cuotaAcv*100):0;
     const renovAlcance=cuotaRenov>0?(realRenovProy/cuotaRenov*100):0;
     const total=datos.length?(acvAlcance*0.75+renovAlcance*0.25):null;
-    return {idx:i+1, cuotaAcv,realAcv,cuotaRenov,realRenov, total, cerrado, enCurso, tieneDatos:datos.length>0};
+    return {idx:i+1, cuotaAcv,realAcv,cuotaRenov,realRenov, realAcvProy, realRenovProy, acvAlcance, renovAlcance, total, cerrado, enCurso, tieneDatos:datos.length>0};
   });
 
   // Alerta de renovaciones: caída >20 puntos vs mes anterior (solo meses cerrados)
@@ -23850,7 +24023,7 @@ async function renderDirectorMetaAspel(){
       <div class="thc"><div class="th-lbl">${MESES_CORTOS[mesActualReal]} — avance real</div><div class="th-val" style="color:${mesEnCursoData&&mesEnCursoData.total>=100?'#27AE60':'var(--red)'};">${mesEnCursoData?calc(mesEnCursoData).total.toFixed(1)+'%':'—'}</div><div style="font-size:9px;color:var(--text3);">${diasTrans} de ${diasHab} días hábiles</div></div>
       <div class="thc"><div class="th-lbl">${MESES_CORTOS[mesActualReal]} — proyectado</div><div class="th-val" style="color:${proyMesActual>=100?'#27AE60':proyMesActual>=85?'#F5A623':'var(--red)'};">${proyMesActual!=null?proyMesActual.toFixed(1)+'%':'—'}</div><div style="font-size:9px;color:var(--text3);">al ritmo actual</div></div>
       <div class="thc"><div class="th-lbl">Q${trimData.findIndex(t=>t.enCurso)+1||Math.ceil(mesActualReal/3)} — proyectado</div><div class="th-val" style="color:#F5A623;">${(()=>{const t=trimData.find(t=>t.enCurso);return t&&t.total!=null?t.total.toFixed(1)+'%':'—';})()}</div><div style="font-size:9px;color:var(--text3);">trimestre en curso</div></div>
-      <div class="thc"><div class="th-lbl">Promedio ${currentYear} (meses cerrados)</div><div class="th-val" style="color:${promedioYTD>=100?'#27AE60':'var(--red)'};">${promedioYTD?promedioYTD.toFixed(1)+'%':'—'}</div><div style="font-size:9px;color:var(--text3);">${mejor?`mejor: ${MESES_CORTOS[mejor.mes]} ${mejor.total.toFixed(0)}%`:''}</div></div>
+      <div class="thc"><div class="th-lbl">Acumulado ${currentYear} (meses cerrados)</div><div class="th-val" style="color:${acumAnual>=100?'#27AE60':'var(--red)'};">${acumAnual!=null?acumAnual.toFixed(1)+'%':'—'}</div><div style="font-size:9px;color:var(--text3);">sobre suma de cuotas · promedio simple de meses: ${promedioYTD?promedioYTD.toFixed(1)+'%':'—'}</div></div>
     </div>
 
     ${alertaRenov?.length?`<div style="background:rgba(245,166,35,0.1);border:1px solid #F5A623;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:flex-start;gap:10px;">
@@ -23868,13 +24041,39 @@ async function renderDirectorMetaAspel(){
       <div style="position:relative;width:100%;height:260px;"><canvas id="chartMetaTotal"></canvas></div>
     </div>
 
+    <div class="card" style="padding:16px;margin-bottom:16px;">
+      <div style="font-size:13px;font-weight:600;margin-bottom:4px;">Cumplimiento trimestral</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Cada barra suma lo que aporta ACV (75%) y Renovaciones (25%); el total es el mismo "TOTAL" del correo de Aspel. Q en curso = proyectado al ritmo actual.</div>
+      <div style="display:flex;gap:16px;margin-bottom:8px;font-size:11px;color:var(--text3);">
+        <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:2px;background:#00A99D;"></span>ACV (×75%)</span>
+        <span style="display:flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:2px;background:#F5A623;"></span>Renovaciones (×25%)</span>
+        <span style="display:flex;align-items:center;gap:4px;"><span style="width:14px;height:2px;background:#E84040;margin-top:5px;"></span>Meta 100%</span>
+      </div>
+      <div style="position:relative;width:100%;height:260px;"><canvas id="chartMetaTrim"></canvas></div>
+    </div>
+
     <div style="font-size:14px;font-weight:600;margin-bottom:8px;">Acumulado trimestral</div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px;">
       ${trimData.map(t=>`<div class="thc" style="${t.enCurso?'border:1px solid #F5A623;':''}">
         <div class="th-lbl">Q${t.idx} ${t.cerrado?'· cerrado':t.enCurso?'· en curso':''}</div>
         <div class="th-val" style="color:${!t.tieneDatos?'var(--text3)':t.total>=100?'#27AE60':t.enCurso?'#F5A623':'var(--red)'};">${t.total!=null?t.total.toFixed(1)+(t.enCurso?'% proy.':'%'):'—'}</div>
-        <div style="font-size:9px;color:var(--text3);">${t.tieneDatos?`${fmt(t.realAcv+t.realRenov)} de ${fmt(t.cuotaAcv+t.cuotaRenov)}`:'sin datos'}</div>
+        <div style="font-size:9px;color:var(--text3);">${t.tieneDatos?`${fmt(t.realAcv+t.realRenov)} de ${fmt(t.cuotaAcv+t.cuotaRenov)}<br>ACV ${t.acvAlcance.toFixed(1)}% · Renov ${t.renovAlcance.toFixed(1)}%`:'sin datos'}</div>
       </div>`).join('')}
+    </div>
+
+    <div style="overflow-x:auto;margin-bottom:20px;">
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead><tr style="background:var(--navy);color:#fff;"><th style="padding:6px 8px;text-align:left;">Trimestre (formato Aspel)</th><th style="padding:6px 8px;">Cuota ACV</th><th style="padding:6px 8px;">Real ACV</th><th style="padding:6px 8px;">Alcance ACV</th><th style="padding:6px 8px;">Cuota Renov.</th><th style="padding:6px 8px;">Real Renov.</th><th style="padding:6px 8px;">Alcance Renov.</th><th style="padding:6px 8px;">TOTAL</th></tr></thead>
+        <tbody>${trimData.filter(t=>t.tieneDatos).map(t=>`<tr style="border-bottom:1px solid var(--border);">
+          <td style="padding:5px 8px;font-weight:600;">Q${t.idx}${t.enCurso?' <span style="color:#F5A623;font-size:9px;">(proyectado)</span>':''}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(t.cuotaAcv)}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(Math.round(t.realAcvProy))}</td>
+          <td style="padding:5px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${t.acvAlcance.toFixed(2)}%</td>
+          <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(t.cuotaRenov)}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${fmt(Math.round(t.realRenovProy))}</td>
+          <td style="padding:5px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${t.renovAlcance.toFixed(2)}%</td>
+          <td style="padding:5px 8px;text-align:center;font-weight:700;font-family:'JetBrains Mono',monospace;color:${t.total>=100?'#27AE60':'var(--red)'};">${t.total.toFixed(2)}%</td></tr>`).join('')}</tbody>
+      </table>
     </div>
 
     <div style="font-size:14px;font-weight:600;margin-bottom:10px;">Desglose por factor</div>
@@ -23918,6 +24117,11 @@ async function renderDirectorMetaAspel(){
       {label:'Real',data:totalArr,backgroundColor:'#0D2240',borderRadius:4,maxBarThickness:36},
       {label:'Proyectado',data:totalProyArr,backgroundColor:'#c3c2c0',borderRadius:4,maxBarThickness:36}
     ]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{ticks:{callback:v=>v+'%'}}},plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.dataset.label+': '+c.parsed.y.toFixed(1)+'%'}}}},plugins:[metaLinePlugin]});
+    const tq=trimData.filter(t=>t.tieneDatos);
+    new Chart(document.getElementById('chartMetaTrim'),{type:'bar',data:{labels:tq.map(t=>'Q'+t.idx+(t.enCurso?' (proy.)':'')),datasets:[
+      {label:'ACV (×75%)',data:tq.map(t=>t.acvAlcance*0.75),backgroundColor:'#00A99D',maxBarThickness:60},
+      {label:'Renovaciones (×25%)',data:tq.map(t=>t.renovAlcance*0.25),backgroundColor:'#F5A623',maxBarThickness:60}
+    ]},options:{responsive:true,maintainAspectRatio:false,scales:{x:{stacked:true},y:{stacked:true,ticks:{callback:v=>v+'%'}}},plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.dataset.label+': '+c.parsed.y.toFixed(1)+' pts',footer:items=>'TOTAL: '+items.reduce((a,i)=>a+i.parsed.y,0).toFixed(2)+'%'}}}},plugins:[metaLinePlugin,{id:'totLbl',afterDatasetsDraw(ch){const{ctx}=ch;ctx.save();ctx.font='600 12px Inter, sans-serif';ctx.fillStyle='#0D2240';ctx.textAlign='center';tq.forEach((t,i)=>{const bar=ch.getDatasetMeta(1).data[i];if(bar&&t.total!=null) ctx.fillText(t.total.toFixed(1)+'%',bar.x,bar.y-6);});ctx.restore();}}]});
     new Chart(document.getElementById('chartMetaAcv'),{type:'line',data:{labels,datasets:[{data:acvArr,borderColor:'#00A99D',backgroundColor:'rgba(0,169,157,0.1)',fill:true,tension:0.3,pointRadius:4,borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{ticks:{callback:v=>v+'%'}}},plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y.toFixed(1)+'%'}}}},plugins:[metaLinePlugin]});
     new Chart(document.getElementById('chartMetaRenov'),{type:'line',data:{labels,datasets:[{data:renovArr,borderColor:'#F5A623',backgroundColor:'rgba(245,166,35,0.1)',fill:true,tension:0.3,pointRadius:4,borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{ticks:{callback:v=>v+'%'}}},plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>c.parsed.y.toFixed(1)+'%'}}}},plugins:[metaLinePlugin]});
   },50);
