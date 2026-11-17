@@ -35322,11 +35322,12 @@ function solFacturarModal(id){
   solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">🧾 Registrar factura</div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:12px;">${solEsc(r.cliente_nombre)} · ${solEsc(r.concepto)} · <b>${fmt(r.monto_total)}</b></div>
     ${solFld('XML de la factura (recomendado)','<input id="sfxXml" type="file" accept=".xml" onchange="solFacturarLeerXml(\''+id+'\',this)" style="font-size:12px;">','Se llenan serie, folio y UUID, y se verifica total y RFC.')}
-    ${solFld('PDF de la factura (opcional)','<input id="sfxPdf" type="file" accept=".pdf" style="font-size:12px;">','Se adjunta junto con el XML en la oportunidad del CRM.')}
+    ${solFld('PDF de la factura (opcional)','<input id="sfxPdf" type="file" accept=".pdf" onchange="solFactValidar(\''+id+'\')" style="font-size:12px;">','Se adjunta junto con el XML en la oportunidad del CRM.')}
     <div id="sfxAviso" style="font-size:12px;margin-bottom:8px;"></div>
+    <div id="sfxBloq" style="font-size:12px;margin-bottom:8px;"></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 12px;">
-      ${solFld('Serie','<input id="sfxSerie" value="INN" style="'+SOL_INPUT_STYLE+'">')}
-      ${solFld('Folio','<input id="sfxFolio" placeholder="591" style="'+SOL_INPUT_STYLE+'">')}
+      ${solFld('Serie','<input id="sfxSerie" value="INN" onchange="solFactValidar(\''+id+'\')" style="'+SOL_INPUT_STYLE+'">')}
+      ${solFld('Folio','<input id="sfxFolio" placeholder="591" onchange="solFactValidar(\''+id+'\')" style="'+SOL_INPUT_STYLE+'">')}
     </div>
     <div style="display:flex;gap:8px;margin-top:4px;"><button onclick="solFacturarGuardar('${id}')" style="background:#1B4D6E;color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar factura</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:12px;cursor:pointer;">Cerrar</button></div>`,500);
 }
@@ -35340,15 +35341,62 @@ async function solFacturarLeerXml(id,input){
   if(x.serie) document.getElementById('sfxSerie').value=x.serie;
   if(x.folio) document.getElementById('sfxFolio').value=x.folio;
   const av2=[];
-  if(isFinite(x.total)&&Math.abs(x.total-r.monto_total)>0.5) av2.push(`⚠️ El total del XML (${fmt(x.total)}) no coincide con la solicitud (${fmt(r.monto_total)}).`);
+  if(!isFinite(x.total)||Math.round(x.total*100)!==Math.round(Number(r.monto_total)*100)) av2.push(`⚠️ El total del XML (${fmt(x.total)}) no coincide con la solicitud (${fmt(r.monto_total)}).`);
   if(x.rfcReceptor&&r.rfc&&x.rfcReceptor.toUpperCase()!==r.rfc.toUpperCase()) av2.push(`⚠️ El RFC del XML (${solEsc(x.rfcReceptor)}) no coincide con el de la solicitud (${solEsc(r.rfc)}).`);
   const rfcDistinto=!!(x.rfcReceptor&&r.rfc&&x.rfcReceptor.toUpperCase()!==r.rfc.toUpperCase());
   av.innerHTML=av2.length?`<span style="color:#B45309;">${av2.join('<br>')}</span>`+(rfcDistinto?`<div style="margin-top:6px;font-size:11px;color:var(--text2);">Si el cliente tiene varias razones sociales y la factura sí debía ir a <b>${solEsc(x.nombreReceptor||x.rfcReceptor)}</b>, puedes usar el RFC del XML:</div><button id="sfxBtnRazon" onclick="solRegistrarRazonDelXml('${id}')" style="margin-top:4px;background:#fff;color:#1B4D6E;border:1px solid #1B4D6E;border-radius:7px;padding:6px 12px;font-size:11px;font-weight:700;cursor:pointer;">➕ Usar el RFC del XML y registrarlo como razón social de la cuenta</button>`:''):'<span style="color:#2E7D32;">✅ XML leído: total y RFC coinciden.</span>';
+  solFactValidar(id);
+}
+// Jp 2026-11-17: la factura debe coincidir EXACTO con la solicitud (total al centavo y RFC), no repetirse (UUID / serie-folio)
+// y el PDF debe ser el de ese XML. Si algo falla se bloquea el guardado; solo Dirección puede forzarlo.
+async function solFactValidar(id){
+  const r=_solRows.find(z=>z.id===id);if(!r) return [];
+  const box=document.getElementById('sfxBloq');const x=window._solXml;const bl=[];
+  const serie=(document.getElementById('sfxSerie')?.value||'').trim(),folio=(document.getElementById('sfxFolio')?.value||'').trim();
+  if(x){
+    if(!isFinite(x.total)||Math.round(x.total*100)!==Math.round(Number(r.monto_total)*100)) bl.push(`El total del XML (${fmt(x.total)}) no es exactamente el de la solicitud (${fmt(r.monto_total)}).`);
+    if(x.rfcReceptor&&r.rfc&&x.rfcReceptor.toUpperCase()!==String(r.rfc).toUpperCase()) bl.push(`El RFC del XML (${x.rfcReceptor}) no es el de la solicitud (${r.rfc}).`);
+    try{
+      if(x.uuid){
+        const {data:u}=await sb.from('solicitudes_factura').select('cliente_nombre,factura_serie,factura_folio').eq('factura_uuid',x.uuid).neq('id',id).neq('estado','cancelada').limit(1);
+        if(u&&u.length) bl.push(`Ese XML (UUID) ya está registrado en la solicitud de ${u[0].cliente_nombre} (${u[0].factura_serie||''}${u[0].factura_folio||''}).`);
+      }
+    }catch(e){console.warn('dup uuid',e);}
+  }
+  try{
+    if(folio){
+      const {data:d1}=await sb.from('solicitudes_factura').select('cliente_nombre').eq('factura_folio',folio).eq('factura_serie',serie).neq('id',id).neq('estado','cancelada').limit(1);
+      if(d1&&d1.length) bl.push(`La factura ${serie}${folio} ya está registrada en la solicitud de ${d1[0].cliente_nombre}.`);
+      let q=sb.from('fact_ingresos').select('id,cliente,estatus').eq('folio',folio).eq('serie',serie).neq('estatus','CANCELADA').limit(3);
+      const {data:d2}=await q;
+      const otros=(d2||[]).filter(z=>z.id!==r.fact_ingreso_id);
+      if(otros.length) bl.push(`La factura ${serie}${folio} ya existe en Ingresos (${otros[0].cliente||'otro cliente'}).`);
+    }
+  }catch(e){console.warn('dup folio',e);}
+  const pf=document.getElementById('sfxPdf')?.files?.[0];
+  if(pf&&x&&x.uuid){
+    try{
+      await cargarPdfJs();
+      const lineas=await pdfExtraerLineas(await pf.arrayBuffer());
+      const txt=lineas.join(' ');
+      const uu=(txt.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)||[]).map(z=>z.toLowerCase());
+      if(!uu.length) bl.push('No pude leer el folio fiscal (UUID) en el PDF para confirmar que es el de este XML.');
+      else if(!uu.includes(String(x.uuid).toLowerCase())) bl.push(`El PDF es de otra factura (folio fiscal ${uu[0].slice(0,8)}…), no corresponde al XML.`);
+    }catch(e){console.warn('pdf',e);bl.push('No pude leer el PDF para compararlo con el XML.');}
+  }
+  window._solBloq=bl;
+  if(box) box.innerHTML=bl.length?`<div style="background:#fdecea;border:1px solid #e6a4a0;border-radius:8px;padding:8px 11px;color:#a8281e;"><b>⛔ No se puede guardar así:</b><br>${bl.map(z=>'• '+solEsc(z)).join('<br>')}${shpEsDir()?'<div style="margin-top:4px;color:var(--text3);">Como Director puedes forzarlo al guardar.</div>':''}</div>`:((x||pf)?'<div style="color:#2E7D32;">✅ Total y RFC exactos, sin duplicados'+(pf&&x?', y el PDF corresponde al XML':'')+'.</div>':'');
+  return bl;
 }
 async function solFacturarGuardar(id){
   const r=_solRows.find(z=>z.id===id);if(!r) return;
   const serie=document.getElementById('sfxSerie').value.trim(),folio=document.getElementById('sfxFolio').value.trim();
   if(!folio) return alert('Falta el folio de la factura.');
+  { const bl=await solFactValidar(id);
+    if(bl.length){
+      if(!shpEsDir()) return alert('No se puede guardar la factura:\n\n• '+bl.join('\n• ')+'\n\nCorrige el archivo o devuélvela con motivo.');
+      if(!confirm('⛔ '+bl.join('\n⛔ ')+'\n\n¿Forzar el guardado como Director?')) return;
+    } }
   try{
     let xmlAviso='';
     if(window._solXmlFile){
