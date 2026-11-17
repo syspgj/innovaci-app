@@ -33,7 +33,13 @@ export default async function handler(req, res) {
     const url = `${SITE_URL}/api/cron/dropbox-resguardo-check${polizaId ? '?poliza_id=' + encodeURIComponent(polizaId) : ''}`;
     const r = await fetch(url, { headers: { 'x-sync-secret': SYNC_SECRET } });
     const j = await r.json().catch(() => ({}));
-    return res.status(r.ok ? 200 : 502).json({ ok: r.ok && j.ok !== false, status: r.status, ...j });
+    // 2026-11-17: después de Dropbox se revisan también las carpetas de Google Drive de la póliza.
+    let drive = null;
+    try {
+      const rd = await fetch(`${SITE_URL}/api/cron/drive-resguardo-check${polizaId ? '?poliza_id=' + encodeURIComponent(polizaId) : ''}`, { headers: { 'x-sync-secret': SYNC_SECRET } });
+      drive = await rd.json().catch(() => ({}));
+    } catch (e) { drive = { ok: false, error: String((e && e.message) || e) }; }
+    return res.status(r.ok ? 200 : 502).json({ ok: r.ok && j.ok !== false, status: r.status, ...j, drive });
   } catch (e) {
     return res.status(500).json({ ok: false, error: String((e && e.message) || e) });
   }
