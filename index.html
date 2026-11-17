@@ -25294,6 +25294,49 @@ function dropboxCarpetaPoner(path){
 }
 function dropboxCarpetaElegir(i){const c=(window._dbxCarpetas||[])[i];if(c) dropboxCarpetaPoner(c.path);}
 function dropboxCarpetaElegirActual(){if(window._dbxRuta) dropboxCarpetaPoner(window._dbxRuta);}
+// Jp 2026-11-17: carpetas de Google Drive por póliza (varias tareas de respaldo; todas deben tener archivo del periodo).
+function resguardoDriveIdDeUrl(t){
+  t=String(t||'').trim();
+  let m=t.match(/\/folders\/([A-Za-z0-9_-]{10,})/)||t.match(/[?&]id=([A-Za-z0-9_-]{10,})/);
+  if(m) return m[1];
+  return /^[A-Za-z0-9_-]{15,}$/.test(t)?t:null;
+}
+async function resguardoDriveAgregar(id){
+  const et=(document.getElementById('resguardoDriveEtiqueta_'+id)?.value||'').trim();
+  const url=(document.getElementById('resguardoDriveUrl_'+id)?.value||'').trim();
+  const carpeta=resguardoDriveIdDeUrl(url);
+  if(!carpeta) return alert('Pega la liga completa de la carpeta de Drive (la que dice drive.google.com/drive/folders/…).');
+  const {error}=await sb.from('resguardo_origenes').insert({cliente_poliza_id:id,proveedor:'drive',etiqueta:et||null,carpeta_id:carpeta,carpeta_url:url,created_by:currentUser?.id||null});
+  if(error) return alert('No se pudo agregar: '+error.message+(/resguardo_origenes/.test(error.message)?'\n\nFalta correr resguardo_origenes_drive.sql en Supabase.':''));
+  document.getElementById('modalDetallePoliza')?.remove();
+  await abrirDetallePoliza(id);
+  revisarDrivePoliza(id);
+}
+async function resguardoDriveQuitar(origenId,polizaId){
+  if(!confirm('¿Quitar esta carpeta de la validación? Ya no se tomará en cuenta para dar por cumplido el respaldo.')) return;
+  const {error}=await sb.from('resguardo_origenes').update({activo:false}).eq('id',origenId);
+  if(error) return alert('No se pudo quitar: '+error.message);
+  document.getElementById('modalDetallePoliza')?.remove();
+  abrirDetallePoliza(polizaId);
+}
+async function revisarDrivePoliza(id){
+  const btn=document.getElementById('btnRevisarDrive_'+id);
+  if(btn){btn.disabled=true;btn.textContent='⏳ Revisando Drive…';}
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/admin-resguardo-revisar?poliza_id='+encodeURIComponent(id),{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
+    const j=await res.json().catch(()=>({}));
+    const d=j.drive||{};
+    if(d.omitido) alert(d.omitido);
+    else if(d.ok===false) alert('No se pudo revisar Drive: '+(d.error||'error'));
+    else if(d.errores&&d.errores.length) alert('Drive: '+d.errores.map(e=>(e.carpeta||'')+' — '+String(e.error).replace(/^not_found:.*/,'no existe o no está compartida con innovaci-os-lector@innovaci-os-drive.iam.gserviceaccount.com')).join('\n'));
+    document.getElementById('modalDetallePoliza')?.remove();
+    abrirDetallePoliza(id);
+  }catch(e){
+    alert('No se pudo revisar Drive: '+(e.message||e));
+    if(btn){btn.disabled=false;btn.textContent='🔄 Revisar Drive ahora';}
+  }
+}
 async function guardarConfigResguardo(id){
   const servidorSel=document.getElementById('resguardoServidorProducto_'+id);
   const folderInput=document.getElementById('resguardoDropboxFolder_'+id);
@@ -25447,10 +25490,11 @@ async function abrirDetallePoliza(id){
         if(derivado) periodicidadDias=derivado;
       }
     }
-    const [{data:evidencias},{data:incidenciasAbiertas},{data:serversCat}]=await Promise.all([
+    const [{data:evidencias},{data:incidenciasAbiertas},{data:serversCat},{data:origenesDrive}]=await Promise.all([
       sb.from('resguardo_evidencias').select('*').eq('cliente_poliza_id',id).order('periodo_fecha',{ascending:false}).limit(24),
       sb.from('servicios_ejecutados').select('id,folio_ticket,estatus').eq('cliente_poliza_id',id).eq('tipo_servicio','INCIDENCIA_RESGUARDO').in('estatus',['PENDIENTE','ASIGNADO','EN_CURSO']).order('created_at',{ascending:false}).limit(1),
       sb.from('productos_servidores').select('id,nombre').order('nombre'),
+      sb.from('resguardo_origenes').select('*').eq('cliente_poliza_id',id).eq('activo',true).order('created_at'),
     ]);
     // producto_servidor_id actual del servidor ya ligado (si existe), para
     // preseleccionar el combo de abajo — Jp, 2026-10-26: "en el caso de
@@ -25483,7 +25527,7 @@ async function abrirDetallePoliza(id){
     const ultEvid=(evidencias||[])[0]||null;
     const candidatos=[];
     if(ultArchFecha) candidatos.push({fecha:ultArchFecha,origen:'Dropbox',detalle:ultArchNombre});
-    if(ultEvid) candidatos.push({fecha:ultEvid.periodo_fecha,origen:ultEvid.origen==='dropbox'?'Dropbox':'Subida manual',detalle:ultEvid.dropbox_path?ultEvid.dropbox_path.split('/').pop():(ultEvid.nota||null)});
+    if(ultEvid) candidatos.push({fecha:ultEvid.periodo_fecha,origen:ultEvid.origen==='dropbox'?'Dropbox':(ultEvid.origen==='drive'?'Google Drive':'Subida manual'),detalle:ultEvid.dropbox_path?ultEvid.dropbox_path.split('/').pop():(ultEvid.nota||null)});
     candidatos.sort((x,y)=>String(y.fecha).localeCompare(String(x.fecha)));
     const ultimoValidado=candidatos[0]||null;
     const diasSin=ultimoValidado?diasEntre(ultimoValidado.fecha,hoyMx):null;
@@ -25493,8 +25537,19 @@ async function abrirDetallePoliza(id){
     if(c.estatus==='CERRADA'){alertaTxt='Póliza cerrada — no se revisa.';alertaTipo='gris';}
     else if(c.dropbox_revision_error){alertaTxt=dropboxErrorAmigable(c.dropbox_revision_error,c.resguardo_dropbox_folder);alertaTipo='rojo';}
     else if(!periodicidadDias){alertaTxt='Falta definir la periodicidad de esta póliza (abajo, en Configuración de resguardo).';alertaTipo='amarillo';}
+    else if(!ultimoValidado&&(origenesDrive||[]).length&&!c.resguardo_dropbox_folder){alertaTxt=(origenesDrive||[]).some(o=>o.revision_at)?'Requiere revisión: ninguna carpeta de Drive tiene respaldo validado todavía.':'Sin revisar aún — pulsa "Revisar Drive ahora".';alertaTipo=(origenesDrive||[]).some(o=>o.revision_at)?'rojo':'amarillo';}
     else if(!ultimoValidado){alertaTxt=c.resguardo_dropbox_folder?(c.dropbox_revision_at?'Requiere revisión: no hay ningún respaldo validado todavía.':'Sin revisar aún — pulsa "Revisar Dropbox ahora".'):'Requiere revisión: sin carpeta de Dropbox ni evidencia subida.';alertaTipo=c.dropbox_revision_at||!c.resguardo_dropbox_folder?'rojo':'amarillo';}
     else if(atrasado){alertaTxt=`Requiere revisión: el último respaldo es de hace ${diasSin} días (se esperaba cada ${periodicidadDias}).`;alertaTipo='rojo';}
+    // Jp 2026-11-17: carpetas de Google Drive (varias tareas por póliza): todas deben tener respaldo reciente.
+    const drv=(origenesDrive||[]).map(o=>{
+      const f=mxFecha(o.ultimo_archivo_fecha);
+      const reciente=!!(f&&periodicidadDias&&diasEntre(f,hoyMx)<=periodicidadDias);
+      return {...o,f,reciente,estado:o.error?'error':(!o.revision_at?'sin':(reciente?'ok':'viejo'))};
+    });
+    if(alertaTipo==='ok'&&drv.length){
+      const malas=drv.filter(o=>o.estado!=='ok');
+      if(malas.length){alertaTxt='Carpeta(s) de Drive sin respaldo reciente: '+malas.map(o=>(o.etiqueta||'carpeta')+(o.estado==='error'?' (error al revisar)':o.estado==='sin'?' (sin revisar)':'')).join(', ')+'.';alertaTipo=malas.some(o=>o.estado==='error'||o.estado==='viejo')?'rojo':'amarillo';}
+    }
     const alertaColores={ok:['#27AE60','rgba(39,174,96,0.08)'],rojo:['#E84040','rgba(232,64,64,0.08)'],amarillo:['#c47f0a','rgba(245,166,35,0.10)'],gris:['#64748b','rgba(100,116,139,0.08)']};
     const [alC,alBg]=alertaColores[alertaTipo];
     const resumenHtml=`<div style="margin-bottom:12px;padding:12px;border:1px solid ${alC}55;background:${alBg};border-radius:8px;">
@@ -25526,6 +25581,16 @@ async function abrirDetallePoliza(id){
         ${dropboxEstadoHtml}
       </div>
       ${dropboxDetalleHtml}${botonRevisarHtml}
+    </div>
+    <div style="margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:8px;">
+        <div style="font-size:11px;font-weight:700;color:var(--navy);">☁️ Validación en Google Drive</div>
+        ${!drv.length?'<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#94a3b822;color:#64748b;">— Sin carpetas de Drive</span>':(drv.every(o=>o.estado==='ok')?'<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#27AE6022;color:#27AE60;">✅ Todas con respaldo reciente</span>':'<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#F5A62322;color:#c47f0a;">⚠ Hay carpetas sin respaldo reciente</span>')}
+      </div>
+      ${drv.length?`<div style="font-size:11px;color:var(--text3);margin-bottom:4px;">La póliza se da por cumplida cuando <b>todas</b> estas carpetas tienen archivo del periodo.</div>`+drv.map(o=>`<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--border);font-size:11px;">
+        <div><b>${(o.etiqueta||'Carpeta').replace(/</g,'&lt;')}</b> ${o.estado==='ok'?'✅':o.estado==='viejo'?'⚠':o.estado==='error'?'❌':'⏳'}<br>
+        ${o.estado==='error'?`<span style="color:var(--red);">${String(o.error).replace(/</g,'&lt;').replace(/^not_found:.*/,'La carpeta no existe o no está compartida con innovaci-os-lector@innovaci-os-drive.iam.gserviceaccount.com')}</span>`:o.revision_at?(o.ultimo_archivo?`Último archivo: <b>${o.f}</b> — <span style="color:var(--text3);">${String(o.ultimo_archivo).replace(/</g,'&lt;')} (${o.archivos_total} archivos)</span>`:'<span style="color:#c47f0a;">Carpeta sin archivos</span>'):'<span style="color:var(--text3);">Sin revisar aún</span>'}</div>
+        <button onclick="resguardoDriveQuitar('${o.id}','${id}')" style="background:none;border:1px solid var(--border);border-radius:6px;padding:2px 8px;font-size:10px;cursor:pointer;white-space:nowrap;">Quitar</button></div>`).join('')+`<div style="margin-top:8px;"><button id="btnRevisarDrive_${id}" onclick="revisarDrivePoliza('${id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">🔄 Revisar Drive ahora</button></div>`:'<div style="font-size:11px;color:var(--text3);">Agrega las carpetas de Drive en "⚙ Configuración de resguardo" (abajo).</div>'}
     </div>
     <div style="margin-bottom:12px;padding:12px;border:1px solid ${vencido?'var(--red)':'var(--border)'};border-radius:8px;${vencido?'background:rgba(232,64,64,0.05);':''}">
       <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:8px;">🗓 Evidencia de resguardo</div>
@@ -25560,6 +25625,15 @@ async function abrirDetallePoliza(id){
           <button type="button" onclick="dropboxBuscarCarpeta('${id}')" style="background:#fff;color:var(--navy);border:1px solid var(--navy);border-radius:6px;padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">📂 Buscar carpeta</button>
         </div>
         <div style="font-size:10px;color:var(--text3);margin-top:3px;">Si no sabes cómo se llama, pulsa "Buscar carpeta": verás las carpetas reales de Dropbox y eliges la correcta con un clic. Después pulsa "Guardar configuración".</div>
+      </div>
+      <div style="margin-bottom:8px;padding:8px;border:1px solid var(--border);border-radius:6px;">
+        <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">☁️ Agregar carpeta de Google Drive (una por cada tarea de respaldo)</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <input type="text" id="resguardoDriveEtiqueta_${id}" placeholder="Nombre (ej. Publico_full)" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;width:150px;">
+          <input type="text" id="resguardoDriveUrl_${id}" placeholder="Pega aquí la liga de la carpeta de Drive" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;flex:1;min-width:160px;">
+          <button type="button" onclick="resguardoDriveAgregar('${id}')" style="background:#fff;color:var(--navy);border:1px solid var(--navy);border-radius:6px;padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">➕ Agregar</button>
+        </div>
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;">Antes, en Drive, comparte esa carpeta con <b>innovaci-os-lector@innovaci-os-drive.iam.gserviceaccount.com</b> como Lector. Se agrega al instante (no hace falta "Guardar configuración").</div>
       </div>
       <div style="margin-bottom:8px;">
         <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Ajuste manual de periodicidad en días (opcional — tiene prioridad sobre servidor y catálogo)</div>
