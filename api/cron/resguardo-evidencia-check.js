@@ -50,7 +50,13 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const RESEND_KEY = process.env.RESEND_API_KEY;
 const FROM_EMAIL = process.env.REPORTE_FROM_EMAIL || 'Innovaci OS <reportes@innovaci.com.mx>';
 const JP_BCC_EMAIL = 'joss@innovaci.com.mx';
-const ADMIN_EMAIL = 'administracion@innovaci.com.mx';
+// Jp, 2026-11-17: el correo diario de resguardos va a Operaciones (Violeta), Coordinación/Mesa de Control y Soporte (Adriana);
+// Jp recibe copia oculta. Administración YA NO lo recibe. Se puede cambiar sin tocar código con la variable de Vercel
+// RESGUARDO_DESTINATARIOS (correos separados por coma).
+const DESTINATARIOS = (process.env.RESGUARDO_DESTINATARIOS || 'violeta@innovaci.com.mx,coordinacion@innovaci.com.mx,adriana@innovaci.com.mx')
+  .split(',').map((x) => x.trim()).filter(Boolean);
+// Una póliza es PRIORITARIA cuando lleva este número de días (o más) de atraso en su evidencia, o si nunca se ha registrado.
+const DIAS_PRIORITARIA = 7;
 
 const VTIGER_BASE_URL = process.env.VTIGER_BASE_URL;
 const VTIGER_USER = process.env.VTIGER_USER;
@@ -110,26 +116,43 @@ async function enviarCorreo({ to, subject, html }) {
   return body;
 }
 
-function plantillaAviso({ titulo, intro, filas, introVencidas, filasVencidas }) {
-  const fila = (f) => `
-    <div style="padding:10px 0;border-bottom:1px solid #eee;">
-      <div style="font-size:13px;font-weight:700;color:#0b1f33;">${f.cliente}</div>
-      <div style="font-size:12.5px;color:#333;margin-top:2px;">${f.detalle}</div>
+function plantillaAviso({ fechaTxt, prioritarias, faltan, detectadas, alCorriente, sinPeriodicidad }) {
+  const esc = (t) => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const chip = (n, txt, bg, fg) => `<td style="padding:0 4px;"><div style="background:${bg};color:${fg};border-radius:8px;padding:8px 6px;text-align:center;"><div style="font-size:20px;font-weight:700;">${n}</div><div style="font-size:10.5px;">${txt}</div></div></td>`;
+  const bloque = (titulo, color, intro, filas, render) => !filas.length ? '' : `
+    <div style="margin-top:20px;">
+      <div style="font-size:13.5px;font-weight:700;color:${color};border-bottom:2px solid ${color};padding-bottom:4px;">${titulo} (${filas.length})</div>
+      <div style="font-size:12px;color:#555;margin:6px 0 4px;">${intro}</div>
+      ${filas.map(render).join('')}
     </div>`;
-  return `<div style="font-family:Arial,sans-serif;max-width:580px;margin:0 auto;">
+  const filaFalta = (f) => `<div style="padding:10px 0;border-bottom:1px solid #eee;">
+      <div style="font-size:13px;font-weight:700;color:#0b1f33;">${esc(f.cliente)} <span style="font-weight:400;color:#666;">· ${esc(f.poliza)}</span></div>
+      <div style="font-size:12.5px;margin-top:2px;"><b style="color:${f.prioritaria ? '#b00000' : '#c77700'};">${f.nunca ? 'Nunca se ha registrado evidencia' : (f.atraso > 0 ? f.atraso + ' día' + (f.atraso === 1 ? '' : 's') + ' de atraso' : 'Vence hoy')}</b> · cada ${f.periodicidad} día${f.periodicidad === 1 ? '' : 's'}${f.atraso > 0 ? ' · debió subirse el ' + f.vencimiento : ''}</div>
+      <div style="font-size:12px;color:#444;margin-top:2px;">${f.ultimaTxt}</div>
+      <div style="font-size:12px;color:#444;margin-top:2px;"><b>Qué hacer:</b> ${f.motivo}</div>
+      ${f.ticketTxt ? `<div style="font-size:12px;color:#0b6;margin-top:2px;">🎫 ${f.ticketTxt}</div>` : ''}
+    </div>`;
+  const filaDet = (f) => `<div style="padding:8px 0;border-bottom:1px solid #eee;font-size:12.5px;"><b style="color:#0b1f33;">${esc(f.cliente)}</b> · ${esc(f.poliza)}<br><span style="color:#444;">${f.detalle}</span></div>`;
+  const total = prioritarias.length + faltan.length;
+  return `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;">
     <div style="background:#0b1f33;color:#fff;padding:18px 20px;border-radius:8px 8px 0 0;">
-      <div style="font-size:16px;font-weight:700;">${titulo}</div>
-      <div style="font-size:12px;opacity:0.8;margin-top:2px;">Evidencia de Resguardo — Innovaci OS</div>
+      <div style="font-size:17px;font-weight:700;">Resguardos — revisión del día</div>
+      <div style="font-size:12px;opacity:0.8;margin-top:2px;">${esc(fechaTxt)} · Innovaci OS</div>
     </div>
-    <div style="border:1px solid #eee;border-top:none;padding:18px 20px;border-radius:0 0 8px 8px;">
-      ${filasVencidas && filasVencidas.length ? `
-        <div style="font-size:13px;color:#b00000;font-weight:700;margin-bottom:6px;">${introVencidas}</div>
-        ${filasVencidas.map(fila).join('')}
-      ` : ''}
-      ${filas && filas.length ? `
-        <div style="font-size:13px;color:#333;margin:${filasVencidas && filasVencidas.length ? '16px' : '0'} 0 10px;">${intro}</div>
-        ${filas.map(fila).join('')}
-      ` : ''}
+    <div style="border:1px solid #eee;border-top:none;padding:16px 20px 20px;border-radius:0 0 8px 8px;">
+      <table role="presentation" width="100%" style="border-collapse:collapse;"><tr>
+        ${chip(prioritarias.length, 'PRIORITARIAS', prioritarias.length ? '#fdeaea' : '#f1f3f5', prioritarias.length ? '#b00000' : '#777')}
+        ${chip(faltan.length, 'Falta evidencia', faltan.length ? '#fff4e0' : '#f1f3f5', faltan.length ? '#c77700' : '#777')}
+        ${chip(detectadas.length, 'Evidencia detectada', detectadas.length ? '#e6f7ee' : '#f1f3f5', detectadas.length ? '#0a7a3d' : '#777')}
+        ${chip(alCorriente.length, 'Al corriente', '#f1f3f5', '#444')}
+      </tr></table>
+      ${total === 0 ? '<div style="margin-top:16px;font-size:13px;color:#0a7a3d;font-weight:700;">✅ Todas las pólizas de resguardo tienen su evidencia al corriente. No hay nada pendiente hoy.</div>' : ''}
+      ${bloque('🔴 PRIORITARIAS — atender hoy', '#b00000', `Llevan ${DIAS_PRIORITARIA} días o más sin evidencia, o nunca se ha registrado ninguna.`, prioritarias, filaFalta)}
+      ${bloque('🟠 FALTA EVIDENCIA — revisar', '#c77700', 'Ya les toca evidencia del periodo vigente y todavía no se registra.', faltan, filaFalta)}
+      ${bloque('🟢 EVIDENCIA DETECTADA — últimas 24 horas', '#0a7a3d', 'Estas pólizas quedaron cubiertas (Dropbox o subida a mano); no requieren acción.', detectadas, filaDet)}
+      ${bloque('✅ AL CORRIENTE — próxima evidencia en 3 días o menos', '#444', 'Solo para tenerlas en el radar.', alCorriente, filaDet)}
+      ${sinPeriodicidad.length ? `<div style="margin-top:20px;font-size:12px;color:#777;">⚠ ${sinPeriodicidad.length} póliza(s) de resguardo sin periodicidad o fecha de inicio capturada (no se pueden evaluar): ${sinPeriodicidad.map(esc).join(', ')}.</div>` : ''}
+      <div style="margin-top:22px;font-size:11px;color:#888;">Se envía todos los días a las 7:00 a. m. Entra a Innovaci OS → Operaciones para subir evidencia o configurar la carpeta de Dropbox.</div>
     </div>
   </div>`;
 }
@@ -284,6 +307,7 @@ export default async function handler(req, res) {
     // La lógica de tickets para Soporte no cambia (se crea uno cuando la evidencia está vencida y no hay uno abierto).
     const filasFalta = [];
     const filasAlCorriente = [];
+    const sinPeriodicidad = [];
     let ticketsCreados = 0;
     let comentariosCrm = 0;
 
@@ -292,7 +316,7 @@ export default async function handler(req, res) {
         || (p.servidor_cloud_id && servidorMap[p.servidor_cloud_id]?.productos_servidores?.specs
           ? parsearPeriodicidadBackupSpecs(servidorMap[p.servidor_cloud_id].productos_servidores.specs)
           : null);
-      if (!periodicidadDias || !p.fecha_inicio) continue; // sin datos suficientes para calcular — se deja visible en el detalle de la póliza, no se puede alertar sin esto
+      if (!periodicidadDias || !p.fecha_inicio) { sinPeriodicidad.push(p.cliente_nombre); continue; } // sin datos suficientes para calcular
 
       const ultimaEvidencia = ultimaEvidenciaPorPoliza[p.id] || null;
       const periodoActual = calcularPeriodoActual(p.fecha_inicio, periodicidadDias, hoy);
@@ -354,33 +378,55 @@ export default async function handler(req, res) {
         const cuando = diasParaVencer < 0
           ? `Debió subirse el ${proximoVencimiento} (cada ${periodicidadDias} día${periodicidadDias === 1 ? '' : 's'}).`
           : `Vence hoy (cada ${periodicidadDias} día${periodicidadDias === 1 ? '' : 's'}).`;
+        const atraso = diasParaVencer < 0 ? -diasParaVencer : 0;
+        const nunca = !ultimaEvidencia;
         filasFalta.push({
           cliente: p.cliente_nombre,
-          detalle: `${nombrePoliza} — ${cuando} ${ultimaTxt}<br><b>Motivo:</b> ${motivo}${ticketTxt ? '<br>' + ticketTxt : ''}`,
+          poliza: nombrePoliza,
+          atraso,
+          nunca,
+          periodicidad: periodicidadDias,
+          vencimiento: proximoVencimiento,
+          ultimaTxt,
+          motivo,
+          ticketTxt,
+          prioritaria: atraso >= DIAS_PRIORITARIA || (nunca && atraso > 0),
         });
       } else if (diasParaVencer >= 0 && diasParaVencer <= 3) {
         filasAlCorriente.push({
           cliente: p.cliente_nombre,
-          detalle: `${nombrePoliza} — evidencia del periodo ya registrada. ${ultimaTxt} Próxima evidencia: <b>${proximoVencimiento}</b> (en ${diasParaVencer} día${diasParaVencer === 1 ? '' : 's'}).`,
+          poliza: nombrePoliza,
+          detalle: `${ultimaTxt} Próxima evidencia: <b>${proximoVencimiento}</b> (en ${diasParaVencer} día${diasParaVencer === 1 ? '' : 's'}).`,
         });
       }
     }
 
+    // Evidencias registradas en las últimas 24 h (Dropbox o a mano): son las "detectadas".
+    const hace24h = Date.now() - 26 * 60 * 60 * 1000;
+    const polizaPorId = {}; polizas.forEach((p) => { polizaPorId[p.id] = p; });
+    const filasDetectadas = evidencias
+      .filter((e) => e.fecha_subida && new Date(e.fecha_subida).getTime() >= hace24h && polizaPorId[e.cliente_poliza_id])
+      .map((e) => {
+        const p = polizaPorId[e.cliente_poliza_id];
+        return { cliente: p.cliente_nombre, poliza: p.polizas_catalogo?.nombre || 'Resguardo', detalle: `Periodo ${e.periodo_fecha} · ${e.origen === 'dropbox' ? 'detectada automáticamente en Dropbox' : 'subida a mano'}.` };
+      });
+
+    const orden = (a, b) => (b.nunca - a.nunca) || (b.atraso - a.atraso);
+    const prioritarias = filasFalta.filter((f) => f.prioritaria).sort(orden);
+    const faltan = filasFalta.filter((f) => !f.prioritaria).sort(orden);
+
+    // Se envía TODOS los días (aunque todo esté al corriente) para que se sepa que la revisión corrió.
+    const fechaTxt = new Date(hoy + 'T12:00:00').toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
     let correoEnviado = false;
-    if (filasFalta.length || filasAlCorriente.length) {
+    let errorCorreo = null;
+    try {
       await enviarCorreo({
-        to: ADMIN_EMAIL,
-        subject: `🗓 Resguardo — ${filasFalta.length ? `🔴 ${filasFalta.length} sin evidencia` : '✅ todas con evidencia'}${filasAlCorriente.length ? `, ${filasAlCorriente.length} al corriente (próxima en ≤3 días)` : ''}`,
-        html: plantillaAviso({
-          titulo: 'Evidencia de resguardo',
-          introVencidas: `🔴 FALTA EVIDENCIA (${filasFalta.length}) — estas pólizas no tienen la evidencia del periodo vigente:`,
-          filasVencidas: filasFalta,
-          intro: `✅ AL CORRIENTE (${filasAlCorriente.length}) — ya tienen su evidencia; solo se avisa cuándo toca la siguiente:`,
-          filas: filasAlCorriente,
-        }),
+        to: DESTINATARIOS,
+        subject: `🗓 Resguardos ${hoy} — ${prioritarias.length ? `🔴 ${prioritarias.length} prioritaria${prioritarias.length === 1 ? '' : 's'}` : '🔴 0 prioritarias'} · ${faltan.length} sin evidencia · ${filasDetectadas.length} detectada${filasDetectadas.length === 1 ? '' : 's'}`,
+        html: plantillaAviso({ fechaTxt, prioritarias, faltan, detectadas: filasDetectadas, alCorriente: filasAlCorriente, sinPeriodicidad }),
       });
       correoEnviado = true;
-    }
+    } catch (e) { errorCorreo = e.message; console.error('resguardo correo', e); }
 
     res.status(200).json({
       ok: true,
@@ -389,6 +435,10 @@ export default async function handler(req, res) {
       tickets_creados: ticketsCreados,
       comentarios_crm: comentariosCrm,
       correo_enviado: correoEnviado,
+      error_correo: errorCorreo,
+      destinatarios: DESTINATARIOS.length,
+      prioritarias: prioritarias.length,
+      sin_evidencia: faltan.length,
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message || 'Error desconocido.' });
