@@ -272,6 +272,10 @@ export default async function handler(req, res) {
       `resguardo_evidencias?cliente_poliza_id=in.(${polizaIds.join(',')})&select=cliente_poliza_id,periodo_fecha`
     );
     const periodosYaCubiertos = new Set(evidencias.map((e) => `${e.cliente_poliza_id}|${e.periodo_fecha}`));
+    // 2026-11-17: si la póliza además tiene carpetas de Google Drive (resguardo_origenes), el periodo lo cierra
+    // api/cron/drive-resguardo-check.js cuando TODAS las carpetas (Dropbox + Drive) tienen archivo del periodo.
+    let conOrigenes = new Set();
+    try { conOrigenes = new Set((await sbGet(`resguardo_origenes?activo=eq.true&select=cliente_poliza_id`)).map((o) => o.cliente_poliza_id)); } catch (_) { /* tabla aún no creada */ }
 
     let accessToken = null;
     let registrosCreados = 0;
@@ -308,7 +312,9 @@ export default async function handler(req, res) {
         if (yaCubierto) { detalle.push({ cliente: p.cliente_nombre, resultado: 'periodo ya cubierto', ultimo: masReciente.path_display }); continue; }
 
         const fechaArchivo = fechaMexico(masReciente.server_modified);
-        if (fechaArchivo >= periodoActual) {
+        if (fechaArchivo >= periodoActual && conOrigenes.has(p.id)) {
+          detalle.push({ cliente: p.cliente_nombre, resultado: 'Dropbox al corriente; falta validar las carpetas de Drive', archivo: masReciente.name, fecha: fechaArchivo });
+        } else if (fechaArchivo >= periodoActual) {
           let crmComentarioId = null;
           if (p.numero_proyecto_crm) {
             crmComentarioId = await comentarEnProyectoCrm(

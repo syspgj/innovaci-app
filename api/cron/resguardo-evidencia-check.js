@@ -413,7 +413,7 @@ export default async function handler(req, res) {
       .filter((e) => e.fecha_subida && new Date(e.fecha_subida).getTime() >= hace24h && polizaPorId[e.cliente_poliza_id])
       .map((e) => {
         const p = polizaPorId[e.cliente_poliza_id];
-        return { id: p.id, cliente: p.cliente_nombre, poliza: p.polizas_catalogo?.nombre || 'Resguardo', detalle: `Periodo ${e.periodo_fecha} · ${e.origen === 'dropbox' ? 'detectada automáticamente en Dropbox' : 'subida a mano'}.` };
+        return { id: p.id, cliente: p.cliente_nombre, poliza: p.polizas_catalogo?.nombre || 'Resguardo', detalle: `Periodo ${e.periodo_fecha} · ${e.origen === 'dropbox' ? 'detectada automáticamente en Dropbox' : (e.origen === 'drive' ? 'detectada automáticamente en Google Drive (todas las tareas de respaldo)' : 'subida a mano')}.` };
       });
 
     const orden = (a, b) => (b.nunca - a.nunca) || (b.atraso - a.atraso);
