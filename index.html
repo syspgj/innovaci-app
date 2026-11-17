@@ -9622,23 +9622,125 @@ function catProyItems(tipo){
   const me=((typeof userProfile!=='undefined'&&userProfile&&userProfile.nombre)||'').toLowerCase();
   return (CAT_PROY||[]).filter(c=>c.tipo_servicio===tipo&&(!c.solo_para||me.includes(c.solo_para.toLowerCase())));
 }
-function catProyPintar(actual){
-  const tipo=document.getElementById('pTipo')?.value, sel=document.getElementById('pProductoSel'), inp=document.getElementById('pProducto');
+// Jp, 2026-11-17: en estos tipos NO se puede escribir a mano: solo se elige del catálogo
+// (cursos en vivo con generación vigente en Academia, cursos 24/7 y membresías) para no crear productos de más.
+const TIPOS_SOLO_CATALOGO=['Curso o Diplomado en Vivo','24/7','Membresías'];
+function catProyLlenar(tipo,sel,inp,actual){
   if(!sel||!inp) return;
+  const soloCat=TIPOS_SOLO_CATALOGO.includes(tipo);
   const items=catProyItems(tipo);
-  if(!items.length){sel.style.display='none'; inp.style.display=''; return;}
+  if(actual==='') inp.value='';
+  if(!items.length){
+    if(soloCat){sel.innerHTML='<option value="">— Sin opciones disponibles (revisa las generaciones vigentes en Academia) —</option>';sel.style.display='';inp.style.display='none';return;}
+    sel.style.display='none'; inp.style.display=''; return;
+  }
   const val=(actual!==undefined?actual:inp.value)||'';
   const grupos=[...new Set(items.map(i=>i.grupo||''))];
   const opt=i=>`<option value="${i.nombre.replace(/"/g,'&quot;')}" ${i.nombre===val?'selected':''}>${i.nombre}${i.etiqueta||''}</option>`;
   const enLista=items.some(i=>i.nombre===val);
   sel.innerHTML='<option value="">— Elige —</option>'+grupos.map(g=>g?`<optgroup label="${g}">${items.filter(i=>(i.grupo||'')===g).map(opt).join('')}</optgroup>`:items.filter(i=>!i.grupo).map(opt).join('')).join('')
-    +(val&&!enLista?`<option value="__otro" selected>Otro: ${val}</option>`:'')+'<option value="__otro">Otro (escribir)…</option>';
-  sel.style.display=''; inp.style.display=(val&&!enLista)?'':'none';
+    +(val&&!enLista?(soloCat?`<option value="__anterior" selected>⚠ ${val} (valor anterior: elige uno de la lista)</option>`:`<option value="__otro" selected>Otro: ${val}</option>`):'')
+    +(soloCat?'':'<option value="__otro">Otro (escribir)…</option>');
+  sel.style.display=''; inp.style.display=(!soloCat&&val&&!enLista)?'':'none';
+}
+function catProyPintar(actual){
+  const tipo=document.getElementById('pTipo')?.value, sel=document.getElementById('pProductoSel'), inp=document.getElementById('pProducto');
+  catProyLlenar(tipo,sel,inp,actual);
 }
 function catProyElegir(){
   const sel=document.getElementById('pProductoSel'), inp=document.getElementById('pProducto');
   if(sel.value==='__otro'){inp.style.display='';inp.focus();return;}
+  if(sel.value==='__anterior') return;
   inp.style.display='none'; inp.value=sel.value; inp.dispatchEvent(new Event('input',{bubbles:true}));
+}
+// ── Partidas adicionales (varios productos/servicios en una misma venta o cotización) ──
+function pipePartidaHtml(pt){
+  pt=pt||{};
+  const st="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;width:100%;box-sizing:border-box;margin-bottom:5px;";
+  return `<div class="pPartida" data-prod="${String(pt.producto||'').replace(/"/g,'&quot;')}" style="border:1px dashed var(--teal);border-radius:8px;padding:9px 11px;margin-top:8px;background:#f8fcfc;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;"><b style="font-size:11px;color:var(--teal);">➕ Otra partida de la misma venta</b><span onclick="this.closest('.pPartida').remove()" style="cursor:pointer;font-size:11px;color:var(--text3);">✕ quitar</span></div>
+    <select class="ptTipo" onchange="pipePartidaPintar(this.closest('.pPartida'),'')" style="${st}">${TIPOS_SERVICIO.map(t=>`<option ${pt.tipo_servicio===t?'selected':''}>${t}</option>`).join('')}</select>
+    <select class="ptSel" onchange="pipePartidaElegir(this.closest('.pPartida'))" style="${st}display:none;"></select>
+    <input class="ptInp" type="text" value="${String(pt.producto||'').replace(/"/g,'&quot;')}" placeholder="Producto o servicio" style="${st}">
+    <input class="ptMonto" type="number" step="0.01" min="0" value="${pt.subtotal||''}" placeholder="Subtotal de esta partida (opcional)" style="${st}margin-bottom:0;">
+  </div>`;
+}
+function pipePartidaPintar(row,actual){ if(row) catProyLlenar(row.querySelector('.ptTipo').value,row.querySelector('.ptSel'),row.querySelector('.ptInp'),actual); }
+function pipePartidaElegir(row){
+  const sel=row.querySelector('.ptSel'), inp=row.querySelector('.ptInp');
+  if(sel.value==='__otro'){inp.style.display='';inp.focus();return;}
+  if(sel.value==='__anterior') return;
+  inp.style.display='none'; inp.value=sel.value;
+}
+async function pipeAgregarPartida(pt){
+  await catProyCargar();
+  const lista=document.getElementById('pPartidasLista'); if(!lista) return null;
+  lista.insertAdjacentHTML('beforeend',pipePartidaHtml(pt));
+  const row=lista.lastElementChild; pipePartidaPintar(row,pt&&pt.producto!==undefined?pt.producto:undefined);
+  return row;
+}
+function pipeRepintarPartidas(){ document.querySelectorAll('#pPartidasLista .pPartida').forEach(r=>pipePartidaPintar(r,r.dataset.prod||'')); }
+function pipeLeerPartidas(){
+  return [...document.querySelectorAll('#pPartidasLista .pPartida')].map(r=>({
+    tipo_servicio:r.querySelector('.ptTipo').value,
+    producto:(r.querySelector('.ptInp').value||'').trim(),
+    subtotal:parseFloat(r.querySelector('.ptMonto').value)||null,
+  })).filter(x=>x.producto);
+}
+function pipeValidarCatalogo(prod,orig){
+  const chk=(tipo,producto,esNuevo)=>{
+    if(!TIPOS_SOLO_CATALOGO.includes(tipo)) return '';
+    if(!producto) return `En "${tipo}" debes elegir el servicio de la lista.`;
+    if(esNuevo&&!catProyItems(tipo).some(i=>i.nombre===producto)) return `"${producto}" no está en el catálogo de ${tipo}. Elígelo de la lista (si no aparece, pídele a Academia/Dirección que lo habilite).`;
+    return '';
+  };
+  const e0=chk(prod.tipo_servicio,prod.producto,!orig||orig.producto!==prod.producto||orig.tipo_servicio!==prod.tipo_servicio);
+  if(e0) return e0;
+  for(const x of (prod.partidas||[])){const e=chk(x.tipo_servicio,x.producto,true);if(e) return e;}
+  return '';
+}
+function pipeNrm(t){return String(t||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\b20\d\d\b/g,' ').replace(/[^a-z0-9]+/g,' ').trim();}
+function pipeMatchCatalogo(desc){
+  const d=' '+pipeNrm(desc)+' ';
+  let mejor=null,lm=0;
+  (CAT_PROY||[]).forEach(c=>{const k=pipeNrm(c.nombre);if(k.length>6&&d.includes(' '+k+' ')&&k.length>lm){mejor=c;lm=k.length;}});
+  return mejor;
+}
+async function pipeLeerCotizacion(input){
+  const f=input.files?.[0]; const est=document.getElementById('pCotizEstado'); if(!f||!est) return;
+  window._pipeCotizFile=f;
+  est.style.color='var(--teal)'; est.textContent='Leyendo la cotización…';
+  try{
+    await catProyCargar();
+    const b64=await new Promise((ok,ko)=>{const rd=new FileReader();rd.onload=()=>ok(String(rd.result).split(',')[1]||'');rd.onerror=ko;rd.readAsDataURL(f);});
+    const {data:sess}=await sb.auth.getSession();
+    const resp=await fetch('/api/solicitud-leer-cotizacion',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({archivoBase64:b64,mediaType:f.type||'application/pdf'})});
+    let d={};try{d=await resp.json();}catch(e){}
+    if(!resp.ok||!d.ok){est.style.color='#c0392b';est.textContent='No se pudo leer ('+(d.error||resp.status)+'). Captura los datos a mano; el archivo se adjunta igual al guardar.';return;}
+    const x=d.datos||{}; const partes=[];
+    const setv=(id,v)=>{const e=document.getElementById(id);if(e&&v!=null&&v!==''){e.value=v;return true;}return false;};
+    if(x.total&&setv('pMonto',x.total)) partes.push('monto '+fmt(x.total));
+    const sub=x.subtotal||(x.total?Math.round(x.total/1.16*100)/100:null);
+    if(sub&&setv('pSubtotal',sub)) partes.push('subtotal');
+    const cli=document.getElementById('pCliente');
+    if(x.cliente&&cli&&!cli.value.trim()){cli.value=x.cliente;try{pipeFiltrarCuentasModal();}catch(e){} partes.push('cliente (elige la cuenta de la lista)');}
+    const ps=(x.partidas&&x.partidas.length)?x.partidas:(x.concepto?x.concepto.split(/\s\+\s/).map(t=>({descripcion:t})):[]);
+    const sinMatch=[]; let primera=true; const lista=document.getElementById('pPartidasLista'); if(lista) lista.innerHTML='';
+    for(const pt of ps){
+      const m=pipeMatchCatalogo(pt.descripcion);
+      if(primera){
+        primera=false;
+        if(m){const tp=document.getElementById('pTipo'); if(tp) tp.value=m.tipo_servicio; catProyPintar(m.nombre); const inp=document.getElementById('pProducto'); if(inp) inp.value=m.nombre;}
+        else sinMatch.push(pt.descripcion);
+        continue;
+      }
+      if(m) await pipeAgregarPartida({tipo_servicio:m.tipo_servicio,producto:m.nombre,subtotal:pt.importe||null});
+      else { sinMatch.push(pt.descripcion); await pipeAgregarPartida({tipo_servicio:TIPOS_SERVICIO[0],producto:'',subtotal:pt.importe||null}); }
+    }
+    if(ps.length) partes.push(ps.length+' partida'+(ps.length>1?'s':''));
+    est.style.color='var(--text2)';
+    est.innerHTML=(partes.length?'✅ Leí: '+partes.join(', ')+'. ':'No encontré datos claros. ')+(sinMatch.length?`<br><span style="color:#B45309;">⚠ Elige del catálogo el producto de: ${sinMatch.map(t=>solEsc(t)).join(' · ')}</span>`:'')+'<br>Revisa todo antes de guardar; la cotización se adjunta a la negociación al guardar.';
+  }catch(e){est.style.color='#c0392b';est.textContent='Error al leer: '+(e?.message||e);}
 }
 const ESTATUS_PIPE=['Prospectando','Evaluando Requerimientos','Valoración con Soporte','Valoración con Dirección','Preparando Propuesta','Cotización enviada','Negociación o Revisión con Cliente','Pausada por Cliente','CAP','Cerrada-Ganada','Cerrada-Perdida'];
 // Mismos nombres que la fase_venta real de Vtiger — así el traspaso a Fase 3
@@ -10038,6 +10140,7 @@ function pipeIntentarCerrarModal(){
 async function agregarFilaPipe(){
   const hoy=todayLocal();
   window._pipeEditOriginal=null;
+  window._pipeCotizFile=null;
   if(!window._cartClientes||!window._cartClientes.length){
     window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente');
   }
@@ -10061,7 +10164,8 @@ async function editarFilaPipe(id){
     const {data:opp}=await sb.from('oportunidades_crm').select('crm_folio,crm_potentialid,fecha_creacion_crm').eq('id',r.oportunidad_crm_id).maybeSingle();
     if(opp) r.oportunidades_crm=opp;
   }
-  window._pipeEditOriginal={estatus:r.estatus,probabilidad:r.probabilidad,oportunidad_crm_id:r.oportunidad_crm_id};
+  window._pipeEditOriginal={estatus:r.estatus,probabilidad:r.probabilidad,oportunidad_crm_id:r.oportunidad_crm_id,tipo_servicio:r.tipo_servicio,producto:r.producto};
+  window._pipeCotizFile=null;
   if(!window._cartClientes||!window._cartClientes.length){
     window._cartClientes=await carteraFetchTodosClientes('id,razon_social,rfc,num_cliente');
   }
@@ -10095,6 +10199,11 @@ function modalPipeHTML(r,hoy){
     <input type="hidden" id="pipeId" value="${v.id||''}">
     <div class="pipe-2col"><div class="pipe-col-izq">
     <div class="form-grid fg3" style="gap:10px;">
+      <div class="form-field" style="grid-column:1/-1;background:#f3fafa;border:1px solid #9fd3d0;border-radius:8px;padding:10px 12px;">
+        <label>📎 Cotización (PDF o imagen) <span style="font-weight:400;color:var(--text3);">— la app la lee y llena monto, subtotal, cliente y partidas</span></label>
+        <input type="file" id="pCotizArchivo" accept="application/pdf,image/*" onchange="pipeLeerCotizacion(this)" style="font-size:12px;">
+        <div id="pCotizEstado" style="font-size:11px;margin-top:4px;color:var(--text3);">Opcional. Si la subes, se guarda también como documento de la negociación.</div>
+      </div>
       <div class="form-field" style="grid-column:1/-1;">
         <label>Tipo de servicio</label>
         <select id="pTipo" onchange="catProyPintar('')" style="padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;">
@@ -10105,8 +10214,11 @@ function modalPipeHTML(r,hoy){
       <div class="form-field" style="grid-column:1/-1;">
         <label>Servicio / Póliza</label>
         <select id="pProductoSel" onchange="catProyElegir()" style="display:none;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;width:100%;margin-bottom:6px;"></select>
-        <input type="text" id="pProducto" value="${v.producto||''}" placeholder="Ej. Póliza Infinito · Curso Empresarial · Servidor Cloud…">
-        <img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="display:none" onload="catProyCargar().then(()=>catProyPintar())">
+        <input type="text" id="pProducto" value="${v.producto||''}" placeholder="Ej. Póliza Infinito · Curso Empresarial · Servidor Cloud…" ${TIPOS_SOLO_CATALOGO.includes(v.tipo_servicio||'')?'style="display:none"':''}>
+        <img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="display:none" onload="catProyCargar().then(()=>{catProyPintar();pipeRepintarPartidas();})">
+        <div id="pPartidasLista">${(Array.isArray(v.partidas)?v.partidas:[]).map(pipePartidaHtml).join('')}</div>
+        <button type="button" onclick="pipeAgregarPartida()" style="margin-top:8px;background:#fff;border:1px dashed var(--teal);color:var(--teal);border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;">➕ Agregar otra partida (otro producto o servicio en la misma venta)</button>
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;">Si en una misma cotización vendes 2 o más cosas (p. ej. un combo y otro curso), agrega una partida por cada una. Los cursos en vivo, 24/7 y membresías solo se eligen del catálogo.</div>
       </div>
       <div class="form-field" style="grid-column:1/-1;">
         <label>Cliente</label>
@@ -10407,6 +10519,8 @@ async function _guardarFilaPipeInterno(irASiguiente){
     // no sobrescribir en silencio el valor histórico que ya tuviera la fila.
   };
   if(prospectoAppId) payload.prospecto_app_id=prospectoAppId;
+  payload.partidas=pipeLeerPartidas();
+  { const errCat=pipeValidarCatalogo({tipo_servicio:payload.tipo_servicio,producto:payload.producto,partidas:payload.partidas},window._pipeEditOriginal&&id?window._pipeEditOriginal:null); if(errCat){alert(errCat);return;} }
   // Motivo obligatorio (Cerrada-Perdida / Pausada / Valoración con Dirección)
   const orig0=window._pipeEditOriginal;
   let motivoInfo=null;
@@ -10425,6 +10539,8 @@ async function _guardarFilaPipeInterno(irASiguiente){
   let error;
   if(id){
     ({error}=await sb.from('pipeline_vendedor').update(payload).eq('id',id));
+    if(error&&/partidas/.test(error.message||'')){ delete payload.partidas; ({error}=await sb.from('pipeline_vendedor').update(payload).eq('id',id)); if(!error) uiToast('Guardado, pero falta correr pipeline_partidas.sql para guardar las partidas adicionales',false); }
+    if(!error&&window._pipeCotizFile){ try{ await subirDocumentoAdjuntoActividad('oportunidad',id,window._pipeCotizFile); }catch(e){console.error('adjuntar cotización',e);} window._pipeCotizFile=null; }
     // Fase 3: si esta fila está ligada a una Oportunidad real del CRM y el
     // vendedor cambió el estatus o la probabilidad, se refleja de inmediato
     // en Vtiger. Proyección siempre gana — no se pregunta, se sobreescribe.
@@ -10464,9 +10580,11 @@ async function _guardarFilaPipeInterno(irASiguiente){
       nuevaFila=r.data;errIns=r.error;
     } else {
       ({data:nuevaFila,error:errIns}=await sb.from('pipeline_vendedor').insert(payload).select().single());
+      if(errIns&&/partidas/.test(errIns.message||'')){ delete payload.partidas; ({data:nuevaFila,error:errIns}=await sb.from('pipeline_vendedor').insert(payload).select().single()); if(!errIns) uiToast('Guardado, pero falta correr pipeline_partidas.sql para guardar las partidas adicionales',false); }
     }
     error=errIns;
     if(nuevaFila) filaIdGuardada=nuevaFila.id;
+    if(nuevaFila&&window._pipeCotizFile){ try{ await subirDocumentoAdjuntoActividad('oportunidad',nuevaFila.id,window._pipeCotizFile); }catch(e){console.error('adjuntar cotización',e);} window._pipeCotizFile=null; }
     // Fase 4: fila NUEVA ligada a una cuenta real -> crear la Oportunidad
     // correspondiente en el CRM (nunca para texto libre, solo con cuenta).
     if(!error&&cuentaId&&nuevaFila){
@@ -33600,6 +33718,21 @@ document.addEventListener('paste',e=>{
   const it=[...(e.clipboardData?.items||[])].find(x=>x.kind==='file'&&/^image\//.test(x.type));
   if(it){e.preventDefault();solComprobanteSet(it.getAsFile());}
 });
+// Jp, 2026-11-17: una venta puede traer 2 o más cursos (p. ej. combo de talleres + curso 24/7). Se exige una generación por curso.
+function solNrmCurso(t){return String(t||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\b20\d\d\b/g,' ').replace(/[^a-z0-9]+/g,' ').trim();}
+function solCursos247EnConcepto(concepto){
+  const c=' '+solNrmCurso(concepto)+' ';
+  return (CAT_PROY||[]).filter(x=>x.tipo_servicio==='24/7'&&!/extensi[oó]n de pr[aá]cticas/i.test(x.nombre)).map(x=>x.nombre).filter(n=>{const k=solNrmCurso(n);return k.length>8&&c.includes(' '+k+' ');});
+}
+function solMinGeneraciones(concepto,tipo){
+  const combo=solEsCombo(concepto);
+  const en24=solCursos247EnConcepto(concepto);
+  const porTexto=(combo?2:(en24.length&&!/AGUINALDO|CIERRE|TALLER/i.test(concepto||'')?0:1))+en24.length;
+  const ex=(window._sfPipe&&Array.isArray(window._sfPipe.partidas))?window._sfPipe.partidas.filter(x=>x.tipo_servicio==='Curso o Diplomado en Vivo'||x.tipo_servicio==='24/7'):[];
+  const mainCurso=['Curso o Diplomado en Vivo','24/7'].includes(window._sfPipe?.tipo_servicio||tipo||'');
+  const porPartidas=ex.length?((mainCurso?(combo?2:1):0)+ex.length):0;
+  return Math.max(1,porTexto,porPartidas);
+}
 function solAcadHtml(p,ac){
   ac=ac||{};
   const as=(ac.asistentes&&ac.asistentes.length)?ac.asistentes:[{}];
@@ -33646,8 +33779,8 @@ function solAcadValidar(ac,concepto,tipo){
   if(mal) return 'Cada asistente necesita nombre, correo y teléfono.';
   const esVivo=tipo?tipo==='Curso o Diplomado en Vivo':/AGUINALDO|CIERRE|TALLER|COMBO/i.test(concepto||'');
   const hayGens=(window._solGens||[]).some(g=>g.__vig);
-  const min=solEsCombo(concepto)?2:1;
-  if(hayGens&&ac.generaciones.length<min) return min>1?'Es el combo: deben ir las dos generaciones (Aguinaldo y Cierre de Año).':(esVivo?'Marca la generación (fecha) en la que entrará el cliente. Es obligatorio en cursos y talleres en vivo.':'Marca la generación del curso 24/7 al que entrará el cliente.');
+  const min=solMinGeneraciones(concepto,tipo);
+  if(hayGens&&ac.generaciones.length<min) return min>1?(solEsCombo(concepto)&&min===2?'Es el combo: deben ir las dos generaciones (Aguinaldo y Cierre de Año).':`Esta venta incluye ${min} cursos/talleres (el combo cuenta como 2${solCursos247EnConcepto(concepto).length?'; también lleva: '+solCursos247EnConcepto(concepto).join(', '):''}). Marca una generación por cada uno (te faltan ${min-ac.generaciones.length}).`):(esVivo?'Marca la generación (fecha) en la que entrará el cliente. Es obligatorio en cursos y talleres en vivo.':'Marca la generación del curso 24/7 al que entrará el cliente.');
   if(!hayGens&&esVivo&&!ac.fecha_texto) return 'Indica la FECHA a la que entrará el cliente (no hay generaciones vigentes en Academia para elegir).';
   const cursos=ac.generaciones.map(g=>g.curso).filter(Boolean);
   if(new Set(cursos).size<cursos.length) return 'Marcaste dos fechas del mismo taller; el cliente entra solo a una. Deja una sola generación por taller.';
@@ -33932,11 +34065,15 @@ function solAplicarNegociacion(n){
   window._sfPipe=n;
   solDocsDePipeline(n.id);
   const set=(id,v)=>{const el=document.getElementById(id);if(el&&v!=null&&v!=='')el.value=v;};
-  set('sfConcepto',n.producto);set('sfTotal',n.monto_total);
+  { const extras=Array.isArray(n.partidas)?n.partidas:[];
+    set('sfConcepto',[n.producto,...extras.map(x=>x.producto)].filter(Boolean).join(' + ')); }
+  set('sfTotal',n.monto_total);
   { // Jp, 2026-11-14: el tipo de la negociación pasa a la solicitud; si es curso en vivo/24-7 se exige alumno y generación
     const ts=document.getElementById('sfTipoServ');
     if(ts){
-      if(n.tipo_servicio&&[...ts.options].some(o=>o.value===n.tipo_servicio)) ts.value=n.tipo_servicio;
+      const tiposN=[n.tipo_servicio,...(Array.isArray(n.partidas)?n.partidas:[]).map(x=>x.tipo_servicio)];
+      const tipoElegido=tiposN.find(t=>t==='Curso o Diplomado en Vivo')||tiposN.find(t=>t==='24/7')||n.tipo_servicio;
+      if(tipoElegido&&[...ts.options].some(o=>o.value===tipoElegido)) ts.value=tipoElegido;
       else if(!ts.value) ts.value=solTipoDeConcepto(n.producto)||'';
       solTipoServCambio();
     }
