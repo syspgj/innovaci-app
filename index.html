@@ -1275,17 +1275,51 @@ let academiaGenFiltro={q:'',sistema:'',tipoCurso:'',archivadas:false};
 // me va a aparecer un solo Marco Antonio y que asistió a los dos [cursos]".
 let academiaAsistFiltro={q:''};
 let academiaConstFiltro={q:''};
+// Jp, 2026-11-17: TIPO = qué producto es (diplomado, curso, taller, empresarial) y MODALIDAD = cómo se imparte
+// (en vivo o 24/7). Los valores viejos (diplomado_vip, desde_cero, 24_7 como tipo) se normalizan aquí para que la
+// app funcione antes y después de correr academia_tipos_modalidad_migracion.sql.
+const ACAD_TIPOS=[['diplomado','Diplomado'],['curso','Curso'],['taller','Taller de especialización'],['empresarial','Curso empresarial (en la empresa)']];
+const ACAD_MODALIDADES=[['en_vivo','En vivo'],['24_7','24/7 (a tu ritmo)']];
+function academiaTipoNorm(t){return ({diplomado_vip:'diplomado',desde_cero:'curso','24_7':'taller'})[t]||t;}
+function academiaSelPares(id,pares,val,extra){return `<select id="${id}" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;" ${extra||''}>${pares.map(o=>`<option value="${o[0]}"${o[0]===val?' selected':''}>${o[1]}</option>`).join('')}</select>`;}
+// Modalidad 24/7: la fecha de fin es indefinida (hasta que arranque la siguiente edición en vivo): se bloquea y se guarda vacía.
+function academiaModalidadFin(prefix,modalidadId){
+  const fin=document.getElementById(prefix+'FechaFin'); if(!fin) return;
+  const es=document.getElementById(modalidadId)?.value==='24_7';
+  fin.disabled=es; if(es) fin.value='';
+  const n=document.getElementById(prefix+'FechaFinNota'); if(n) n.style.display=es?'block':'none';
+}
+function academiaEmpresaToggle(prefix,tipo,visibleExtra){
+  const b=document.getElementById(prefix+'EmpresaBox'); if(b) b.style.display=(academiaTipoNorm(tipo)==='empresarial'&&visibleExtra!==false)?'block':'none';
+}
+function academiaBloqueEmpresa(prefix,clienteCartera,g){
+  g=g||{};const q=v=>String(v==null?'':v).replace(/"/g,'&quot;');
+  return `<div style="background:rgba(0,169,157,0.06);border:1px solid var(--teal);border-radius:8px;padding:12px;margin-bottom:12px;">
+    <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">🏢 DATOS DE LA EMPRESA Y DEL TITULAR (portal del cliente)</div>
+    ${academiaBloqueClienteCartera(prefix,clienteCartera,g.cliente_nombre||'')}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;">
+      ${fld('Nombre del titular',inp(prefix+'TitNombre','text','Ej. Arturo Pérez',q(g.titular_nombre)))}
+      ${fld('Correo del titular',inp(prefix+'TitCorreo','email','titular@empresa.com',q(g.titular_correo)))}
+    </div>
+    <div style="margin-top:8px;max-width:50%;">${fld('Teléfono del titular',inp(prefix+'TitTel','tel','Ej. 722 123 4567',q(g.titular_telefono)))}</div>
+    <div style="font-size:10px;color:var(--text3);margin-top:6px;">Con estos datos el titular entra al portal donde ve el avance del curso de su empresa.</div>
+  </div>`;
+}
+function academiaTitularLeer(prefix){
+  const v=i=>document.getElementById(prefix+i)?.value?.trim()||null;
+  return {titular_nombre:v('TitNombre'),titular_correo:v('TitCorreo'),titular_telefono:v('TitTel')};
+}
 // Categorías combinadas de curso para el filtro de Generaciones (Jp, Lote 4
 // punto 29): tipo/modalidad por separado no correspondían a como Jp piensa
 // los cursos ("diplomado en vivo", "diplomado 24/7", etc.) — se combinan
 // aquí en las 6 categorías que dio de ejemplo.
 const ACADEMIA_CATEGORIAS_CURSO=[
   {key:'empresarial', label:'Cursos empresariales', match:c=>c?.tipo==='empresarial'},
-  {key:'diplomado_vivo', label:'Diplomados en vivo', match:c=>(c?.tipo==='diplomado_vip')&&c?.modalidad==='en_vivo'},
-  {key:'diplomado_247', label:'Diplomados 24/7', match:c=>(c?.tipo==='diplomado_vip'||c?.tipo==='24_7')&&c?.modalidad!=='en_vivo'},
-  {key:'taller_vivo', label:'Talleres de especialización en vivo', match:c=>c?.tipo==='taller'&&c?.modalidad==='en_vivo'},
-  {key:'taller_247', label:'Talleres de especialización 24/7', match:c=>c?.tipo==='taller'&&c?.modalidad!=='en_vivo'},
-  {key:'desde_cero', label:'Cursos desde cero', match:c=>c?.tipo==='desde_cero'},
+  {key:'diplomado_vivo', label:'Diplomados en vivo', match:c=>academiaTipoNorm(c?.tipo)==='diplomado'&&c?.modalidad==='en_vivo'},
+  {key:'diplomado_247', label:'Diplomados 24/7', match:c=>academiaTipoNorm(c?.tipo)==='diplomado'&&c?.modalidad!=='en_vivo'},
+  {key:'taller_vivo', label:'Talleres de especialización en vivo', match:c=>academiaTipoNorm(c?.tipo)==='taller'&&c?.modalidad==='en_vivo'},
+  {key:'taller_247', label:'Talleres de especialización 24/7', match:c=>academiaTipoNorm(c?.tipo)==='taller'&&c?.modalidad!=='en_vivo'},
+  {key:'desde_cero', label:'Cursos', match:c=>academiaTipoNorm(c?.tipo)==='curso'},
 ];
 function academiaCategoriaCurso(curso){
   return ACADEMIA_CATEGORIAS_CURSO.find(cat=>cat.match(curso))||null;
@@ -2134,20 +2168,20 @@ async function academiaAbrirNuevaGeneracion(){
       <div id="genCursoSistemaWrap" style="margin-bottom:10px;">${fld('Sistema',`<select id="genNuevoCursoSistema" onchange="academiaActualizarClavePreviewGen()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${(sistemas||[]).map(s=>`<option value="${s.clave}" data-codigo="${s.codigo_clave||''}">${s.clave}</option>`).join('')}</select>`)}</div>
       <div style="margin-bottom:10px;">${fld('Nombre del curso',inp('genNuevoCursoNombre','text','Ej. DIPLOMADO SIIGO ASPEL NOI 2026'))}</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px;">
-        ${fld('Tipo',sel('genNuevoCursoTipo',['diplomado_vip','24_7','empresarial','taller','desde_cero'],'',`onchange="academiaActualizarClavePreviewGen()"`))}
-        ${fld('Modalidad',sel('genNuevoCursoModalidad',['en_vivo','24_7','in_company'],'',`onchange="academiaActualizarClavePreviewGen()"`))}
+        ${fld('Tipo',academiaSelPares('genNuevoCursoTipo',ACAD_TIPOS,'diplomado',`onchange="academiaActualizarClavePreviewGen()"`))}
+        ${fld('Modalidad',academiaSelPares('genNuevoCursoModalidad',ACAD_MODALIDADES,'en_vivo',`onchange="academiaActualizarClavePreviewGen()"`))}
       </div>
       <div style="margin-bottom:8px;">${fld('Duración (horas)',inp('genNuevoCursoHoras','number','',''))}</div>
       <div id="genCursoCopiaNota" style="display:none;font-size:11px;color:var(--text3);">Esto va a crear un curso nuevo con estos datos como punto de partida — el curso original que elegiste arriba no se modifica ni se comparte con esta generación.</div>
       <div id="genCursoNuevaNota" style="font-size:11px;color:var(--text3);">Tipo + Modalidad determinan la categoría del filtro "Tipo de curso" en Generaciones.</div>
     </div>
+    <div id="genEmpresaBox" style="display:none;">${academiaBloqueEmpresa('gen',null,{})}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      ${academiaBloqueClienteCartera('gen',null,'')}
       ${fld('Instructor(a) que firma/da seguimiento',academiaSelectFirmante('genFirmante',firmantes,null))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha de inicio',inp('genFechaInicio','date','','',`oninput="academiaActualizarClavePreviewGen()"`))}
-      ${fld('Fecha de fin',inp('genFechaFin','date','','',`onchange="academiaSugerirFechasPracticas('genFechaFin','genFechaLimitePracticas','genFechaLimitePracticasExt')"`))}
+      ${fld('Fecha de fin',inp('genFechaFin','date','','',`onchange="academiaSugerirFechasPracticas('genFechaFin','genFechaLimitePracticas','genFechaLimitePracticasExt')"`)+`<div id="genFechaFinNota" style="display:none;font-size:10px;color:var(--teal);margin-top:3px;">♾ Indefinida: el curso 24/7 sigue abierto hasta que arranque la siguiente edición en vivo.</div>`)}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha de conclusión de prácticas (sugerida: +15 días)',inp('genFechaLimitePracticas','date','','',`oninput="this.dataset.tocado='1'"`))}
@@ -2181,7 +2215,7 @@ function academiaOnCambioCursoSel(selEl){
     notaCopia.style.display='none';
     notaNueva.style.display='block';
     document.getElementById('genNuevoCursoNombre').value='';
-    document.getElementById('genNuevoCursoTipo').value='diplomado_vip';
+    document.getElementById('genNuevoCursoTipo').value='diplomado';
     document.getElementById('genNuevoCursoModalidad').value='en_vivo';
     document.getElementById('genNuevoCursoHoras').value='';
   } else {
@@ -2191,8 +2225,8 @@ function academiaOnCambioCursoSel(selEl){
     notaCopia.style.display='block';
     notaNueva.style.display='none';
     document.getElementById('genNuevoCursoNombre').value=opt.dataset.nombre||'';
-    document.getElementById('genNuevoCursoTipo').value=opt.dataset.tipo||'diplomado_vip';
-    document.getElementById('genNuevoCursoModalidad').value=opt.dataset.modalidad||'en_vivo';
+    document.getElementById('genNuevoCursoTipo').value=academiaTipoNorm(opt.dataset.tipo)||'diplomado';
+    document.getElementById('genNuevoCursoModalidad').value=(opt.dataset.modalidad==='24_7'?'24_7':'en_vivo');
     document.getElementById('genNuevoCursoHoras').value=opt.dataset.horas||'';
   }
   academiaActualizarClavePreviewGen();
@@ -2208,6 +2242,8 @@ function academiaActualizarClavePreviewGen(){
   const tipo=document.getElementById('genNuevoCursoTipo')?.value||'';
   const modalidad=document.getElementById('genNuevoCursoModalidad')?.value||'';
   const fechaInicio=document.getElementById('genFechaInicio')?.value||'';
+  academiaEmpresaToggle('gen',tipo,!!cursoSel?.value);
+  academiaModalidadFin('gen','genNuevoCursoModalidad');
   let sistemaClave='',sistemaCodigo='';
   if(esNuevo){
     const selSistema=document.getElementById('genNuevoCursoSistema');
@@ -2278,6 +2314,7 @@ async function academiaGuardarNuevaGeneracion(){
   // del preview, que pudo quedar desactualizado si algo cambió sin disparar
   // el oninput/onchange correspondiente).
   academiaActualizarClavePreviewGen();
+  { const _c=document.getElementById('genTitCorreo')?.value?.trim(); if(academiaTipoNorm(document.getElementById('genNuevoCursoTipo')?.value)==='empresarial'&&_c&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(_c)){alert('El correo del titular no es válido.');return;} }
   const clave=document.getElementById('genClavePreview')?.value?.trim();
   if(!clave){alert('No se pudo armar la clave automática — revisa que hayas elegido sistema, tipo y modalidad del curso (y el tema/cliente si aplica).');return;}
 
@@ -2291,7 +2328,7 @@ async function academiaGuardarNuevaGeneracion(){
     const {data:nuevoCurso,error:errCurso}=await sb.from('academia_cursos').insert({
       sistema_id:sistema.id,
       nombre,
-      tipo:document.getElementById('genNuevoCursoTipo')?.value||'diplomado_vip',
+      tipo:document.getElementById('genNuevoCursoTipo')?.value||'diplomado',
       modalidad:document.getElementById('genNuevoCursoModalidad')?.value||'en_vivo',
       duracion_horas:parseFloat(document.getElementById('genNuevoCursoHoras')?.value)||null,
     }).select().single();
@@ -2326,13 +2363,14 @@ async function academiaGuardarNuevaGeneracion(){
     curso_id:cursoId,
     clave,
     fecha_inicio:document.getElementById('genFechaInicio')?.value||null,
-    fecha_fin:document.getElementById('genFechaFin')?.value||null,
+    fecha_fin:document.getElementById('genNuevoCursoModalidad')?.value==='24_7'?null:(document.getElementById('genFechaFin')?.value||null),
     sesiones_totales:parseInt(document.getElementById('genSesiones')?.value)||null,
     practicas_totales:parseInt(document.getElementById('genPracticas')?.value)||null,
     fecha_limite_practicas:document.getElementById('genFechaLimitePracticas')?.value||null,
     fecha_limite_practicas_extension:document.getElementById('genFechaLimitePracticasExt')?.value||null,
     cliente_nombre:clienteCartera.cliente_nombre,
     cliente_cartera_id:clienteCartera.cliente_cartera_id,
+    ...(academiaTipoNorm(document.getElementById('genNuevoCursoTipo')?.value)==='empresarial'?academiaTitularLeer('gen'):{}),
     firmante_instructor_id:document.getElementById('genFirmante')?.value||null,
   }).select().single();
   if(error){alert('Error al crear la generación (¿ya existe una con esta clave para este curso?): '+error.message);return;}
@@ -2537,10 +2575,11 @@ function academiaGenerarClaveGeneracion(sistema,tipo,modalidad,{fechaInicio,clie
   const anio2=anio4.slice(-2);
   const mes3=ACADEMIA_MESES3[f.getMonth()+1];
   const es247=modalidad==='24_7';
-  if(tipo==='diplomado_vip'){
+  tipo=academiaTipoNorm(tipo);
+  if(tipo==='diplomado'){
     return es247?`${sis}-D247-${anio4}`:`${sis}-DG${mes3}${anio2}`;
   }
-  if(tipo==='desde_cero'||tipo==='24_7'){
+  if(tipo==='curso'){
     return es247?`${sis}-0247-${anio4}`:`${sis}-0-${anio4}`;
   }
   if(tipo==='taller'){
@@ -2592,9 +2631,10 @@ async function academiaAbrirEditarGeneracion(generacionId){
     <div style="font-size:11px;font-weight:700;color:var(--teal);margin-bottom:8px;">DATOS DEL CURSO</div>
     <div style="margin-bottom:10px;">${fld('Nombre del curso / generación',inp('egNombreCurso','text','',c.nombre||''))}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      ${fld('Tipo',sel('egTipo',['diplomado_vip','24_7','empresarial','taller','desde_cero'],c.tipo))}
-      ${fld('Modalidad',sel('egModalidad',['en_vivo','24_7','in_company'],c.modalidad))}
+      ${fld('Tipo',academiaSelPares('egTipo',ACAD_TIPOS,academiaTipoNorm(c.tipo),`onchange="academiaEmpresaToggle('eg',this.value)"`))}
+      ${fld('Modalidad',academiaSelPares('egModalidad',ACAD_MODALIDADES,c.modalidad==='24_7'?'24_7':'en_vivo',`onchange="academiaModalidadFin('eg','egModalidad')"`))}
     </div>
+    <div id="egEmpresaBox" style="display:${academiaTipoNorm(c.tipo)==='empresarial'?'block':'none'};">${academiaBloqueEmpresa('eg',g.cliente_cartera||null,g)}</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px;">
       ${fld('Duración (horas)',inp('egHoras','number','',c.duracion_horas??''))}
       ${fld('Número de prácticas',inp('egPracticas','number','',g.practicas_totales??''))}
@@ -2608,12 +2648,11 @@ async function academiaAbrirEditarGeneracion(generacionId){
       ${fld('Sesiones totales',inp('egSesiones','number','',g.sesiones_totales??''))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-      ${academiaBloqueClienteCartera('eg',g.cliente_cartera||null,g.cliente_nombre||'')}
       ${fld('Instructor(a) que firma/da seguimiento',academiaSelectFirmante('egFirmante',firmantes,g.firmante_instructor_id))}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha de inicio',inp('egFechaInicio','date','',g.fecha_inicio||''))}
-      ${fld('Fecha de fin',inp('egFechaFin','date','',g.fecha_fin||'',`onchange="academiaSugerirFechasPracticas('egFechaFin','egFechaLimitePracticas','egFechaLimitePracticasExt')"`))}
+      ${fld('Fecha de fin',inp('egFechaFin','date','',g.fecha_fin||'',`onchange="academiaSugerirFechasPracticas('egFechaFin','egFechaLimitePracticas','egFechaLimitePracticasExt')"`)+`<div id="egFechaFinNota" style="display:none;font-size:10px;color:var(--teal);margin-top:3px;">♾ Indefinida: el curso 24/7 sigue abierto hasta que arranque la siguiente edición en vivo.</div>`)}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
       ${fld('Fecha de conclusión de prácticas (sugerida: +15 días)',inp('egFechaLimitePracticas','date','',g.fecha_limite_practicas||'',`oninput="this.dataset.tocado='1'" ${g.fecha_limite_practicas?`data-tocado="1"`:''}`))}
@@ -2651,6 +2690,7 @@ async function academiaAbrirEditarGeneracion(generacionId){
   // esto, al reabrir el modal se vería como si no hubiera nada ligado aunque
   // sí lo esté (Jp, Lote 28).
   academiaClienteCarteraPrecargar('eg',g.cliente_cartera||null);
+  academiaModalidadFin('eg','egModalidad');
 }
 
 // ── CURSOS EN ODOO (Jp 2026-11-15): liga la generación con uno o varios cursos
@@ -2687,6 +2727,7 @@ function egOdooPintarResultados(){
 }
 
 async function academiaGuardarEditarGeneracion(generacionId,cursoId){
+  { const _c=document.getElementById('egTitCorreo')?.value?.trim(); if(academiaTipoNorm(document.getElementById('egTipo')?.value)==='empresarial'&&_c&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(_c)){alert('El correo del titular no es válido.');return;} }
   const competencias=(document.getElementById('egCompetencias')?.value||'').split('\n').map(s=>s.trim()).filter(Boolean);
   const {error:errCurso}=await sb.from('academia_cursos').update({
     nombre:document.getElementById('egNombreCurso')?.value?.trim(),
@@ -2704,7 +2745,7 @@ async function academiaGuardarEditarGeneracion(generacionId,cursoId){
     // ya no se edita nunca, ni aquí ni al crear (ver academiaGenerarClaveGeneracion).
     sesiones_totales:parseInt(document.getElementById('egSesiones')?.value)||null,
     fecha_inicio:document.getElementById('egFechaInicio')?.value||null,
-    fecha_fin:document.getElementById('egFechaFin')?.value||null,
+    fecha_fin:document.getElementById('egModalidad')?.value==='24_7'?null:(document.getElementById('egFechaFin')?.value||null),
     practicas_totales:parseInt(document.getElementById('egPracticas')?.value)||null,
     archivado_manual:!!document.getElementById('egArchivadoManual')?.checked,
     whatsapp_grupo_url:document.getElementById('egWaUrl')?.value?.trim()||null,
@@ -2715,6 +2756,7 @@ async function academiaGuardarEditarGeneracion(generacionId,cursoId){
     fecha_limite_practicas_extension:document.getElementById('egFechaLimitePracticasExt')?.value||null,
     cliente_nombre:clienteCartera.cliente_nombre,
     cliente_cartera_id:clienteCartera.cliente_cartera_id,
+    ...(academiaTipoNorm(document.getElementById('egTipo')?.value)==='empresarial'?academiaTitularLeer('eg'):{}),
     firmante_instructor_id:document.getElementById('egFirmante')?.value||null,
   }).eq('id',generacionId);
   if(errGen){alert('Error al actualizar la generación: '+errGen.message);return;}
@@ -2747,7 +2789,7 @@ let _clienteCarteraBuscarTimer={};
 function academiaBloqueClienteCartera(prefix,clienteCarteraActual,clienteNombreActual){
   const valorInicial=clienteCarteraActual?.razon_social||clienteNombreActual||'';
   return `<div>
-    ${fld('Cliente (solo cursos empresariales — nombre de la empresa)',inp(prefix+'Cliente','text','Ej. Transportes Evomex',valorInicial,`oninput="academiaClienteCarteraBuscarDebounced('${prefix}');if('${prefix}'==='gen'&&typeof academiaActualizarClavePreviewGen==='function')academiaActualizarClavePreviewGen();"`))}
+    ${fld('Empresa (nombre de la empresa del curso)',inp(prefix+'Cliente','text','Ej. Transportes Evomex',valorInicial,`oninput="academiaClienteCarteraBuscarDebounced('${prefix}');if('${prefix}'==='gen'&&typeof academiaActualizarClavePreviewGen==='function')academiaActualizarClavePreviewGen();"`))}
     <div id="${prefix}ClienteMatches" style="margin-top:4px;"></div>
   </div>`;
 }
@@ -9581,17 +9623,17 @@ async function catProyCargar(){
         // Jp, 2026-11-14: "Curso o Diplomado en Vivo" solo muestra lo que tiene una generación VIGENTE en Academia
         // (no archivada y con fecha de fin hoy o después; los 24/7 cuentan mientras no estén archivados).
         // Se controla desde Academia → Generaciones. Si la consulta falla, no se filtra nada.
-        let vigIds=null,mapaGens=null,gensInfo={};
+        let vigIds=null,mapaGens=null,gensInfo={},mapaTit={};
         try{
           const hoy=todayLocal();
           const [{data:gs},{data:mp}]=await Promise.all([
             sb.from('academia_generaciones').select('id,fecha_inicio,fecha_fin,archivado_manual,curso:curso_id(modalidad)').limit(600),
-            sb.from('shopify_producto_map').select('catalogo_item_id,generacion_ids')]);
+            sb.from('shopify_producto_map').select('catalogo_item_id,generacion_ids,titulo')]);
           if(gs&&mp){
             vigIds=new Set();
             gs.forEach(g=>{gensInfo[g.id]=g;if(!g.archivado_manual&&(!g.fecha_fin||g.fecha_fin>=hoy||g.curso?.modalidad==='24_7')) vigIds.add(g.id);});
             mapaGens={};
-            mp.forEach(m=>{if(!m.catalogo_item_id) return;(mapaGens[m.catalogo_item_id]=mapaGens[m.catalogo_item_id]||new Set());(m.generacion_ids||[]).forEach(i=>mapaGens[m.catalogo_item_id].add(i));});
+            mp.forEach(m=>{if(!m.catalogo_item_id) return;(mapaTit[m.catalogo_item_id]=mapaTit[m.catalogo_item_id]||[]).push(m.titulo||'');(mapaGens[m.catalogo_item_id]=mapaGens[m.catalogo_item_id]||new Set());(m.generacion_ids||[]).forEach(i=>mapaGens[m.catalogo_item_id].add(i));});
           }
         }catch(e){console.error('catProy vigentes',e);vigIds=null;mapaGens=null;}
         const fechaCorta=iso=>{try{return new Date(iso+'T12:00:00').toLocaleDateString('es-MX',{day:'numeric',month:'short'}).replace('.','');}catch(e){return iso;}};
@@ -9600,8 +9642,17 @@ async function catProyCargar(){
         ci.forEach(x=>{const k=x.nombre.trim().toLowerCase();(porNombre[k]=porNombre[k]||{x,ids:new Set()}).ids.add(x.id);});
         const nuevos=[];
         Object.values(porNombre).forEach(({x,ids})=>{
-          const es247=/24\/7|247/i.test(x.nombre);
-          let etiqueta='';
+          // Jp, 2026-11-17: 24/7 también si el producto de la tienda ligado dice 24/7 o TODAS sus generaciones son 24/7
+          // (ej. "Curso NOI desde cero" no lleva 24/7 en el nombre del catálogo pero se vende solo 24/7).
+          const nombre247=/24\/7|247/i.test(x.nombre);
+          let es247=nombre247;
+          if(!es247&&mapaGens){
+            const tit=[...ids].some(i=>(mapaTit[i]||[]).some(t=>/24\s*\/\s*7/.test(t)));
+            const gl=new Set();ids.forEach(i=>(mapaGens[i]||new Set()).forEach(g=>gl.add(g)));
+            const gi=[...gl].map(g=>gensInfo[g]).filter(Boolean);
+            es247=tit||(gi.length>0&&gi.every(g=>g.curso?.modalidad==='24_7'));
+          }
+          let etiqueta=(es247&&!nombre247)?' (24/7)':'';
           if(!es247&&vigIds&&mapaGens){
             const ligadas=new Set();ids.forEach(i=>(mapaGens[i]||new Set()).forEach(g=>ligadas.add(g)));
             const vig=[...ligadas].filter(g=>vigIds.has(g));
@@ -14667,7 +14718,7 @@ async function renderDirectorCartera(containerId){
   // criterio confirmado con Jp. "Inactivo" = cliente sin póliza vigente, sin servicio
   // eventual registrado, sin curso, y sin suscripción reclamada/en revisión/renovada.
   const servEventualSet=new Set((servHist||[]).map(s=>s.cliente_cartera_id));
-  const cursosSet=new Set((generaciones||[]).filter(g=>['diplomado_vip','24_7'].includes(g.curso?.tipo)).map(g=>g.cliente_cartera_id));
+  const cursosSet=new Set((generaciones||[]).filter(g=>academiaTipoNorm(g.curso?.tipo)==='diplomado').map(g=>g.cliente_cartera_id));
   (clientes||[]).forEach(cl=>{
     cl._suscripciones=(suscripciones||[]).filter(s=>s.cliente_id===cl.id);
     cl._polizaVigente=(polizasVig||[]).find(p=>p.cliente_cartera_id===cl.id)||null;
@@ -33336,7 +33387,7 @@ async function shpCrearServicio(clave){
     // Curso: la familia sale del tipo de curso de la generación elegida (taller / desde cero / diplomado)
     const g=[...(_shpGenSel[clave]||[])].map(id=>_shpGens.find(x=>x.id===id)).find(Boolean);
     const tp=g?.curso?.tipo||'';
-    familia=tp==='diplomado_vip'?'Diplomados':(tp==='desde_cero'?'Cursos':(tp==='taller'?'Talleres':(/diplomado/i.test(titulo)?'Diplomados':(/taller/i.test(titulo)?'Talleres':'Cursos'))));
+    familia=academiaTipoNorm(tp)==='diplomado'?'Diplomados':(academiaTipoNorm(tp)==='curso'?'Cursos':(academiaTipoNorm(tp)==='taller'?'Talleres':(/diplomado/i.test(titulo)?'Diplomados':(/taller/i.test(titulo)?'Talleres':'Cursos'))));
     rubro=null;pref='CUR-SHOP-';
     if(g?.curso?.nombre) sugerido=g.curso.nombre;
   }
