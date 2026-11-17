@@ -53,6 +53,30 @@ export default async function handler(req, res) {
     const s = (await sbGet(`solicitudes_factura?id=eq.${id}&select=*`))[0];
     if (!s) return res.status(200).json({ ok: false, error: 'No se encontró la solicitud' });
 
+    // Jp, 2026-11-17: aviso de solicitud de cancelación de una factura ya emitida
+    if (String(body.evento || '') === 'cancelacion') {
+      const C = [];
+      C.push('🚫 SOLICITUD DE CANCELACIÓN DE FACTURA');
+      C.push('');
+      C.push(`Solicita: ${s.cancelacion_solicitada_por || s.vendedor_nombre || '—'}`);
+      C.push(`Cliente: ${s.cliente_nombre || '—'}${s.num_cliente ? ' (#' + s.num_cliente + ')' : ''}`);
+      C.push(`Factura: ${(s.factura_serie || '') + (s.factura_folio || '') || '—'} · ${mxn(s.monto_total)}`);
+      if (s.concepto) C.push(`Concepto: ${s.concepto}`);
+      C.push(`Motivo: ${s.cancelacion_motivo || '—'}`);
+      if (s.cancelacion_sustituye) C.push('Se emitirá una factura nueva que la sustituye.');
+      if (s.pago_validado) C.push('⚠️ El pago ya estaba validado: solo Dirección puede registrar la cancelación.');
+      if (s.academia && s.academia.inscrito_at) C.push('🎓 Hay alumnos inscritos en Academia: Capacitación debe revisar su acceso.');
+      C.push('');
+      C.push('Administración: cancela en SAE/SAT y regístralo en Innovaci OS › Solicitudes de factura › "Registrar cancelación".');
+      const rc = await fetch(`https://api.telegram.org/bot${BOT}/sendMessage`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ chat_id: CHAT, text: C.join('\n'), disable_web_page_preview: true }),
+      });
+      if (!rc.ok) return res.status(200).json({ ok: false, error: 'Telegram: ' + (await rc.text()).slice(0, 300) });
+      return res.status(200).json({ ok: true });
+    }
+
     const conPago = s.tipo === 'con_pago';
     const L = [];
     L.push(conPago ? '🧾 NUEVA SOLICITUD DE FACTURA — pago por validar' : '🧾 NUEVA SOLICITUD DE FACTURA — liberar pago');
@@ -67,6 +91,11 @@ export default async function handler(req, res) {
     if (!conPago && s.fecha_pago_esperada) L.push(`Pagará el: ${s.fecha_pago_esperada}`);
     if (s.notas) L.push(`Notas: ${String(s.notas).slice(0, 300)}`);
     if (s.crm_link) L.push(`CRM: ${s.crm_link}`);
+    if (s.precio_alerta === 'requiere_autorizacion') {
+      L.push('');
+      L.push('⛔ MONTO POR DEBAJO DEL PERMITIDO — no validar pago ni facturar hasta que Dirección autorice.');
+      if (s.precio_detalle && s.precio_detalle.resumen) L.push(String(s.precio_detalle.resumen).slice(0, 500));
+    }
     L.push('');
     L.push('Revisar en Innovaci OS › Solicitudes de factura.');
 
