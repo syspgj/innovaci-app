@@ -20918,7 +20918,40 @@ async function llamadaMarcar(id,estado){
   uiToast(estado==='hecha'?'✓ Llamada registrada':'Llamada cancelada');
   llamadasCargarPanel();
 }
+// Jp 2026-11-17: antes de capturar un prospecto nuevo se revisa si ya existe (teléfono sin +52 o correo) y se jala lo que ya hay en la app.
+function llTel10(t){let d=String(t||'').replace(/\D/g,'');if(d.length>10&&d.startsWith('52')) d=d.slice(2);if(d.length>10&&d.startsWith('1')&&d.length===11) d=d.slice(1);return d.length>=10?d.slice(-10):d;}
+function llTelNorm(){const e=document.getElementById('llTel');if(!e) return;const n=llTel10(e.value);if(n.length===10) e.value=n;llDupBuscar();}
+let _llDupT=null;
+function llDupDeb(){clearTimeout(_llDupT);_llDupT=setTimeout(llDupBuscar,500);}
+async function llDupBuscar(){
+  const box=document.getElementById('llDup');if(!box) return;
+  const tel=llTel10(document.getElementById('llTel')?.value),mail=(document.getElementById('llMail')?.value||'').trim();
+  if(window._llDup||window._llDupIgnorar) return;
+  if(tel.length<10&&!/.+@.+\..+/.test(mail)){box.innerHTML='';return;}
+  const {data,error}=await sb.rpc('buscar_contacto_duplicado',{p_tel:tel.length===10?tel:null,p_mail:/.+@.+\..+/.test(mail)?mail:null});
+  if(error){box.innerHTML='';console.warn('dup',error.message);return;}
+  window._llDupRes=data||[];
+  if(!(data||[]).length){box.innerHTML=tel.length===10?'<div style="font-size:11px;color:#2E7D32;">✓ No existe en la app: se creará como prospecto nuevo.</div>':'';return;}
+  const esc=x=>String(x??'').replace(/</g,'&lt;');
+  box.innerHTML=`<div style="background:#fffbea;border:1px solid #f3dc8a;border-radius:8px;padding:9px 11px;font-size:12px;"><b>⚠ Este contacto ya existe en la app</b>`+
+   data.map((r,i)=>`<div style="margin-top:7px;padding-top:7px;border-top:1px dashed #e8d68a;"><b>${esc(r.nombre)}</b> <span style="color:var(--text3);">(${esc(r.origen)})</span><br><span style="color:var(--text2);">${r.empresa&&r.empresa!==r.nombre?esc(r.empresa)+' · ':''}${esc(r.telefono||'')} ${esc(r.email||'')}${r.estatus?' · '+esc(r.estatus):''}${r.vendedor_asignado?' · vendedor asignado':''}</span><br><button type="button" onclick="llDupUsar(${i})" style="margin-top:5px;background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:11px;font-weight:600;cursor:pointer;">Es esta persona — usar sus datos</button></div>`).join('')+
+   `<div style="margin-top:8px;"><button type="button" onclick="window._llDupIgnorar=true;document.getElementById('llDup').innerHTML='<div style=&quot;font-size:11px;color:var(--text3);&quot;>Se creará como persona distinta.</div>'" style="background:none;border:1px solid var(--border);border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer;">No es la misma, crear nuevo</button></div></div>`;
+}
+function llDupUsar(i){
+  const r=(window._llDupRes||[])[i];if(!r) return;
+  window._llDup={modo:r.origen==='prospecto'?'prospecto':'cliente',id:r.id,cliente_id:r.cliente_cartera_id||null};
+  const set=(id,v,ro)=>{const e=document.getElementById(id);if(e){if(v) e.value=v;e.readOnly=true;e.style.background='#f2f5f5';}};
+  set('llNombre',r.nombre);set('llTel',llTel10(r.telefono)||document.getElementById('llTel').value);set('llMail',r.email);set('llEmp',r.empresa);
+  const box=document.getElementById('llDup');
+  box.innerHTML=`<div style="background:#eef6f6;border:1px solid #b9dede;border-radius:8px;padding:9px 11px;font-size:12px;">✅ Usando ${r.origen==='prospecto'?'el prospecto que ya existe':'los datos del cliente que ya existe en Cartera'}: <b>${String(r.nombre||'').replace(/</g,'&lt;')}</b>${r.estatus?' · '+String(r.estatus).replace(/</g,'&lt;'):''}. No se duplica. <a href="#" onclick="llDupQuitar();return false;" style="color:var(--teal);">Cambiar</a></div>`;
+}
+function llDupQuitar(){
+  window._llDup=null;window._llDupIgnorar=false;
+  ['llNombre','llTel','llMail','llEmp'].forEach(id=>{const e=document.getElementById(id);if(e){e.readOnly=false;e.style.background='';}});
+  llDupBuscar();
+}
 async function llamadaModal(prospectoId){
+  window._llDup=null;window._llDupIgnorar=false;window._llDupRes=null;
   document.getElementById('modalLlamada')?.remove();
   const {data:vends}=await sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre');
   let p=null;
@@ -20932,8 +20965,9 @@ async function llamadaModal(prospectoId){
     <div style="font-size:12px;color:var(--text3);">El vendedor recibe correo al instante y un recordatorio 5 min antes.</div>
     ${p?`<div style="margin-top:10px;padding:8px 10px;background:var(--surf2);border-radius:8px;font-size:13px;"><b>${(p.nombre||'').replace(/</g,'&lt;')} ${(p.apellidos||'').replace(/</g,'&lt;')}</b> · ${p.telefono||'sin teléfono'}</div><input type="hidden" id="llId" value="${p.id}">`
     :`<label style="${lab}">Nombre *</label><input id="llNombre" style="${inp}" placeholder="Nombre y apellidos">
-      <label style="${lab}">Teléfono / WhatsApp *</label><input id="llTel" style="${inp}" inputmode="tel" placeholder="10 dígitos">
-      <label style="${lab}">Correo</label><input id="llMail" style="${inp}" type="email">
+      <label style="${lab}">Teléfono / WhatsApp *</label><input id="llTel" style="${inp}" inputmode="tel" placeholder="10 dígitos (sin +52)" oninput="llDupDeb()" onblur="llTelNorm()">
+      <label style="${lab}">Correo</label><input id="llMail" style="${inp}" type="email" oninput="llDupDeb()" onblur="llDupBuscar()">
+      <div id="llDup" style="margin-top:8px;"></div>
       <label style="${lab}">Empresa</label><input id="llEmp" style="${inp}">`}
     <label style="${lab}">Vendedor *</label>
     <select id="llVend" style="${inp}"><option value="">— Elegir —</option>${(vends||[]).map(v=>`<option value="${v.id}">${v.nombre}</option>`).join('')}</select>
@@ -20962,13 +20996,15 @@ async function llamadaGuardar(){
     if(!pid){
       const nombre=document.getElementById('llNombre').value.trim(), tel=document.getElementById('llTel').value.trim();
       if(!nombre||!tel){btn.disabled=false;btn.textContent='Asignar y avisar';return err('Nombre y teléfono son obligatorios.');}
-      const dig=tel.replace(/\D/g,'').slice(-10);
-      if(dig.length>=10){
-        const {data:ya}=await sb.from('prospectos').select('id,nombre,telefono').ilike('telefono','%'+dig).limit(1);
-        if(ya&&ya.length&&confirm('Ya existe un prospecto con ese teléfono: '+ya[0].nombre+'.\n\n¿Usar ese mismo en lugar de crear uno nuevo?')) pid=ya[0].id;
+      const sel=window._llDup;
+      if(sel&&sel.modo==='prospecto') pid=sel.id;
+      else if(!window._llDupIgnorar){
+        const t10=llTel10(tel),mm=document.getElementById('llMail').value.trim();
+        const {data:ya}=await sb.rpc('buscar_contacto_duplicado',{p_tel:t10.length===10?t10:null,p_mail:/.+@.+\..+/.test(mm)?mm:null});
+        if(ya&&ya.length){btn.disabled=false;btn.textContent='Asignar y avisar';llDupBuscar();return err('Este contacto ya existe en la app: elige "Es esta persona" o "No es la misma, crear nuevo".');}
       }
       if(!pid){
-        const {data:nuevo,error:e1}=await sb.from('prospectos').insert({nombre,telefono:tel,email:document.getElementById('llMail').value.trim()||null,empresa:document.getElementById('llEmp').value.trim()||null,origen:'WhatsApp-Respond',estatus:'Canalizado a ventas',asignado_a:currentUser.id,vendedor_asignado:vend,respondio_ok:true,fecha_contacto:hoy,notas:motivo,anio:currentYear,mes:currentMonth}).select().single();
+        const {data:nuevo,error:e1}=await sb.from('prospectos').insert({nombre,telefono:(llTel10(tel).length===10?llTel10(tel):tel),cliente_cartera_id:(window._llDup&&window._llDup.cliente_id)||null,email:document.getElementById('llMail').value.trim()||null,empresa:document.getElementById('llEmp').value.trim()||null,origen:'WhatsApp-Respond',estatus:'Canalizado a ventas',asignado_a:currentUser.id,vendedor_asignado:vend,respondio_ok:true,fecha_contacto:hoy,notas:motivo,anio:currentYear,mes:currentMonth}).select().single();
         if(e1) throw e1;
         pid=nuevo.id;
       }
