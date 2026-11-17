@@ -118,6 +118,9 @@ async function enviarCorreo({ to, subject, html }) {
 
 function plantillaAviso({ fechaTxt, prioritarias, faltan, detectadas, alCorriente, sinPeriodicidad }) {
   const esc = (t) => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  // Jp 2026-11-17: el nombre del cliente abre directo la póliza dentro de la app (os.innovaci.com.mx/?poliza=ID).
+  const SITE = process.env.SYNC_SITE_URL || 'https://os.innovaci.com.mx';
+  const liga = (f) => f.id ? `<a href="${SITE}/?poliza=${encodeURIComponent(f.id)}" style="color:#0b1f33;text-decoration:underline;">${esc(f.cliente)}</a>` : esc(f.cliente);
   const chip = (n, txt, bg, fg) => `<td style="padding:0 4px;"><div style="background:${bg};color:${fg};border-radius:8px;padding:8px 6px;text-align:center;"><div style="font-size:20px;font-weight:700;">${n}</div><div style="font-size:10.5px;">${txt}</div></div></td>`;
   const bloque = (titulo, color, intro, filas, render) => !filas.length ? '' : `
     <div style="margin-top:20px;">
@@ -126,13 +129,13 @@ function plantillaAviso({ fechaTxt, prioritarias, faltan, detectadas, alCorrient
       ${filas.map(render).join('')}
     </div>`;
   const filaFalta = (f) => `<div style="padding:10px 0;border-bottom:1px solid #eee;">
-      <div style="font-size:13px;font-weight:700;color:#0b1f33;">${esc(f.cliente)} <span style="font-weight:400;color:#666;">· ${esc(f.poliza)}</span></div>
+      <div style="font-size:13px;font-weight:700;color:#0b1f33;">${liga(f)} <span style="font-weight:400;color:#666;">· ${esc(f.poliza)}</span></div>
       <div style="font-size:12.5px;margin-top:2px;"><b style="color:${f.prioritaria ? '#b00000' : '#c77700'};">${f.nunca ? 'Nunca se ha registrado evidencia' : (f.atraso > 0 ? f.atraso + ' día' + (f.atraso === 1 ? '' : 's') + ' de atraso' : 'Vence hoy')}</b> · cada ${f.periodicidad} día${f.periodicidad === 1 ? '' : 's'}${f.atraso > 0 ? ' · debió subirse el ' + f.vencimiento : ''}</div>
       <div style="font-size:12px;color:#444;margin-top:2px;">${f.ultimaTxt}</div>
       <div style="font-size:12px;color:#444;margin-top:2px;"><b>Qué hacer:</b> ${f.motivo}</div>
       ${f.ticketTxt ? `<div style="font-size:12px;color:#0b6;margin-top:2px;">🎫 ${f.ticketTxt}</div>` : ''}
     </div>`;
-  const filaDet = (f) => `<div style="padding:8px 0;border-bottom:1px solid #eee;font-size:12.5px;"><b style="color:#0b1f33;">${esc(f.cliente)}</b> · ${esc(f.poliza)}<br><span style="color:#444;">${f.detalle}</span></div>`;
+  const filaDet = (f) => `<div style="padding:8px 0;border-bottom:1px solid #eee;font-size:12.5px;"><b style="color:#0b1f33;">${liga(f)}</b> · ${esc(f.poliza)}<br><span style="color:#444;">${f.detalle}</span></div>`;
   const total = prioritarias.length + faltan.length;
   return `<div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;">
     <div style="background:#0b1f33;color:#fff;padding:18px 20px;border-radius:8px 8px 0 0;">
@@ -381,6 +384,7 @@ export default async function handler(req, res) {
         const atraso = diasParaVencer < 0 ? -diasParaVencer : 0;
         const nunca = !ultimaEvidencia;
         filasFalta.push({
+          id: p.id,
           cliente: p.cliente_nombre,
           poliza: nombrePoliza,
           atraso,
@@ -394,6 +398,7 @@ export default async function handler(req, res) {
         });
       } else if (diasParaVencer >= 0 && diasParaVencer <= 3) {
         filasAlCorriente.push({
+          id: p.id,
           cliente: p.cliente_nombre,
           poliza: nombrePoliza,
           detalle: `${ultimaTxt} Próxima evidencia: <b>${proximoVencimiento}</b> (en ${diasParaVencer} día${diasParaVencer === 1 ? '' : 's'}).`,
@@ -408,7 +413,7 @@ export default async function handler(req, res) {
       .filter((e) => e.fecha_subida && new Date(e.fecha_subida).getTime() >= hace24h && polizaPorId[e.cliente_poliza_id])
       .map((e) => {
         const p = polizaPorId[e.cliente_poliza_id];
-        return { cliente: p.cliente_nombre, poliza: p.polizas_catalogo?.nombre || 'Resguardo', detalle: `Periodo ${e.periodo_fecha} · ${e.origen === 'dropbox' ? 'detectada automáticamente en Dropbox' : 'subida a mano'}.` };
+        return { id: p.id, cliente: p.cliente_nombre, poliza: p.polizas_catalogo?.nombre || 'Resguardo', detalle: `Periodo ${e.periodo_fecha} · ${e.origen === 'dropbox' ? 'detectada automáticamente en Dropbox' : 'subida a mano'}.` };
       });
 
     const orden = (a, b) => (b.nunca - a.nunca) || (b.atraso - a.atraso);
