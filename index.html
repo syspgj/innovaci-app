@@ -25326,10 +25326,22 @@ async function revisarDrivePoliza(id){
     const {data:sess}=await sb.auth.getSession();
     const res=await fetch('/api/admin-resguardo-revisar?poliza_id='+encodeURIComponent(id),{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
     const j=await res.json().catch(()=>({}));
-    const d=j.drive||{};
-    if(d.omitido) alert(d.omitido);
-    else if(d.ok===false) alert('No se pudo revisar Drive: '+(d.error||'error'));
-    else if(d.errores&&d.errores.length) alert('Drive: '+d.errores.map(e=>(e.carpeta||'')+' — '+String(e.error).replace(/^not_found:.*/,'no existe o no está compartida con innovaci-os-lector@innovaci-os-drive.iam.gserviceaccount.com')).join('\n'));
+    const d=j.drive;
+    const errTxt=e=>String(e).replace(/^not_found:.*/,'no existe o no está compartida con innovaci-os-lector@innovaci-os-drive.iam.gserviceaccount.com');
+    // Siempre se le dice al usuario qué pasó (antes quedaba mudo si el servidor no respondía lo esperado).
+    if(!d||typeof d!=='object'||!Object.keys(d).length) alert('⚠ El servidor no devolvió resultado de Drive. Probablemente falta publicar la versión nueva de api/admin-resguardo-revisar.js (o api/cron/drive-resguardo-check.js). Avisa a Dirección.');
+    else if(d.omitido) alert('⚠ '+d.omitido);
+    else if(d.ok===false) alert('❌ No se pudo revisar Drive: '+(d.error||'error'));
+    else if(d.mensaje) alert('ℹ '+d.mensaje);
+    else {
+      const lineas=[];
+      (d.detalle||[]).forEach(x=>{
+        lineas.push((x.resultado==='evidencia registrada'?'✅ ':x.resultado==='periodo ya cubierto'?'✅ ':'⚠ ')+x.resultado.charAt(0).toUpperCase()+x.resultado.slice(1)+(x.periodo?' (periodo desde '+x.periodo+')':''));
+        (x.estados||[]).forEach(s=>lineas.push('   • '+s.etiqueta+': '+(s.error?'error — '+errTxt(s.error):s.ok?'con archivo del periodo ✔ ('+s.fecha+')':'sin archivo del periodo'+(s.fecha?' (último: '+s.fecha+')':''))));
+      });
+      (d.errores||[]).forEach(e=>{ if(e.carpeta) lineas.push('❌ '+e.carpeta+' — '+errTxt(e.error)); });
+      alert('Revisión de Drive terminada.\n\n'+(lineas.join('\n')||'Sin resultados para esta póliza.'));
+    }
     document.getElementById('modalDetallePoliza')?.remove();
     abrirDetallePoliza(id);
   }catch(e){
