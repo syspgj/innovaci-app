@@ -169,6 +169,14 @@ function filaEspejo(c) {
     campos_personalizados: c.custom_fields ?? c.customFields ?? null,
     creado_en_respond: creadoEnDe(c),
     sincronizado_at: new Date().toISOString(),
+    // PostgREST exige que TODAS las filas de un insert en lote tengan
+    // exactamente las mismas claves ("All object keys must match"). Antes
+    // estas tres se agregaban solo en algunas ramas y el lote completo se
+    // rechazaba con 400: los prospectos sí se creaban, pero el espejo quedaba
+    // vacío. Ahora van siempre, en null cuando no aplican.
+    prospecto_id: null,
+    cliente_cartera_id: null,
+    resultado: null,
   };
 }
 
