@@ -7,6 +7,7 @@
 //
 // POST /api/admin-respond-sync              -> continúa el barrido
 // POST /api/admin-respond-sync?reiniciar=1  -> empieza el barrido desde cero
+// POST /api/admin-respond-sync?simulacion=1 -> solo cuenta lo que haría, sin escribir
 //
 // Exige una sesión de Supabase válida (Authorization: Bearer <token>).
 
@@ -27,8 +28,11 @@ export default async function handler(req, res) {
     });
     if (!u.ok) return res.status(401).json({ ok: false, error: 'Sesión inválida' });
 
-    const reiniciar = req.query && req.query.reiniciar === '1' ? '?reiniciar=1' : '';
-    const r = await fetch(`${SITE_URL}/api/cron/respond-sync-contactos${reiniciar}`, {
+    const q = new URLSearchParams();
+    if (req.query && req.query.reiniciar === '1') q.set('reiniciar', '1');
+    if (req.query && req.query.simulacion === '1') q.set('simulacion', '1');
+    const cola = q.toString() ? '?' + q.toString() : '';
+    const r = await fetch(`${SITE_URL}/api/cron/respond-sync-contactos${cola}`, {
       headers: { 'x-sync-secret': SYNC_SECRET },
     });
     const j = await r.json().catch(() => ({}));
