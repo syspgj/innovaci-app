@@ -37609,6 +37609,7 @@ async function renderDirectorConfig(){
   // Jp, 2026-11-18: lista del equipo para el panel de contraseñas.
   const {data:_pwUsrs}=await sb.from('usuarios').select('id,nombre,email,rol,activo').order('nombre');
   const pwUsuarios=(_pwUsrs||[]).filter(u=>u.activo!==false);
+  window._pwUsuarios=pwUsuarios;
   // Load current kpi_config for current month
   const {data:kc}=await sb.from('kpi_config').select('*').eq('anio',currentYear).eq('mes',currentMonth).order('orden');
   const configs=kc||[];
@@ -37621,18 +37622,34 @@ async function renderDirectorConfig(){
     <!-- Contraseñas del equipo (Jp, 2026-11-18). El correo de "olvidé mi contraseña"
          sale por el buzón prestado de Supabase y casi nunca llega; esto la cambia directo. -->
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:16px 20px;margin-bottom:20px;">
-      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px;">🔑 Contraseña de un usuario</div>
-      <div style="font-size:11px;color:var(--text3);margin-bottom:10px;line-height:1.5;">Cambia la contraseña de alguien del equipo al instante, sin correos de por medio. Úsalo cuando alguien no pueda entrar. La contraseña no se guarda aquí ni se puede volver a ver: anótala, pásasela y pídele que la cambie desde su perfil.</div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-        <select id="pwUsuario" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;min-width:220px;font-family:'Inter',sans-serif;">
-          <option value="">— Elige al usuario —</option>
-          ${pwUsuarios.map(u=>`<option value="${u.id}">${solEsc(u.nombre||u.email||'(sin nombre)')}${u.email?' · '+solEsc(u.email):''}</option>`).join('')}
-        </select>
-        <input type="password" id="pwNueva" autocomplete="new-password" placeholder="Nueva contraseña (mín. 8)" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;width:200px;">
-        <input type="password" id="pwNueva2" autocomplete="new-password" placeholder="Repítela" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;width:150px;">
-        <button id="btnPwCambiar" onclick="dirCambiarPassword()" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Cambiar contraseña</button>
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px;">👤 Usuarios del equipo</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:10px;line-height:1.5;">Elige a una persona para corregir su nombre o su correo, o para cambiarle la contraseña. Todo se aplica al instante, sin correos de por medio.</div>
+      <select id="pwUsuario" onchange="dirUsuarioElegido()" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;min-width:280px;font-family:'Inter',sans-serif;margin-bottom:12px;">
+        <option value="">— Elige al usuario —</option>
+        ${pwUsuarios.map(u=>`<option value="${u.id}">${solEsc(u.nombre||u.email||'(sin nombre)')}${u.email?' · '+solEsc(u.email):''}</option>`).join('')}
+      </select>
+      <div id="pwPanel" style="display:none;">
+        <div style="border-top:1px solid var(--border);padding-top:12px;margin-bottom:14px;">
+          <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px;">✏️ Nombre y correo</div>
+          <div style="font-size:11px;color:var(--text3);margin-bottom:8px;line-height:1.5;">El nombre es el que se ve en toda la app. El correo es con el que esa persona entra: si lo cambias, desde ese momento tiene que usar el nuevo (la contraseña sigue siendo la misma).</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <input type="text" id="pwNombre" placeholder="Nombre completo" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;width:230px;">
+            <input type="email" id="pwEmail" autocomplete="off" placeholder="correo@innovaci.com.mx" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;width:250px;">
+            <button id="btnPwDatos" onclick="dirGuardarUsuario()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Guardar datos</button>
+          </div>
+          <div id="pwDatosResultado" style="margin-top:8px;font-size:12px;"></div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:12px;">
+          <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px;">🔑 Contraseña</div>
+          <div style="font-size:11px;color:var(--text3);margin-bottom:8px;line-height:1.5;">Úsalo cuando alguien no pueda entrar. No se guarda aquí ni se puede volver a ver: anótala, pásasela y pídele que la cambie desde su perfil.</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <input type="password" id="pwNueva" autocomplete="new-password" placeholder="Nueva contraseña (mín. 8)" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;width:200px;">
+            <input type="password" id="pwNueva2" autocomplete="new-password" placeholder="Repítela" style="padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;width:150px;">
+            <button id="btnPwCambiar" onclick="dirCambiarPassword()" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Cambiar contraseña</button>
+          </div>
+          <div id="pwResultado" style="margin-top:8px;font-size:12px;"></div>
+        </div>
       </div>
-      <div id="pwResultado" style="margin-top:10px;font-size:12px;"></div>
     </div>
     <!-- Respond.io (Jp, 2026-11-18): primer paso de la integración de WhatsApp.
          Solo prueba la conexión y enseña qué devuelve la API; todavía no sincroniza. -->
