@@ -104,13 +104,17 @@ export default async function handler(req, res) {
     //    devolvió 400 "Identifier list is invalid", o sea que el servidor la leyó
     //    como GET /contact/{identificador}. Así que se prueban varias formas en
     //    orden y se reporta cuál funcionó, para dejar la buena en el código.
+    // La ruta ya está confirmada contra la cuenta real: POST /contact/list, que
+    // exige `filter` en el cuerpo ("Please check if filter is provided"). El
+    // `limit` va en la dirección, no en el cuerpo. Quedan por confirmar los
+    // obligatorios exactos, así que se prueban de más completo a más escueto.
+    const TZ = process.env.RESPOND_TIMEZONE || 'America/Mexico_City';
     const intentos = [
-      { ruta: '/contact/list', metodo: 'POST', cuerpo: { limit: 3 } },
-      { ruta: '/contact/list', metodo: 'POST', cuerpo: { limit: 3, search: '' } },
-      { ruta: '/contact', metodo: 'GET' },
-      { ruta: '/contact?limit=3', metodo: 'GET' },
-      { ruta: '/contacts?limit=3', metodo: 'GET' },
-      { ruta: '/contact/list?limit=3', metodo: 'GET' },
+      { ruta: '/contact/list?limit=3', metodo: 'POST', cuerpo: { search: '', filter: { $and: [] }, timezone: TZ } },
+      { ruta: '/contact/list?limit=3', metodo: 'POST', cuerpo: { search: '', filter: {}, timezone: TZ } },
+      { ruta: '/contact/list?limit=3', metodo: 'POST', cuerpo: { filter: { $and: [] }, timezone: TZ } },
+      { ruta: '/contact/list?limit=3', metodo: 'POST', cuerpo: { search: '', filter: { $and: [] } } },
+      { ruta: '/contact/list', metodo: 'POST', cuerpo: { search: '', filter: { $and: [] }, timezone: TZ, limit: 3 } },
     ];
     const probados = [];
     let lista = null;
@@ -158,6 +162,12 @@ export default async function handler(req, res) {
     salida.contactos_recibidos = Array.isArray(items) ? items.length : 0;
     salida.paginacion = lista.cuerpo && lista.cuerpo.pagination ? lista.cuerpo.pagination : null;
     salida.campos = Array.isArray(items) && items.length ? Object.keys(items[0]) : [];
+    // El asignado puede venir como texto o como objeto {id,firstName,...}.
+    const nombreAsignado = (a) => {
+      if (!a) return null;
+      if (typeof a === 'string') return a;
+      return [a.firstName, a.lastName].filter(Boolean).join(' ') || a.email || String(a.id || '') || null;
+    };
     salida.ejemplo = Array.isArray(items) && items.length
       ? {
           id: items[0].id ?? null,
@@ -165,7 +175,8 @@ export default async function handler(req, res) {
           telefono: tapar(items[0].phone, 6),
           correo: tapar(items[0].email, 3),
           etiquetas: items[0].tags || null,
-          asignado_a: items[0].assignee ?? null,
+          asignado_a: nombreAsignado(items[0].assignee),
+          etapa: items[0].lifecycle ?? items[0].status ?? null,
           campos_personalizados: Array.isArray(items[0].customFields) ? items[0].customFields.map((c) => c && c.name) : null,
         }
       : null;
