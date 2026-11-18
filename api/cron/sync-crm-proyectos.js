@@ -289,14 +289,28 @@ async function sincronizarRenovacionesPolizas(proyectosPayload) {
   const [polizas, catalogo] = await Promise.all([
     fetchTodo(
       'clientes_polizas',
-      'id,cliente_cartera_id,cliente_nombre,numero_proyecto_crm,estatus,poliza_catalogo_id,horas_totales,vendedor,servidor_cloud_id,resguardo_periodicidad_dias_override,resguardo_dropbox_folder,tipo_resguardo_texto,contacto_telefono,contacto_correo,credenciales_aspel,personas_autorizadas'
+      'id,cliente_cartera_id,cliente_nombre,numero_proyecto_crm,estatus,fecha_inicio,seccion_manual,poliza_catalogo_id,horas_totales,vendedor,servidor_cloud_id,resguardo_periodicidad_dias_override,resguardo_plazo_cliente_dias,resguardo_dropbox_folder,tipo_resguardo_texto,contacto_telefono,contacto_correo,credenciales_aspel,personas_autorizadas'
     ),
     fetchTodo('polizas_catalogo', 'id,categoria'),
   ]);
 
-  const polizasConProyecto = polizas.filter(
-    (c) => c.cliente_cartera_id && c.numero_proyecto_crm && c.estatus !== 'CERRADA'
-  );
+  // Jp, 2026-11-18 — RADIACION Y DOSIMETRIA: la póliza vieja ya estaba CERRADA
+  // (a mano, al vencer) y por eso el sync nunca veía la renovación: el proyecto
+  // nuevo del CRM (PROJ2602, En curso) se quedaba sin fila en la app y el
+  // cliente desaparecía de "Pólizas de resguardo". Ahora también se revisan las
+  // pólizas ya cerradas: si su proyecto del CRM está concluido y existe uno más
+  // nuevo activo sin fila propia, se crea la fila nueva (y la vieja, si todavía
+  // estaba abierta, se cierra como siempre).
+  const polizasConProyecto = polizas
+    .filter((c) => c.cliente_cartera_id && c.numero_proyecto_crm)
+    .sort((a, b) => {
+      // Primero las abiertas, y dentro de cada grupo la de inicio más reciente:
+      // es la que mejor refleja la configuración actual al clonarla.
+      const abiertaA = a.estatus !== 'CERRADA' ? 0 : 1;
+      const abiertaB = b.estatus !== 'CERRADA' ? 0 : 1;
+      if (abiertaA !== abiertaB) return abiertaA - abiertaB;
+      return String(b.fecha_inicio || '').localeCompare(String(a.fecha_inicio || ''));
+    });
   if (!polizasConProyecto.length) return { revisadas: 0, cerradas: 0, creadas: 0, detalle: [] };
 
   const categoriaPorCatalogoId = new Map(catalogo.map((c) => [c.id, c.categoria]));
@@ -345,8 +359,10 @@ async function sincronizarRenovacionesPolizas(proyectosPayload) {
     if (!proyectoNuevo) continue;
 
     try {
-      await sbPatch(`clientes_polizas?id=eq.${poliza.id}`, { estatus: 'CERRADA' });
-      cerradas++;
+      if (poliza.estatus !== 'CERRADA') {
+        await sbPatch(`clientes_polizas?id=eq.${poliza.id}`, { estatus: 'CERRADA' });
+        cerradas++;
+      }
 
       const numeroNuevo = soloDigitos(proyectoNuevo.crm_project_no);
       await sbPost('clientes_polizas', {
@@ -360,10 +376,12 @@ async function sincronizarRenovacionesPolizas(proyectosPayload) {
         vendedor: poliza.vendedor,
         personas_autorizadas: poliza.personas_autorizadas,
         estatus: 'VIGENTE',
+        seccion_manual: poliza.seccion_manual,
         origen: 'crm_renovacion_auto',
         numero_proyecto_crm: `POL${numeroNuevo}`,
         servidor_cloud_id: poliza.servidor_cloud_id,
         resguardo_periodicidad_dias_override: poliza.resguardo_periodicidad_dias_override,
+        resguardo_plazo_cliente_dias: poliza.resguardo_plazo_cliente_dias,
         resguardo_dropbox_folder: poliza.resguardo_dropbox_folder,
         tipo_resguardo_texto: poliza.tipo_resguardo_texto,
         contacto_telefono: poliza.contacto_telefono,
