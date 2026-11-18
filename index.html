@@ -20869,7 +20869,7 @@ async function renderProspectos(){
     proyHtmlPros=`<div style="margin-top:6px;font-size:11px;color:var(--text3);">Registra tu primera llamada para ver la proyección de completado.</div>`;
   }
 
-  mc.innerHTML=`${pendHoyHtml}${llamadasBarraHtml()}
+  mc.innerHTML=`${pendHoyHtml}${llamadasBarraHtml()}${respondBarraProspectosHtml()}
   <div style="background:var(--teal-bg);border:1px solid rgba(0,169,157,0.25);border-radius:var(--radsm);padding:8px 14px;margin-bottom:14px;font-size:12px;color:var(--teal);font-weight:600;">
     🎯 Campaña activa: ${campanaActiva.nombre}
   </div>
@@ -21060,7 +21060,7 @@ async function renderProspectosVendedor(){
   const yaClientes=ps.filter(p=>p._cliente||p.cliente_cartera_id).length;
   const eventosUnicos=[...new Set(ps.map(p=>p.evento).filter(Boolean))].sort();
 
-  mc.innerHTML=`${llamadasBarraHtml()}
+  mc.innerHTML=`${llamadasBarraHtml()}${respondBarraProspectosHtml()}
   <div style="margin-bottom:16px;">
     <div style="font-size:18px;font-weight:600;color:var(--text);">Prospectos</div>
     <div style="font-size:12px;color:var(--text3);">${total} en total · ${mios} tuyos · ${sinAsignar} sin asignar ${yaClientes?`· <span style="color:var(--gold);font-weight:600;">⚠ ${yaClientes} ya son cliente</span>`:''}</div>
@@ -36232,6 +36232,17 @@ async function solFacturarGuardar(id){
 // ════════════════════════════════════════════════════════════════════════════
 const NOVEDADES=[
   {
+    id:'whatsapp-prospectos-2026-11-18',
+    titulo:'Ya no captures a mano a quien te escribe por WhatsApp',
+    roles:['vendedor','telemarketing','director'],
+    texto:{
+      vendedor:'La app ya se asoma a WhatsApp y trae sola a quien escribe, a Prospectos. Si alguien te acaba de escribir y lo quieres ya, hay una barra verde arriba de Prospectos: pones el teléfono, "Traerlo ahora" y aparece. Si ya existía, NO se duplica. Toma 2 minutos leer la guía.',
+      telemarketing:'La app ya se asoma a WhatsApp y trae sola a quien escribe, a Prospectos. Si alguien te acaba de escribir y lo quieres ya, hay una barra verde arriba de Prospectos: pones el teléfono, "Traerlo ahora" y aparece. Si ya existía, NO se duplica. Toma 2 minutos leer la guía.',
+      director:'Entró la sincronización con WhatsApp (Respond): corre sola cada hora de 8 a 20 h y además Ventas y Telemarketing pueden traer a alguien al instante desde Prospectos. La guía del equipo ya está en el glosario.',
+    },
+    doc:'d83fad72-6053-4783-b650-1187f033c8f5',
+  },
+  {
     id:'mesa-control-guia-inicio-2026-11-17',
     titulo:'Bienvenida a Mesa de Control: guía de inicio con imágenes',
     roles:['gerente_operaciones','mesa_control','asesor','director'],
@@ -37358,6 +37369,60 @@ async function respondProbar(){
   }finally{
     if(btn){btn.disabled=false;btn.textContent='🔌 Probar conexión';}
   }
+}
+
+// ── Barra "Traer de WhatsApp" para las pantallas de Prospectos ──────────
+// Jp, 2026-11-18: "¿qué pasa si llega alguien por WhatsApp que no está dado de
+// alta y me compra de volada?". Con esto se trae en el momento, sin esperar al
+// barrido de cada hora.
+function respondBarraProspectosHtml(){
+  return `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;background:#25D36611;border:1px solid #25D36644;border-radius:var(--radsm,8px);padding:8px 12px;margin-bottom:12px;">
+    <span style="font-size:12px;font-weight:600;color:var(--text2);">💬 ¿Te acaban de escribir por WhatsApp?</span>
+    <input type="text" id="respTraerTel" placeholder="Teléfono, ej. 5512345678" onkeydown="if(event.key==='Enter')respondTraerContacto()" style="padding:6px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;width:180px;">
+    <button onclick="respondTraerContacto()" style="background:#25D366;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">Traerlo ahora</button>
+    <button onclick="respondTraerTodos()" title="Revisa todos los contactos de WhatsApp, no solo uno" style="background:#fff;color:var(--navy);border:1px solid var(--navy);border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔄 Traer todos</button>
+    <span id="respTraerMsg" style="font-size:12px;"></span>
+  </div>`;
+}
+async function respondTraerContacto(){
+  const inp=document.getElementById('respTraerTel');
+  const msg=document.getElementById('respTraerMsg');
+  const tel=(inp?.value||'').trim();
+  if(!tel){ if(msg) msg.innerHTML='<span style="color:#c47f0a;">Escribe el teléfono.</span>'; return; }
+  if(msg) msg.innerHTML='<span style="color:var(--text3);">Buscando en WhatsApp…</span>';
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/respond-traer-contacto?telefono='+encodeURIComponent(tel),
+      {method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
+    const j=await res.json().catch(()=>({}));
+    const esc=t=>String(t==null?'':t).replace(/</g,'&lt;');
+    if(!j.ok){ msg.innerHTML='<span style="color:var(--red);">'+esc(j.error||'No se pudo buscar.')+'</span>'; return; }
+    if(!j.encontrado){ msg.innerHTML='<span style="color:#c47f0a;">Ese número no tiene conversación en WhatsApp.</span>'; return; }
+    const quien=esc(j.nombre||j.telefono||'');
+    const extra=[j.lifecycle?'etapa '+esc(j.lifecycle):'',j.etiquetas&&j.etiquetas.length?esc(j.etiquetas.join(', ')):''].filter(Boolean).join(' · ');
+    if(j.resultado==='prospecto_creado'){
+      msg.innerHTML=`<span style="color:#16a34a;font-weight:600;">✅ ${quien} ya está en Prospectos${extra?' ('+extra+')':''}.</span>`;
+      uiToast('✓ '+quien+' agregado a Prospectos');
+    }else if(j.resultado==='ya_existia_prospecto'){
+      msg.innerHTML=`<span style="color:#16a34a;">Ya estaba en Prospectos: <b>${quien}</b>. Se actualizó con lo de WhatsApp${j.es_cliente?' · ojo: ya es cliente ('+esc(j.cliente)+')':''}.</span>`;
+    }else{
+      msg.innerHTML=`<span style="color:#1D5FA8;">No es prospecto: <b>${esc(j.cliente)}</b> ya es cliente de Cartera.</span>`;
+    }
+    if(inp) inp.value='';
+    setTimeout(()=>{ if(typeof renderProspectosVendedor==='function'&&document.getElementById('bodyProspectosV')) renderProspectosVendedor(); },1200);
+  }catch(e){ if(msg) msg.innerHTML='<span style="color:var(--red);">No se pudo conectar.</span>'; }
+}
+async function respondTraerTodos(){
+  const msg=document.getElementById('respTraerMsg');
+  if(msg) msg.innerHTML='<span style="color:var(--text3);">Revisando los contactos de WhatsApp… puede tardar un minuto.</span>';
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/admin-respond-sync',{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
+    const j=await res.json().catch(()=>({}));
+    if(!j.ok){ msg.innerHTML='<span style="color:var(--red);">No se pudo: '+String(j.error||'').replace(/</g,'&lt;')+'</span>'; return; }
+    msg.innerHTML=`<span style="color:#16a34a;">Listo: ${j.prospecto_creado||0} prospectos nuevos de ${j.contactos||0} contactos revisados.</span>`;
+    if((j.prospecto_creado||0)>0) setTimeout(()=>{ if(typeof renderProspectosVendedor==='function'&&document.getElementById('bodyProspectosV')) renderProspectosVendedor(); },1200);
+  }catch(e){ if(msg) msg.innerHTML='<span style="color:var(--red);">No se pudo conectar.</span>'; }
 }
 
 // Estado del último barrido de contactos de Respond.io.
