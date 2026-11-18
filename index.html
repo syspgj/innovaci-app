@@ -37360,6 +37360,56 @@ async function respondProbar(){
   }
 }
 
+// Estado del último barrido de contactos de Respond.io.
+async function respondPintarEstado(){
+  const caja=document.getElementById('respondEstado');
+  if(!caja) return;
+  try{
+    const [{data:est},{count}]=await Promise.all([
+      sb.from('respond_sync_estado').select('*').eq('id',1).maybeSingle(),
+      sb.from('respond_contactos').select('respond_id',{count:'exact',head:true}),
+    ]);
+    const r=est?.ultimo_resultado||null;
+    const cuando=est?.actualizado_at?new Date(est.actualizado_at).toLocaleString('es-MX',{timeZone:'America/Mexico_City',dateStyle:'short',timeStyle:'short'}):null;
+    caja.innerHTML=`Contactos ya espejados en la app: <b>${count??0}</b>`+
+      (cuando?` · última corrida: ${cuando} (${est.modo==='completo'?'barrido completo':'barrido parcial, continúa'})`:' · sin corridas todavía')+
+      (r?`<br>Última vez: ${r.contactos||0} contactos revisados · ${r.prospecto_creado||0} prospectos nuevos · ${r.ligado_prospecto||0} ligados a prospecto · ${r.ligado_cartera||0} ligados a cuenta de Cartera${r.sin_datos_para_ligar?` · ${r.sin_datos_para_ligar} sin teléfono ni correo`:''}`:'');
+  }catch(e){ caja.textContent='No se pudo leer el estado (¿falta correr el SQL de respond_contactos?).'; }
+}
+async function respondSincronizar(reiniciar){
+  const btn=document.getElementById('btnRespondSync');
+  const caja=document.getElementById('respondSyncResultado');
+  if(reiniciar&&!confirm('Esto vuelve a recorrer TODOS los contactos de Respond desde el principio. No duplica nada, solo tarda más. ¿Continuar?')) return;
+  if(btn){btn.disabled=true;btn.textContent='⏳ Sincronizando…';}
+  if(caja) caja.innerHTML='<span style="color:var(--text3);">Trayendo contactos de Respond.io… puede tardar un minuto.</span>';
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/admin-respond-sync'+(reiniciar?'?reiniciar=1':''),
+      {method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
+    const j=await res.json().catch(()=>({}));
+    const esc=t=>String(t==null?'':t).replace(/</g,'&lt;');
+    if(j.omitido){
+      caja.innerHTML=`<span style="color:#c47f0a;">⚠ ${esc(j.omitido)}</span>`;
+    }else if(!j.ok){
+      caja.innerHTML=`<span style="color:var(--red);">❌ No se pudo sincronizar: ${esc(j.error||'error')}</span>`;
+    }else{
+      caja.innerHTML=`<div style="color:#16a34a;font-weight:600;">✅ Listo — ${esc(j.contactos||0)} contactos revisados en ${esc(Math.round((j.ms||0)/1000))} s (${esc(j.barrido||'')}).</div>
+        <div style="margin-top:4px;color:var(--text2);">
+          Prospectos nuevos: <b>${esc(j.prospecto_creado||0)}</b> ·
+          Ya existían como prospecto: <b>${esc(j.ligado_prospecto||0)}</b> ·
+          Son clientes de Cartera: <b>${esc(j.ligado_cartera||0)}</b> ·
+          Sin teléfono ni correo: <b>${esc(j.sin_datos_para_ligar||0)}</b>
+        </div>
+        ${(j.errores&&j.errores.length)?`<div style="margin-top:6px;color:#c47f0a;font-size:11px;">Avisos: ${esc(j.errores.slice(0,5).join(' · '))}</div>`:''}`;
+    }
+  }catch(err){
+    caja.innerHTML='<span style="color:var(--red);">No se pudo llamar al servidor: '+String(err.message||err)+'</span>';
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='🔄 Sincronizar ahora';}
+    respondPintarEstado();
+  }
+}
+
 async function renderDirectorConfig(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando configuración...</div>';
@@ -37382,6 +37432,16 @@ async function renderDirectorConfig(){
         <button id="btnRespondProbar" onclick="respondProbar()" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔌 Probar conexión</button>
       </div>
       <div id="respondResultado" style="margin-top:10px;font-size:12px;"></div>
+      <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:10px;">
+        <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:4px;">Sincronización de contactos</div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Trae los contactos de Respond, los cruza por teléfono y correo contra Cartera y Prospectos, y da de alta como prospecto solo a los que no existan. Corre sola cada hora de 8 a 20 h.</div>
+        <div id="respondEstado" style="font-size:11px;color:var(--text2);margin-bottom:8px;">—</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button id="btnRespondSync" onclick="respondSincronizar(false)" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔄 Sincronizar ahora</button>
+          <button onclick="respondSincronizar(true)" style="background:#fff;color:var(--navy);border:1px solid var(--navy);border-radius:6px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">↺ Empezar de cero</button>
+        </div>
+        <div id="respondSyncResultado" style="margin-top:8px;font-size:12px;"></div>
+      </div>
     </div>
     <!-- TABLA BONO KPIs -->
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:16px 20px;margin-bottom:20px;">
@@ -37511,6 +37571,7 @@ async function renderDirectorConfig(){
   </div>`;
   await cargarAjustesUI();
   await cargarCreditosPanel();
+  respondPintarEstado();
 }
 
 async function cargarCreditosPanel(){
