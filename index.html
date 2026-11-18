@@ -9157,6 +9157,34 @@ async function renderVendorMiMes(){
     .order('fecha_vencimiento');
   window._polizasPorRenovar=polizasPorRenovarRaw||[];
   const countPolizasPorRenovar=window._polizasPorRenovar.length;
+  // Jp, 2026-11-18: "que también les llegue la notificación ahí, en la misma
+  // app". Las llamadas que telemarketing le asigna a un vendedor solo
+  // avisaban por correo; dentro de la app había que entrar a Prospectos para
+  // enterarse. Ahora aparecen aquí, en su pantalla de inicio, igual que las
+  // altas por validar o las pólizas por renovar.
+  const {data:llAsigRaw}=await sb.from('prospecto_llamadas_asignadas')
+    .select('id,prospecto_id,fecha,hora,motivo,asignado_por_nombre')
+    .eq('vendedor_id',currentUser.id).eq('estado','pendiente')
+    .order('fecha',{ascending:true}).order('hora',{ascending:true});
+  const llAsig=llAsigRaw||[];
+  let llNombres={};
+  if(llAsig.length){
+    const {data:psAsig}=await sb.from('prospectos').select('id,nombre,apellidos,telefono').in('id',[...new Set(llAsig.map(l=>l.prospecto_id))]);
+    (psAsig||[]).forEach(p=>{llNombres[p.id]={nombre:[p.nombre,p.apellidos].filter(Boolean).join(' '),telefono:p.telefono};});
+  }
+  const hoyLl=todayLocal();
+  const minutosAhora=new Date().getHours()*60+new Date().getMinutes();
+  const minutosDe=h=>{const m=String(h||'').slice(0,5).split(':');return m.length===2?(+m[0])*60+(+m[1]):null;};
+  // Urgente = vencida, o es hoy y faltan 30 minutos o menos.
+  const llUrgentes=llAsig.filter(l=>{
+    if(l.fecha<hoyLl) return true;
+    if(l.fecha!==hoyLl) return false;
+    const m=minutosDe(l.hora);
+    return m==null||m-minutosAhora<=30;
+  });
+  const llProx=llUrgentes[0]||llAsig[0]||null;
+  const llProxNom=llProx?(llNombres[llProx.prospecto_id]?.nombre||'un prospecto'):'';
+  const llProxCuando=llProx?(llProx.fecha<hoyLl?'⚠ ya venció':(llProx.fecha===hoyLl?('hoy'+(llProx.hora?' a las '+String(llProx.hora).slice(0,5):'')):('el '+String(llProx.fecha).slice(8,10)+'/'+String(llProx.fecha).slice(5,7)+(llProx.hora?' a las '+String(llProx.hora).slice(0,5):'')))):'';
   // Calcular totales
   const tot={svc:0,aspel:0,it:0,cursos:0,sf:0,demos:0,val:0,cn:0,dip:0,sus:susAuto,ren:renovAuto,cur_vivo:0};
   for(const r of registros){tot.svc+=r.svc||0;tot.aspel+=r.aspel||0;tot.it+=r.it||0;tot.cursos+=r.cursos||0;tot.sf+=r.siigo_fiscal||0;tot.demos+=r.demos||0;tot.val+=r.valoraciones||0;tot.cn+=r.clientes_nuevos||0;tot.dip+=r.diplomados||0;tot.cur_vivo+=r.talleres_vivo||0;}
@@ -9301,6 +9329,16 @@ async function renderVendorMiMes(){
     :`⚡ Falta ${fmt(metaDepto-totalDeptoSvc)} para liberar comisiones completas — tasa actual: 2%`;
   const pctFmt=Math.round(svcPct*100);
   mc.innerHTML=`
+  ${llAsig.length?`<div onclick="swV('prospectosV')" style="cursor:pointer;background:${llUrgentes.length?'rgba(232,64,64,0.08)':'rgba(0,169,157,0.08)'};border:1px solid ${llUrgentes.length?'rgba(232,64,64,0.35)':'rgba(0,169,157,0.35)'};border-radius:var(--rad);padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span style="font-size:20px;">${llUrgentes.length?'⏰':'📞'}</span>
+      <div>
+        <div style="font-size:13px;font-weight:700;color:${llUrgentes.length?'#C0392B':'var(--teal)'};">${llAsig.length} ${llAsig.length===1?'llamada asignada':'llamadas asignadas'}${llUrgentes.length?` · ${llUrgentes.length} para ya`:''}</div>
+        <div style="font-size:11px;color:var(--text2);">La próxima: <b>${solEsc(llProxNom)}</b> ${llProxCuando}${llProx?.asignado_por_nombre?` — te la pasó ${solEsc(llProx.asignado_por_nombre)}`:''}${llProx?.motivo?`<br><span style="color:var(--text3);">${solEsc(String(llProx.motivo).slice(0,140))}</span>`:''}</div>
+      </div>
+    </div>
+    <span style="font-size:18px;color:${llUrgentes.length?'#C0392B':'var(--teal)'};">→</span>
+  </div>`:''}
   ${countPorValidar>0?`<div onclick="abrirModalPorValidar()" style="cursor:pointer;background:rgba(26,127,160,0.08);border:1px solid rgba(26,127,160,0.35);border-radius:var(--rad);padding:12px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
     <div style="display:flex;align-items:center;gap:10px;">
       <span style="font-size:20px;">🆕</span>
@@ -29858,7 +29896,8 @@ function renderIngresosTabla(){
           <td style="padding:4px 6px;">
             <div style="display:flex;gap:3px;">
               ${r.xml_path?`<button onclick="verXMLGuardado('${r.xml_path}')" title="Ver/descargar XML" style="background:none;border:1px solid var(--border);color:var(--text3);border-radius:4px;padding:2px 5px;font-size:10px;cursor:pointer;">📄</button>
-              <button onclick="generarPDFDesdeStorage('${r.xml_path}')" title="Generar PDF" style="background:none;border:1px solid var(--border);color:var(--text3);border-radius:4px;padding:2px 5px;font-size:10px;cursor:pointer;">🖨️</button>`:''}
+              <button onclick="generarPDFDesdeStorage('${r.xml_path}')" title="Armar el PDF a partir del XML" style="background:none;border:1px solid var(--border);color:var(--text3);border-radius:4px;padding:2px 5px;font-size:10px;cursor:pointer;">🖨️</button>`:''}
+              ${r.pdf_path?`<button onclick="verPdfFacturaGuardado('${r.pdf_path}')" title="PDF de la factura (el de Aspel)" style="background:none;border:1px solid #1D5FA8;color:#1D5FA8;border-radius:4px;padding:2px 5px;font-size:10px;cursor:pointer;">📕</button>`:''}
               <button onclick="eliminarFactIngreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 6px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button>
             </div>
           </td>
@@ -30225,7 +30264,8 @@ async function renderEgresosTabla(){
         <td style="padding:4px 6px;">
           <div style="display:flex;gap:3px;">
             ${r.xml_path?`<button onclick="verXMLGuardado('${r.xml_path}')" title="Ver/descargar XML" style="background:none;border:1px solid var(--border);color:var(--text3);border-radius:4px;padding:2px 5px;font-size:10px;cursor:pointer;">📄</button>
-            <button onclick="generarPDFDesdeStorage('${r.xml_path}')" title="Generar PDF" style="background:none;border:1px solid var(--border);color:var(--text3);border-radius:4px;padding:2px 5px;font-size:10px;cursor:pointer;">🖨️</button>`:''}
+            <button onclick="generarPDFDesdeStorage('${r.xml_path}')" title="Armar el PDF a partir del XML" style="background:none;border:1px solid var(--border);color:var(--text3);border-radius:4px;padding:2px 5px;font-size:10px;cursor:pointer;">🖨️</button>`:''}
+              ${r.pdf_path?`<button onclick="verPdfFacturaGuardado('${r.pdf_path}')" title="PDF de la factura (el de Aspel)" style="background:none;border:1px solid #1D5FA8;color:#1D5FA8;border-radius:4px;padding:2px 5px;font-size:10px;cursor:pointer;">📕</button>`:''}
             <button onclick="eliminarFactEgreso('${r.id}')" style="background:none;border:1px solid rgba(232,64,64,0.3);color:var(--red);border-radius:5px;padding:2px 6px;font-size:10px;cursor:pointer;font-family:'Inter',sans-serif;">✕</button>
           </div>
         </td>
@@ -31397,6 +31437,14 @@ async function editarIngreso(id){
       ${r.xml_path?`<button type="button" onclick="verXMLGuardado('${r.xml_path}')" style="background:#fff;border:1px solid var(--teal);color:var(--teal);border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">👁 Ver XML</button>`:''}
       <button type="button" onclick="validarIngresoContraXml('${id}')" style="background:var(--teal);border:none;color:#fff;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">✔ Validar contra XML</button>
     </div>
+    <!-- Jp, 2026-11-18: el PDF real de la factura (el de Aspel) se sube aquí
+         junto con el XML. Si existe, es el que se abre desde la tabla; si no,
+         se sigue armando el PDF a partir del XML, como hasta ahora. -->
+    <div style="background:rgba(29,95,168,0.06);border:1px dashed #1D5FA8;border-radius:8px;padding:10px 12px;margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span style="font-size:12px;font-weight:600;color:#1D5FA8;">📕 ${r.pdf_path?'Reemplazar PDF de la factura':'Cargar PDF de la factura'}</span>
+      <input type="file" id="eiiPdfFile" accept="application/pdf" style="font-size:11px;flex:1;min-width:160px;">
+      ${r.pdf_path?`<span style="font-size:10px;color:#1D5FA8;font-weight:600;">🔗 ya tiene PDF</span><button type="button" onclick="verPdfFacturaGuardado('${r.pdf_path}')" style="background:#fff;border:1px solid #1D5FA8;color:#1D5FA8;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">👁 Ver PDF</button>`:'<span style="font-size:10px;color:var(--text3);">Opcional. Sin él, el botón 🖨️ sigue armando el PDF desde el XML.</span>'}
+    </div>
     <div id="eiiValidacionXml" style="margin-bottom:12px;"></div>
     ${(r.folio&&!r.origen_banco&&r.estatus!=='CANCELADA')?`<div style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <button type="button" onclick="dividirIngresoAbrir('${id}')" style="background:#fff;border:1px solid var(--navy);color:var(--navy);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;">✂ Dividir por rubro</button>
@@ -31564,18 +31612,55 @@ function fiBadgeDivision(r){
 }
 // Sugerencia de rubro por descripción de la partida del XML (solo si el rubro
 // existe en el catálogo; siempre se puede cambiar a mano).
+// Jp, 2026-11-18: el rubro se puede deducir del TIPO DE SERVICIO con el que se
+// vendió (lo que el vendedor eligió en la negociación), que es más confiable
+// que adivinarlo del texto de la factura. Esto es lo que antes se capturaba a
+// mano en Finanzas. Donde el tipo no alcanza (una póliza puede ser Aspel,
+// Resguardo o Total), el concepto desempata.
+const RUBRO_POR_TIPO_SERVICIO={
+  '24/7':'24/7',
+  'Curso Empresarial':'CURSO EMPRESARIAL',
+  'Servidor Cloud':'CLOUD',
+  'Servicio por Evento':'SERVICIO POR EVENTO',
+  'Suscripción Aspel':'RENTA ASPEL',
+  'Licenciamiento Aspel':'SISTEMA ASPEL',
+  'Membresías':'CIRCULO INNOVACI',
+};
+function rubroDesdeTipoServicio(tipo,concepto){
+  if(!tipo) return '';
+  const norm=t=>(t||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().trim();
+  const rubros=window._rubrosIng||[];
+  const hallar=nom=>rubros.find(x=>norm(x)===norm(nom))||'';
+  const c=norm(concepto);
+  let nombre=RUBRO_POR_TIPO_SERVICIO[tipo]||'';
+  if(tipo==='Curso o Diplomado en Vivo') nombre=/DIPLOMADO/.test(c)?'DIPLOMADOS EN VIVO':'CURSOS O TALLERES EN VIVO';
+  else if(tipo==='Póliza') nombre=/RESGUARDO/.test(c)?'POLIZA RESGUARDO':(/(TOTAL|ALIADO|INFINITO)/.test(c)?'POLIZA TOTAL O ALIADO':'POLIZA ASPEL');
+  if(!nombre) return '';
+  return hallar(nombre)||nombre;
+}
 function sugerirRubroPartida(desc){
   const norm=t=>(t||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toUpperCase().trim();
   const rubros=window._rubrosIng||[];
   const hallar=nom=>rubros.find(x=>norm(x)===norm(nom))||'';
   const d=norm(desc);
+  // Jp, 2026-11-18: faltaban los rubros de cursos (24/7, en vivo, empresarial),
+  // que eran justo los que había que poner a mano cada vez. El orden importa:
+  // la modalidad manda sobre el tipo de curso (un diplomado 24/7 es rubro
+  // "24/7", no "DIPLOMADOS EN VIVO"). También se corrigió MEMBRESIA, que
+  // apuntaba a un rubro que no existe en el catálogo ("MEMBRESIA" en vez de
+  // "CIRCULO INNOVACI") y por eso nunca se aplicaba.
   const reglas=[
     [/CLOUD|INNOXL/,'CLOUD'],
-    [/PUESTA A PUNTO|IMPLEMENTA|INSTALACION|CONFIGURACION|MIGRACION|GENERACION Y CARGA/,'SERVICIO POR EVENTO'],
     [/TIMBRE/,'TIMBRES'],
-    [/MEMBRESIA/,'MEMBRESIA'],
+    [/MEMBRESIA|CIRCULO/,'CIRCULO INNOVACI'],
     [/RESGUARDO/,'POLIZA RESGUARDO'],
+    [/POLIZA (TOTAL|ALIADO)|POLIZA INFINITO/,'POLIZA TOTAL O ALIADO'],
     [/POLIZA/,'POLIZA ASPEL'],
+    [/PUESTA A PUNTO|IMPLEMENTA|INSTALACION|CONFIGURACION|MIGRACION|GENERACION Y CARGA/,'SERVICIO POR EVENTO'],
+    [/24\s*\/\s*7|ACCESO 24|A TU RITMO/,'24/7'],
+    [/CURSO EMPRESARIAL|TALLER EMPRESARIAL|EMPRESARIAL/,'CURSO EMPRESARIAL'],
+    [/DIPLOMADO/,'DIPLOMADOS EN VIVO'],
+    [/CURSO|TALLER/,'CURSOS O TALLERES EN VIVO'],
     [/TS PLUS|SIIGO|LICENCIA|SOFTWARE/,'SOFTWARE'],
   ];
   for(const [re,nom] of reglas){ if(re.test(d)){ const h=hallar(nom); if(h) return h; } }
@@ -31934,6 +32019,13 @@ async function guardarEdicionIngreso(){
     const path=await subirXMLStorage(window._eiiXmlText,'ingresos',payload.folio);
     if(path) payload.xml_path=path;
     window._eiiXmlText=null;
+  }
+  // PDF real de la factura (Jp, 2026-11-18): se guarda en el mismo bucket que
+  // el XML. Si falla la subida se avisa pero no se pierde el resto del guardado.
+  const pdfFile=document.getElementById('eiiPdfFile')?.files?.[0];
+  if(pdfFile){
+    const pp=await subirPdfFacturaStorage(pdfFile,payload.folio||id);
+    if(pp) payload.pdf_path=pp;
   }
   const {error}=await sb.from('fact_ingresos').update(payload).eq('id',id);
   if(error){alert('Error: '+error.message);return;}
@@ -32986,6 +33078,25 @@ async function subirXMLStorage(xmlText,tipo,folio){
     if(error){console.error('Error subiendo XML:',error.message);return null;}
     return path;
   }catch(e){console.error('Error subiendo XML:',e);return null;}
+}
+
+// ── PDF real de la factura (Jp, 2026-11-18) ──────────────────────────────
+// Facturación lo sube junto con el XML, desde "Editar factura". Vive en el
+// mismo bucket que el XML (facturas-xml), en la carpeta pdf/.
+async function subirPdfFacturaStorage(file,folio){
+  try{
+    const limpio=String(folio||'sin-folio').replace(/[^A-Za-z0-9_-]/g,'');
+    const path=`pdf/ingresos/${limpio}-${Date.now()}.pdf`;
+    const {error}=await sb.storage.from('facturas-xml').upload(path,file,{contentType:'application/pdf',upsert:false});
+    if(error){alert('No se pudo guardar el PDF de la factura: '+error.message);return null;}
+    return path;
+  }catch(e){alert('No se pudo guardar el PDF de la factura: '+(e?.message||e));return null;}
+}
+async function verPdfFacturaGuardado(path){
+  if(!path){alert('Esta factura no tiene PDF guardado.');return;}
+  const {data,error}=await sb.storage.from('facturas-xml').createSignedUrl(path,300);
+  if(error||!data){alert('No se pudo abrir el PDF: '+(error?.message||''));return;}
+  window.open(data.signedUrl,'_blank');
 }
 
 async function verXMLGuardado(path){
@@ -37524,7 +37635,16 @@ async function solRegistrarIngresoFinanzasInt(r,xmlText){
       return {ok:true,creado:false,conciliado};
     }
     const anio=Number(d.fecha.slice(0,4))||currentYear,mes=Number(d.fecha.slice(5,7))||currentMonth;
-    const rubro=sugerirRubroPartida(d.concepto)||null;
+    // Rubro: primero el tipo de servicio con el que se vendió (viene de la
+    // negociación ligada); si no hay, se adivina del concepto como antes.
+    let tipoServicioVenta='';
+    if(r.pipeline_vendedor_id){
+      try{
+        const {data:pv}=await sb.from('pipeline_vendedor').select('tipo_servicio').eq('id',r.pipeline_vendedor_id).maybeSingle();
+        tipoServicioVenta=pv?.tipo_servicio||'';
+      }catch(e){}
+    }
+    const rubro=rubroDesdeTipoServicio(tipoServicioVenta,d.concepto||r.concepto)||sugerirRubroPartida(d.concepto)||null;
     const estatus=cobrado?'PAGADA':'EMITIDA';
     const base={anio,mes,fecha:d.fecha||null,folio:d.folio,serie:null,cliente:(String(r.notas||'').startsWith(SOL_PG_MARCA)?r.cliente_nombre:d.cliente)||r.cliente_nombre||null,vendedor,concepto:d.concepto||null,rubro,
       subtotal_original:d.subtotal||0,descuento:d.descuento||0,subtotal_final:d.subtotalFinal??((d.subtotal||0)-(d.descuento||0)),iva:d.ivaTras||0,total:d.total||0,

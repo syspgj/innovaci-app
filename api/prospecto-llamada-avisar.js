@@ -53,6 +53,24 @@ export default async function handler(req, res) {
     if (!l) return res.status(200).json({ ok: false, error: 'No se encontró la llamada' });
     const p = (await sbGet(`prospectos?id=eq.${l.prospecto_id}&select=nombre,apellidos,empresa,telefono,email,interes,origen,evento,notas`))[0] || {};
     const v = (await sbGet(`usuarios?id=eq.${l.vendedor_id}&select=nombre,email`))[0];
+    // Jp, 2026-11-18: el vendedor recibía el prospecto "en frío" — nombre,
+    // teléfono y el motivo de una línea — pero NO lo que ya se había hablado
+    // con él. Al entrar a la llamada sin ese contexto hace repetir al cliente
+    // todo lo que ya contó. Ahora el correo lleva las últimas llamadas con sus
+    // notas, que es justo lo que telemarketing ya tenía capturado.
+    let historial = [];
+    try {
+      historial = await sbGet(
+        `prospecto_llamadas?prospecto_id=eq.${l.prospecto_id}&select=created_at,fecha,resultado,notas,usuario_id&order=created_at.desc&limit=5`
+      );
+      const uids = [...new Set(historial.map((h) => h.usuario_id).filter(Boolean))];
+      if (uids.length) {
+        const us = await sbGet(`usuarios?id=in.(${uids.join(',')})&select=id,nombre`);
+        const mapa = {};
+        us.forEach((u) => { mapa[u.id] = u.nombre; });
+        historial.forEach((h) => { h._quien = mapa[h.usuario_id] || ''; });
+      }
+    } catch (_) { historial = []; }
     if (!v?.email) return res.status(200).json({ ok: false, error: 'El vendedor no tiene correo en la App' });
     const cc = new Set();
     if (l.asignado_por) { const a = (await sbGet(`usuarios?id=eq.${l.asignado_por}&select=email`))[0]; if (a?.email) cc.add(a.email); }

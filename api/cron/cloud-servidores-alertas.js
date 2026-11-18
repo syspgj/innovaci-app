@@ -73,6 +73,26 @@ async function sbPatch(path, body) {
   if (!res.ok) throw new Error(`Supabase PATCH ${path} -> ${res.status}: ${await res.text()}`);
 }
 
+async function sbPost(path, body) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      'content-type': 'application/json',
+      prefer: 'return=representation',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`Supabase POST ${path} -> ${res.status}: ${await res.text()}`);
+  return res.json();
+}
+
+const MESES = ['', 'ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO', 'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'];
+// Marca que lleva cada solicitud creada sola, para no duplicarla cuando el
+// cron vuelva a correr los días siguientes del mismo mes.
+function marcaCloud(anio, mes) { return `[cloud-auto ${anio}-${String(mes).padStart(2, '0')}]`; }
+
 async function enviarCorreo({ to, subject, html }) {
   if (!RESEND_KEY) return;
   const destinatarios = Array.isArray(to) ? to : [to];
@@ -129,7 +149,7 @@ export default async function handler(req, res) {
 
   try {
     const servidores = await sbGet(
-      `clientes_servidores_cloud?estado=neq.cancelado&select=id,cliente_cartera_id,nombre_servidor,monto_mensual,dia_facturacion,dia_limite_pago,estado`
+      `clientes_servidores_cloud?estado=neq.cancelado&select=id,cliente_cartera_id,nombre_servidor,monto_mensual,dia_facturacion,dia_limite_pago,estado,producto_servidor_id`
     );
     if (!servidores.length) {
       return res.status(200).json({ ok: true, hoy, mensaje: 'Sin servidores cloud activos en control.' });
@@ -137,7 +157,7 @@ export default async function handler(req, res) {
 
     const clienteIds = [...new Set(servidores.map(s => s.cliente_cartera_id))];
     const clientes = await sbGet(
-      `clientes_cartera?id=in.(${clienteIds.join(',')})&select=id,razon_social,vendedor_asignado`
+      `clientes_cartera?id=in.(${clienteIds.join(',')})&select=id,razon_social,num_cliente,rfc,regimen_fiscal,uso_cfdi,forma_pago_pref,metodo_pago_pref,vendedor_asignado`
     );
     const clienteMap = {};
     clientes.forEach(c => { clienteMap[c.id] = c; });
@@ -158,6 +178,31 @@ export default async function handler(req, res) {
       if (!facturaPorCliente[f.cliente_cartera_id]) facturaPorCliente[f.cliente_cartera_id] = f;
     });
 
+    // ── Solicitudes de factura del mes (Jp, 2026-11-18) ──────────────────
+    // Las facturas de Cloud no nacen en Ventas: las hace Facturación. Antes
+    // había que acordarse de capturar las 8 solicitudes a mano cada día 7; si
+    // se olvidaba, este cron solo mandaba el correo de "factura no emitida".
+    // Ahora, llegado el día de facturación de cada servidor, la solicitud se
+    // crea sola a nombre del VENDEDOR dueño de la cuenta (así él la ve y le
+    // carga el pago, aunque no la haya pedido) y queda en "pendiente de pago",
+    // que es el estado con el que Facturación la timbra y luego espera el
+    // pago del día límite. La factura se sigue haciendo en Aspel a mano: esto
+    // solo deja la solicitud lista, nunca timbra ni cobra nada.
+    const marca = marcaCloud(anio, mes);
+    const nombresProducto = {};
+    const prodIds = [...new Set(servidores.map(s => s.producto_servidor_id).filter(Boolean))];
+    if (prodIds.length) {
+      const prods = await sbGet(`productos_servidores?id=in.(${prodIds.join(',')})&select=id,nombre`);
+      prods.forEach(p => { nombresProducto[p.id] = p.nombre; });
+    }
+    const solsMes = await sbGet(
+      `solicitudes_factura?cliente_cartera_id=in.(${clienteIds.join(',')})&created_at=gte.${inicioMes}&select=id,cliente_cartera_id,notas,estado`
+    );
+    const yaTieneSolicitud = new Set(
+      solsMes.filter(x => String(x.notas || '').includes(marca)).map(x => x.cliente_cartera_id)
+    );
+    const solicitudesCreadas = [];
+
     const avisosAdmin = []; // {cliente, detalle}
     const avisosPorVendedor = {}; // usuarioId -> [{cliente, detalle}]
     let actualizados = 0;
@@ -167,6 +212,48 @@ export default async function handler(req, res) {
       const nombreCliente = cliente ? cliente.razon_social : '(cliente no encontrado)';
       const factura = facturaPorCliente[s.cliente_cartera_id];
       const vendedorUsuario = cliente && cliente.vendedor_asignado ? usuarioMap[cliente.vendedor_asignado] : null;
+
+      // Día de facturación: deja lista la solicitud si todavía no existe.
+      if (
+        cliente && s.estado !== 'suspendido' &&
+        dia >= (s.dia_facturacion || 7) &&
+        !facturaPorCliente[s.cliente_cartera_id] &&
+        !yaTieneSolicitud.has(s.cliente_cartera_id)
+      ) {
+        const equipo = nombresProducto[s.producto_servidor_id] || s.nombre_servidor || 'SERVIDOR CLOUD';
+        const concepto = `SERVIDOR ${String(equipo).toUpperCase().startsWith('CLOUD') ? '' : 'CLOUD '}${String(equipo).toUpperCase()} — ${MESES[mes]} ${anio}`;
+        const limite = Math.min(28, s.dia_limite_pago || 27);
+        try {
+          await sbPost('solicitudes_factura', {
+            vendedor_id: cliente.vendedor_asignado || null,
+            vendedor_nombre: vendedorUsuario ? vendedorUsuario.nombre : '',
+            cliente_cartera_id: cliente.id,
+            num_cliente: cliente.num_cliente || null,
+            cliente_nombre: cliente.razon_social,
+            rfc: cliente.rfc || null,
+            tipo: 'liberar_pago',
+            estado: 'pendiente_pago',
+            concepto,
+            monto_total: s.monto_mensual,
+            fecha_pago_esperada: `${anio}-${String(mes).padStart(2, '0')}-${String(limite).padStart(2, '0')}`,
+            forma_pago: cliente.forma_pago_pref || null,
+            metodo_pago: cliente.metodo_pago_pref || null,
+            uso_cfdi: cliente.uso_cfdi || null,
+            regimen: cliente.regimen_fiscal || null,
+            notas: `${marca} Servidor en la nube — solicitud generada sola el día ${dia} (día de facturación: ${s.dia_facturacion || 7}). El pago vence el día ${limite}. Si el monto o el concepto cambiaron, corrígelos aquí antes de facturar.`,
+          });
+          yaTieneSolicitud.add(s.cliente_cartera_id);
+          solicitudesCreadas.push({
+            cliente: nombreCliente,
+            detalle: `${concepto} · ${fmtMoney(s.monto_mensual)} · a nombre de ${vendedorUsuario ? vendedorUsuario.nombre : 'sin vendedor asignado'} · pago esperado el día ${limite}.`,
+          });
+        } catch (e) {
+          avisosAdmin.push({
+            cliente: nombreCliente,
+            detalle: `No se pudo crear sola la solicitud de factura del servidor cloud: ${e.message}. Captúrala a mano.`,
+          });
+        }
+      }
 
       let nuevoEstado = s.estado;
       let patch = null;
@@ -185,10 +272,18 @@ export default async function handler(req, res) {
         // No hay factura este mes y ya pasó el día de facturación —
         // aviso de "factura no emitida", sin tocar el estado del servidor
         // (puede seguir activo por la factura del mes anterior).
-        avisosAdmin.push({
-          cliente: nombreCliente,
-          detalle: `${s.nombre_servidor || 'Servidor cloud'} (${fmtMoney(s.monto_mensual)}/mes) — todavía no se ha registrado la factura de este mes en Finanzas (día de facturación: ${s.dia_facturacion}).`,
-        });
+        // Si la solicitud ya quedó lista (la acaba de crear este mismo cron o
+        // se creó un día anterior), el aviso cambia de tono: no es un olvido,
+        // es que falta timbrarla.
+        const tieneSol = yaTieneSolicitud.has(s.cliente_cartera_id);
+        if (!solicitudesCreadas.some(x => x.cliente === nombreCliente)) {
+          avisosAdmin.push({
+            cliente: nombreCliente,
+            detalle: tieneSol
+              ? `${s.nombre_servidor || 'Servidor cloud'} (${fmtMoney(s.monto_mensual)}/mes) — la solicitud de factura ya está en Facturación, falta timbrarla y registrarla en Finanzas.`
+              : `${s.nombre_servidor || 'Servidor cloud'} (${fmtMoney(s.monto_mensual)}/mes) — todavía no se ha registrado la factura de este mes en Finanzas (día de facturación: ${s.dia_facturacion}).`,
+          });
+        }
       }
 
       if (patch && nuevoEstado !== s.estado) {
@@ -212,6 +307,19 @@ export default async function handler(req, res) {
     }
 
     let correosEnviados = 0;
+
+    if (solicitudesCreadas.length) {
+      await enviarCorreo({
+        to: ADMIN_EMAIL,
+        subject: `🖥️ Servidores Cloud — ${solicitudesCreadas.length} solicitud${solicitudesCreadas.length !== 1 ? 'es' : ''} de factura lista${solicitudesCreadas.length !== 1 ? 's' : ''}`,
+        html: plantillaAviso({
+          titulo: 'Solicitudes de factura de servidores cloud',
+          intro: `Hoy ${hoy} se crearon solas ${solicitudesCreadas.length} solicitud${solicitudesCreadas.length !== 1 ? 'es' : ''} de factura de servidores en la nube. Ya están en Facturación → "Por facturar", esperando que se timbren; el pago lo carga el vendedor cuando llegue.`,
+          filas: solicitudesCreadas,
+        }),
+      });
+      correosEnviados++;
+    }
 
     if (avisosAdmin.length) {
       await enviarCorreo({
@@ -240,7 +348,7 @@ export default async function handler(req, res) {
       correosEnviados++;
     }
 
-    res.status(200).json({ ok: true, hoy, servidores_revisados: servidores.length, actualizados, correos_enviados: correosEnviados });
+    res.status(200).json({ ok: true, hoy, servidores_revisados: servidores.length, actualizados, solicitudes_creadas: solicitudesCreadas.length, detalle_solicitudes: solicitudesCreadas, correos_enviados: correosEnviados });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message || 'Error desconocido.' });
   }
