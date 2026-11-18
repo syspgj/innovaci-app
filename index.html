@@ -1417,7 +1417,21 @@ const ACADEMIA_SUBTABS=[
 ];
 let currentAcademiaTab='dashboard';
 let academiaGeneracionSel=null; // id de generación activa dentro de Generaciones/Prácticas
-let academiaGenFiltro={q:'',sistema:'',tipoCurso:'',archivadas:false};
+let academiaGenFiltro={q:'',sistema:'',tipoCurso:'',tipo:'',modalidad:'',archivadas:false};
+// Jp, 2026-11-18: en Generaciones el filtro combinado ("Diplomados 24/7",
+// "Talleres de especialización en vivo"…) se parte en dos, igual que al dar de
+// alta un curso: Tipo por un lado y Modalidad por el otro. Modalidad solo
+// tiene dos valores; no hay más.
+const ACADEMIA_TIPOS_CURSO=[
+  {key:'diplomado',   label:'Diplomado'},
+  {key:'curso',       label:'Curso'},
+  {key:'taller',      label:'Taller de especialización'},
+  {key:'empresarial', label:'Curso empresarial'},
+];
+const ACADEMIA_MODALIDADES=[
+  {key:'en_vivo', label:'En vivo'},
+  {key:'24_7',    label:'24/7 (a tu ritmo)'},
+];
 // Catálogo de Asistentes (Lote 10): un expediente por PERSONA, no por
 // inscripción — Jp: "cuando me aparezca en la lista de asistentes solamente
 // me va a aparecer un solo Marco Antonio y que asistió a los dos [cursos]".
@@ -2181,11 +2195,13 @@ async function renderAcademiaGeneraciones(){
   // entre el catálogo y Academia. Si falta, el curso simplemente NO aparece en
   // "Servicio / Póliza" y nadie se entera (fue lo que pasó con el Taller de
   // Pólizas Dinámicas 24/7). Aquí se avisa en la propia generación.
-  let gensVendibles=null;
+  // Se guarda en el caché porque quien pinta las tarjetas es
+  // academiaPintarGeneraciones(), otra función.
+  window._academiaCache.gensVendibles=null;
   try{
     const {data:mpv}=await sb.from('shopify_producto_map').select('generacion_ids');
-    if(mpv){ gensVendibles=new Set(); mpv.forEach(m=>(m.generacion_ids||[]).forEach(i=>gensVendibles.add(i))); }
-  }catch(e){ gensVendibles=null; }
+    if(mpv){ const s=new Set(); mpv.forEach(m=>(m.generacion_ids||[]).forEach(i=>s.add(i))); window._academiaCache.gensVendibles=s; }
+  }catch(e){ window._academiaCache.gensVendibles=null; }
   const conteos={};
   const archivadas={};
   (inscripciones||[]).forEach(i=>{
@@ -2214,9 +2230,13 @@ async function renderAcademiaGeneraciones(){
         <option value="" ${!academiaGenFiltro.sistema?'selected':''}>Sistema: todos</option>
         ${(window._academiaCache.sistemas||[]).map(s=>`<option value="${s.clave}" ${academiaGenFiltro.sistema===s.clave?'selected':''}>${s.clave}</option>`).join('')}
       </select>
-      <select onchange="academiaGenFiltro.tipoCurso=this.value;academiaPintarGeneraciones();" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
-        <option value="" ${!academiaGenFiltro.tipoCurso?'selected':''}>Tipo de curso: todos</option>
-        ${ACADEMIA_CATEGORIAS_CURSO.map(cat=>`<option value="${cat.key}" ${academiaGenFiltro.tipoCurso===cat.key?'selected':''}>${cat.label}</option>`).join('')}
+      <select onchange="academiaGenFiltro.tipo=this.value;academiaPintarGeneraciones();" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+        <option value="" ${!academiaGenFiltro.tipo?'selected':''}>Tipo: todos</option>
+        ${ACADEMIA_TIPOS_CURSO.map(t=>`<option value="${t.key}" ${academiaGenFiltro.tipo===t.key?'selected':''}>${t.label}</option>`).join('')}
+      </select>
+      <select onchange="academiaGenFiltro.modalidad=this.value;academiaPintarGeneraciones();" style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+        <option value="" ${!academiaGenFiltro.modalidad?'selected':''}>Modalidad: todas</option>
+        ${ACADEMIA_MODALIDADES.map(m=>`<option value="${m.key}" ${academiaGenFiltro.modalidad===m.key?'selected':''}>${m.label}</option>`).join('')}
       </select>
       <button class="cartera-subtab" style="${academiaGenFiltro.archivadas?'background:var(--navy);color:#fff;':''}" title="Generaciones donde ya se le envió su constancia a todos" onclick="academiaGenFiltro.archivadas=!academiaGenFiltro.archivadas;academiaPintarGeneraciones();">🗄 ${academiaGenFiltro.archivadas?'Viendo archivadas':'Ver archivadas'}</button>
       <button class="cartera-subtab" style="${academiaGenVista==='grid'?'background:var(--teal);color:#fff;':''}" onclick="academiaGenVista='grid';academiaPintarGeneraciones();">▦ Tarjetas</button>
@@ -2234,10 +2254,20 @@ function academiaPintarGeneraciones(){
   const q=(academiaGenFiltro.q||'').trim().toLowerCase();
   const conteos=window._academiaCache.generacionesConteos||{};
   const archivadasMap=window._academiaCache.generacionesArchivadas||{};
+  const vendibles=window._academiaCache.gensVendibles||null;
   const generaciones=(window._academiaCache.generaciones||[]).filter(g=>{
     if(!!archivadasMap[g.id]!==!!academiaGenFiltro.archivadas) return false;
     if(academiaGenFiltro.sistema && g.curso?.sistema?.clave!==academiaGenFiltro.sistema) return false;
     if(academiaGenFiltro.tipoCurso && academiaCategoriaCurso(g.curso)?.key!==academiaGenFiltro.tipoCurso) return false;
+    // "empresarial" es un tipo propio; los demás se normalizan (desde_cero→curso, etc.)
+    if(academiaGenFiltro.tipo){
+      const t=g.curso?.tipo==='empresarial'?'empresarial':academiaTipoNorm(g.curso?.tipo);
+      if(t!==academiaGenFiltro.tipo) return false;
+    }
+    if(academiaGenFiltro.modalidad){
+      const m=g.curso?.modalidad==='en_vivo'?'en_vivo':'24_7';
+      if(m!==academiaGenFiltro.modalidad) return false;
+    }
     if(!q) return true;
     const hay=`${g.curso?.sistema?.clave||''} ${g.curso?.nombre||''} ${g.clave||''}`.toLowerCase();
     return hay.includes(q);
@@ -2290,7 +2320,7 @@ function academiaPintarGeneraciones(){
           <div style="font-size:11px;font-weight:700;color:${ac.c};text-transform:uppercase;letter-spacing:.05em;">${g.curso?.sistema?.clave||''} · ${g.clave}</div>
           <div style="font-size:15px;font-weight:600;color:var(--navy);margin:4px 0 ${g.cliente_nombre?'2px':'10px'};padding-right:70px;">${g.curso?.nombre||''}</div>
           ${g.cliente_nombre?`<div style="font-size:12px;color:var(--text2);margin-bottom:8px;">🏢 ${g.cliente_nombre}</div>`:''}
-          ${(gensVendibles&&!gensVendibles.has(g.id)&&!g.cliente_nombre&&!g.archivado_manual)?`<div title="Ventas no la ve en 'Servicio / Póliza' porque no hay un producto en la tienda ligado a esta generación. Crea el producto en Shopify y vuelve a sincronizar." style="background:#FFF8EC;border:1px solid #F5A623;border-radius:6px;padding:5px 8px;font-size:10.5px;color:#8a5a00;margin-bottom:8px;line-height:1.4;">⚠️ No se puede vender todavía: falta su producto en la tienda</div>`:''}
+          ${(vendibles&&!vendibles.has(g.id)&&!g.cliente_nombre&&!g.archivado_manual)?`<div title="Ventas no la ve en 'Servicio / Póliza' porque no hay un producto en la tienda ligado a esta generación. Crea el producto en Shopify y vuelve a sincronizar." style="background:#FFF8EC;border:1px solid #F5A623;border-radius:6px;padding:5px 8px;font-size:10.5px;color:#8a5a00;margin-bottom:8px;line-height:1.4;">⚠️ No se puede vender todavía: falta su producto en la tienda</div>`:''}
           <div style="display:flex;gap:14px;font-size:12px;color:var(--text2);">
             <div><b>${c.total}</b> participantes</div>
             <div>${c.esencial||0} Esencial</div>
@@ -8665,7 +8695,7 @@ function modalPipeTeleHTML(r,hoy){
         <img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="display:none" onload="catProyCargar().then(()=>{catProyPintar();pipeRepintarPartidas();})">
         <div id="pPartidasLista">${(Array.isArray(v.partidas)?v.partidas:[]).map(pipePartidaHtml).join('')}</div>
         <button type="button" onclick="pipeAgregarPartida()" style="margin-top:8px;background:#fff;border:1px dashed var(--teal);color:var(--teal);border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;">➕ Agregar otra partida (otro producto o servicio en la misma venta)</button>
-        <div style="font-size:10px;color:var(--text3);margin-top:3px;">Si en una misma cotización vendes 2 o más cosas, agrega una partida por cada una. Los cursos en vivo, 24/7 y membresías solo se eligen del catálogo.</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;">Si en una misma cotización vendes 2 o más cosas, agrega una partida por cada una. Los cursos en vivo, 24/7 y membresías solo se eligen del catálogo. <button type="button" onclick="catProyRecargar()" style="background:none;border:none;color:var(--teal);font-size:10px;font-weight:700;cursor:pointer;padding:0;text-decoration:underline;">¿No aparece uno? Actualizar catálogo</button> <span id="catProyMsg"></span></div>
       </div>
       <div class="form-field" style="grid-column:1/-1;">
         <label>Cliente / prospecto</label>
@@ -9896,8 +9926,16 @@ const TIPOS_CRM=['Póliza','Curso Empresarial','IT','Servicio por Evento','Suscr
 const TIPOS_SERVICIO=[...TIPOS_CRM,'Membresías']; // Membresías no existe en el picklist del CRM: no se envía
 // Catálogo de Servicio/Póliza por tipo (tabla catalogo_proyeccion). Si falla la carga, queda texto libre.
 let CAT_PROY=null;
+// Jp, 2026-11-18: el catálogo se guardaba en memoria para toda la sesión, así
+// que si Capacitación daba de alta una generación o se ligaba un producto de
+// la tienda mientras Ventas tenía la app abierta, el servicio nuevo no
+// aparecía hasta recargar la página — y nadie sabía por qué. Ahora se
+// refresca solo cada 2 minutos, y hay un botón para forzarlo.
+let CAT_PROY_AT=0;
+const CAT_PROY_TTL=120000;
 async function catProyCargar(){
-  if(CAT_PROY) return CAT_PROY;
+  if(CAT_PROY&&(Date.now()-CAT_PROY_AT)<CAT_PROY_TTL) return CAT_PROY;
+  CAT_PROY_AT=Date.now();
   try{
     const {data,error}=await sb.from('catalogo_proyeccion').select('tipo_servicio,nombre,orden,solo_para,grupo').eq('activo',true).order('orden');
     CAT_PROY=error?[]:(data||[]);
@@ -9954,6 +9992,17 @@ async function catProyCargar(){
     }catch(e){console.error('catProy catálogo único',e);}
   }catch(e){CAT_PROY=[];}
   return CAT_PROY;
+}
+// Fuerza una relectura del catálogo y vuelve a pintar la lista del modal
+// abierto (sirve cuando Capacitación acaba de ligar un curso nuevo).
+async function catProyRecargar(){
+  CAT_PROY=null; CAT_PROY_AT=0;
+  const msg=document.getElementById('catProyMsg');
+  if(msg) msg.textContent='Actualizando catálogo…';
+  await catProyCargar();
+  catProyPintar(document.getElementById('pProducto')?.value||'');
+  if(typeof pipeRepintarPartidas==='function') pipeRepintarPartidas();
+  if(msg) msg.textContent='Catálogo actualizado.';
 }
 function catProyItems(tipo){
   const me=((typeof userProfile!=='undefined'&&userProfile&&userProfile.nombre)||'').toLowerCase();
@@ -10557,7 +10606,7 @@ function modalPipeHTML(r,hoy){
         <img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="display:none" onload="catProyCargar().then(()=>{catProyPintar();pipeRepintarPartidas();})">
         <div id="pPartidasLista">${(Array.isArray(v.partidas)?v.partidas:[]).map(pipePartidaHtml).join('')}</div>
         <button type="button" onclick="pipeAgregarPartida()" style="margin-top:8px;background:#fff;border:1px dashed var(--teal);color:var(--teal);border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;">➕ Agregar otra partida (otro producto o servicio en la misma venta)</button>
-        <div style="font-size:10px;color:var(--text3);margin-top:3px;">Si en una misma cotización vendes 2 o más cosas (p. ej. un combo y otro curso), agrega una partida por cada una. Los cursos en vivo, 24/7 y membresías solo se eligen del catálogo.</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;">Si en una misma cotización vendes 2 o más cosas (p. ej. un combo y otro curso), agrega una partida por cada una. Los cursos en vivo, 24/7 y membresías solo se eligen del catálogo. <button type="button" onclick="catProyRecargar()" style="background:none;border:none;color:var(--teal);font-size:10px;font-weight:700;cursor:pointer;padding:0;text-decoration:underline;">¿No aparece uno? Actualizar catálogo</button> <span id="catProyMsg"></span></div>
       </div>
       <div class="form-field" style="grid-column:1/-1;">
         <label>Cliente</label>
@@ -34997,8 +35046,14 @@ function solAcadHtml(p,ac){
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 12px;">
       ${solFld('Nivel de acceso',`<select id="${p}AcadNivel" style="${SOL_INPUT_STYLE}"><option value="esencial" ${ac.nivel==='esencial'?'selected':''}>Esencial</option><option value="plus" ${ac.nivel==='plus'?'selected':''}>Plus</option><option value="premium" ${ac.nivel==='premium'?'selected':''}>Premium</option></select>`)}
     </div>
-    <div style="font-size:12px;font-weight:700;color:#b45309;margin-bottom:3px;">📅 ¿En qué fecha entra el cliente? <span style="font-weight:500;color:var(--text3);">(obligatorio en talleres en vivo; combo = una fecha por taller)</span></div>
-    <div style="margin:6px 0 4px;"><input id="${p}AcadFecha" value="${solEsc(ac.fecha_texto||'')}" placeholder="Fecha del taller que elige el cliente, ej. 11 de noviembre / 2 de diciembre" style="${SOL_INPUT_STYLE}"><div style="font-size:10px;color:var(--text3);">Escríbela aquí si todavía no aparece en la lista de abajo; Dirección la liga a la generación.</div></div>
+    <!-- Jp, 2026-11-18: se quitó el campo "¿en qué fecha entra el cliente?".
+         Se puso cuando el Taller de Aguinaldo tenía dos fechas por elegir; hoy
+         le queda una sola, y en todo lo demás (pólizas dinámicas, 24/7…) no
+         aplicaba y estorbaba: pedía una fecha que no existe. La generación se
+         marca abajo; si no hay ninguna, se envía sin ella y Dirección la liga.
+         Se conserva ac.fecha_texto de solicitudes viejas, solo para leerlo. -->
+    <div style="font-size:12px;font-weight:700;color:var(--navy);margin:8px 0 3px;">📅 Generación a la que entra</div>
+    ${ac.fecha_texto?`<div style="font-size:10px;color:var(--text3);margin-bottom:4px;">El vendedor había anotado: <b>${solEsc(ac.fecha_texto)}</b></div>`:''}
     <div id="${p}AcadGens" style="font-size:12px;max-height:150px;overflow-y:auto;background:#fff;border:1px solid var(--border);border-radius:6px;padding:6px 10px;" data-sel="${solEsc(((ac.generaciones||[]).map(g=>g.id)).join(','))}">Cargando generaciones…</div>
   </div>`;
 }
@@ -35009,7 +35064,14 @@ async function solAcadCargarGens(p){
   const selPrev=new Set((box.dataset.sel||'').split(',').filter(Boolean));
   const gens=(window._solGens||[]).filter(g=>(g.__vig||selPrev.has(g.id))&&(!window._solGenSolo||window._solGenSolo.has(g.id)||g.__sel||selPrev.has(g.id))).slice().sort((a,b)=>(sug.has(b.id)-sug.has(a.id))||String(a.fecha_inicio||'9').localeCompare(String(b.fecha_inicio||'9')));
   const sel=new Set((box.dataset.sel||'').split(',').filter(Boolean));
-  box.innerHTML=gens.length?gens.map(g=>`<label style="display:flex;gap:6px;align-items:flex-start;padding:2px 0;"><input type="checkbox" class="${p}AcadGen" value="${g.id}" ${sel.has(g.id)?'checked':''}><span>${sug.has(g.id)?'⭐ ':''}${g.fecha_inicio?'<b>'+solFecha(g.fecha_inicio)+'</b> · ':''}${solEsc(g.curso?.nombre||'')} <span style="color:var(--text3);">(${solEsc(g.clave||'')})</span></span></label>`).join(''):'<span style="color:var(--text3);">No hay generaciones vigentes en Academia. Pídele a Dirección que las cree (en un combo, una por curso); mientras, puedes enviar sin generación y se asigna después desde la tarjeta.</span>';
+  box.innerHTML=gens.length?gens.map(g=>`<label style="display:flex;gap:6px;align-items:flex-start;padding:2px 0;"><input type="checkbox" class="${p}AcadGen" value="${g.id}" ${sel.has(g.id)?'checked':''}><span>${sug.has(g.id)?'⭐ ':''}${g.fecha_inicio?'<b>'+solFecha(g.fecha_inicio)+'</b> · ':''}${solEsc(g.curso?.nombre||'')} <span style="color:var(--text3);">(${solEsc(g.clave||'')})</span></span></label>`).join(''):(()=>{
+    // Jp, 2026-11-18: antes solo decía "no hay generaciones vigentes" aunque sí
+    // hubiera — pasa cuando el producto de la tienda limita la lista a las suyas.
+    // Ahora se distingue, para no mandar a nadie a crear algo que ya existe.
+    const vig=(window._solGens||[]).filter(g=>g.__vig).length;
+    if(vig&&window._solGenSolo) return '<span style="color:#b45309;">Hay '+vig+' generación(es) vigente(s), pero este producto de la tienda no está ligado a ninguna, así que no se pueden elegir aquí. Envía sin generación y Dirección la liga desde la tarjeta.</span>';
+    return '<span style="color:var(--text3);">No hay generaciones vigentes en Academia. Pídele a Dirección que las cree; mientras, puedes enviar sin generación y se asigna después desde la tarjeta.</span>';
+  })();
 }
 function solAcadLeer(p){
   const asistentes=[...document.querySelectorAll('.'+p+'AsRow')].map(r=>({nombre:r.querySelector('.'+p+'AsN').value.trim(),correo:r.querySelector('.'+p+'AsC').value.trim(),telefono:r.querySelector('.'+p+'AsT').value.trim()})).filter(a=>a.nombre||a.correo||a.telefono);
@@ -35033,7 +35095,8 @@ function solAcadValidar(ac,concepto,tipo){
   const hayGens=(window._solGens||[]).some(g=>g.__vig);
   const min=solMinGeneraciones(concepto,tipo);
   if(hayGens&&ac.generaciones.length<min) return min>1?(solEsCombo(concepto)&&min===2?'Es el combo: deben ir las dos generaciones (Aguinaldo y Cierre de Año).':`Esta venta incluye ${min} cursos/talleres (el combo cuenta como 2${solCursos247EnConcepto(concepto).length?'; también lleva: '+solCursos247EnConcepto(concepto).join(', '):''}). Marca una generación por cada uno (te faltan ${min-ac.generaciones.length}).`):(esVivo?'Marca la generación (fecha) en la que entrará el cliente. Es obligatorio en cursos y talleres en vivo.':'Marca la generación del curso 24/7 al que entrará el cliente.');
-  if(!hayGens&&esVivo&&!ac.fecha_texto) return 'Indica la FECHA a la que entrará el cliente (no hay generaciones vigentes en Academia para elegir).';
+  // Jp, 2026-11-18: ya no se pide escribir la fecha a mano. Si Academia no tiene
+  // generaciones vigentes, la solicitud se envía sin generación y Dirección la liga.
   const cursos=ac.generaciones.map(g=>g.curso).filter(Boolean);
   if(new Set(cursos).size<cursos.length) return 'Marcaste dos fechas del mismo taller; el cliente entra solo a una. Deja una sola generación por taller.';
   return '';
