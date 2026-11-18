@@ -25265,6 +25265,35 @@ function calcularProximoVencimientoResguardo(fechaInicioStr,periodicidadDias,ult
 // póliza (si ya está espejado), y registra la fila en resguardo_evidencias
 // para el periodo que corresponde — Jp confirmó que la evidencia debe ser
 // un archivo/captura real, no solo un checkbox.
+// Deja la constancia de una validación de resguardo en la bitácora del
+// servidor cloud del cliente y, si ese servidor tiene su propio proyecto en el
+// CRM, también comenta ahí (Jp, 2026-11-18). Los crons de Dropbox y Drive
+// hacen lo mismo del lado del servidor.
+async function dejarConstanciaEnServidor({polizaId,servidorCloudId,periodo,origen,texto,archivo,crmComentarioId}){
+  if(!servidorCloudId) return;
+  try{
+    let crmServidorId=null;
+    const {data:serv}=await sb.from('clientes_servidores_cloud').select('numero_proyecto_crm').eq('id',servidorCloudId).single();
+    if(serv?.numero_proyecto_crm){
+      try{
+        const {data:sess}=await sb.auth.getSession();
+        const res=await fetch('/api/crm-comentarios',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+sess?.session?.access_token},body:JSON.stringify({tipo:'proyecto',numero_proyecto_crm:serv.numero_proyecto_crm,comentario:texto,vendedor_usuario_id:currentUser.id})});
+        const j=await res.json().catch(()=>({}));
+        if(j.ok) crmServidorId=j.comentario_id; else console.error('No se pudo comentar en el proyecto CRM del servidor',j);
+      }catch(e){console.error('No se pudo comentar en el proyecto CRM del servidor',e);}
+    }
+    const {error}=await sb.from('servidores_bitacora').insert({
+      servidor_cloud_id:servidorCloudId, cliente_poliza_id:polizaId, tipo:'resguardo_validado',
+      periodo_fecha:periodo||null, origen, texto, archivo:archivo||null,
+      crm_comentario_id:crmComentarioId?String(crmComentarioId):null,
+      crm_comentario_servidor_id:crmServidorId?String(crmServidorId):null,
+      creado_por:currentUser?.id||null,
+    });
+    // Duplicado del mismo periodo: el índice único lo rechaza y no es un error real.
+    if(error&&!/duplicate|unique/i.test(error.message||'')) console.error('servidores_bitacora',error);
+  }catch(e){console.error('dejarConstanciaEnServidor',e);}
+}
+
 async function guardarEvidenciaResguardo(id){
   const fileInput=document.getElementById('resguardoArchivo_'+id);
   const notaInput=document.getElementById('resguardoNota_'+id);
@@ -25275,7 +25304,8 @@ async function guardarEvidenciaResguardo(id){
   try{
     let crmComentarioId=null;
     try{
-      const {data:polRow}=await sb.from('clientes_polizas').select('numero_proyecto_crm').eq('id',id).single();
+      const {data:polRow}=await sb.from('clientes_polizas').select('numero_proyecto_crm,servidor_cloud_id,cliente_nombre').eq('id',id).single();
+      window._evidenciaPolRow=polRow||null;
       if(polRow?.numero_proyecto_crm){
         const {data:sess}=await sb.auth.getSession();
         const token=sess?.session?.access_token;
@@ -25300,6 +25330,15 @@ async function guardarEvidenciaResguardo(id){
     }
     const {error:evErr}=await sb.from('resguardo_evidencias').upsert({cliente_poliza_id:id,periodo_fecha:periodoFecha,fecha_subida:new Date().toISOString(),origen:'manual',subido_por:currentUser.id,crm_documento_id:docId,crm_comentario_id:crmComentarioId,nota},{onConflict:'cliente_poliza_id,periodo_fecha'});
     if(evErr) throw evErr;
+    // Jp, 2026-11-18 — constancia en el servidor del cliente: "cada que se
+    // valide el resguardo, sea manual o automático, se tiene que lanzar un
+    // comentario hacia el servidor como evidencia de que se está resguardando".
+    await dejarConstanciaEnServidor({
+      polizaId:id, servidorCloudId:window._evidenciaPolRow?.servidor_cloud_id||null,
+      periodo:periodoFecha, origen:'manual',
+      texto:`✅ Resguardo validado (evidencia subida a mano en la App) — ${window._evidenciaPolRow?.cliente_nombre||''}, periodo ${periodoFecha}.`+(nota?' '+nota:''),
+      archivo:file?.name||null, crmComentarioId,
+    });
     alert('Evidencia de resguardo guardada.');
     document.getElementById('modalDetallePoliza')?.remove();
     abrirDetallePoliza(id);
@@ -25338,8 +25377,9 @@ function dropboxErrorAmigable(err,carpeta){
   return 'No se pudo revisar la carpeta de Dropbox: '+e.replace(/^Dropbox list_folder \([^)]*\) falló: /,'').slice(0,200);
 }
 // Buscador de carpetas de Dropbox: lista las carpetas reales (un nivel), se puede entrar a subcarpetas y elegir una.
-async function dropboxBuscarCarpeta(id,ruta){
-  const inp=document.getElementById('resguardoDropboxFolder_'+id);
+async function dropboxBuscarCarpeta(id,ruta,destino){
+  if(ruta===undefined) window._dbxDestino=destino||null;
+  const inp=document.getElementById(window._dbxDestino||('resguardoDropboxFolder_'+id));
   let path=ruta;
   if(path===undefined){ // empieza en la carpeta que contiene a la capturada (o en la raíz)
     const act=(inp?.value||'').trim().replace(/\/+$/,'');
@@ -25376,10 +25416,24 @@ function dropboxCarpetaFiltrar(){
 }
 function dropboxCarpetaIr(i){const c=(window._dbxCarpetas||[])[i];if(c) dropboxBuscarCarpeta(window._dbxPolizaId,c.path);}
 function dropboxCarpetaPoner(path){
-  const inp=document.getElementById('resguardoDropboxFolder_'+window._dbxPolizaId);
+  // _dbxDestino permite reusar el mismo explorador para la carpeta "clásica"
+  // y para las carpetas adicionales (RAMTAV: 3 tareas de respaldo en Dropbox).
+  const idDestino=window._dbxDestino||('resguardoDropboxFolder_'+window._dbxPolizaId);
+  const inp=document.getElementById(idDestino);
   if(inp){inp.value=path;inp.style.background='#e6f6f5';}
   document.getElementById('modalDropboxCarpetas')?.remove();
-  uiToast('📂 Carpeta elegida: '+path+' — pulsa "💾 Guardar configuración".',true);
+  uiToast('📂 Carpeta elegida: '+path+(window._dbxDestino?' — pulsa "➕ Agregar".':' — pulsa "💾 Guardar configuración".'),true);
+}
+// Agrega una carpeta MÁS de Dropbox a la póliza (una por cada tarea de respaldo).
+async function resguardoDropboxAgregar(id){
+  const et=(document.getElementById('resguardoDbxEtiqueta_'+id)?.value||'').trim();
+  const ruta=(document.getElementById('resguardoDbxRuta_'+id)?.value||'').trim();
+  if(!ruta) return alert('Captura (o busca) la ruta de la carpeta en Dropbox.');
+  const {error}=await sb.from('resguardo_origenes').insert({cliente_poliza_id:id,proveedor:'dropbox',etiqueta:et||null,carpeta_id:ruta,created_by:currentUser?.id||null});
+  if(error) return alert('No se pudo agregar: '+error.message);
+  document.getElementById('modalDetallePoliza')?.remove();
+  await abrirDetallePoliza(id);
+  revisarDropboxPoliza(id);
 }
 function dropboxCarpetaElegir(i){const c=(window._dbxCarpetas||[])[i];if(c) dropboxCarpetaPoner(c.path);}
 function dropboxCarpetaElegirActual(){if(window._dbxRuta) dropboxCarpetaPoner(window._dbxRuta);}
@@ -25593,12 +25647,17 @@ async function abrirDetallePoliza(id){
         if(derivado) periodicidadDias=derivado;
       }
     }
-    const [{data:evidencias},{data:incidenciasAbiertas},{data:serversCat},{data:origenesDrive}]=await Promise.all([
+    const [{data:evidencias},{data:incidenciasAbiertas},{data:serversCat},{data:origenesTodos},{data:bitacoraServidor}]=await Promise.all([
       sb.from('resguardo_evidencias').select('*').eq('cliente_poliza_id',id).order('periodo_fecha',{ascending:false}).limit(24),
       sb.from('servicios_ejecutados').select('id,folio_ticket,estatus').eq('cliente_poliza_id',id).eq('tipo_servicio','INCIDENCIA_RESGUARDO').in('estatus',['PENDIENTE','ASIGNADO','EN_CURSO']).order('created_at',{ascending:false}).limit(1),
       sb.from('productos_servidores').select('id,nombre').order('nombre'),
       sb.from('resguardo_origenes').select('*').eq('cliente_poliza_id',id).eq('activo',true).order('created_at'),
+      sb.from('servidores_bitacora').select('*').eq('cliente_poliza_id',id).order('creado_en',{ascending:false}).limit(10),
     ]);
+    // Jp, 2026-11-18 — RAMTAV: una póliza puede tener varias carpetas de Dropbox
+    // (3 tareas de respaldo), igual que ya pasaba con Drive.
+    const origenesDrive=(origenesTodos||[]).filter(o=>(o.proveedor||'drive')==='drive');
+    const origenesDbx=(origenesTodos||[]).filter(o=>o.proveedor==='dropbox');
     // producto_servidor_id actual del servidor ya ligado (si existe), para
     // preseleccionar el combo de abajo — Jp, 2026-10-26: "en el caso de
     // ellos [ARES] no está en el CRM, pero sí está en la factura es un
@@ -25631,6 +25690,13 @@ async function abrirDetallePoliza(id){
     const candidatos=[];
     if(ultArchFecha) candidatos.push({fecha:ultArchFecha,origen:'Dropbox',detalle:ultArchNombre});
     if(ultEvid) candidatos.push({fecha:ultEvid.periodo_fecha,origen:ultEvid.origen==='dropbox'?'Dropbox':(ultEvid.origen==='drive'?'Google Drive':'Subida manual'),detalle:ultEvid.dropbox_path?ultEvid.dropbox_path.split('/').pop():(ultEvid.nota||null)});
+    // Archivos de las carpetas adicionales (Dropbox o Drive) — para que el
+    // "último resguardo validado" no salga vacío cuando la póliza no usa la
+    // carpeta única de siempre (RAMTAV: 3 tareas, todas en resguardo_origenes).
+    (origenesTodos||[]).forEach(o=>{
+      const f=mxFecha(o.ultimo_archivo_fecha);
+      if(f) candidatos.push({fecha:f,origen:o.proveedor==='dropbox'?'Dropbox':'Google Drive',detalle:o.etiqueta||o.ultimo_archivo||null});
+    });
     candidatos.sort((x,y)=>String(y.fecha).localeCompare(String(x.fecha)));
     const ultimoValidado=candidatos[0]||null;
     const diasSin=ultimoValidado?diasEntre(ultimoValidado.fecha,hoyMx):null;
@@ -25645,12 +25711,19 @@ async function abrirDetallePoliza(id){
     if(c.estatus==='CERRADA'){alertaTxt='Póliza cerrada — no se revisa.';alertaTipo='gris';}
     else if(c.dropbox_revision_error){alertaTxt=dropboxErrorAmigable(c.dropbox_revision_error,c.resguardo_dropbox_folder);alertaTipo='rojo';}
     else if(!periodicidadDias){alertaTxt='Falta definir la periodicidad de esta póliza (abajo, en Configuración de resguardo).';alertaTipo='amarillo';}
-    else if(!ultimoValidado&&(origenesDrive||[]).length&&!c.resguardo_dropbox_folder){alertaTxt=(origenesDrive||[]).some(o=>o.revision_at)?'Requiere revisión: ninguna carpeta de Drive tiene respaldo validado todavía.':'Sin revisar aún — pulsa "Revisar Drive ahora".';alertaTipo=(origenesDrive||[]).some(o=>o.revision_at)?'rojo':'amarillo';}
+    else if(!ultimoValidado&&((origenesDrive||[]).length||(origenesDbx||[]).length)&&!c.resguardo_dropbox_folder){alertaTxt=(origenesDrive||[]).some(o=>o.revision_at)?'Requiere revisión: ninguna carpeta de Drive tiene respaldo validado todavía.':'Sin revisar aún — pulsa "Revisar Drive ahora".';alertaTipo=(origenesDrive||[]).some(o=>o.revision_at)?'rojo':'amarillo';}
     else if(!ultimoValidado){alertaTxt=c.resguardo_dropbox_folder?(c.dropbox_revision_at?'Requiere revisión: no hay ningún respaldo validado todavía.':'Sin revisar aún — pulsa "Revisar Dropbox ahora".'):'Requiere revisión: sin carpeta de Dropbox ni evidencia subida.';alertaTipo=c.dropbox_revision_at||!c.resguardo_dropbox_folder?'rojo':'amarillo';}
     else if(atrasado&&plazoCliente&&!fueraDePlazoCliente){alertaTxt=`Alerta interna: el último respaldo es de hace ${diasSin} días (se esperaba cada ${periodicidadDias}). Con el cliente aún estamos en plazo (${plazoCliente} días; quedan ${plazoCliente-diasSin}).`;alertaTipo='amarillo';}
     else if(atrasado&&plazoCliente){alertaTxt=`Fuera del plazo con el cliente: el último respaldo es de hace ${diasSin} días y el contrato pide máximo ${plazoCliente}.`;alertaTipo='rojo';}
     else if(atrasado){alertaTxt=`Requiere revisión: el último respaldo es de hace ${diasSin} días (se esperaba cada ${periodicidadDias}).`;alertaTipo='rojo';}
     // Jp 2026-11-17: carpetas de Google Drive (varias tareas por póliza): todas deben tener respaldo reciente.
+    const dbx=(origenesDbx||[]).map(o=>{
+      const f=mxFecha(o.ultimo_archivo_fecha);
+      const dd=f?diasEntre(f,hoyMx):null;
+      const reciente=!!(f&&periodicidadDias&&dd<=periodicidadDias);
+      const enPlazo=!!(f&&plazoCliente&&dd<=plazoCliente);
+      return {...o,f,reciente,estado:o.error?'error':(!o.revision_at?'sin':(reciente?'ok':(enPlazo?'interna':'viejo')))};
+    });
     const drv=(origenesDrive||[]).map(o=>{
       const f=mxFecha(o.ultimo_archivo_fecha);
       const dd=f?diasEntre(f,hoyMx):null;
@@ -25658,6 +25731,10 @@ async function abrirDetallePoliza(id){
       const enPlazo=!!(f&&plazoCliente&&dd<=plazoCliente);
       return {...o,f,reciente,estado:o.error?'error':(!o.revision_at?'sin':(reciente?'ok':(enPlazo?'interna':'viejo')))};
     });
+    if(alertaTipo==='ok'&&dbx.length){
+      const malasD=dbx.filter(o=>o.estado!=='ok');
+      if(malasD.length){alertaTxt='Carpeta(s) de Dropbox sin respaldo reciente: '+malasD.map(o=>(o.etiqueta||o.carpeta_id)+(o.estado==='error'?' (error al revisar)':o.estado==='sin'?' (sin revisar)':o.estado==='interna'?' (atraso interno, aún en plazo del cliente)':'')).join(', ')+'.';alertaTipo=malasD.some(o=>o.estado==='error'||o.estado==='viejo')?'rojo':'amarillo';}
+    }
     if(alertaTipo==='ok'&&drv.length){
       const malas=drv.filter(o=>o.estado!=='ok');
       if(malas.length){alertaTxt='Carpeta(s) de Drive sin respaldo reciente: '+malas.map(o=>(o.etiqueta||'carpeta')+(o.estado==='error'?' (error al revisar)':o.estado==='sin'?' (sin revisar)':o.estado==='interna'?' (atraso interno, aún en plazo del cliente)':'')).join(', ')+'.';alertaTipo=malas.some(o=>o.estado==='error'||o.estado==='viejo')?'rojo':'amarillo';}
@@ -25685,14 +25762,19 @@ async function abrirDetallePoliza(id){
         ${!c.dropbox_revision_error&&c.dropbox_revision_at?(c.dropbox_ultimo_archivo?`<br>Último archivo en la carpeta: <b>${ultArchFecha}</b> — <span style="color:var(--text3);">${ultArchNombre}</span> <span style="color:var(--text3);">(${c.dropbox_archivos_total} archivos en total)</span>`:'<br><span style="color:#c47f0a;">La carpeta existe pero está vacía: no hay respaldos en Dropbox.</span>'):''}
         <br><span style="color:var(--text3);">${revisionTxt?'Última revisión: '+revisionTxt+' · ':'Nunca revisada · '}corre sola una vez al día.</span></div>`
       :`<div style="font-size:11px;margin-top:6px;color:var(--text3);">Sin carpeta de Dropbox capturada todavía — captúrala en "⚙ Configuración de resguardo" para activar la validación automática. Mientras tanto, sigue subiendo la evidencia manualmente.</div>`;
-    const botonRevisarHtml=c.resguardo_dropbox_folder?`<div style="margin-top:8px;"><button id="btnRevisarDropbox_${id}" onclick="revisarDropboxPoliza('${id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">🔄 Revisar Dropbox ahora</button></div>`:'';
+    const dbxListaHtml=dbx.length?`<div style="font-size:11px;color:var(--text3);margin:8px 0 2px;">${c.resguardo_dropbox_folder?'Además, esta':'Esta'} póliza tiene <b>${dbx.length} ${dbx.length===1?'carpeta':'carpetas'}</b> de Dropbox (una por cada tarea de respaldo). Se da por cumplida cuando <b>todas</b> tienen archivo del periodo.</div>`+dbx.map(o=>`<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--border);font-size:11px;">
+      <div><b>${String(o.etiqueta||o.carpeta_id).replace(/</g,'&lt;')}</b> ${o.estado==='ok'?'✅':(o.estado==='viejo'||o.estado==='interna')?'⚠':o.estado==='error'?'❌':'⏳'}<br>
+      <span style="font-family:'JetBrains Mono',monospace;color:var(--text3);">${String(o.carpeta_id).replace(/</g,'&lt;')}</span><br>
+      ${o.estado==='error'?`<span style="color:var(--red);">${String(o.error).replace(/</g,'&lt;')}</span>`:o.revision_at?(o.ultimo_archivo?`Último archivo: <b>${o.f}</b> — <span style="color:var(--text3);">${String(o.ultimo_archivo).replace(/</g,'&lt;')} (${o.archivos_total} archivos)</span>`:'<span style="color:#c47f0a;">Carpeta sin archivos</span>'):'<span style="color:var(--text3);">Sin revisar aún</span>'}</div>
+      <button onclick="resguardoDriveQuitar('${o.id}','${id}')" style="background:none;border:1px solid var(--border);border-radius:6px;padding:2px 8px;font-size:10px;cursor:pointer;white-space:nowrap;">Quitar</button></div>`).join(''):'';
+    const botonRevisarHtml=(c.resguardo_dropbox_folder||dbx.length)?`<div style="margin-top:8px;"><button id="btnRevisarDropbox_${id}" onclick="revisarDropboxPoliza('${id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">🔄 Revisar Dropbox ahora</button></div>`:'';
 
     resguardoBloque=`${resumenHtml}<div style="margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:8px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:8px;">
         <div style="font-size:11px;font-weight:700;color:var(--navy);">📂 Validación en Dropbox</div>
         ${dropboxEstadoHtml}
       </div>
-      ${dropboxDetalleHtml}${botonRevisarHtml}
+      ${c.resguardo_dropbox_folder||!dbx.length?dropboxDetalleHtml:''}${dbxListaHtml}${botonRevisarHtml}
     </div>
     <div style="margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:8px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:8px;">
@@ -25741,6 +25823,16 @@ async function abrirDetallePoliza(id){
         <div style="font-size:10px;color:var(--text3);margin-top:3px;">Si no sabes cómo se llama, pulsa "Buscar carpeta": verás las carpetas reales de Dropbox y eliges la correcta con un clic. Después pulsa "Guardar configuración".</div>
       </div>
       <div style="margin-bottom:8px;padding:8px;border:1px solid var(--border);border-radius:6px;">
+        <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">📂 Agregar OTRA carpeta de Dropbox (una por cada tarea de respaldo)</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <input type="text" id="resguardoDbxEtiqueta_${id}" placeholder="Nombre (ej. Diario 3pm)" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;width:150px;">
+          <input type="text" id="resguardoDbxRuta_${id}" placeholder="/Espacio familiar/CLIENTE/TAREA" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;flex:1;min-width:160px;">
+          <button type="button" onclick="dropboxBuscarCarpeta('${id}',undefined,'resguardoDbxRuta_${id}')" style="background:#fff;color:var(--navy);border:1px solid var(--navy);border-radius:6px;padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">📂 Buscar</button>
+          <button type="button" onclick="resguardoDropboxAgregar('${id}')" style="background:#fff;color:var(--navy);border:1px solid var(--navy);border-radius:6px;padding:6px 10px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">➕ Agregar</button>
+        </div>
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;">Úsalo cuando el cliente tenga varias tareas de respaldo en carpetas distintas. Se agrega al instante (no hace falta "Guardar configuración").</div>
+      </div>
+      <div style="margin-bottom:8px;padding:8px;border:1px solid var(--border);border-radius:6px;">
         <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">☁️ Agregar carpeta de Google Drive (una por cada tarea de respaldo)</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <input type="text" id="resguardoDriveEtiqueta_${id}" placeholder="Nombre (ej. Publico_full)" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;width:150px;">
@@ -25759,7 +25851,17 @@ async function abrirDetallePoliza(id){
         <div style="font-size:10px;color:var(--text3);margin-top:3px;">La vigilancia interna sigue la periodicidad (avisa suave al primer atraso); el plazo del cliente marca cuándo ya estamos incumpliendo.</div>
       </div>
       <button onclick="guardarConfigResguardo('${id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">💾 Guardar configuración</button>
-    </details>`;
+    </details>
+    <div style="margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:8px;">
+      <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:6px;">🖥 Constancias en el servidor del cliente</div>
+      ${!c.servidor_cloud_id
+        ?'<div style="font-size:11px;color:var(--text3);">Esta póliza no tiene servidor cloud ligado — las constancias se dejan solo en el proyecto del CRM. Liga el servidor en "⚙ Configuración de resguardo".</div>'
+        :(!(bitacoraServidor||[]).length
+          ?'<div style="font-size:11px;color:var(--text3);font-style:italic;">Sin constancias todavía — se genera una cada vez que se valida un resguardo (automático o manual).</div>'
+          :(bitacoraServidor||[]).map(b=>`<div style="padding:6px 0;border-top:1px solid var(--border);font-size:11px;">
+            <b>${(b.creado_en||'').slice(0,10)}</b> <span style="color:var(--text3);">· ${b.origen==='dropbox'?'Dropbox':b.origen==='drive'?'Google Drive':'Manual'}${b.periodo_fecha?' · periodo '+b.periodo_fecha:''}${b.crm_comentario_servidor_id?' · comentado en el CRM del servidor':''}</span><br>
+            ${String(b.texto||'').replace(/</g,'&lt;')}</div>`).join(''))}
+    </div>`;
   }
   const html=`
     <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:14px;">
@@ -28449,6 +28551,7 @@ function cloudFormularioServidor(s,facturas){
         ${fld('Día límite de pago',inp('cDiaLimite','number','',s?.dia_limite_pago||27))}
       </div>
       ${fld('Fecha de inicio de contrato',inp('cFechaAlta','date','',s?.fecha_alta||new Date().toISOString().split('T')[0]))}
+      ${fld('Proyecto del CRM de este servidor (opcional)',inp('cProyectoCrm','text','ej. POL2602 — si el servidor tiene proyecto propio en el CRM',s?.numero_proyecto_crm||'')+`<div style="font-size:10px;color:var(--text3);margin-top:3px;">Si lo capturas, cada resguardo validado de este cliente deja también su comentario en ese proyecto.</div>`)}
       ${s?fld('Estado',`<select id="cEstado" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${Object.entries(CLOUD_ESTADO_LABEL).map(([k,v])=>`<option value="${k}" ${k===s.estado?'selected':''}>${v.l}</option>`).join('')}</select>`):''}
       ${fld('Notas',`<textarea id="cNotas" rows="2" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;font-family:'Inter',sans-serif;">${s?.notas||''}</textarea>`)}
       ${s?cloudFacturasHtml(facturas):''}
@@ -28542,6 +28645,7 @@ async function guardarCloudServidor(id){
     dia_limite_pago: Number(document.getElementById('cDiaLimite').value)||27,
     fecha_alta: document.getElementById('cFechaAlta').value||new Date().toISOString().split('T')[0],
     notas: document.getElementById('cNotas').value.trim()||null,
+    numero_proyecto_crm: document.getElementById('cProyectoCrm')?.value.trim()||null,
   };
   const estadoSel=document.getElementById('cEstado');
   if(estadoSel) payload.estado=estadoSel.value;
