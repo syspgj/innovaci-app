@@ -1,0 +1,533 @@
+// api/cron/sync-crm-proyectos.js
+//
+// Jp, 2026-10-14 — Fase 1 de "Proyectos" (punto 4, antes "más adelante").
+// Mismo patrón que api/cron/sync-crm-oportunidades.js, pero con una
+// diferencia a propósito: en vez de dejar el mapeo crudo→negocio como un
+// segundo paso manual (lo que pasó con Cuentas y causó que clientes_cartera
+// se desactualizara 8+ días sin que nadie lo notara — ver conversación del
+// 2026-10-14), este cron hace las DOS cosas en una sola corrida:
+//   1. Trae todos los proyectos de Vtiger (módulo "Project") y los guarda
+//      crudos en stg_proyectos_crm_raw (igual que los demás syncs, para
+//      poder diagnosticar si algo sale raro).
+//   2. Mapea cada uno a proyectos_crm con sus columnas de negocio ya
+//      resueltas (cliente, oportunidad, vendedor, activo/cerrado), sin
+//      depender de que alguien corra un segundo script después.
+//
+// "activo": projectstatus NOT IN ('Archivado','Concluido') — los otros 6
+// valores (En Asignación, En curso, Detenido por Cliente, Detenido por
+// Soporte, Parcialmente Concluido, Confirmado por Cliente) cuentan como
+// proyecto todavía abierto/con seguimiento. Confirmado contra el describe
+// en vivo del módulo (ver api/crm-describir-proyectos.js, ya usado y
+// puede borrarse del repo).
+//
+// cliente_cartera_id: linktoaccountscontacts (id de Cuenta en Vtiger) ->
+// stg_cuentas_crm_raw.crm_record_id -> account_no -> clientes_cartera.num_cliente
+// (mismo patrón ya probado con Oportunidades).
+//
+// oportunidad_crm_id: potentialid (si el proyecto se originó de una
+// Oportunidad ganada) -> oportunidades_crm.crm_potentialid.
+//
+// vendedor_asignado: heredado de clientes_cartera.vendedor_asignado de la
+// cuenta ya resuelta (igual que Oportunidades) — no tiene caso resolverlo
+// desde assigned_user_id de Vtiger, porque ese es el usuario de ahí, no
+// necesariamente el vendedor de Cartera en la app.
+//
+// Variables de entorno: reutiliza las ya configuradas — VTIGER_BASE_URL,
+// VTIGER_USER, VTIGER_ACCESS_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
+// SYNC_SECRET. No requiere ninguna nueva.
+//
+// Cron: agregar a vercel.json, mismo bloque "crons", después del de
+// Oportunidades — ver nota en ese archivo.
+
+import crypto from 'node:crypto';
+
+const VTIGER_BASE_URL = process.env.VTIGER_BASE_URL;
+const VTIGER_USER = process.env.VTIGER_USER;
+const VTIGER_ACCESS_KEY = process.env.VTIGER_ACCESS_KEY;
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SYNC_SECRET = process.env.SYNC_SECRET;
+
+// Proyectos con estatus en alguno de estos dos valores cuentan como
+// cerrados/archivados — todo lo demás es "activo".
+const ESTATUS_CERRADOS = new Set(['Archivado', 'Concluido']);
+
+// Jp, 2026-10-14 — nivel de prioridad/atención por tipo de póliza
+// (confirmado con la tabla "Niveles de prioridad, asignación y primer
+// contacto" y validado en el chat): solo los tipos de proyecto que SON
+// una póliza de soporte vigente tienen nivel; todo lo demás (resguardo,
+// capacitaciones, servicios sueltos, pólizas desfasadas/históricas) se
+// deja sin nivel a propósito — no es un hueco, Jp confirmó que no importa
+// que esas no tengan nivel. Las claves van normalizadas (sin acentos,
+// minúsculas) porque el CRM no acentúa consistente ("Poliza Backup" vs
+// "Póliza Elite") — ver normalizarTipoProyecto.
+const NIVEL_POR_TIPO_PROYECTO = {
+  'poliza elite': { codigo: 'N1', label: 'Black' },
+  'poliza aliado core': { codigo: 'N1', label: 'Black' },
+  'poliza aliado empresa': { codigo: 'N1', label: 'Black' },
+  'poliza aliado prime': { codigo: 'N1', label: 'Black' },
+  'poliza aliado especial': { codigo: 'N1', label: 'Black' },
+  'poliza infinito': { codigo: 'N2', label: 'Blue' },
+  'poliza mi empresa +': { codigo: 'N3', label: 'Gold' },
+  'circulo innovaci noi': { codigo: 'N3', label: 'Gold' },
+  'poliza profesionista': { codigo: 'N4', label: 'Green' },
+  'poliza emprendedor': { codigo: 'N5', label: 'Gray' },
+  'poliza siigo aspel': { codigo: 'N5', label: 'Gray' },
+  // Sin nivel a propósito (confirmado con Jp, 2026-10-14): Evento Gratuito,
+  // Servicio Remoto, Servicio en Sitio, Capacitacion, Capacitacion Grupal,
+  // Poliza Backup (es resguardo, no póliza de soporte — va aparte),
+  // Poliza Small, Póliza Total ASPEL/GOLD/RED/BLUE/BLACK, Póliza Especial
+  // N1, Póliza desfasada (todas desfasadas/históricas).
+};
+
+function normalizarTipoProyecto(v) {
+  if (!v) return '';
+  return v
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '') // quita acentos
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function resolverNivel(tipoProyecto) {
+  const clave = normalizarTipoProyecto(tipoProyecto);
+  return NIVEL_POR_TIPO_PROYECTO[clave] || null;
+}
+
+function md5(str) {
+  return crypto.createHash('md5').update(str).digest('hex');
+}
+
+async function vtigerLogin() {
+  const challengeUrl = `${VTIGER_BASE_URL}/webservice.php?operation=getchallenge&username=${encodeURIComponent(VTIGER_USER)}`;
+  const challengeRes = await fetch(challengeUrl);
+  const challengeJson = await challengeRes.json();
+  if (!challengeJson.success) {
+    throw new Error('No se pudo obtener el challenge token de Vtiger: ' + JSON.stringify(challengeJson));
+  }
+  const token = challengeJson.result.token;
+  const accessKeyHash = md5(token + VTIGER_ACCESS_KEY);
+  const loginBody = new URLSearchParams({ operation: 'login', username: VTIGER_USER, accessKey: accessKeyHash });
+  const loginRes = await fetch(`${VTIGER_BASE_URL}/webservice.php`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: loginBody,
+  });
+  const loginJson = await loginRes.json();
+  if (!loginJson.success) {
+    throw new Error('Login a Vtiger falló: ' + JSON.stringify(loginJson));
+  }
+  return loginJson.result.sessionName;
+}
+
+async function vtigerQueryAll(sessionName, moduleName) {
+  const pageSize = 100;
+  let offset = 0;
+  let all = [];
+  while (true) {
+    const query = `select * from ${moduleName} limit ${offset},${pageSize};`;
+    const url = `${VTIGER_BASE_URL}/webservice.php?operation=query&sessionName=${encodeURIComponent(sessionName)}&query=${encodeURIComponent(query)}`;
+    const res = await fetch(url);
+    const json = await res.json();
+    if (!json.success) {
+      throw new Error(`Query a ${moduleName} falló (offset ${offset}): ` + JSON.stringify(json));
+    }
+    const rows = json.result || [];
+    all = all.concat(rows);
+    if (rows.length < pageSize) break;
+    offset += pageSize;
+    if (offset > 50 * pageSize) break; // límite de seguridad, igual que Oportunidades
+  }
+  return all;
+}
+
+async function upsertRaw(table, idField, rows) {
+  if (!rows.length) return 0;
+  const payload = rows.map((r) => ({ [idField]: r.id, raw: r, synced_at: new Date().toISOString() }));
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?on_conflict=${idField}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      Prefer: 'resolution=merge-duplicates,return=minimal',
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Upsert a ${table} falló (${res.status}): ${text}`);
+  }
+  return payload.length;
+}
+
+async function fetchTodo(table, select) {
+  let todos = [];
+  let desde = 0;
+  const pageSize = 1000;
+  while (true) {
+    const url = `${SUPABASE_URL}/rest/v1/${table}?select=${encodeURIComponent(select)}&limit=${pageSize}&offset=${desde}`;
+    const res = await fetch(url, {
+      headers: { apikey: SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}` },
+    });
+    if (!res.ok) throw new Error(`No se pudo leer ${table}: ` + (await res.text()));
+    const rows = await res.json();
+    todos = todos.concat(rows);
+    if (rows.length < pageSize) break;
+    desde += pageSize;
+  }
+  return todos;
+}
+
+// Jp, 2026-10-14 — segundo bug encontrado en la primera corrida real:
+// cuando un proyecto no tiene fecha capturada, Vtiger no regresa "" sino el
+// literal "0000-00-00" (fecha cero de MySQL) — Postgres lo rechaza
+// ("date/time field value out of range"). Se filtra igual que un vacío.
+function esFechaVacia(v) {
+  if (!v) return true;
+  const soloDigitos = String(v).replace(/[^0-9]/g, '');
+  return /^0+$/.test(soloDigitos); // "0000-00-00", "0000-00-00 00:00:00", etc.
+}
+
+function parseFechaCRM(v) {
+  // Vtiger regresa fechas como "YYYY-MM-DD", "" o "0000-00-00".
+  if (esFechaVacia(v)) return null;
+  return v;
+}
+
+function parseFechaHoraCRM(v) {
+  // createdtime/modifiedtime vienen como "YYYY-MM-DD HH:MM:SS" (hora local
+  // del servidor Vtiger) — se manda tal cual, Postgres lo interpreta.
+  if (esFechaVacia(v)) return null;
+  return v;
+}
+
+// Jp, 2026-10-14 — bug encontrado en la primera corrida real: targetbudget
+// viene de Vtiger como texto con formato de moneda (ej. "$1,709.00"), no
+// como número — Postgres lo rechaza tal cual ("invalid input syntax for
+// type numeric"). Se limpia a solo dígitos/punto/signo antes de guardar.
+function parseMonedaCRM(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const limpio = String(v).replace(/[^0-9.-]/g, '');
+  if (!limpio || limpio === '-' || limpio === '.') return null;
+  const num = Number(limpio);
+  return Number.isFinite(num) ? num : null;
+}
+
+async function sbPatch(pathConFiltro, cambios) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${pathConFiltro}`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify(cambios),
+  });
+  if (!res.ok) throw new Error(`PATCH ${pathConFiltro} falló (${res.status}): ${await res.text()}`);
+}
+
+async function sbPost(table, fila) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify(fila),
+  });
+  if (!res.ok) throw new Error(`POST ${table} falló (${res.status}): ${await res.text()}`);
+}
+
+// ---------------------------------------------------------------------
+// Jp, 2026-10-29 — detección automática de renovación de pólizas
+// (Resguardo y Soporte), pedida a raíz de un caso real: RIVACOLOR
+// renovó su póliza de Resguardo INN2 en el CRM (proyecto viejo PROJ2376
+// quedó "Concluido", proyecto nuevo PROJ2655 con la nueva vigencia), pero
+// Mesa de Control seguía mostrando solo la vieja como vencida — nadie
+// había notado que el nuevo proyecto nunca generaba su propia fila en
+// clientes_polizas. Mismo problema aplica a pólizas de Soporte
+// (Elite/Infinito/Aliado/etc.), que también se renuevan como proyecto
+// nuevo en CRM cada año.
+//
+// Comportamiento (confirmado con Jp, totalmente automático, sin
+// confirmación manual): para cada fila de clientes_polizas que ya
+// seguíamos (tiene numero_proyecto_crm) y no está CERRADA, si su
+// proyecto en CRM quedó Concluido/Archivado y existe un proyecto MÁS
+// reciente del mismo cliente y de la misma categoría de póliza
+// (Resguardo, o Soporte/Aliado) que sigue activo y todavía no tiene su
+// propia fila en clientes_polizas:
+//   1. Cierra la póliza vieja (estatus='CERRADA' — mismo efecto que dar
+//      clic en "Cerrar póliza" a mano).
+//   2. Crea la póliza nueva clonando la configuración de la vieja
+//      (mismo poliza_catalogo_id — mismo tipo/subtipo exacto — más
+//      servidor/carpeta Dropbox si es Resguardo, horas incluidas si es
+//      Soporte) con las fechas y el número de proyecto del proyecto
+//      nuevo. horas_consumidas se reinicia en 0 (nuevo periodo).
+// Solo se dispara para categorías que ya se siguen como póliza real en
+// polizas_catalogo (RESGUARDO/ALIADO/ASPEL) — nunca para Capacitaciones,
+// Servicios sueltos, etc. Es idempotente: en la siguiente corrida la
+// fila vieja ya está CERRADA y se ignora.
+// ---------------------------------------------------------------------
+const TIPOS_SOPORTE_CRM = new Set(Object.keys(NIVEL_POR_TIPO_PROYECTO));
+const TIPO_RESGUARDO_CRM = 'poliza backup';
+
+function soloDigitos(v) {
+  return (v || '').match(/\d+/)?.[0] || null;
+}
+
+async function sincronizarRenovacionesPolizas(proyectosPayload) {
+  const proyectosValidos = proyectosPayload.filter(
+    (p) => p.cliente_cartera_id && p.tipo_proyecto && p.estatus_proyecto && p.fecha_inicio && p.crm_project_no
+  );
+  if (!proyectosValidos.length) return { revisadas: 0, cerradas: 0, creadas: 0, detalle: [] };
+
+  const [polizas, catalogo] = await Promise.all([
+    fetchTodo(
+      'clientes_polizas',
+      'id,cliente_cartera_id,cliente_nombre,numero_proyecto_crm,estatus,fecha_inicio,seccion_manual,poliza_catalogo_id,horas_totales,vendedor,servidor_cloud_id,resguardo_periodicidad_dias_override,resguardo_plazo_cliente_dias,resguardo_dropbox_folder,tipo_resguardo_texto,contacto_telefono,contacto_correo,credenciales_aspel,personas_autorizadas'
+    ),
+    fetchTodo('polizas_catalogo', 'id,categoria'),
+  ]);
+
+  // Jp, 2026-11-18 — RADIACION Y DOSIMETRIA: la póliza vieja ya estaba CERRADA
+  // (a mano, al vencer) y por eso el sync nunca veía la renovación: el proyecto
+  // nuevo del CRM (PROJ2602, En curso) se quedaba sin fila en la app y el
+  // cliente desaparecía de "Pólizas de resguardo". Ahora también se revisan las
+  // pólizas ya cerradas: si su proyecto del CRM está concluido y existe uno más
+  // nuevo activo sin fila propia, se crea la fila nueva (y la vieja, si todavía
+  // estaba abierta, se cierra como siempre).
+  const polizasConProyecto = polizas
+    .filter((c) => c.cliente_cartera_id && c.numero_proyecto_crm)
+    .sort((a, b) => {
+      // Primero las abiertas, y dentro de cada grupo la de inicio más reciente:
+      // es la que mejor refleja la configuración actual al clonarla.
+      const abiertaA = a.estatus !== 'CERRADA' ? 0 : 1;
+      const abiertaB = b.estatus !== 'CERRADA' ? 0 : 1;
+      if (abiertaA !== abiertaB) return abiertaA - abiertaB;
+      return String(b.fecha_inicio || '').localeCompare(String(a.fecha_inicio || ''));
+    });
+  if (!polizasConProyecto.length) return { revisadas: 0, cerradas: 0, creadas: 0, detalle: [] };
+
+  const categoriaPorCatalogoId = new Map(catalogo.map((c) => [c.id, c.categoria]));
+  const numerosYaEnApp = new Set(polizas.map((c) => soloDigitos(c.numero_proyecto_crm)).filter(Boolean));
+  const proyectoPorNumero = new Map(proyectosValidos.map((p) => [soloDigitos(p.crm_project_no), p]));
+
+  const porClienteYCategoria = new Map(); // `${cliente_cartera_id}|${categoria}` -> proyectos activos
+  for (const p of proyectosValidos) {
+    if (!p.activo) continue;
+    const tipoNorm = normalizarTipoProyecto(p.tipo_proyecto);
+    let categoria = null;
+    if (tipoNorm === TIPO_RESGUARDO_CRM) categoria = 'RESGUARDO';
+    else if (TIPOS_SOPORTE_CRM.has(tipoNorm)) categoria = 'SOPORTE';
+    if (!categoria) continue;
+    const key = `${p.cliente_cartera_id}|${categoria}`;
+    if (!porClienteYCategoria.has(key)) porClienteYCategoria.set(key, []);
+    porClienteYCategoria.get(key).push(p);
+  }
+
+  let cerradas = 0;
+  let creadas = 0;
+  const detalle = [];
+
+  for (const poliza of polizasConProyecto) {
+    const numeroViejo = soloDigitos(poliza.numero_proyecto_crm);
+    const proyectoViejo = numeroViejo ? proyectoPorNumero.get(numeroViejo) : null;
+    // Si no vimos el proyecto en este sync, o sigue activo, no hay nada
+    // que hacer todavía.
+    if (!proyectoViejo || proyectoViejo.activo) continue;
+
+    const categoriaCatalogo = categoriaPorCatalogoId.get(poliza.poliza_catalogo_id);
+    const categoria =
+      categoriaCatalogo === 'RESGUARDO' ? 'RESGUARDO' : categoriaCatalogo === 'ALIADO' || categoriaCatalogo === 'ASPEL' ? 'SOPORTE' : null;
+    if (!categoria) continue;
+
+    const umbral = proyectoViejo.fecha_fin_prevista || proyectoViejo.fecha_inicio;
+    const candidatos = (porClienteYCategoria.get(`${poliza.cliente_cartera_id}|${categoria}`) || [])
+      .filter((p) => {
+        const numeroNuevo = soloDigitos(p.crm_project_no);
+        if (!numeroNuevo || numerosYaEnApp.has(numeroNuevo)) return false; // ya tiene su propia fila
+        return p.fecha_inicio >= umbral;
+      })
+      .sort((a, b) => (a.fecha_inicio < b.fecha_inicio ? 1 : -1));
+
+    const proyectoNuevo = candidatos[0];
+    if (!proyectoNuevo) continue;
+
+    try {
+      if (poliza.estatus !== 'CERRADA') {
+        await sbPatch(`clientes_polizas?id=eq.${poliza.id}`, { estatus: 'CERRADA' });
+        cerradas++;
+      }
+
+      const numeroNuevo = soloDigitos(proyectoNuevo.crm_project_no);
+      await sbPost('clientes_polizas', {
+        cliente_nombre: poliza.cliente_nombre,
+        cliente_cartera_id: poliza.cliente_cartera_id,
+        poliza_catalogo_id: poliza.poliza_catalogo_id,
+        fecha_inicio: proyectoNuevo.fecha_inicio,
+        fecha_vencimiento: proyectoNuevo.fecha_fin_prevista || proyectoNuevo.fecha_inicio,
+        horas_totales: poliza.horas_totales || 0,
+        horas_consumidas: 0,
+        vendedor: poliza.vendedor,
+        personas_autorizadas: poliza.personas_autorizadas,
+        estatus: 'VIGENTE',
+        seccion_manual: poliza.seccion_manual,
+        origen: 'crm_renovacion_auto',
+        numero_proyecto_crm: `POL${numeroNuevo}`,
+        servidor_cloud_id: poliza.servidor_cloud_id,
+        resguardo_periodicidad_dias_override: poliza.resguardo_periodicidad_dias_override,
+        resguardo_plazo_cliente_dias: poliza.resguardo_plazo_cliente_dias,
+        resguardo_dropbox_folder: poliza.resguardo_dropbox_folder,
+        tipo_resguardo_texto: poliza.tipo_resguardo_texto,
+        contacto_telefono: poliza.contacto_telefono,
+        contacto_correo: poliza.contacto_correo,
+        credenciales_aspel: poliza.credenciales_aspel,
+      });
+      creadas++;
+      numerosYaEnApp.add(numeroNuevo);
+      detalle.push({ cliente: poliza.cliente_nombre, de: poliza.numero_proyecto_crm, a: `POL${numeroNuevo}` });
+    } catch (errRenov) {
+      // No se detiene el sync completo por un error en una sola póliza —
+      // se reporta en la respuesta para que se note, y se reintenta sola
+      // en la siguiente corrida (la vieja puede haber quedado cerrada sin
+      // la nueva creada; eso se corrige solo porque polizasConProyecto ya
+      // no la vuelve a encontrar activa — revisar el log si esto pasa).
+      detalle.push({ cliente: poliza.cliente_nombre, de: poliza.numero_proyecto_crm, error: String(errRenov?.message || errRenov) });
+    }
+  }
+
+  return { revisadas: polizasConProyecto.length, cerradas, creadas, detalle };
+}
+
+export default async function handler(req, res) {
+  // Jp, 2026-10-29 — bug encontrado: Vercel Cron manda su propio header
+  // "authorization: Bearer <CRON_SECRET>" en cada corrida programada, pero
+  // este endpoint solo aceptaba "?secret=" o "x-sync-secret" (los que se
+  // usan al probar a mano desde el navegador) — así que CADA corrida
+  // automática fallaba con 401 en silencio desde que se creó este cron
+  // (confirmado: proyectos_crm.updated_at no avanza desde 2026-10-14,
+  // único día en que alguien lo probó a mano con ?secret=, pese a estar
+  // programado cada ~3h desde entonces). Se acepta el header authorization
+  // contra SYNC_SECRET *o* CRON_SECRET (no sabemos cuál de los dos manda
+  // Vercel realmente en esta cuenta, y si llegaran a tener valores
+  // distintos esto cubre ambos casos sin arriesgar nada).
+  const secret = req.query?.secret || req.headers['x-sync-secret'];
+  const authHeader = req.headers['authorization'];
+  const autorizadoPorHeader =
+    authHeader === `Bearer ${SYNC_SECRET}` ||
+    (process.env.CRON_SECRET && authHeader === `Bearer ${process.env.CRON_SECRET}`);
+  if (!SYNC_SECRET || (secret !== SYNC_SECRET && !autorizadoPorHeader)) {
+    res.status(401).json({ ok: false, error: 'No autorizado' });
+    return;
+  }
+
+  try {
+    const sessionName = await vtigerLogin();
+
+    // El nombre real del módulo quedó confirmado como "Project" (singular)
+    // con el describe del 2026-10-14 — ver crm-describir-proyectos.js.
+    const proyectos = await vtigerQueryAll(sessionName, 'Project');
+    const totalRaw = await upsertRaw('stg_proyectos_crm_raw', 'crm_projectid', proyectos);
+
+    // Tablas de apoyo para resolver cliente_cartera_id / oportunidad_crm_id
+    // / vendedor_asignado — mismo patrón que Oportunidades.
+    const [cuentasCrm, clientesCartera, oportunidades] = await Promise.all([
+      fetchTodo('stg_cuentas_crm_raw', 'crm_record_id,account_no'),
+      fetchTodo('clientes_cartera', 'id,num_cliente,vendedor_asignado'),
+      fetchTodo('oportunidades_crm', 'id,crm_potentialid'),
+    ]);
+    const accountNoPorCrmId = new Map(cuentasCrm.map((c) => [c.crm_record_id, c.account_no]));
+    const clientePorNumCliente = new Map(clientesCartera.map((c) => [c.num_cliente, c]));
+    const oportunidadPorPotentialId = new Map(oportunidades.map((o) => [o.crm_potentialid, o.id]));
+
+    const payload = proyectos.map((p) => {
+      const accountId = p.linktoaccountscontacts || null;
+      const accountNo = accountId ? accountNoPorCrmId.get(accountId) || null : null;
+      const cliente = accountNo ? clientePorNumCliente.get(accountNo) || null : null;
+      const estatus = p.projectstatus || null;
+      const nivel = resolverNivel(p.projecttype);
+      return {
+        crm_projectid: p.id,
+        crm_project_no: p.project_no || null,
+        nombre_proyecto: p.projectname || null,
+        tipo_proyecto: p.projecttype || null,
+        estatus_proyecto: estatus,
+        activo: estatus ? !ESTATUS_CERRADOS.has(estatus) : null,
+        nivel_prioridad: nivel?.codigo || null,
+        nivel_label: nivel?.label || null,
+        progreso: p.progress || null,
+        prioridad: p.projectpriority || null,
+        fecha_inicio: parseFechaCRM(p.startdate),
+        fecha_fin_prevista: parseFechaCRM(p.targetenddate),
+        fecha_fin_real: parseFechaCRM(p.actualenddate),
+        presupuesto: parseMonedaCRM(p.targetbudget),
+        descripcion: p.description || null,
+        cliente_cartera_id: cliente?.id || null,
+        oportunidad_crm_id: p.potentialid ? oportunidadPorPotentialId.get(p.potentialid) || null : null,
+        vendedor_crm_texto: p.assigned_user_id || null,
+        vendedor_asignado: cliente?.vendedor_asignado || null,
+        fecha_creacion_crm: parseFechaHoraCRM(p.createdtime),
+        fecha_actualizacion_crm: parseFechaHoraCRM(p.modifiedtime),
+        // Jp, 2026-10-14 — "Horas Remotas Disponibles" y "Tiempo Restante"
+        // son campos de texto libre del CRM (NO se calculan), solo
+        // aplican a proyectos tipo póliza. Confirmado por coincidencia
+        // exacta de texto contra capturas reales de Jp (ASPID PROJ2487,
+        // COMESA PROJ2654): cf_992 = Horas Remotas Disponibles, cf_1028 =
+        // Tiempo Restante.
+        horas_remotas_disponibles: p.cf_992 || null,
+        tiempo_restante: p.cf_1028 || null,
+        updated_at: new Date().toISOString(),
+      };
+    });
+
+    let totalMapeado = 0;
+    if (payload.length) {
+      const res2 = await fetch(`${SUPABASE_URL}/rest/v1/proyectos_crm?on_conflict=crm_projectid`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: SUPABASE_SERVICE_ROLE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          Prefer: 'resolution=merge-duplicates,return=minimal',
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!res2.ok) {
+        const text = await res2.text();
+        throw new Error(`Upsert a proyectos_crm falló (${res2.status}): ${text}`);
+      }
+      totalMapeado = payload.length;
+    }
+
+    const conCuenta = payload.filter((p) => p.cliente_cartera_id).length;
+    const activos = payload.filter((p) => p.activo).length;
+
+    // Jp, 2026-10-29 — reconciliación de renovaciones de pólizas (ver
+    // sincronizarRenovacionesPolizas arriba). Va en try/catch propio para
+    // que un error aquí nunca tumbe el sync de proyectos_crm, que ya para
+    // este punto quedó guardado bien.
+    let renovaciones = { revisadas: 0, cerradas: 0, creadas: 0, detalle: [] };
+    try {
+      renovaciones = await sincronizarRenovacionesPolizas(payload);
+    } catch (errRenov) {
+      renovaciones = { error: String(errRenov?.message || errRenov) };
+    }
+
+    res.status(200).json({
+      ok: true,
+      totalRaw,
+      totalMapeado,
+      conCuenta,
+      sinCuenta: totalMapeado - conCuenta,
+      activos,
+      renovaciones,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err?.message || err) });
+  }
+}
