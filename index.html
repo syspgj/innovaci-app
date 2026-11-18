@@ -9958,8 +9958,17 @@ async function catProyCargar(){
             gs.forEach(g=>{gensInfo[g.id]=g;if(!g.archivado_manual&&(!g.fecha_fin||g.fecha_fin>=hoy||g.curso?.modalidad==='24_7')) vigIds.add(g.id);});
             mapaGens={};
             mp.forEach(m=>{if(!m.catalogo_item_id) return;(mapaTit[m.catalogo_item_id]=mapaTit[m.catalogo_item_id]||[]).push(m.titulo||'');(mapaGens[m.catalogo_item_id]=mapaGens[m.catalogo_item_id]||new Set());(m.generacion_ids||[]).forEach(i=>mapaGens[m.catalogo_item_id].add(i));});
+            // Jp, 2026-11-18: si Academia no devolvió NINGUNA generación (sin
+            // permiso de lectura, o un problema de red), el filtro de vigencia
+            // dejaba la lista de cursos en vivo completamente vacía —
+            // "Sin opciones disponibles"— sin decir por qué. Un problema de
+            // lectura no debe esconderle productos a Ventas: se apaga el
+            // filtro y se muestra todo.
+            if(!gs.length){ vigIds=null; }
           }
-        }catch(e){console.error('catProy vigentes',e);vigIds=null;mapaGens=null;}
+          // Diagnóstico para el botón "Actualizar catálogo".
+          window._catProyDiag={gens:(gs||[]).length,vigentes:vigIds?vigIds.size:null,maps:(mp||[]).length};
+        }catch(e){console.error('catProy vigentes',e);vigIds=null;mapaGens=null;window._catProyDiag={error:String(e&&e.message||e)};}
         const fechaCorta=iso=>{try{return new Date(iso+'T12:00:00').toLocaleDateString('es-MX',{day:'numeric',month:'short'}).replace('.','');}catch(e){return iso;}};
         // Agrupa por nombre (el catálogo repite nombres): un nombre es vigente si CUALQUIERA de sus filas tiene generación vigente
         const porNombre={};
@@ -10002,7 +10011,9 @@ async function catProyRecargar(){
   await catProyCargar();
   catProyPintar(document.getElementById('pProducto')?.value||'');
   if(typeof pipeRepintarPartidas==='function') pipeRepintarPartidas();
-  if(msg) msg.textContent='Catálogo actualizado.';
+  const d=window._catProyDiag||{};
+  if(msg) msg.textContent=d.error?('No se pudo leer Academia: '+d.error)
+    :`Catálogo actualizado · ${(CAT_PROY||[]).length} servicios · ${d.gens||0} generaciones (${d.vigentes==null?'sin filtro':d.vigentes+' vigentes'}) · ${d.maps||0} productos de la tienda.`;
 }
 function catProyItems(tipo){
   const me=((typeof userProfile!=='undefined'&&userProfile&&userProfile.nombre)||'').toLowerCase();
@@ -36238,7 +36249,15 @@ async function renderSolFacturaGestion(el){
   cont.innerHTML=`
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
     <div style="font-size:15px;font-weight:600;color:var(--text);">🧾 Facturación — solicitudes</div>
-    ${esDir?`<div><input id="solCapturaInput" type="file" accept="image/*" onchange="solLeerCaptura(this)" style="display:none;"><button onclick="document.getElementById('solCapturaInput').click()" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">📷 Subir captura del banco</button> <input id="solShopInput" type="file" accept="image/*" onchange="solLeerShopify(this)" style="display:none;"><button onclick="document.getElementById('solShopInput').click()" style="background:#fff;color:var(--teal);border:1px solid var(--teal);border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">🛍 Subir captura de Shopify</button> <span id="solCapturaEstado" style="font-size:11px;color:var(--text3);"></span></div>`:''}
+    ${esDir?`<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">
+      <button onclick="renderSolFacturaGestion(_solContenedor)" title="Vuelve a leer las solicitudes sin recargar la página ni volver a entrar" style="background:#fff;color:var(--navy);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">🔄 Actualizar</button>
+      <label style="font-size:11px;color:var(--text3);display:flex;align-items:center;gap:5px;" title="Solo hace falta si la captura va a media lista y no se alcanza a ver el encabezado con la fecha">Fecha de la captura <input type="date" id="solCapturaFecha" value="${_solCapturaFecha||''}" onchange="_solCapturaFecha=this.value;" style="padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;"></label>
+      <input id="solCapturaInput" type="file" accept="image/*" multiple onchange="solLeerCaptura(this)" style="display:none;">
+      <button onclick="document.getElementById('solCapturaInput').click()" title="Puedes elegir varias capturas del mismo recorrido: se leen juntas y en orden" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">📷 Subir captura(s) del banco</button>
+      <input id="solShopInput" type="file" accept="image/*" onchange="solLeerShopify(this)" style="display:none;">
+      <button onclick="document.getElementById('solShopInput').click()" style="background:#fff;color:var(--teal);border:1px solid var(--teal);border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">🛍 Subir captura de Shopify</button>
+      <span id="solCapturaEstado" style="font-size:11px;color:var(--text3);"></span>
+    </div>`:''}
   </div>
   ${por.sin_gen.length&&_solFiltro!=='sin_gen'?`<div onclick="_solFiltro='sin_gen';renderSolFacturaGestion(_solContenedor)" style="cursor:pointer;background:#fff1dc;border:1px solid #F5A623;border-left:5px solid #F5A623;border-radius:10px;padding:9px 14px;margin-bottom:12px;font-size:12.5px;color:#8a4b00;"><b>🎓 ${por.sin_gen.length} solicitud${por.sin_gen.length>1?'es':''} facturada${por.sin_gen.length>1?'s':''} sin asignar en Academia/generación.</b> Clic para verlas.</div>`:''}
   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
@@ -36248,19 +36267,33 @@ async function renderSolFacturaGestion(el){
 }
 
 // ─── LECTURA DE LA CAPTURA DEL BANCO Y CASADO ────────────────────────────────
+// Jp, 2026-11-18: cuando el día trae más movimientos de los que caben en una
+// pantalla, se suben VARIAS capturas del mismo recorrido y se leen juntas, en
+// orden: así la segunda hereda la fecha del encabezado que quedó en la primera.
+// El recuadro de fecha es el salvavidas para cuando ni la primera captura
+// alcanza a mostrar el encabezado.
+let _solCapturaFecha='';
 async function solLeerCaptura(input){
-  const file=input.files?.[0];input.value='';
-  if(!file) return;
+  const files=[...(input.files||[])];input.value='';
+  if(!files.length) return;
   const est=document.getElementById('solCapturaEstado');
-  if(est){est.textContent='Leyendo captura...';est.style.color='var(--teal)';}
+  const leer=f=>new Promise((ok,ko)=>{const rd=new FileReader();rd.onload=()=>ok(String(rd.result).split(',')[1]||'');rd.onerror=ko;rd.readAsDataURL(f);});
+  if(est){est.textContent=files.length>1?`Leyendo ${files.length} capturas...`:'Leyendo captura...';est.style.color='var(--teal)';}
   try{
-    const b64=await new Promise((ok,ko)=>{const rd=new FileReader();rd.onload=()=>ok(String(rd.result).split(',')[1]||'');rd.onerror=ko;rd.readAsDataURL(file);});
+    const imagenes=[];
+    for(const f of files) imagenes.push({base64:await leer(f),mediaType:f.type||'image/png'});
     const {data:sess}=await sb.auth.getSession();
-    const resp=await fetch('/api/solicitud-leer-captura',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({imagenBase64:b64,mediaType:file.type||'image/png'})});
+    const resp=await fetch('/api/solicitud-leer-captura',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({imagenes,fecha:_solCapturaFecha||null})});
     let data={};try{data=await resp.json();}catch(e){}
     if(!resp.ok||!data.ok){if(est){est.textContent='No se pudo leer: '+(data.error||resp.status);est.style.color='#c0392b';}return;}
     _solMovs=data.movimientos||[];
-    if(est){est.textContent=`${_solMovs.length} movimientos leídos.`;est.style.color='var(--text3)';}
+    // Resumen por día, para que se vea de un vistazo si la fecha salió bien.
+    const porDia={};_solMovs.forEach(m=>{porDia[m.fecha]=(porDia[m.fecha]||0)+1;});
+    const resumen=Object.entries(porDia).sort().map(([f,n])=>`${solFecha(f)}: ${n}`).join(' · ');
+    if(est){
+      est.textContent=`${_solMovs.length} movimientos leídos${files.length>1?' de '+files.length+' capturas':''}${resumen?' ('+resumen+')':''}.`+(data.aviso?' ⚠ '+data.aviso:'');
+      est.style.color=data.aviso?'#b45309':'var(--text3)';
+    }
     solMostrarCasado();
   }catch(e){if(est){est.textContent='Error: '+(e?.message||e);est.style.color='#c0392b';}}
 }
