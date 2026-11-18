@@ -19958,29 +19958,7 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
   const ctx=c._ctx||cuentaContexto(c,[],[],[],[]);
   const tim=ctx.timbres||{};
   const fmtMes=f=>{if(!f)return '';const d=new Date(f);const m=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][d.getMonth()];return m+' '+d.getFullYear();};
-  const ctxHtml=`
-      <div style="border:1px solid ${tim.color||'var(--border)'};border-left:4px solid ${tim.color||'var(--border)'};border-radius:var(--radsm);padding:12px;background:#fff;">
-        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">📌 Contexto para la llamada</div>
-        <div style="font-size:13px;font-weight:700;color:${tim.color||'var(--text)'};">${tim.txt||''}</div>
-        ${tim.detalle?`<div style="font-size:11px;color:var(--text2);margin-top:2px;">${tim.detalle}</div>`:''}
-        <div style="margin-top:8px;display:grid;gap:3px;font-size:11.5px;color:var(--text2);">
-          ${(ctx.sistemas||[]).length?(ctx.sistemas||[]).map(s=>{const m=sisModalidad(s.version_licencia);
-            return `<div>🧩 <b>${s.sistema}</b> · ${solEsc(s.version_licencia||'sin versión')}${m?` <span style="color:${m==='compra'?'#1e8449':'#c0392b'};font-weight:700;">(${sisModalidadTxt(m)})</span>`:' <span style="color:#F5A623;font-weight:700;">(falta la modalidad)</span>'}${s.usuarios?` · ${s.usuarios} usuarios`:''}</div>`;}).join('')
-            :`<div style="color:var(--text3);font-style:italic;">Sin versiones registradas — el CRM no tiene la modalidad de sus sistemas.</div>`}
-        </div>
-        <div style="margin-top:9px;border-top:1px solid var(--border);padding-top:8px;display:grid;gap:4px;font-size:11.5px;color:var(--text2);">
-          <div>⏱ <b>Último movimiento:</b> ${ctx.ultMov?`${haceCuanto(ctx.ultMov)} (${fmtMes(ctx.ultMov)})`:'<span style="color:#E07B39;">sin registro alguno</span>'}</div>
-          ${ctx.ultimaCompra?`<div>🏆 <b>Última compra:</b> ${solEsc(ctx.ultimaCompra.nombre_oportunidad||'')}${ctx.ultimaCompra.monto?' · '+fmt(ctx.ultimaCompra.monto):''} · ${fmtMes(ctx.ultimaCompra.fecha_creacion_crm)}</div>`:'<div style="color:var(--text3);">🏆 Sin compras registradas en el CRM</div>'}
-          ${(ctx.abiertas||[]).length?`<div>💼 <b>Abiertas:</b> ${ctx.abiertas.map(o=>solEsc(o.nombre_oportunidad||'')+' ('+(o.fase_venta||'')+')').join(' · ')}</div>`:''}
-          ${(ctx.proyActivos||[]).length?`<div>🛠 <b>Proyecto activo:</b> ${ctx.proyActivos.map(p=>solEsc(p.nombre_proyecto||'')+(p.tiempo_restante?' · '+solEsc(p.tiempo_restante):'')).join(' · ')}</div>`:''}
-          ${ctx.ultLlamada?`<div>📞 <b>Última llamada en la app:</b> ${ctx.ultLlamada.resultado||''} · ${haceCuanto(ctx.ultLlamada.created_at)}${ctx.ultLlamada.notas?` — <i>${solEsc(String(ctx.ultLlamada.notas).slice(0,120))}</i>`:''}</div>`:''}
-        </div>
-        <div style="margin-top:9px;border-top:1px solid var(--border);padding-top:8px;">
-          <div style="font-size:11px;font-weight:700;color:var(--text3);margin-bottom:4px;">💬 Último comentario en el CRM</div>
-          <div id="teleUltComentario_${clienteId}" style="font-size:11.5px;color:var(--text3);font-style:italic;">Cargando del CRM…</div>
-        </div>
-      </div>
-  `;
+  const ctxHtml=`<div id="teleCtxBox_${clienteId}">${teleContextoHtml(clienteId,ctx,fmtMes)}</div>`;
   const modal=document.createElement('div');
   modal.id='modalDetalleCuenta';
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;overflow-y:auto;';
@@ -35323,6 +35301,11 @@ function solAcadEditarModal(id){
       }
     }catch(e){console.error('solAcadEditarModal gens',e);}
     try{ if(!window._solGenSug&&!((ac.generaciones||[]).length)) await solSugerirGensPorConcepto('sa',r.concepto); }catch(e){}
+    // Jp, 2026-11-18: si ya sabemos a qué generación(es) corresponde lo que se
+    // vendió, la lista se limita a esas — antes salían las 20 vigentes y era
+    // fácil marcar la equivocada. El enlace "ver todas" la libera por si hubo
+    // un error de captura.
+    if(window._solGenSug&&window._solGenSug.size){ window._solGenSolo=new Set(window._solGenSug); window._solGenVerTodas=false; }
     solAcadCargarGens('sa');
   })();
 }
