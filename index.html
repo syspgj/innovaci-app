@@ -24884,7 +24884,7 @@ async function renderOpsContratos(){
   const body=document.getElementById('opsBody');
   body.innerHTML='<div class="loading"><div class="spinner"></div></div>';
   const [{data:contratos,error},{data:polizas},{data:proyectosCrm}]=await Promise.all([
-    sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,horas_incluidas), clientes_cartera(razon_social,vendedor_asignado,telefono,correo_principal,telefono_whatsapp)').order('fecha_vencimiento'),
+    sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,horas_incluidas,resguardo_periodicidad_dias), clientes_cartera(razon_social,vendedor_asignado,telefono,correo_principal,telefono_whatsapp)').order('fecha_vencimiento'),
     sb.from('polizas_catalogo').select('id,categoria,nombre,modalidad,horas_incluidas,precio,vigencia_meses').eq('activo',true).order('categoria').order('precio'),
     // Jp, 2026-10-29 — "Estado CRM" (ver renovación de pólizas): el campo
     // "Estado" del proyecto en Vtiger (En curso/Concluido/En Asignación/
@@ -24921,6 +24921,73 @@ async function renderOpsContratos(){
     <div id="opsPolizasTablaCont"></div>`;
   opsPintarPolizasSeccionToggle();
   opsPintarPolizas();
+  opsCargarEstadoResguardos().then(()=>opsPintarPolizas()).catch(e=>console.error('estado resguardos',e));
+}
+
+// Jp, 2026-11-18 — en la lista de pólizas de RESGUARDO las horas no aplican:
+// "lo que me interesa saber: cuándo fue el último resguardo registrado, los
+// días de atraso y el estatus del respaldo, que sea muy visible". Se calcula
+// aquí para todas las de resguardo, con el mismo criterio del detalle: el
+// último archivo real de Dropbox/Drive o la evidencia subida a mano, contra
+// la periodicidad interna y, si lo tiene, el plazo del contrato del cliente.
+async function opsCargarEstadoResguardos(){
+  const resg=(window._opsPolizas||[]).filter(c=>opsEsResguardo(c));
+  if(!resg.length) return;
+  const ids=resg.map(c=>c.id);
+  const servidorIds=[...new Set(resg.map(c=>c.servidor_cloud_id).filter(Boolean))];
+  const [{data:evid},{data:orig},{data:servs}]=await Promise.all([
+    sb.from('resguardo_evidencias').select('cliente_poliza_id,periodo_fecha,origen').in('cliente_poliza_id',ids).order('periodo_fecha',{ascending:false}),
+    sb.from('resguardo_origenes').select('cliente_poliza_id,etiqueta,ultimo_archivo_fecha,revision_at,error').in('cliente_poliza_id',ids).eq('activo',true),
+    servidorIds.length?sb.from('clientes_servidores_cloud').select('id,productos_servidores(specs)').in('id',servidorIds):Promise.resolve({data:[]}),
+  ]);
+  const servMap={}; (servs||[]).forEach(x=>{servMap[x.id]=x;});
+  const ultEvid={}; (evid||[]).forEach(e=>{ if(!ultEvid[e.cliente_poliza_id]) ultEvid[e.cliente_poliza_id]=e; });
+  const origPorPoliza={}; (orig||[]).forEach(o=>{ (origPorPoliza[o.cliente_poliza_id]=origPorPoliza[o.cliente_poliza_id]||[]).push(o); });
+  const mx=iso=>iso?new Date(new Date(iso).getTime()-6*3600*1000).toISOString().slice(0,10):null;
+  const hoyMx=mx(new Date().toISOString());
+  const difDias=(a,b)=>Math.floor((new Date(b+'T00:00:00')-new Date(a+'T00:00:00'))/86400000);
+  resg.forEach(c=>{
+    const periodicidad=c.resguardo_periodicidad_dias_override||c.polizas_catalogo?.resguardo_periodicidad_dias
+      ||(c.servidor_cloud_id&&servMap[c.servidor_cloud_id]?.productos_servidores?.specs?parsearPeriodicidadBackupSpecs(servMap[c.servidor_cloud_id].productos_servidores.specs):null);
+    const plazo=c.resguardo_plazo_cliente_dias||null;
+    const cand=[];
+    const fd=mx(c.dropbox_ultimo_archivo_fecha); if(fd) cand.push({fecha:fd,origen:'Dropbox'});
+    const ue=ultEvid[c.id]; if(ue) cand.push({fecha:ue.periodo_fecha,origen:ue.origen==='dropbox'?'Dropbox':(ue.origen==='drive'?'Drive':'Manual')});
+    (origPorPoliza[c.id]||[]).forEach(o=>{ const f=mx(o.ultimo_archivo_fecha); if(f) cand.push({fecha:f,origen:'Drive'}); });
+    cand.sort((x,y)=>String(y.fecha).localeCompare(String(x.fecha)));
+    const ultimo=cand[0]||null;
+    const atraso=ultimo?difDias(ultimo.fecha,hoyMx):null;
+    // Con varias carpetas de Drive manda la más atrasada: la póliza se cumple
+    // cuando TODAS tienen archivo del periodo (mismo criterio que el detalle).
+    const susOrig=origPorPoliza[c.id]||[];
+    const fechasDrive=susOrig.map(o=>mx(o.ultimo_archivo_fecha)).filter(Boolean);
+    const driveIncompleto=susOrig.some(o=>!o.revision_at||o.error||!o.ultimo_archivo_fecha);
+    const peorDrive=fechasDrive.sort()[0]||null;
+    let estado='sin';
+    if(c.estatus==='CERRADA') estado='cerrada';
+    else if(!periodicidad||!ultimo) estado='sin';
+    else if(driveIncompleto) estado='vencido';
+    else{
+      const d=Math.max(atraso,peorDrive?difDias(peorDrive,hoyMx):atraso);
+      if(d<=periodicidad) estado='ok';
+      else if(plazo&&d<=plazo) estado='interna';
+      else estado='vencido';
+    }
+    c._resg={ultimo:ultimo?ultimo.fecha:null,origen:ultimo?ultimo.origen:null,atraso,periodicidad,plazo,estado};
+  });
+}
+function opsResguardoBadge(c){
+  const r=c._resg;
+  if(!r) return '<span style="color:var(--text3);font-size:10px;">calculando…</span>';
+  const mapa={
+    ok:['✅ Con respaldo','#27AE60'],
+    interna:['⚠ Atraso interno','#c47f0a'],
+    vencido:['❌ Sin respaldo vigente','#E84040'],
+    sin:[r.periodicidad?'⏳ Sin respaldo registrado':'⚙ Falta configurar','#64748b'],
+    cerrada:['— Cerrada','#64748b'],
+  };
+  const [txt,color]=mapa[r.estado]||mapa.sin;
+  return `<span style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${color}22;color:${color};white-space:nowrap;">${txt}</span>`;
 }
 // Bug visual (Jp, 2026-09-09): "cuando yo selecciono soporte, se sombrea en
 // verde resguardo, y cuando yo selecciono resguardo, se queda ahí mismo en
@@ -25006,6 +25073,7 @@ function opsPintarPolizas(){
 
   const tablaDom=document.getElementById('opsPolizasTablaCont');
   if(!tablaDom) return;
+  const esResguardoSeccion=opsPolizasSeccion==='resguardo';
   const q=(opsPolizasFiltro.q||'').trim().toLowerCase();
   let filas=todas.filter(c=>{
     const est=opsEstadoPoliza(c);
@@ -25034,6 +25102,9 @@ function opsPintarPolizas(){
     if(col==='poliza') return c.polizas_catalogo?.nombre||'';
     if(col==='fecha_inicio') return c.fecha_inicio||'';
     if(col==='fecha_vencimiento') return c.fecha_vencimiento||'';
+    if(col==='ultimoresg') return c._resg?.ultimo||'';
+    if(col==='atraso') return c._resg?.atraso==null?-1:c._resg.atraso;
+    if(col==='respaldo'){const ord={vencido:0,sin:1,interna:2,ok:3,cerrada:4};return ord[c._resg?.estado]??1;}
     if(col==='horas') return c.horas_totales||0;
     if(col==='consumidas') return c.horas_consumidas||0;
     if(col==='restantes') return est.restantes;
@@ -25053,8 +25124,10 @@ function opsPintarPolizas(){
       <thead><tr style="background:var(--bg2,#f5f6f8);">
         ${opsThPolizas('pol','POL#','center')}${opsThPolizas('cliente','Cliente')}${opsThPolizas('poliza','Póliza')}
         ${opsThPolizas('fecha_inicio','Inicio','center')}${opsThPolizas('fecha_vencimiento','Vencimiento','center')}
-        ${opsThPolizas('horas','Horas','right')}${opsThPolizas('consumidas','Consumidas','center')}
-        ${opsThPolizas('restantes','Restantes','center')}${opsThPolizas('estatus','Estatus','center')}${opsThPolizas('estadocrm','Estado CRM','center')}
+        ${esResguardoSeccion
+          ?`${opsThPolizas('ultimoresg','Último resguardo','center')}${opsThPolizas('atraso','Atraso','center')}${opsThPolizas('respaldo','Respaldo','center')}`
+          :`${opsThPolizas('horas','Horas','right')}${opsThPolizas('consumidas','Consumidas','center')}${opsThPolizas('restantes','Restantes','center')}`}
+        ${opsThPolizas('estatus','Estatus','center')}${opsThPolizas('estadocrm','Estado CRM','center')}
       </tr></thead>
       <tbody>
         ${filas.length===0?'<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text3);">Sin pólizas con estos filtros</td></tr>':''}
@@ -25066,9 +25139,15 @@ function opsPintarPolizas(){
             <td style="padding:6px 8px;">${c.polizas_catalogo?.nombre||'—'}</td>
             <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${c.fecha_inicio||'—'}</td>
             <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${c.fecha_vencimiento||'—'}${!est.vencida&&est.diasParaVencer!==null&&est.diasParaVencer<=30?` <span style="color:#F5A623;font-size:9px;">(${est.diasParaVencer}d)</span>`:''}</td>
-            <td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${est.totales?est.totales+'h':'—'}</td>
+            ${esResguardoSeccion?(()=>{
+              const r=c._resg;
+              const colAtraso=!r||r.atraso==null?'var(--text3)':(r.estado==='ok'?'#27AE60':r.estado==='interna'?'#c47f0a':'#E84040');
+              return `<td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${r?.ultimo||'—'}${r?.origen?`<div style="font-size:9px;color:var(--text3);font-family:'Inter',sans-serif;">${r.origen}</div>`:''}</td>
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;color:${colAtraso};">${!r||r.atraso==null?'—':(r.atraso+' d')}</td>
+            <td style="padding:6px 8px;text-align:center;">${opsResguardoBadge(c)}</td>`;
+            })():`<td style="padding:6px 8px;text-align:right;font-family:'JetBrains Mono',monospace;">${est.totales?est.totales+'h':'—'}</td>
             <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;">${est.totales?est.consumidas+'h':'—'}</td>
-            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;color:${est.porVencerHoras?'#E84040':'var(--text)'};">${est.totales?est.restantes+'h':'—'}</td>
+            <td style="padding:6px 8px;text-align:center;font-family:'JetBrains Mono',monospace;font-weight:700;color:${est.porVencerHoras?'#E84040':'var(--text)'};">${est.totales?est.restantes+'h':'—'}</td>`}
             <td style="padding:6px 8px;text-align:center;"><span style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${est.color}22;color:${est.color};">${est.label}</span></td>
             <td style="padding:6px 8px;text-align:center;font-size:11px;color:var(--text3);">${c._estadoCrm||'—'}</td>
           </tr>`;
@@ -25643,8 +25722,9 @@ async function abrirDetallePoliza(id){
         ${!evidencias?.length?'<div style="font-size:11px;color:var(--text3);font-style:italic;">Sin evidencias subidas todavía.</div>':evidencias.map(e=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-top:1px solid var(--border);font-size:11px;"><span>${e.origen==='dropbox'?'🤖':'👤'} ${e.periodo_fecha}${e.nota?' — '+e.nota:''}</span><span style="color:var(--text3);">${(e.fecha_subida||'').slice(0,10)}</span></div>`).join('')}
       </div>
     </div>
-    <div style="margin-bottom:12px;padding:12px;border:1px dashed var(--border);border-radius:8px;">
-      <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:8px;">⚙ Configuración de resguardo</div>
+    <details style="margin-bottom:12px;padding:12px;border:1px dashed var(--border);border-radius:8px;">
+      <summary style="font-size:11px;font-weight:700;color:var(--navy);cursor:pointer;">⚙ Configuración de resguardo <span style="font-weight:500;color:var(--text3);">— clic para abrir (servidor, carpetas, periodicidad, plazo)</span></summary>
+      <div style="height:8px;"></div>
       <div style="margin-bottom:8px;">
         <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Servidor cloud contratado (si aplica — no depende del CRM)</div>
         <select id="resguardoServidorProducto_${id}" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;width:100%;">
@@ -25679,7 +25759,7 @@ async function abrirDetallePoliza(id){
         <div style="font-size:10px;color:var(--text3);margin-top:3px;">La vigilancia interna sigue la periodicidad (avisa suave al primer atraso); el plazo del cliente marca cuándo ya estamos incumpliendo.</div>
       </div>
       <button onclick="guardarConfigResguardo('${id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">💾 Guardar configuración</button>
-    </div>`;
+    </details>`;
   }
   const html=`
     <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:14px;">
@@ -25790,7 +25870,7 @@ async function abrirDetallePoliza(id){
     ${(c.personas_autorizadas||c.contacto_telefono||c.contacto_correo)?`<div style="margin-bottom:8px;font-size:12px;"><b>Contacto:</b> ${c.personas_autorizadas||'—'}${c.contacto_telefono?' · 📞 '+c.contacto_telefono:''}${c.contacto_correo?' · ✉ '+c.contacto_correo:''}</div>`:''}
     ${c.notas?`<div style="margin-bottom:8px;font-size:12px;"><b>Notas:</b> ${c.notas}</div>`:''}
     ${(c.origen==='crm_import'||c.origen==='crm_import_resguardo')?`<div style="margin-bottom:12px;font-size:10px;color:var(--text3);">Importado del CRM anterior${c.numero_proyecto_crm?' · número de póliza '+c.numero_proyecto_crm:''}.</div>`:''}
-    ${polizasHistoricasCandidatas.length>1?`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(245,166,35,0.08);border-radius:6px;font-size:11px;">
+    ${polizasHistoricasCandidatas.length>1&&!c.poliza_numero_legacy?`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(245,166,35,0.08);border-radius:6px;font-size:11px;">
       ⚠ Esta cuenta tiene <b>${polizasHistoricasCandidatas.length} pólizas distintas</b> en el historial 2019-2026 — elige cuál corresponde a ESTA póliza para no mezclar el historial de otra:
       <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
         ${polizasHistoricasCandidatas.map(p=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;background:#fff;border:1px solid var(--border);border-radius:6px;padding:6px 10px;">
@@ -25941,7 +26021,9 @@ function polizaMostrarCondicionesDetectadas(id,r,nombreArchivo){
   const esc=t=>String(t==null?'':t).replace(/</g,'&lt;');
   const modal=document.createElement('div');
   modal.id='modalCondicionesResguardo';
-  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:1200;display:flex;align-items:center;justify-content:center;padding:16px;';
+  // z-index por encima de mkModal (9999): si no, la ventana salía DETRÁS del
+  // detalle de la póliza y no se veía hasta cerrar el detalle.
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10050;display:flex;align-items:center;justify-content:center;padding:16px;';
   modal.innerHTML=`<div class="card" style="width:100%;max-width:560px;padding:20px;max-height:90vh;overflow-y:auto;">
     <div style="font-size:14px;font-weight:700;margin-bottom:4px;">📄 Condiciones encontradas en el PDF</div>
     <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">${esc(nombreArchivo)}${r.producto?' — '+esc(r.producto):''}</div>
