@@ -25636,7 +25636,12 @@ async function abrirDetallePoliza(id){
   // Nube con Servidor, parseando el "Backup..." de productos_servidores.specs)
   // > default del catálogo (INN1/INN2/INN3/Aliado/Infinito).
   let resguardoBloque='';
-  if(c.seccion_manual==='resguardo'){
+  // Jp, 2026-11-18 — ASPID abría con la pantalla de Soporte: el detalle miraba
+  // SOLO c.seccion_manual, mientras que la lista de "Resguardo" usa
+  // opsEsResguardo() (clasificación manual O categoría del catálogo). Ahora los
+  // dos usan el mismo criterio.
+  const esResg=opsEsResguardo(c);
+  if(esResg){
     let periodicidadDias=c.resguardo_periodicidad_dias_override||c.polizas_catalogo?.resguardo_periodicidad_dias||null;
     let servidorInfo=null;
     if(!c.resguardo_periodicidad_dias_override&&c.servidor_cloud_id){
@@ -25882,7 +25887,7 @@ async function abrirDetallePoliza(id){
       <span>${est.agotada?'⚠ Se acabó el banco de horas.':est.vencida?'⚠ Venció por fecha.':'⚠ Ya existe otra póliza del mismo tipo para este cliente, con fecha de inicio más reciente — es probable que esta ya esté reemplazada.'} Si ya no va a seguir usándose, puedes cerrarla — se saca de "📋 Pólizas" y queda archivada en "🗂 Histórico de pólizas".</span>
       <button onclick="cerrarPoliza('${id}')" style="background:var(--red);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">📁 Cerrar póliza</button>
     </div>`:''}
-    ${c.seccion_manual==='resguardo'?'<div style="display:grid;grid-template-columns:1.15fr 1fr;gap:16px;align-items:start;"><div>':''}
+    ${esResg?'<div style="display:grid;grid-template-columns:1.15fr 1fr;gap:16px;align-items:start;"><div>':''}
     ${cartera?`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(0,169,157,0.06);border-radius:6px;font-size:11px;">
       🔗 Vinculado a Cartera de Cuentas: <b>${cartera.razon_social}</b>${cartera.num_cliente?' · #'+cartera.num_cliente:''}${vendedorNombre?' · vendedor: '+vendedorNombre:''}${cartera.telefono?' · tel: '+cartera.telefono:''}
       <div style="margin-top:6px;display:flex;gap:12px;flex-wrap:wrap;">
@@ -25926,7 +25931,7 @@ async function abrirDetallePoliza(id){
           <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Fecha de conclusión</div>
           <input id="dpFechaVencimiento" type="date" value="${c.fecha_vencimiento||''}" style="${INP}">
         </div>
-        ${c.seccion_manual==='resguardo'?'':`<div>
+        ${esResg?'':`<div>
           <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Horas que incluye la póliza</div>
           <input id="dpHorasTotales" type="number" step="0.5" value="${c.horas_totales>0?c.horas_totales:(c.polizas_catalogo?.horas_incluidas||0)}" style="${INP}">
         </div>`}
@@ -25957,9 +25962,9 @@ async function abrirDetallePoliza(id){
         :(c.polizas_catalogo.resguardos_incluidos?`<div style="margin-bottom:4px;">💾 ${c.polizas_catalogo.resguardos_incluidos}${opsEsResguardo(c)?` <span style="font-size:10px;color:var(--text3);">(texto general del catálogo — sube el contrato o la factura para usar las condiciones reales de este cliente)</span>`:''}</div>`:'')}
       ${c.polizas_catalogo.beneficios?`<div style="color:var(--text2);border-top:1px solid var(--border);padding-top:6px;margin-top:4px;line-height:1.5;">${c.polizas_catalogo.beneficios}</div>`:''}
     </div>`:`<div style="margin-bottom:12px;font-size:11px;color:var(--text3);">Sin tipo de póliza asignado — asígnalo arriba para ver prioridad, horario y beneficios.</div>`}
-    ${c.seccion_manual==='resguardo'?'</div><div>':''}${resguardoBloque}${c.seccion_manual==='resguardo'?'</div></div>':''}
+    ${esResg?'</div><div>':''}${resguardoBloque}${esResg?'</div></div>':''}
 
-    ${c.seccion_manual==='resguardo'?'':`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(41,128,185,0.06);border-radius:6px;">
+    ${esResg?'':`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(41,128,185,0.06);border-radius:6px;">
       <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:6px;">⏱ Horas — con base en los tickets reales${c.poliza_numero_legacy?` (app + historial 2019-2026 de POL${c.poliza_numero_legacy})`:' (app)'}</div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;font-size:12px;">
         <div><div style="color:var(--text3);font-size:10px;">Incluidas</div><div style="font-family:'JetBrains Mono',monospace;">${horasReales.total?horasReales.total+'h':'—'}</div><div style="font-size:9px;color:var(--text3);">${horasReales.total?'('+opsHorasAMinutosTexto(horasReales.total)+')':''}</div></div>
@@ -25968,7 +25973,7 @@ async function abrirDetallePoliza(id){
       </div>
       <div style="font-size:10px;color:var(--text3);margin-top:6px;">${(horasReales.minutosApp/60).toFixed(2)}h de tickets en la app${c.poliza_numero_legacy?` + ${(horasReales.minutosHistorico/60).toFixed(2)}h del historial`:''}</div>
     </div>`}
-    ${c.horas_referencia_texto&&c.seccion_manual!=='resguardo'?`<div style="margin-bottom:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Referencia de horas (CRM anterior):</b><br>${c.horas_referencia_texto}</div>`:''}
+    ${c.horas_referencia_texto&&!esResg?`<div style="margin-bottom:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;white-space:pre-wrap;"><b>Referencia de horas (CRM anterior):</b><br>${c.horas_referencia_texto}</div>`:''}
     ${(c.personas_autorizadas||c.contacto_telefono||c.contacto_correo)?`<div style="margin-bottom:8px;font-size:12px;"><b>Contacto:</b> ${c.personas_autorizadas||'—'}${c.contacto_telefono?' · 📞 '+c.contacto_telefono:''}${c.contacto_correo?' · ✉ '+c.contacto_correo:''}</div>`:''}
     ${c.notas?`<div style="margin-bottom:8px;font-size:12px;"><b>Notas:</b> ${c.notas}</div>`:''}
     ${(c.origen==='crm_import'||c.origen==='crm_import_resguardo')?`<div style="margin-bottom:12px;font-size:10px;color:var(--text3);">Importado del CRM anterior${c.numero_proyecto_crm?' · número de póliza '+c.numero_proyecto_crm:''}.</div>`:''}
@@ -26004,7 +26009,7 @@ async function abrirDetallePoliza(id){
         </tbody>
       </table>
     </div>`;
-  mkModal('modalDetallePoliza',`Detalle de póliza — ${c.cliente_nombre}`,html,null,'Cerrar',c.seccion_manual==='resguardo'?'1000px':true);
+  mkModal('modalDetallePoliza',`Detalle de póliza — ${c.cliente_nombre}`,html,null,'Cerrar',esResg?'1000px':true);
   cargarDocsPoliza(id,opsEsResguardo(c));
 }
 // Autollena "Horas que incluye la póliza" al elegir el tipo de póliza en
