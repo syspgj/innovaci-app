@@ -34951,7 +34951,13 @@ async function solAplicarPrefillShopify(id){
     const porCurso={};(gl||[]).filter(g=>solEsVig(g.id)).forEach(g=>{(porCurso[g.curso_id]=porCurso[g.curso_id]||[]).push(g.id);});
     const auto=Object.values(porCurso).filter(a=>a.length===1).map(a=>a[0]);
     window._solGenSug=new Set(linked.filter(solEsVig));
-    if(!shpEsDir()) window._solGenSolo=new Set(linked);
+    // Jp, 2026-11-18: "que se dé la posibilidad de LA generación correcta, no
+    // todas". La lista se limita a las generaciones del producto vendido —
+    // también para Dirección, que antes las veía todas y por eso era fácil
+    // marcar la equivocada. Si de verdad hay que cambiarla, el enlace
+    // "ver todas" de abajo quita el filtro.
+    window._solGenSolo=new Set(linked);
+    window._solGenVerTodas=false;
     const box=document.getElementById('sfAcadGens');
     if(box){box.dataset.sel=auto.join(',');await solAcadCargarGens('sf');}
   }
@@ -35058,7 +35064,7 @@ function solAcadNivelDeConcepto(c){const t=String(c||'').toUpperCase();return /P
 function solAcadFilaHtml(p,a){
   a=a||{};
   return `<div class="${p}AsRow" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:0 10px;border-bottom:1px dashed var(--border);margin-bottom:6px;">
-    ${solFld('Nombre del asistente',`<input class="${p}AsN" value="${solEsc(a.nombre||'')}" style="${SOL_INPUT_STYLE}">`)}
+    ${solFld('Nombre del asistente',`<input class="${p}AsN" value="${solEsc(a.nombre||'')}" style="${SOL_INPUT_STYLE}" title="Tal cual se escriba aquí saldrá impreso en la constancia"><div style="font-size:10px;color:#b45309;margin-top:2px;">📜 Tal cual lo escribas aquí sale en la constancia — nombre completo y bien acentuado.</div>`)}
     ${solFld('Correo',`<input class="${p}AsC" type="email" value="${solEsc(a.correo||'')}" style="${SOL_INPUT_STYLE}">`)}
     ${solFld('Teléfono / WhatsApp',`<input class="${p}AsT" value="${solEsc(a.telefono||'')}" style="${SOL_INPUT_STYLE}">`)}
   </div>`;
@@ -35184,7 +35190,10 @@ async function solAcadCargarGens(p){
   if(!window._solGens) await solCargarGeneraciones();
   const sug=window._solGenSug||new Set();
   const selPrev=new Set((box.dataset.sel||'').split(',').filter(Boolean));
-  const gens=(window._solGens||[]).filter(g=>(g.__vig||selPrev.has(g.id))&&(!window._solGenSolo||window._solGenSolo.has(g.id)||g.__sel||selPrev.has(g.id))).slice().sort((a,b)=>(sug.has(b.id)-sug.has(a.id))||String(a.fecha_inicio||'9').localeCompare(String(b.fecha_inicio||'9')));
+  // Jp, 2026-11-18: por defecto solo se ofrece la generación del producto que
+  // se vendió; "ver todas" la quita para corregir un error de captura.
+  const soloDelProducto=window._solGenSolo&&!window._solGenVerTodas;
+  const gens=(window._solGens||[]).filter(g=>(g.__vig||selPrev.has(g.id))&&(!soloDelProducto||window._solGenSolo.has(g.id)||g.__sel||selPrev.has(g.id))).slice().sort((a,b)=>(sug.has(b.id)-sug.has(a.id))||String(a.fecha_inicio||'9').localeCompare(String(b.fecha_inicio||'9')));
   const sel=new Set((box.dataset.sel||'').split(',').filter(Boolean));
   box.innerHTML=gens.length?gens.map(g=>`<label style="display:flex;gap:6px;align-items:flex-start;padding:2px 0;"><input type="checkbox" class="${p}AcadGen" value="${g.id}" ${sel.has(g.id)?'checked':''}><span>${sug.has(g.id)?'⭐ ':''}${g.fecha_inicio?'<b>'+solFecha(g.fecha_inicio)+'</b> · ':''}${solEsc(g.curso?.nombre||'')} <span style="color:var(--text3);">(${solEsc(g.clave||'')})</span></span></label>`).join(''):(()=>{
     // Jp, 2026-11-18: antes solo decía "no hay generaciones vigentes" aunque sí
@@ -35194,6 +35203,18 @@ async function solAcadCargarGens(p){
     if(vig&&window._solGenSolo) return '<span style="color:#b45309;">Hay '+vig+' generación(es) vigente(s), pero este producto de la tienda no está ligado a ninguna, así que no se pueden elegir aquí. Envía sin generación y Dirección la liga desde la tarjeta.</span>';
     return '<span style="color:var(--text3);">No hay generaciones vigentes en Academia. Pídele a Dirección que las cree; mientras, puedes enviar sin generación y se asigna después desde la tarjeta.</span>';
   })();
+  // Enlace para quitar/poner el filtro cuando la generación marcada no es la
+  // que el cliente quiere (error de captura).
+  if(window._solGenSolo){
+    box.insertAdjacentHTML('beforeend',`<div style="border-top:1px dashed var(--border);margin-top:6px;padding-top:5px;">
+      <button type="button" onclick="solAcadVerTodasGens('${p}')" style="background:none;border:none;color:var(--teal);font-size:10.5px;font-weight:700;cursor:pointer;padding:0;text-decoration:underline;">${window._solGenVerTodas?'↩ Dejar solo la de este producto':'¿Generación equivocada? Ver todas las vigentes'}</button>
+      ${window._solGenVerTodas?'<span style="font-size:10px;color:#b45309;margin-left:6px;">Cuidado: si marcas otra, el alumno entra a ese curso.</span>':''}
+    </div>`);
+  }
+}
+function solAcadVerTodasGens(p){
+  window._solGenVerTodas=!window._solGenVerTodas;
+  solAcadCargarGens(p);
 }
 function solAcadLeer(p){
   const asistentes=[...document.querySelectorAll('.'+p+'AsRow')].map(r=>({nombre:r.querySelector('.'+p+'AsN').value.trim(),correo:r.querySelector('.'+p+'AsC').value.trim(),telefono:r.querySelector('.'+p+'AsT').value.trim()})).filter(a=>a.nombre||a.correo||a.telefono);
