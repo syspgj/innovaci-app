@@ -40,16 +40,38 @@ function normalizarTelefono(t) {
   return '+' + d;
 }
 
-async function llamarRespond(ruta) {
+async function llamarRespond(ruta, metodo, cuerpoEnviado) {
   const url = `${RESPOND_BASE.replace(/\/+$/, '')}${ruta}`;
   const t0 = Date.now();
-  const res = await fetch(url, {
+  const opciones = {
+    method: metodo || 'GET',
     headers: { Authorization: `Bearer ${RESPOND_TOKEN}`, Accept: 'application/json' },
-  });
+  };
+  if (cuerpoEnviado) {
+    opciones.headers['Content-Type'] = 'application/json';
+    opciones.body = JSON.stringify(cuerpoEnviado);
+  }
+  const res = await fetch(url, opciones);
   const texto = await res.text();
   let cuerpo = null;
   try { cuerpo = JSON.parse(texto); } catch (_) { cuerpo = texto.slice(0, 400); }
-  return { url, status: res.status, ok: res.ok, ms: Date.now() - t0, cuerpo };
+  return { url, ruta, metodo: opciones.method, status: res.status, ok: res.ok, ms: Date.now() - t0, cuerpo };
+}
+
+// Saca la lista de contactos venga como venga (items/data/contacts/arreglo suelto).
+function sacarItems(cuerpo) {
+  if (!cuerpo) return null;
+  if (Array.isArray(cuerpo)) return cuerpo;
+  for (const k of ['items', 'data', 'contacts', 'results', 'records']) {
+    if (Array.isArray(cuerpo[k])) return cuerpo[k];
+  }
+  return null;
+}
+
+function mensajeDeError(c) {
+  if (!c) return '';
+  if (typeof c === 'string') return c.slice(0, 200);
+  return String(c.message || c.error || JSON.stringify(c)).slice(0, 200);
 }
 
 export default async function handler(req, res) {
@@ -78,28 +100,61 @@ export default async function handler(req, res) {
   const telefono = req.query && req.query.telefono ? String(req.query.telefono) : '';
 
   try {
-    // 1) Listado de contactos: confirma token, ruta y forma de la respuesta.
-    const lista = await llamarRespond('/contact/list?limit=3');
+    // 1) Listado de contactos. La ruta real no está confirmada: GET /contact/list
+    //    devolvió 400 "Identifier list is invalid", o sea que el servidor la leyó
+    //    como GET /contact/{identificador}. Así que se prueban varias formas en
+    //    orden y se reporta cuál funcionó, para dejar la buena en el código.
+    const intentos = [
+      { ruta: '/contact/list', metodo: 'POST', cuerpo: { limit: 3 } },
+      { ruta: '/contact/list', metodo: 'POST', cuerpo: { limit: 3, search: '' } },
+      { ruta: '/contact', metodo: 'GET' },
+      { ruta: '/contact?limit=3', metodo: 'GET' },
+      { ruta: '/contacts?limit=3', metodo: 'GET' },
+      { ruta: '/contact/list?limit=3', metodo: 'GET' },
+    ];
+    const probados = [];
+    let lista = null;
+    for (const it of intentos) {
+      const r = await llamarRespond(it.ruta, it.metodo, it.cuerpo);
+      probados.push({
+        intento: it.metodo + ' ' + it.ruta,
+        status: r.status,
+        detalle: r.ok ? 'ok' : mensajeDeError(r.cuerpo),
+      });
+      if (r.ok && sacarItems(r.cuerpo)) { lista = r; break; }
+      // Pausa corta: la API limita peticiones por segundo.
+      await new Promise((ok) => setTimeout(ok, 220));
+    }
 
     const salida = {
-      ok: lista.ok,
+      ok: !!lista,
       base: RESPOND_BASE,
-      listado: { ruta: '/contact/list?limit=3', status: lista.status, ms: lista.ms },
+      token_aceptado: !probados.some((x) => x.status === 401 || x.status === 403),
+      intentos: probados,
+      listado: lista ? { ruta: lista.metodo + ' ' + lista.ruta, status: lista.status, ms: lista.ms } : null,
     };
 
-    if (!lista.ok) {
-      salida.error = lista.status === 401 || lista.status === 403
+    if (!lista) {
+      const auth = probados.find((x) => x.status === 401 || x.status === 403);
+      salida.error = auth
         ? 'El token no fue aceptado (¿se copió completo? ¿sigue activo en Respond.io?).'
-        : lista.status === 404
-          ? 'La ruta no existe en esta versión de la API. Hay que ajustar la dirección base o el endpoint.'
-          : lista.status === 429
-            ? 'Respond.io está limitando las peticiones (demasiadas por segundo). Espera un momento y vuelve a probar.'
-            : 'Respond.io respondió con un error.';
-      salida.respuesta_cruda = typeof lista.cuerpo === 'string' ? lista.cuerpo : JSON.stringify(lista.cuerpo).slice(0, 400);
+        : 'El token funciona, pero ninguna de las rutas de listado probadas respondió. Abajo está lo que contestó cada una; con eso se ajusta el código.';
+      // La búsqueda por teléfono se intenta de todas formas: esa ruta sí existe.
+      if (telefono) {
+        const tel = normalizarTelefono(telefono);
+        const busca = await llamarRespond('/contact/phone:' + encodeURIComponent(tel));
+        salida.busqueda = {
+          telefono_enviado: tel, status: busca.status, encontrado: busca.ok, ms: busca.ms,
+          nombre: busca.ok && busca.cuerpo ? [busca.cuerpo.firstName, busca.cuerpo.lastName].filter(Boolean).join(' ') || null : null,
+          etiquetas: busca.ok && busca.cuerpo ? busca.cuerpo.tags || null : null,
+          campos: busca.ok && busca.cuerpo ? Object.keys(busca.cuerpo) : null,
+          nota: busca.status === 404 ? 'Ese teléfono no existe como contacto en Respond.io.' : mensajeDeError(busca.cuerpo) || null,
+        };
+      }
       return res.status(200).json(salida);
     }
 
-    const items = (lista.cuerpo && (lista.cuerpo.items || lista.cuerpo.data)) || [];
+    const items = sacarItems(lista.cuerpo) || [];
     salida.contactos_recibidos = Array.isArray(items) ? items.length : 0;
     salida.paginacion = lista.cuerpo && lista.cuerpo.pagination ? lista.cuerpo.pagination : null;
     salida.campos = Array.isArray(items) && items.length ? Object.keys(items[0]) : [];
@@ -127,7 +182,8 @@ export default async function handler(req, res) {
         ms: busca.ms,
         nombre: busca.ok && busca.cuerpo ? [busca.cuerpo.firstName, busca.cuerpo.lastName].filter(Boolean).join(' ') || null : null,
         etiquetas: busca.ok && busca.cuerpo ? busca.cuerpo.tags || null : null,
-        nota: busca.status === 404 ? 'Ese teléfono no existe como contacto en Respond.io.' : null,
+        campos: busca.ok && busca.cuerpo ? Object.keys(busca.cuerpo) : null,
+        nota: busca.status === 404 ? 'Ese teléfono no existe como contacto en Respond.io.' : mensajeDeError(busca.cuerpo) || null,
       };
     }
 
