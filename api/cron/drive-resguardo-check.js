@@ -53,6 +53,31 @@ function fechaMexico(iso) {
   return new Date(new Date(iso).getTime() - 6 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
+// ── Fecha tomada del NOMBRE del archivo (Jp, 2026-11-18) ──────────────────
+// RADIACION Y DOSIMETRIA: su servidor tiene la pila del BIOS dañada y pierde
+// la hora; aunque un sincronizador se la corrige cada 15 minutos, los
+// respaldos se suben con fecha de modificación por default (enero de 2016).
+// La fecha REAL viene en el nombre del archivo
+// (HOMEFOLDERS_NAS_20261113_Inc_v1.pbd -> 13-nov-2026), así que esa manda
+// cuando el nombre la trae; si no, se usa la fecha de modificación como antes.
+function fechaDesdeNombreArchivo(nombre) {
+  const m = String(nombre || '').match(/(20\d{2})[-_.]?(\d{2})[-_.]?(\d{2})/);
+  if (!m) return null;
+  const [, a, mes, dia] = m;
+  const mm = parseInt(mes, 10), dd = parseInt(dia, 10), aa = parseInt(a, 10);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31 || aa < 2015) return null;
+  const iso = `${a}-${mes}-${dia}`;
+  const d = new Date(`${iso}T12:00:00.000Z`);
+  if (isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== iso) return null; // p.ej. 20261345
+  if (d.getTime() > Date.now() + 2 * 86400000) return null; // fecha futura: no es de fiar
+  return d.toISOString();
+}
+// Fecha efectiva de un archivo: la del nombre si la trae, si no la de modificación.
+function fechaEfectivaArchivo(nombre, fechaModificacion) {
+  return fechaDesdeNombreArchivo(nombre) || fechaModificacion || null;
+}
+
+
 async function sbPost(path, body) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method: 'POST',
@@ -239,13 +264,14 @@ export default async function handler(req, res) {
       const estados = [];
       for (const o of susOrigenes) {
         try {
-          const archivos = await driveListarArchivos(token, o.carpeta_id);
-          const ult = archivos.length ? archivos.reduce((a, b) => (a.modifiedTime > b.modifiedTime ? a : b)) : null;
+          const archivos = (await driveListarArchivos(token, o.carpeta_id))
+            .map((f) => ({ ...f, fechaEfectiva: fechaEfectivaArchivo(f.name, f.modifiedTime) }));
+          const ult = archivos.length ? archivos.reduce((a, b) => (a.fechaEfectiva > b.fechaEfectiva ? a : b)) : null;
           await sbPatch(`resguardo_origenes?id=eq.${o.id}`, {
             revision_at: new Date().toISOString(), ultimo_archivo: ult ? ult.name : null,
-            ultimo_archivo_fecha: ult ? ult.modifiedTime : null, archivos_total: archivos.length, error: null,
+            ultimo_archivo_fecha: ult ? ult.fechaEfectiva : null, archivos_total: archivos.length, error: null,
           });
-          const fecha = ult ? fechaMexico(ult.modifiedTime) : null;
+          const fecha = ult ? fechaMexico(ult.fechaEfectiva) : null;
           estados.push({ etiqueta: o.etiqueta || o.carpeta_id, ok: !!(fecha && fecha >= periodo), fecha, archivo: ult?.name || null });
         } catch (e) {
           errores.push({ poliza_id: p.id, cliente: p.cliente_nombre, carpeta: o.etiqueta || o.carpeta_id, error: e.message });
