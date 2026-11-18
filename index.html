@@ -25760,16 +25760,19 @@ async function abrirDetallePoliza(id){
     <div style="margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:8px;">
       <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:6px;">📎 Contrato / factura (PDF)</div>
       <div id="docsPoliza_${id}" style="font-size:11px;color:var(--text3);margin-bottom:8px;">Cargando documentos...</div>
+      ${opsEsResguardo(c)?`<div style="font-size:10px;color:var(--text3);margin-bottom:6px;">Al subir el contrato o la factura, la app lee las condiciones del respaldo (periodicidad, historial, reporte) y te propone aplicarlas a esta póliza.</div>`:''}
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
         <input type="file" id="docPolizaArchivo_${id}" accept="application/pdf,.pdf" style="font-size:11px;">
-        <button type="button" onclick="subirDocPoliza('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">📤 Subir PDF</button>
+        <button type="button" onclick="subirDocPoliza('${id}',${opsEsResguardo(c)?'true':'false'})" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">📤 Subir PDF</button>
       </div>
     </div>
 
     ${c.polizas_catalogo?`<div style="margin-bottom:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;">
       ${c.polizas_catalogo.prioridad_codigo?`<div style="margin-bottom:4px;">🎯 <b>Prioridad ${c.polizas_catalogo.prioridad_codigo}</b> — ${c.polizas_catalogo.prioridad_nombre||''} · tiempo de respuesta ${c.polizas_catalogo.resp_horas_min}-${c.polizas_catalogo.resp_horas_max}h hábiles</div>`:''}
       ${c.polizas_catalogo.horario_atencion?`<div style="margin-bottom:4px;">🕐 ${c.polizas_catalogo.horario_atencion}</div>`:''}
-      ${c.polizas_catalogo.resguardos_incluidos?`<div style="margin-bottom:4px;">💾 ${c.polizas_catalogo.resguardos_incluidos}</div>`:''}
+      ${c.resguardo_condiciones_texto
+        ?`<div style="margin-bottom:4px;">💾 <b>Según el contrato/factura adjunta:</b> ${String(c.resguardo_condiciones_texto).replace(/</g,'&lt;')}${c.resguardo_condiciones_origen?`<br><span style="font-size:10px;color:var(--text3);">Leído de ${String(c.resguardo_condiciones_origen).replace(/</g,'&lt;')}</span>`:''}</div>`
+        :(c.polizas_catalogo.resguardos_incluidos?`<div style="margin-bottom:4px;">💾 ${c.polizas_catalogo.resguardos_incluidos}${opsEsResguardo(c)?` <span style="font-size:10px;color:var(--text3);">(texto general del catálogo — sube el contrato o la factura para usar las condiciones reales de este cliente)</span>`:''}</div>`:'')}
       ${c.polizas_catalogo.beneficios?`<div style="color:var(--text2);border-top:1px solid var(--border);padding-top:6px;margin-top:4px;line-height:1.5;">${c.polizas_catalogo.beneficios}</div>`:''}
     </div>`:`<div style="margin-bottom:12px;font-size:11px;color:var(--text3);">Sin tipo de póliza asignado — asígnalo arriba para ver prioridad, horario y beneficios.</div>`}
     ${c.seccion_manual==='resguardo'?'</div><div>':''}${resguardoBloque}${c.seccion_manual==='resguardo'?'</div></div>':''}
@@ -25820,7 +25823,7 @@ async function abrirDetallePoliza(id){
       </table>
     </div>`;
   mkModal('modalDetallePoliza',`Detalle de póliza — ${c.cliente_nombre}`,html,null,'Cerrar',c.seccion_manual==='resguardo'?'1000px':true);
-  cargarDocsPoliza(id);
+  cargarDocsPoliza(id,opsEsResguardo(c));
 }
 // Autollena "Horas que incluye la póliza" al elegir el tipo de póliza en
 // el detalle (Jp, 2026-09-09): "las horas las debes de colocar en
@@ -25865,16 +25868,123 @@ function desbloquearDatosPoliza(){
   const t=document.getElementById('dpEstadoBloqueo'); if(t){t.textContent='(modo edición — recuerda guardar)';t.style.color='#c47f0a';}
 }
 // Contrato / factura en PDF de la póliza. Se guarda en la app (Storage + crm_documentos); NO se replica al CRM.
-async function cargarDocsPoliza(id){
+async function cargarDocsPoliza(id,esResguardo){
   const box=document.getElementById('docsPoliza_'+id); if(!box) return;
+  if(esResguardo!==undefined) window._docsPolizaEsResguardo=!!esResguardo;
+  const resg=window._docsPolizaEsResguardo;
   const {data,error}=await sb.from('crm_documentos').select('*').eq('cliente_poliza_id',id).eq('entidad_tipo','poliza_contrato').order('created_at',{ascending:false});
   if(error){box.innerHTML='<span style="color:var(--red);">No se pudieron cargar los documentos.</span>';return;}
   if(!(data||[]).length){box.innerHTML='<i>Sin contrato ni factura adjuntos todavía.</i>';return;}
   box.innerHTML=data.map(d=>`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
     <span style="font-size:12px;cursor:pointer;color:var(--navy);text-decoration:underline;" onclick="abrirDocumentoAdjunto('${d.storage_path.replace(/'/g,"\\'")}')">📄 ${String(d.nombre_archivo).replace(/</g,'&lt;')}</span>
-    <span style="font-size:10px;color:var(--text3);white-space:nowrap;">${(d.created_at||'').slice(0,10)} <span onclick="borrarDocPoliza('${d.id}','${d.storage_path.replace(/'/g,"\\'")}','${id}')" title="Eliminar" style="cursor:pointer;color:var(--red);font-size:13px;">🗑</span></span></div>`).join('');
+    <span style="font-size:10px;color:var(--text3);white-space:nowrap;display:flex;align-items:center;gap:6px;">
+      ${resg&&/\.pdf$/i.test(d.nombre_archivo||'')?`<button type="button" onclick="polizaLeerCondicionesGuardado('${id}','${d.storage_path.replace(/'/g,"\\'")}','${String(d.nombre_archivo).replace(/'/g,"\\'")}')" style="background:#fff;color:var(--navy);border:1px solid var(--navy);border-radius:5px;padding:2px 8px;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap;">📄 Leer condiciones</button>`:''}
+      ${(d.created_at||'').slice(0,10)}
+      <span onclick="borrarDocPoliza('${d.id}','${d.storage_path.replace(/'/g,"\\'")}','${id}')" title="Eliminar" style="cursor:pointer;color:var(--red);font-size:13px;">🗑</span>
+    </span></div>`).join('');
 }
-async function subirDocPoliza(id){
+
+// ── Condiciones del resguardo leídas del contrato/factura (Jp, 2026-11-18) ──
+// "me gustaría que tomaran lo que dice el PDF para el tiempo de los respaldos
+// ... y que lo de abajo que dice local diario 60 días se modifique por lo que
+// está en el PDF o en la factura o en un contrato". El texto del catálogo es
+// genérico e igual para todas las pólizas; el PDF trae las condiciones REALES
+// de ESE cliente. Se lee en el navegador con pdf.js (el mismo lector de los
+// anexos de Aspel) y NUNCA se guarda solo: se muestra lo encontrado y Jp
+// confirma o corrige antes de aplicarlo.
+function parsearCondicionesResguardoPdf(lineas){
+  const texto=(lineas||[]).join('\n');
+  const buscar=(re)=>{const l=(lineas||[]).find(x=>re.test(x));return l?l.trim():null;};
+  const get=(re)=>{const m=texto.match(re);return m?m[1].trim():null;};
+  // Frecuencia escrita en una línea ("diarios", "semanal", "cada 3 días", "quincenal", "mensual").
+  const freq=(linea)=>{
+    if(!linea) return null;
+    const cada=linea.match(/cada\s*(\d+)\s*d[ií]as?/i);
+    if(cada) return parseInt(cada[1],10);
+    if(/diari[oa]s?/i.test(linea)) return 1;
+    if(/semanal(es)?/i.test(linea)) return 7;
+    if(/quincenal(es)?/i.test(linea)) return 15;
+    if(/mensual(es)?/i.test(linea)) return 30;
+    return null;
+  };
+  const producto=buscar(/RESPALDOS?\s+(PERSONALIZADO|NUBE|ALIADO|INN)/i);
+  const lineaLocal=buscar(/respaldos?\s+locales?/i);
+  const lineaNube=buscar(/respaldos?\s+(en\s+)?nube/i);
+  const historial=get(/Historial:?\s*(\d+\s*d[ií]as?)/i);
+  const supervision=buscar(/supervisi[oó]n/i);
+  const reporte=buscar(/reporte\s+\w+/i);
+  const transferencia=buscar(/transferencia/i);
+  const contrato=buscar(/contrato\s+de\s+\d/i);
+  const formaServicio=get(/Forma\s+de\s+Servicio:?\s*([A-Za-zÁÉÍÓÚÑáéíóúñ]+)/i);
+  const partes=[lineaLocal,lineaNube,transferencia,historial?('Historial: '+historial):null,supervision,reporte,contrato,formaServicio?('Forma de Servicio: '+formaServicio):null].filter(Boolean);
+  // La validación automática mira la NUBE (Drive/Dropbox): lo local no lo vemos.
+  const periodicidad=freq(lineaNube)||freq(lineaLocal);
+  return {producto,periodicidad,freqLocal:freq(lineaLocal),freqNube:freq(lineaNube),condiciones:partes.join(' · '),encontrado:!!partes.length};
+}
+async function polizaLeerCondicionesDeArchivo(id,arrayBuffer,nombreArchivo){
+  await cargarPdfJs();
+  const lineas=await pdfExtraerLineas(arrayBuffer);
+  const r=parsearCondicionesResguardoPdf(lineas);
+  if(!r.encontrado){alert('El PDF se guardó, pero no se reconocieron condiciones de respaldo en su texto (puede ser un PDF escaneado como imagen). Captura la periodicidad a mano en "⚙ Configuración de resguardo".');return;}
+  polizaMostrarCondicionesDetectadas(id,r,nombreArchivo);
+}
+async function polizaLeerCondicionesGuardado(id,storagePath,nombreArchivo){
+  const fin=uiOcupado('Leyendo el PDF…','Se lee en tu navegador; puede tardar unos segundos.');
+  try{
+    const {data,error}=await sb.storage.from('crm-documentos').download(storagePath);
+    if(error) throw error;
+    await polizaLeerCondicionesDeArchivo(id,await data.arrayBuffer(),nombreArchivo);
+  }catch(e){alert('No se pudo leer el PDF: '+(e.message||e));}
+  finally{fin();}
+}
+function polizaMostrarCondicionesDetectadas(id,r,nombreArchivo){
+  const esc=t=>String(t==null?'':t).replace(/</g,'&lt;');
+  const modal=document.createElement('div');
+  modal.id='modalCondicionesResguardo';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:1200;display:flex;align-items:center;justify-content:center;padding:16px;';
+  modal.innerHTML=`<div class="card" style="width:100%;max-width:560px;padding:20px;max-height:90vh;overflow-y:auto;">
+    <div style="font-size:14px;font-weight:700;margin-bottom:4px;">📄 Condiciones encontradas en el PDF</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">${esc(nombreArchivo)}${r.producto?' — '+esc(r.producto):''}</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:3px;">Texto que se mostrará en la póliza (puedes corregirlo):</div>
+    <textarea id="condResgTexto" rows="4" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:11px;font-family:'Inter',sans-serif;margin-bottom:12px;">${esc(r.condiciones)}</textarea>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+      <div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:3px;">Periodicidad para la vigilancia interna (días)</div>
+        <input type="number" min="1" id="condResgPeriodicidad" value="${r.periodicidad||''}" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;">
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;">${r.freqNube?`Del PDF: respaldos en nube cada ${r.freqNube} día${r.freqNube===1?'':'s'}.`:(r.freqLocal?`Del PDF: respaldos locales cada ${r.freqLocal} día${r.freqLocal===1?'':'s'}.`:'No se detectó la frecuencia — captúrala a mano.')}</div>
+      </div>
+      <div>
+        <div style="font-size:10px;color:var(--text3);margin-bottom:3px;">Plazo máximo con el cliente (días, opcional)</div>
+        <input type="number" min="1" id="condResgPlazo" value="" placeholder="p.ej. 7" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;">
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;">Lo que te exige el contrato. Déjalo vacío si es el mismo que la periodicidad.</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button onclick="guardarCondicionesResguardo('${id}','${String(nombreArchivo).replace(/'/g,"\\'")}')" style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:6px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;">Aplicar a esta póliza</button>
+      <button onclick="document.getElementById('modalCondicionesResguardo')?.remove()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:10px 16px;font-size:13px;cursor:pointer;color:var(--text2);">Ahora no</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+async function guardarCondicionesResguardo(id,nombreArchivo){
+  const texto=document.getElementById('condResgTexto')?.value?.trim()||null;
+  const perInp=document.getElementById('condResgPeriodicidad');
+  const plazoInp=document.getElementById('condResgPlazo');
+  const payload={
+    resguardo_condiciones_texto:texto,
+    resguardo_condiciones_origen:`${nombreArchivo} (${todayLocal()})`,
+    updated_at:new Date().toISOString(),
+  };
+  if(perInp&&perInp.value) payload.resguardo_periodicidad_dias_override=parseInt(perInp.value,10);
+  if(plazoInp&&plazoInp.value) payload.resguardo_plazo_cliente_dias=parseInt(plazoInp.value,10);
+  const {error}=await sb.from('clientes_polizas').update(payload).eq('id',id);
+  if(error){alert('No se pudo guardar: '+error.message);return;}
+  document.getElementById('modalCondicionesResguardo')?.remove();
+  uiToast('✓ Condiciones aplicadas a la póliza');
+  document.getElementById('modalDetallePoliza')?.remove();
+  abrirDetallePoliza(id);
+}
+async function subirDocPoliza(id,esResguardo){
   const inp=document.getElementById('docPolizaArchivo_'+id); const file=inp?.files?.[0];
   if(!file){alert('Elige primero el archivo PDF.');return;}
   if(!/\.pdf$/i.test(file.name)&&file.type!=='application/pdf'){alert('Solo se aceptan archivos PDF.');return;}
@@ -25885,7 +25995,10 @@ async function subirDocPoliza(id){
     if(upErr) throw upErr;
     const {error:insErr}=await sb.from('crm_documentos').insert({entidad_tipo:'poliza_contrato',cliente_poliza_id:id,nombre_archivo:file.name,storage_path:path,tamano_bytes:file.size,subido_por:currentUser.id});
     if(insErr) throw insErr;
+    const buf=esResguardo?await file.arrayBuffer():null;
+    const nombre=file.name;
     inp.value=''; uiToast('✓ PDF subido'); cargarDocsPoliza(id);
+    if(buf){ try{ await polizaLeerCondicionesDeArchivo(id,buf,nombre); }catch(e){ console.error('leer condiciones PDF',e); alert('El PDF se guardó, pero no se pudo leer su texto: '+(e.message||e)); } }
   }catch(e){alert('No se pudo subir el PDF: '+(e.message||e));}
   finally{fin();}
 }
