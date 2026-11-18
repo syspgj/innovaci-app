@@ -8614,7 +8614,10 @@ async function teleCanalizarAVendedor(id){
   const {data:fila}=await sb.from('pipeline_vendedor').select('*').eq('id',id).single();
   if(!fila){alert('No se encontró la negociación.');return;}
   const hoy=todayLocal();
+  // 2026-11-18: el id se genera aquí porque telemarketing no puede LEER la fila del vendedor (RLS), así que insert().select() fallaba.
+  const nuevoId=(crypto&&crypto.randomUUID)?crypto.randomUUID():null;
   const nuevaFila={
+    ...(nuevoId?{id:nuevoId}:{}),
     usuario_id:vendedorId, perfil:'vendedor',
     anio:currentYear, mes:currentMonth,
     cliente:fila.cliente, producto:fila.producto,
@@ -8623,9 +8626,10 @@ async function teleCanalizarAVendedor(id){
     estatus:'Prospectando',
     cliente_cartera_id:fila.cliente_cartera_id, prospecto_app_id:fila.prospecto_app_id,
   };
-  const {data:creada,error}=await sb.from('pipeline_vendedor').insert(nuevaFila).select().single();
+  const {error}=await sb.from('pipeline_vendedor').insert(nuevaFila);
   if(error){alert('Error al canalizar: '+error.message);return;}
-  await sb.from('pipeline_vendedor').update({estatus:'Canalizado a vendedor',canalizado_a_pipeline_id:creada.id}).eq('id',id);
+  const creada={id:nuevoId};
+  await sb.from('pipeline_vendedor').update({estatus:'Canalizado a vendedor',...(nuevoId?{canalizado_a_pipeline_id:nuevoId}:{})}).eq('id',id);
   document.getElementById('modalTeleCanalizar')?.remove();
   document.getElementById('modalPipeTele')?.remove();
   alert('✅ Canalizada — ya aparece en la Proyección de ese vendedor.');
@@ -24569,7 +24573,7 @@ async function renderOpsResumen(){
     sb.from('usuarios').select('id,nombre').eq('rol','asesor').order('nombre'),
     sb.from('mesa_control_telegram_solicitudes').select('id',{count:'exact',head:true}).eq('estado','pendiente'),
     sb.from('clientes_polizas')
-      .select('id,cliente_nombre,fecha_inicio,resguardo_periodicidad_dias_override,servidor_cloud_id,numero_proyecto_crm,polizas_catalogo!inner(nombre,categoria,resguardo_periodicidad_dias)')
+      .select('id,cliente_nombre,fecha_inicio,resguardo_periodicidad_dias_override,resguardo_plazo_cliente_dias,servidor_cloud_id,numero_proyecto_crm,polizas_catalogo!inner(nombre,categoria,resguardo_periodicidad_dias)')
       .neq('estatus','CERRADA').eq('polizas_catalogo.categoria','RESGUARDO'),
     sb.from('clientes_polizas')
       .select('id,cliente_nombre,fecha_vencimiento,numero_proyecto_crm,polizas_catalogo(nombre,categoria)')
@@ -24607,7 +24611,13 @@ async function renderOpsResumen(){
     const proximoVencimiento=calcularProximoVencimientoResguardo(p.fecha_inicio,periodicidadDias,ultimaEvidencia);
     const diasParaVencer=Math.floor((new Date(proximoVencimiento+'T00:00:00')-new Date(today+'T00:00:00'))/86400000);
     const fila={cliente:p.cliente_nombre,detalle:`${p.polizas_catalogo?.nombre||'Resguardo'} — ${diasParaVencer<0?`vencida desde el ${proximoVencimiento}`:`debida el ${proximoVencimiento} (en ${diasParaVencer} día${diasParaVencer===1?'':'s'})`}`,id:p.id};
-    if(diasParaVencer<0) resguardoVencidas.push(fila);
+    // Plazo del contrato con el cliente (opcional): el atraso interno dentro de ese plazo es solo aviso, no vencida.
+    const holguraCliente=p.resguardo_plazo_cliente_dias?Math.max(0,p.resguardo_plazo_cliente_dias-periodicidadDias):0;
+    if(diasParaVencer<0&&diasParaVencer+holguraCliente>=0){
+      fila.detalle=`${p.polizas_catalogo?.nombre||'Resguardo'} — atraso interno desde el ${proximoVencimiento}; aún en plazo con el cliente (${diasParaVencer+holguraCliente} día${diasParaVencer+holguraCliente===1?'':'s'} restantes)`;
+      resguardoPorVencer.push(fila);
+    }
+    else if(diasParaVencer<0) resguardoVencidas.push(fila);
     else if(diasParaVencer<=3) resguardoPorVencer.push(fila);
   });
 
@@ -25356,6 +25366,8 @@ async function guardarConfigResguardo(id){
   const productoServidorId=servidorSel?.value||null;
   const dropboxFolder=folderInput?.value?.trim()||null;
   const overrideDias=overrideInput?.value?parseInt(overrideInput.value,10):null;
+  const plazoInput=document.getElementById('resguardoPlazoCliente_'+id);
+  const plazoCliente=plazoInput?.value?parseInt(plazoInput.value,10):null;
   try{
     const {data:pol,error:polErr}=await sb.from('clientes_polizas').select('id,servidor_cloud_id,cliente_cartera_id').eq('id',id).single();
     if(polErr) throw polErr;
@@ -25370,7 +25382,7 @@ async function guardarConfigResguardo(id){
         servidorCloudId=nuevoServidor.id;
       }
     }
-    const {error:polUpdErr}=await sb.from('clientes_polizas').update({servidor_cloud_id:servidorCloudId,resguardo_dropbox_folder:dropboxFolder,resguardo_periodicidad_dias_override:overrideDias}).eq('id',id);
+    const {error:polUpdErr}=await sb.from('clientes_polizas').update({servidor_cloud_id:servidorCloudId,resguardo_dropbox_folder:dropboxFolder,resguardo_periodicidad_dias_override:overrideDias,resguardo_plazo_cliente_dias:plazoCliente}).eq('id',id);
     if(polUpdErr) throw polUpdErr;
     alert('Configuración de resguardo guardada.');
     document.getElementById('modalDetallePoliza')?.remove();
@@ -25545,22 +25557,31 @@ async function abrirDetallePoliza(id){
     const diasSin=ultimoValidado?diasEntre(ultimoValidado.fecha,hoyMx):null;
     // Tolerancia: el respaldo debe tener, a lo más, la periodicidad en días de antigüedad (diario = de ayer o de hoy).
     const atrasado=!!(periodicidadDias&&ultimoValidado&&diasSin>periodicidadDias);
+    // Jp 2026-11-17: dos plazos. Vigilancia interna = periodicidad (el respaldo corre de noche: el 17 lo esperado es el del 16).
+    // Plazo del contrato con el cliente (opcional): mientras el último respaldo esté dentro de él, estamos protegidos ante el cliente.
+    const plazoCliente=c.resguardo_plazo_cliente_dias||null;
+    const limiteCliente=plazoCliente||periodicidadDias;
+    const fueraDePlazoCliente=!!(atrasado&&limiteCliente&&diasSin>limiteCliente);
     let alertaTxt=null,alertaTipo='ok';
     if(c.estatus==='CERRADA'){alertaTxt='Póliza cerrada — no se revisa.';alertaTipo='gris';}
     else if(c.dropbox_revision_error){alertaTxt=dropboxErrorAmigable(c.dropbox_revision_error,c.resguardo_dropbox_folder);alertaTipo='rojo';}
     else if(!periodicidadDias){alertaTxt='Falta definir la periodicidad de esta póliza (abajo, en Configuración de resguardo).';alertaTipo='amarillo';}
     else if(!ultimoValidado&&(origenesDrive||[]).length&&!c.resguardo_dropbox_folder){alertaTxt=(origenesDrive||[]).some(o=>o.revision_at)?'Requiere revisión: ninguna carpeta de Drive tiene respaldo validado todavía.':'Sin revisar aún — pulsa "Revisar Drive ahora".';alertaTipo=(origenesDrive||[]).some(o=>o.revision_at)?'rojo':'amarillo';}
     else if(!ultimoValidado){alertaTxt=c.resguardo_dropbox_folder?(c.dropbox_revision_at?'Requiere revisión: no hay ningún respaldo validado todavía.':'Sin revisar aún — pulsa "Revisar Dropbox ahora".'):'Requiere revisión: sin carpeta de Dropbox ni evidencia subida.';alertaTipo=c.dropbox_revision_at||!c.resguardo_dropbox_folder?'rojo':'amarillo';}
+    else if(atrasado&&plazoCliente&&!fueraDePlazoCliente){alertaTxt=`Alerta interna: el último respaldo es de hace ${diasSin} días (se esperaba cada ${periodicidadDias}). Con el cliente aún estamos en plazo (${plazoCliente} días; quedan ${plazoCliente-diasSin}).`;alertaTipo='amarillo';}
+    else if(atrasado&&plazoCliente){alertaTxt=`Fuera del plazo con el cliente: el último respaldo es de hace ${diasSin} días y el contrato pide máximo ${plazoCliente}.`;alertaTipo='rojo';}
     else if(atrasado){alertaTxt=`Requiere revisión: el último respaldo es de hace ${diasSin} días (se esperaba cada ${periodicidadDias}).`;alertaTipo='rojo';}
     // Jp 2026-11-17: carpetas de Google Drive (varias tareas por póliza): todas deben tener respaldo reciente.
     const drv=(origenesDrive||[]).map(o=>{
       const f=mxFecha(o.ultimo_archivo_fecha);
-      const reciente=!!(f&&periodicidadDias&&diasEntre(f,hoyMx)<=periodicidadDias);
-      return {...o,f,reciente,estado:o.error?'error':(!o.revision_at?'sin':(reciente?'ok':'viejo'))};
+      const dd=f?diasEntre(f,hoyMx):null;
+      const reciente=!!(f&&periodicidadDias&&dd<=periodicidadDias);
+      const enPlazo=!!(f&&plazoCliente&&dd<=plazoCliente);
+      return {...o,f,reciente,estado:o.error?'error':(!o.revision_at?'sin':(reciente?'ok':(enPlazo?'interna':'viejo')))};
     });
     if(alertaTipo==='ok'&&drv.length){
       const malas=drv.filter(o=>o.estado!=='ok');
-      if(malas.length){alertaTxt='Carpeta(s) de Drive sin respaldo reciente: '+malas.map(o=>(o.etiqueta||'carpeta')+(o.estado==='error'?' (error al revisar)':o.estado==='sin'?' (sin revisar)':'')).join(', ')+'.';alertaTipo=malas.some(o=>o.estado==='error'||o.estado==='viejo')?'rojo':'amarillo';}
+      if(malas.length){alertaTxt='Carpeta(s) de Drive sin respaldo reciente: '+malas.map(o=>(o.etiqueta||'carpeta')+(o.estado==='error'?' (error al revisar)':o.estado==='sin'?' (sin revisar)':o.estado==='interna'?' (atraso interno, aún en plazo del cliente)':'')).join(', ')+'.';alertaTipo=malas.some(o=>o.estado==='error'||o.estado==='viejo')?'rojo':'amarillo';}
     }
     const alertaColores={ok:['#27AE60','rgba(39,174,96,0.08)'],rojo:['#E84040','rgba(232,64,64,0.08)'],amarillo:['#c47f0a','rgba(245,166,35,0.10)'],gris:['#64748b','rgba(100,116,139,0.08)']};
     const [alC,alBg]=alertaColores[alertaTipo];
@@ -25600,13 +25621,14 @@ async function abrirDetallePoliza(id){
         ${!drv.length?'<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#94a3b822;color:#64748b;">— Sin carpetas de Drive</span>':(drv.every(o=>o.estado==='ok')?'<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#27AE6022;color:#27AE60;">✅ Todas con respaldo reciente</span>':'<span style="padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;background:#F5A62322;color:#c47f0a;">⚠ Hay carpetas sin respaldo reciente</span>')}
       </div>
       ${drv.length?`<div style="font-size:11px;color:var(--text3);margin-bottom:4px;">La póliza se da por cumplida cuando <b>todas</b> estas carpetas tienen archivo del periodo.</div>`+drv.map(o=>`<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;padding:6px 0;border-top:1px solid var(--border);font-size:11px;">
-        <div><b>${(o.etiqueta||'Carpeta').replace(/</g,'&lt;')}</b> ${o.estado==='ok'?'✅':o.estado==='viejo'?'⚠':o.estado==='error'?'❌':'⏳'}<br>
+        <div><b>${(o.etiqueta||'Carpeta').replace(/</g,'&lt;')}</b> ${o.estado==='ok'?'✅':(o.estado==='viejo'||o.estado==='interna')?'⚠':o.estado==='error'?'❌':'⏳'}<br>
         ${o.estado==='error'?`<span style="color:var(--red);">${String(o.error).replace(/</g,'&lt;').replace(/^not_found:.*/,'La carpeta no existe o no está compartida con innovaci-os-lector@innovaci-os-drive.iam.gserviceaccount.com')}</span>`:o.revision_at?(o.ultimo_archivo?`Último archivo: <b>${o.f}</b> — <span style="color:var(--text3);">${String(o.ultimo_archivo).replace(/</g,'&lt;')} (${o.archivos_total} archivos)</span>`:'<span style="color:#c47f0a;">Carpeta sin archivos</span>'):'<span style="color:var(--text3);">Sin revisar aún</span>'}</div>
         <button onclick="resguardoDriveQuitar('${o.id}','${id}')" style="background:none;border:1px solid var(--border);border-radius:6px;padding:2px 8px;font-size:10px;cursor:pointer;white-space:nowrap;">Quitar</button></div>`).join('')+`<div style="margin-top:8px;"><button id="btnRevisarDrive_${id}" onclick="revisarDrivePoliza('${id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">🔄 Revisar Drive ahora</button></div>`:'<div style="font-size:11px;color:var(--text3);">Agrega las carpetas de Drive en "⚙ Configuración de resguardo" (abajo).</div>'}
     </div>
     <div style="margin-bottom:12px;padding:12px;border:1px solid ${vencido?'var(--red)':'var(--border)'};border-radius:8px;${vencido?'background:rgba(232,64,64,0.05);':''}">
       <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:8px;">🗓 Evidencia de resguardo</div>
       ${periodicidadDias?`<div style="font-size:12px;margin-bottom:6px;">Periodicidad: <b>cada ${periodicidadDias} día${periodicidadDias===1?'':'s'}</b>${servidorInfo?` (derivado del servidor ${servidorInfo.productos_servidores?.nombre||servidorInfo.nombre_servidor||''})`:''}${c.resguardo_periodicidad_dias_override?' (ajuste manual de esta póliza)':''}</div>`:`<div style="font-size:12px;color:var(--text3);margin-bottom:6px;">Sin periodicidad definida todavía — configúrala abajo en "⚙ Configuración de resguardo".</div>`}
+      ${plazoCliente?`<div style="font-size:12px;margin-bottom:6px;">Plazo con el cliente (contrato): <b>máximo ${plazoCliente} día${plazoCliente===1?'':'s'}</b> sin respaldo${ultimoValidado?` · hoy van ${diasSin}`:''}</div>`:''}
       ${proximoVencimiento?`<div style="font-size:12px;margin-bottom:8px;${vencido?'color:var(--red);font-weight:700;':''}">${vencido?'⚠ Evidencia vencida desde el':'Próxima evidencia debida:'} ${proximoVencimiento}</div>`:''}
       ${incidencia?`<div style="margin-bottom:8px;font-size:11px;padding:6px 10px;background:rgba(232,64,64,0.08);border-radius:6px;">🎫 Incidencia abierta por falta de evidencia: <a href="#" onclick="event.preventDefault();document.getElementById('modalDetallePoliza')?.remove();abrirDetalleTicket('${incidencia.id}')" style="color:var(--navy);font-weight:600;">${incidencia.folio_ticket}</a> (${incidencia.estatus})</div>`:''}
       <div style="font-size:10px;color:var(--text3);margin-bottom:3px;">¿De qué fecha es el respaldo que estás subiendo?</div>
@@ -25651,6 +25673,11 @@ async function abrirDetallePoliza(id){
         <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Ajuste manual de periodicidad en días (opcional — tiene prioridad sobre servidor y catálogo)</div>
         <input type="number" min="1" id="resguardoOverrideDias_${id}" value="${c.resguardo_periodicidad_dias_override||''}" placeholder="p.ej. 3" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;width:100px;">
       </div>
+      <div style="margin-bottom:8px;">
+        <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Plazo máximo del contrato con el cliente, en días (opcional — si lo dejas vacío se usa la periodicidad)</div>
+        <input type="number" min="1" id="resguardoPlazoCliente_${id}" value="${c.resguardo_plazo_cliente_dias||''}" placeholder="p.ej. 7" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:11px;width:100px;">
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;">La vigilancia interna sigue la periodicidad (avisa suave al primer atraso); el plazo del cliente marca cuándo ya estamos incumpliendo.</div>
+      </div>
       <button onclick="guardarConfigResguardo('${id}')" style="background:var(--navy);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">💾 Guardar configuración</button>
     </div>`;
   }
@@ -25687,7 +25714,11 @@ async function abrirDetallePoliza(id){
     </div>`:`<div style="margin-bottom:12px;padding:10px 12px;background:rgba(232,64,64,0.06);border-radius:6px;font-size:11px;color:var(--red);">⚠ Sin cuenta ligada en Cartera de Cuentas (revisar nombre del cliente).</div>`}
 
     <div style="margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:8px;">
-      <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:8px;">✏ Datos de la póliza (editables)</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;">
+        <div style="font-size:11px;font-weight:700;color:var(--navy);">🔒 Datos de la póliza <span id="dpEstadoBloqueo" style="font-weight:500;color:var(--text3);">(bloqueados para evitar cambios por error)</span></div>
+        ${(userProfile.rol==='director'||userProfile.rol==='gerente_operaciones')?`<button type="button" id="dpBtnEditar" onclick="desbloquearDatosPoliza()" style="background:#fff;color:var(--navy);border:1px solid var(--navy);border-radius:6px;padding:4px 12px;font-size:11px;font-weight:600;cursor:pointer;">✏️ Editar</button>`:''}
+      </div>
+      <fieldset id="dpFieldset" disabled style="border:0;padding:0;margin:0;min-width:0;">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
         <div>
           <div style="color:var(--text3);font-size:10px;margin-bottom:3px;">Tipo de póliza</div>
@@ -25722,7 +25753,17 @@ async function abrirDetallePoliza(id){
           <input id="dpPrecio" type="number" step="0.01" value="${c.precio_contratado||0}" style="${INP}">
         </div>
       </div>
-      <button onclick="guardarEdicionPoliza('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💾 Guardar cambios</button>
+      <button id="dpBtnGuardar" onclick="guardarEdicionPoliza('${id}')" style="display:none;background:var(--teal);color:#fff;border:none;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">💾 Guardar cambios</button>
+      </fieldset>
+    </div>
+
+    <div style="margin-bottom:12px;padding:12px;border:1px solid var(--border);border-radius:8px;">
+      <div style="font-size:11px;font-weight:700;color:var(--navy);margin-bottom:6px;">📎 Contrato / factura (PDF)</div>
+      <div id="docsPoliza_${id}" style="font-size:11px;color:var(--text3);margin-bottom:8px;">Cargando documentos...</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+        <input type="file" id="docPolizaArchivo_${id}" accept="application/pdf,.pdf" style="font-size:11px;">
+        <button type="button" onclick="subirDocPoliza('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;">📤 Subir PDF</button>
+      </div>
     </div>
 
     ${c.polizas_catalogo?`<div style="margin-bottom:12px;padding:10px 12px;background:var(--bg2,#f5f6f8);border-radius:6px;font-size:11px;">
@@ -25779,6 +25820,7 @@ async function abrirDetallePoliza(id){
       </table>
     </div>`;
   mkModal('modalDetallePoliza',`Detalle de póliza — ${c.cliente_nombre}`,html,null,'Cerrar',c.seccion_manual==='resguardo'?'1000px':true);
+  cargarDocsPoliza(id);
 }
 // Autollena "Horas que incluye la póliza" al elegir el tipo de póliza en
 // el detalle (Jp, 2026-09-09): "las horas las debes de colocar en
@@ -25815,7 +25857,47 @@ async function reabrirPoliza(id){
   abrirDetallePoliza(id);
   if(document.getElementById('opsPolizasFichas')) renderOpsContratos();
 }
+function desbloquearDatosPoliza(){
+  if(!(userProfile.rol==='director'||userProfile.rol==='gerente_operaciones')){alert('Solo Dirección o Gerencia de Operaciones pueden editar estos datos.');return;}
+  const f=document.getElementById('dpFieldset'); if(f) f.disabled=false;
+  const g=document.getElementById('dpBtnGuardar'); if(g) g.style.display='inline-block';
+  const b=document.getElementById('dpBtnEditar'); if(b) b.style.display='none';
+  const t=document.getElementById('dpEstadoBloqueo'); if(t){t.textContent='(modo edición — recuerda guardar)';t.style.color='#c47f0a';}
+}
+// Contrato / factura en PDF de la póliza. Se guarda en la app (Storage + crm_documentos); NO se replica al CRM.
+async function cargarDocsPoliza(id){
+  const box=document.getElementById('docsPoliza_'+id); if(!box) return;
+  const {data,error}=await sb.from('crm_documentos').select('*').eq('cliente_poliza_id',id).eq('entidad_tipo','poliza_contrato').order('created_at',{ascending:false});
+  if(error){box.innerHTML='<span style="color:var(--red);">No se pudieron cargar los documentos.</span>';return;}
+  if(!(data||[]).length){box.innerHTML='<i>Sin contrato ni factura adjuntos todavía.</i>';return;}
+  box.innerHTML=data.map(d=>`<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
+    <span style="font-size:12px;cursor:pointer;color:var(--navy);text-decoration:underline;" onclick="abrirDocumentoAdjunto('${d.storage_path.replace(/'/g,"\\'")}')">📄 ${String(d.nombre_archivo).replace(/</g,'&lt;')}</span>
+    <span style="font-size:10px;color:var(--text3);white-space:nowrap;">${(d.created_at||'').slice(0,10)} <span onclick="borrarDocPoliza('${d.id}','${d.storage_path.replace(/'/g,"\\'")}','${id}')" title="Eliminar" style="cursor:pointer;color:var(--red);font-size:13px;">🗑</span></span></div>`).join('');
+}
+async function subirDocPoliza(id){
+  const inp=document.getElementById('docPolizaArchivo_'+id); const file=inp?.files?.[0];
+  if(!file){alert('Elige primero el archivo PDF.');return;}
+  if(!/\.pdf$/i.test(file.name)&&file.type!=='application/pdf'){alert('Solo se aceptan archivos PDF.');return;}
+  const fin=uiOcupado('Subiendo el PDF…','Puede tardar unos segundos.');
+  try{
+    const path=`poliza_contrato/${id}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9_.\-]/g,'_')}`;
+    const {error:upErr}=await sb.storage.from('crm-documentos').upload(path,file,{upsert:false});
+    if(upErr) throw upErr;
+    const {error:insErr}=await sb.from('crm_documentos').insert({entidad_tipo:'poliza_contrato',cliente_poliza_id:id,nombre_archivo:file.name,storage_path:path,tamano_bytes:file.size,subido_por:currentUser.id});
+    if(insErr) throw insErr;
+    inp.value=''; uiToast('✓ PDF subido'); cargarDocsPoliza(id);
+  }catch(e){alert('No se pudo subir el PDF: '+(e.message||e));}
+  finally{fin();}
+}
+async function borrarDocPoliza(docId,storagePath,id){
+  if(!confirm('¿Eliminar este documento de la póliza?')) return;
+  await sb.storage.from('crm-documentos').remove([storagePath]);
+  const {error}=await sb.from('crm_documentos').delete().eq('id',docId);
+  if(error){alert('Error al eliminar: '+error.message);return;}
+  cargarDocsPoliza(id);
+}
 async function guardarEdicionPoliza(id){
+  if(!(userProfile.rol==='director'||userProfile.rol==='gerente_operaciones')){alert('Solo Dirección o Gerencia de Operaciones pueden editar estos datos.');return;}
   const catalogoId=document.getElementById('dpCatalogo')?.value||null;
   const payload={
     poliza_catalogo_id:catalogoId,
