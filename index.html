@@ -19739,15 +19739,37 @@ async function renderTeleClientes(){
   // las llamadas ya registradas. Con eso la ficha contesta sola las dos
   // preguntas que antes obligaban a abrir el CRM: ¿le aplican timbres? y
   // ¿cuánto lleva sin que nadie lo contacte?
-  const [{data:clientes},{data:suscripciones},{data:vendedoresList},{data:sisFilas},{data:opsCrm},{data:proyCrm},{data:llamTodas}]=await Promise.all([
+  const [{data:clientes},{data:suscripciones},{data:vendedoresList}]=await Promise.all([
     sb.from('clientes_cartera').select('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)').in('id',ids).order('razon_social'),
     sb.from('suscripciones_cartera').select('*').in('cliente_id',ids),
-    sb.from('usuarios').select('id,nombre'),
-    sb.from('clientes_cartera_sistemas').select('cliente_cartera_id,sistema,version_licencia,plan,usuarios,proximo_pago').in('cliente_cartera_id',ids),
-    sb.from('oportunidades_crm').select('cliente_cartera_id,nombre_oportunidad,fase_venta,monto,fecha_creacion_crm,fecha_cierre_prevista,crm_potentialid').in('cliente_cartera_id',ids),
-    sb.from('proyectos_crm').select('cliente_cartera_id,nombre_proyecto,estatus_proyecto,activo,fecha_inicio,fecha_fin_prevista,tiempo_restante').in('cliente_cartera_id',ids),
-    sb.from('llamadas_cartera').select('cliente_id,resultado,notas,created_at').in('cliente_id',ids).order('created_at',{ascending:false})
+    sb.from('usuarios').select('id,nombre')
   ]);
+  // Jp, 2026-11-18: el contexto se pide APARTE y por lotes. Con una campaña de
+  // 196 cuentas, mandar los 196 identificadores en una sola consulta hace una
+  // dirección larguísima que el servidor puede rechazar; si eso truena dentro
+  // del Promise.all, la pantalla entera se queda sin pintar y las tarjetas
+  // dejan de responder al clic (pasó el 18-nov). Ahora, si el contexto falla,
+  // la lista se pinta igual, nada más sin esos datos extra.
+  const enLotes=(arr,n)=>{const o=[];for(let i=0;i<arr.length;i+=n)o.push(arr.slice(i,i+n));return o;};
+  const traerPorLotes=async(tabla,cols,campo,orden)=>{
+    const out=[];
+    for(const lote of enLotes(ids,60)){
+      let q=sb.from(tabla).select(cols).in(campo,lote);
+      if(orden) q=q.order(orden,{ascending:false});
+      const {data}=await q;
+      if(data&&data.length) out.push(...data);
+    }
+    return out;
+  };
+  let sisFilas=[],opsCrm=[],proyCrm=[],llamTodas=[];
+  try{
+    [sisFilas,opsCrm,proyCrm,llamTodas]=await Promise.all([
+      traerPorLotes('clientes_cartera_sistemas','cliente_cartera_id,sistema,version_licencia,plan,usuarios,proximo_pago','cliente_cartera_id'),
+      traerPorLotes('oportunidades_crm','cliente_cartera_id,nombre_oportunidad,fase_venta,monto,fecha_creacion_crm,fecha_cierre_prevista,crm_potentialid','cliente_cartera_id'),
+      traerPorLotes('proyectos_crm','cliente_cartera_id,nombre_proyecto,estatus_proyecto,activo,fecha_inicio,fecha_fin_prevista,tiempo_restante','cliente_cartera_id'),
+      traerPorLotes('llamadas_cartera','cliente_id,resultado,notas,created_at','cliente_id','created_at')
+    ]);
+  }catch(e){ console.error('contexto de campaña',e); }
   // Adjuntar suscripciones y contexto a cada cliente
   const clientesList=(clientes||[]).map(cl=>{
     const sis=(sisFilas||[]).filter(s=>s.cliente_cartera_id===cl.id);
@@ -19916,9 +19938,23 @@ function filtrarTeleClientes(){
 }
 
 // Alias para el nuevo flujo — abre el modal de llamada al cliente desde telemarketing
+// Jp, 2026-11-18: esta ficha fallaba en silencio (clic y no pasaba nada) cuando
+// algo de adentro tronaba o cuando la cuenta ya no estaba en memoria. Ahora
+// cualquier problema se enseña en pantalla en vez de no hacer nada.
 async function abrirDetalleCuentaTele(clienteId, campanaId){
+  try{
+    await abrirDetalleCuentaTeleInt(clienteId,campanaId);
+  }catch(e){
+    console.error('abrirDetalleCuentaTele',e);
+    alert('No se pudo abrir la ficha de esta cuenta.\n\nDetalle: '+(e&&e.message||e)+'\n\nMándale esta pantalla a Jp.');
+  }
+}
+async function abrirDetalleCuentaTeleInt(clienteId, campanaId){
   const c=(window._cartClientes||[]).find(c=>c.id===clienteId);
-  if(!c) return;
+  if(!c){
+    alert('Esta cuenta ya no está cargada en pantalla (seguramente se recargó la lista). Vuelve a entrar a la campaña e inténtalo de nuevo.');
+    return;
+  }
   const vendedor=(window._carteraVendedores||[]).find(v=>v.id===c.vendedor_asignado);
   // Jp, 2026-10-16: "necesito que la ventana sea muy similar a la de
   // telemarketing [prospectos]... sistemas, eventos, historial de campañas,
@@ -20118,6 +20154,94 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
   // El último comentario del CRM se pide aparte para que la ficha abra ya; si
   // el CRM tarda o falla, la llamada se puede hacer igual.
   teleUltimoComentarioCrm(clienteId,c.num_cliente);
+}
+
+// Bloque de contexto de la ficha de llamada. Se pinta aparte para poder
+// repintarlo solo cuando el vendedor corrige algo durante la llamada.
+function teleContextoHtml(clienteId,ctx,fmtMes){
+  const tim=ctx.timbres||{};
+  const selMod=s=>{
+    const m=sisModalidad(s.version_licencia);
+    const op=(v,t)=>`<option value="${v}" ${m===v?'selected':''}>${t}</option>`;
+    return `<select onchange="teleCambiarModalidad('${clienteId}','${s.sistema}',this.value)" title="Lo que el cliente conteste manda sobre lo que trae el CRM" style="font-size:10px;padding:1px 4px;border:1px solid var(--border);border-radius:4px;margin-left:4px;"><option value="">— sin dato —</option>${op('compra','Compra')}${op('suscripcion','Suscripción')}</select>`;
+  };
+  return `
+      <div style="border:1px solid ${tim.color||'var(--border)'};border-left:4px solid ${tim.color||'var(--border)'};border-radius:var(--radsm);padding:12px;background:#fff;">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">📌 Contexto para la llamada</div>
+        <div style="font-size:13px;font-weight:700;color:${tim.color||'var(--text)'};">${tim.txt||''}</div>
+        ${tim.detalle?`<div style="font-size:11px;color:var(--text2);margin-top:2px;">${tim.detalle}</div>`:''}
+        <div style="margin-top:8px;display:grid;gap:3px;font-size:11.5px;color:var(--text2);">
+          ${(ctx.sistemas||[]).length?(ctx.sistemas||[]).map(s=>{const m=sisModalidad(s.version_licencia);
+            return `<div>🧩 <b>${s.sistema}</b> · ${solEsc(s.version_licencia||'sin versión')}${m?` <span style="color:${m==='compra'?'#1e8449':'#c0392b'};font-weight:700;">(${sisModalidadTxt(m)})</span>`:' <span style="color:#F5A623;font-weight:700;">(falta la modalidad)</span>'}${s.usuarios?` · ${s.usuarios} usuarios`:''}${selMod(s)}</div>`;}).join('')
+            :`<div style="color:var(--text3);font-style:italic;">Sin versiones registradas — el CRM no tiene la modalidad de sus sistemas.</div>`}
+          <div style="font-size:10px;color:var(--text3);">Si el cliente te dice otra cosa, corrígelo aquí mismo: se guarda en su cuenta y se manda al CRM.</div>
+        </div>
+        <div style="margin-top:9px;border-top:1px solid var(--border);padding-top:8px;display:grid;gap:4px;font-size:11.5px;color:var(--text2);">
+          <div>⏱ <b>Último movimiento:</b> ${ctx.ultMov?`${haceCuanto(ctx.ultMov)} (${fmtMes(ctx.ultMov)})`:'<span style="color:#E07B39;">sin registro alguno</span>'}</div>
+          ${ctx.ultimaCompra?`<div>🏆 <b>Última compra:</b> ${solEsc(ctx.ultimaCompra.nombre_oportunidad||'')}${ctx.ultimaCompra.monto?' · '+fmt(ctx.ultimaCompra.monto):''} · ${fmtMes(ctx.ultimaCompra.fecha_creacion_crm)}</div>`:'<div style="color:var(--text3);">🏆 Sin compras registradas en el CRM</div>'}
+          ${(ctx.abiertas||[]).length?`<div>💼 <b>Abiertas:</b> ${ctx.abiertas.map(o=>solEsc(o.nombre_oportunidad||'')+' ('+(o.fase_venta||'')+')').join(' · ')}</div>`:''}
+          ${(ctx.proyActivos||[]).length?`<div>🛠 <b>Proyecto activo:</b> ${ctx.proyActivos.map(p=>solEsc(p.nombre_proyecto||'')+(p.tiempo_restante?' · '+solEsc(p.tiempo_restante):'')).join(' · ')}</div>`:''}
+          ${ctx.ultLlamada?`<div>📞 <b>Última llamada en la app:</b> ${ctx.ultLlamada.resultado||''} · ${haceCuanto(ctx.ultLlamada.created_at)}${ctx.ultLlamada.notas?` — <i>${solEsc(String(ctx.ultLlamada.notas).slice(0,120))}</i>`:''}</div>`:''}
+        </div>
+        <div style="margin-top:9px;border-top:1px solid var(--border);padding-top:8px;">
+          <div style="font-size:11px;font-weight:700;color:var(--text3);margin-bottom:4px;">💬 Último comentario en el CRM</div>
+          <div id="teleUltComentario_${clienteId}" style="font-size:11.5px;color:var(--text3);font-style:italic;">${window._teleUltComentarioHtml||'Cargando del CRM…'}</div>
+        </div>
+        <div id="teleModalidadMsg_${clienteId}" style="margin-top:6px;font-size:11px;"></div>
+      </div>`;
+}
+
+// Nota de Carolina, 2026-11-18: "en la información de OS dice que lo tiene en
+// renta, pero ella me dijo que lo tienen en compra, ¿se puede cambiar?". Sí:
+// lo que el cliente contesta en la llamada manda sobre lo que trae el CRM.
+// Se reescribe la modalidad conservando la versión ("v9.0 Suscripción" →
+// "v9.0 Compra"), se guarda en la cuenta y se replica al CRM para que el
+// próximo sync no lo regrese al valor viejo.
+async function teleCambiarModalidad(clienteId,sistema,modalidad){
+  const c=(window._cartClientes||[]).find(x=>x.id===clienteId);
+  if(!c) return;
+  const ctx=c._ctx||{};
+  let fila=(ctx.sistemas||[]).find(s=>s.sistema===sistema);
+  if(!fila){fila={sistema};ctx.sistemas=(ctx.sistemas||[]).concat(fila);}
+  const msg=document.getElementById('teleModalidadMsg_'+clienteId);
+  const pinta=(t,col)=>{const e=document.getElementById('teleModalidadMsg_'+clienteId)||msg;if(e)e.innerHTML=`<span style="color:${col};font-weight:600;">${t}</span>`;};
+  const etiqueta=modalidad==='compra'?'Compra':modalidad==='suscripcion'?'Suscripción':'';
+  const verVieja=String(fila.version_licencia||'');
+  const prefijo=(verVieja.match(/^v?\s*\d+(\.\d+)?/i)||[''])[0].trim();
+  const verNueva=etiqueta?((prefijo?prefijo+' ':'')+etiqueta):null;
+  pinta('Guardando…','var(--text3)');
+  try{
+    const {error}=await sb.from('clientes_cartera_sistemas')
+      .upsert({cliente_cartera_id:clienteId,sistema,version_licencia:verNueva,usuarios:fila.usuarios||null,updated_at:new Date().toISOString()},{onConflict:'cliente_cartera_id,sistema'});
+    if(error){pinta('No se pudo guardar: '+error.message,'#E84040');return;}
+    fila.version_licencia=verNueva;
+    if(!(c.sistemas_aspel||[]).includes(sistema)){
+      c.sistemas_aspel=(c.sistemas_aspel||[]).concat(sistema);
+      await sb.from('clientes_cartera').update({sistemas_aspel:c.sistemas_aspel}).eq('id',clienteId);
+    }
+    ctx.timbres=timbresVeredicto(ctx.sistemas,c.sistemas_aspel);
+    c._ctx=ctx;
+    const prev=document.getElementById('teleUltComentario_'+clienteId);
+    window._teleUltComentarioHtml=prev?prev.innerHTML:null;
+    const box=document.getElementById('teleCtxBox_'+clienteId);
+    const fmtMes=f=>{if(!f)return '';const d=new Date(f);const m=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][d.getMonth()];return m+' '+d.getFullYear();};
+    if(box) box.innerHTML=teleContextoHtml(clienteId,ctx,fmtMes);
+    window._teleUltComentarioHtml=null;
+    pinta('✅ Guardado. Mandando al CRM…','#27AE60');
+    try{
+      const {data:sess}=await sb.auth.getSession();
+      const r=await fetch('/api/crm-actualizar-cuenta-sistemas',{method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},
+        body:JSON.stringify({cliente_cartera_id:clienteId,sistemas:[{sistema,version_licencia:verNueva,usuarios:fila.usuarios||''}]})});
+      const j=await r.json().catch(()=>({}));
+      pinta(j.ok&&!j.skipped
+        ? '✅ Guardado y actualizado también en el CRM.'
+        : `✅ Guardado en la app. En el CRM no se pudo (${solEsc(j.error||j.razon||'sin detalle')}) — corrígelo allá a mano.`,
+        j.ok&&!j.skipped?'#27AE60':'#b45309');
+    }catch(e){
+      pinta('✅ Guardado en la app; no se pudo avisar al CRM.','#b45309');
+    }
+  }catch(e){pinta('No se pudo guardar: '+String(e.message||e),'#E84040');}
 }
 
 // Trae el comentario más reciente de la Cuenta en el CRM (el "último
