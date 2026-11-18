@@ -19531,16 +19531,32 @@ async function renderTeleClientes(){
     return;
   }
   // Cargar clientes + sus suscripciones + vendedores
-  const [{data:clientes},{data:suscripciones},{data:vendedoresList}]=await Promise.all([
+  // Jp, 2026-11-18: además de las suscripciones se traen la modalidad de cada
+  // sistema (compra vs suscripción), las oportunidades y proyectos del CRM y
+  // las llamadas ya registradas. Con eso la ficha contesta sola las dos
+  // preguntas que antes obligaban a abrir el CRM: ¿le aplican timbres? y
+  // ¿cuánto lleva sin que nadie lo contacte?
+  const [{data:clientes},{data:suscripciones},{data:vendedoresList},{data:sisFilas},{data:opsCrm},{data:proyCrm},{data:llamTodas}]=await Promise.all([
     sb.from('clientes_cartera').select('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)').in('id',ids).order('razon_social'),
     sb.from('suscripciones_cartera').select('*').in('cliente_id',ids),
-    sb.from('usuarios').select('id,nombre')
+    sb.from('usuarios').select('id,nombre'),
+    sb.from('clientes_cartera_sistemas').select('cliente_cartera_id,sistema,version_licencia,plan,usuarios,proximo_pago').in('cliente_cartera_id',ids),
+    sb.from('oportunidades_crm').select('cliente_cartera_id,nombre_oportunidad,fase_venta,monto,fecha_creacion_crm,fecha_cierre_prevista,crm_potentialid').in('cliente_cartera_id',ids),
+    sb.from('proyectos_crm').select('cliente_cartera_id,nombre_proyecto,estatus_proyecto,activo,fecha_inicio,fecha_fin_prevista,tiempo_restante').in('cliente_cartera_id',ids),
+    sb.from('llamadas_cartera').select('cliente_id,resultado,notas,created_at').in('cliente_id',ids).order('created_at',{ascending:false})
   ]);
-  // Adjuntar suscripciones a cada cliente
-  const clientesList=(clientes||[]).map(cl=>({
-    ...cl,
-    _suscripciones:(suscripciones||[]).filter(s=>s.cliente_id===cl.id)
-  }));
+  // Adjuntar suscripciones y contexto a cada cliente
+  const clientesList=(clientes||[]).map(cl=>{
+    const sis=(sisFilas||[]).filter(s=>s.cliente_cartera_id===cl.id);
+    const ops=(opsCrm||[]).filter(o=>o.cliente_cartera_id===cl.id);
+    const proy=(proyCrm||[]).filter(p=>p.cliente_cartera_id===cl.id);
+    const llam=(llamTodas||[]).filter(l=>l.cliente_id===cl.id);
+    return {
+      ...cl,
+      _suscripciones:(suscripciones||[]).filter(s=>s.cliente_id===cl.id),
+      _ctx:cuentaContexto(cl,sis,ops,proy,llam)
+    };
+  });
   window._cartClientes=clientesList;
   window._cartSuscripciones=suscripciones||[];
   window._carteraVendedores=vendedoresList||[];
@@ -19608,8 +19624,14 @@ async function renderTeleClientes(){
       return desgloseHtml?`<div style="margin-top:10px;padding:10px 14px;background:var(--surface-2,#f8f9fa);border-radius:8px;display:flex;gap:16px;flex-wrap:wrap;">${desgloseHtml}</div>`:'';
     })()}
   </div>
-  <div style="position:relative;margin-bottom:12px;">
-    <input type="text" id="teleClienteBuscar" placeholder="Buscar cliente..." oninput="filtrarTeleClientes()" style="width:100%;padding:9px 36px 9px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+  <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
+    <input type="text" id="teleClienteBuscar" placeholder="Buscar cliente..." oninput="filtrarTeleClientes()" style="flex:1;min-width:200px;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+    <select id="teleFiltroTimbres" onchange="filtrarTeleClientes()" title="Filtra por si al cliente le sirven los timbres" style="padding:9px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+      <option value="">Timbres: todos</option>
+      <option value="aplica">🎟️ Sí aplica (compra)</option>
+      <option value="revisar">❓ Falta saberlo</option>
+      <option value="no">🚫 No aplica (suscripción)</option>
+    </select>
   </div>
   <div id="listaTeleClientes" style="display:grid;gap:8px;">
     ${clientesList.map(cl=>{
@@ -19618,7 +19640,11 @@ async function renderTeleClientes(){
       const suscs=cl._suscripciones||[];
       const venceProximo=suscs.some(s=>s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000));
       const colRes=resultado==='Interesado'?'#27AE60':resultado==='No le interesa'?'var(--red)':resultado?'var(--text3)':null;
-      return `<div class="card" style="padding:14px;cursor:pointer;${venceProximo?'border-left:3px solid var(--red);':''}" onclick="abrirDetalleCuentaTele('${cl.id}','${campActiva.id}')" data-razon="${(cl.razon_social||'').toLowerCase()}" data-resultado="${(resultado||'Pendiente').toLowerCase()}">
+      const ctx=cl._ctx||{};
+      const tim=ctx.timbres||{};
+      const sinContacto=ctx.ultMov?haceCuanto(ctx.ultMov):'sin registro';
+      const frio=ctx.ultMov?((Date.now()-new Date(ctx.ultMov).getTime())/86400000)>180:true;
+      return `<div class="card" style="padding:14px;cursor:pointer;${venceProximo?'border-left:3px solid var(--red);':''}" onclick="abrirDetalleCuentaTele('${cl.id}','${campActiva.id}')" data-razon="${(cl.razon_social||'').toLowerCase()}" data-resultado="${(resultado||'Pendiente').toLowerCase()}" data-timbres="${tim.estado||'na'}">
         <div style="display:flex;align-items:flex-start;gap:12px;">
           <div style="flex:1;min-width:0;">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -19626,8 +19652,16 @@ async function renderTeleClientes(){
               <span style="font-weight:600;font-size:13px;color:var(--text);">${cl.razon_social||'Sin nombre'}</span>
             </div>
             <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
-              ${(cl.sistemas_aspel||[]).map(s=>`<span style="background:rgba(0,169,157,0.1);color:var(--teal);border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;">${s}</span>`).join('')}
+              ${(ctx.sistemas||[]).length
+                ?(ctx.sistemas||[]).map(s=>{const m=sisModalidad(s.version_licencia);
+                   return `<span title="${solEsc(s.version_licencia||'sin versión registrada')}" style="background:${m==='compra'?'rgba(39,174,96,0.12)':m==='suscripcion'?'rgba(232,64,64,0.10)':'rgba(0,0,0,0.06)'};color:${m==='compra'?'#1e8449':m==='suscripcion'?'#c0392b':'var(--text3)'};border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;">${s.sistema}${m?' · '+(m==='compra'?'Compra':'Susc'):''}</span>`;}).join('')
+                :(cl.sistemas_aspel||[]).map(s=>`<span style="background:rgba(0,169,157,0.1);color:var(--teal);border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700;">${s}</span>`).join('')}
               ${cl.telefono?`<a href="tel:${cl.telefono}" onclick="event.stopPropagation()" style="font-size:11px;color:var(--navy);">📞 ${cl.telefono}</a>`:''}
+            </div>
+            <div style="margin-top:5px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:10.5px;">
+              <span style="font-weight:700;color:${tim.color||'var(--text3)'};">${tim.txt||''}</span>
+              <span style="color:${frio?'#E07B39':'var(--text3)'};">⏱ Último movimiento: ${sinContacto}</span>
+              ${(ctx.abiertas||[]).length?`<span style="color:#2980B9;font-weight:600;">💼 ${ctx.abiertas.length} oportunidad${ctx.abiertas.length>1?'es':''} abierta${ctx.abiertas.length>1?'s':''}</span>`:''}
             </div>
             ${suscs.length?`<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">
               ${suscs.map(s=>{
@@ -19669,10 +19703,12 @@ function filtrarTeleClientesPorResultado(resultado){
 function filtrarTeleClientes(){
   const q=(document.getElementById('teleClienteBuscar')?.value||'').toLowerCase();
   const r=_teleClientesFiltroResultado.toLowerCase();
+  const t=document.getElementById('teleFiltroTimbres')?.value||'';
   document.querySelectorAll('#listaTeleClientes .card').forEach(el=>{
     const coincideTexto=!q||el.dataset.razon?.includes(q);
     const coincideRes=!r||el.dataset.resultado===r;
-    el.style.display=(coincideTexto&&coincideRes)?'':'none';
+    const coincideTim=!t||el.dataset.timbres===t;
+    el.style.display=(coincideTexto&&coincideRes&&coincideTim)?'':'none';
   });
 }
 
@@ -19713,6 +19749,35 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
     }));
   }
   const suscs=c._suscripciones||[];
+  // Jp, 2026-11-18 — contexto listo para la llamada: modalidad de cada sistema
+  // (de ahí sale si le aplican timbres), último movimiento real y qué se le ha
+  // vendido. Antes esto obligaba a abrir el CRM cuenta por cuenta.
+  const ctx=c._ctx||cuentaContexto(c,[],[],[],[]);
+  const tim=ctx.timbres||{};
+  const fmtMes=f=>{if(!f)return '';const d=new Date(f);const m=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][d.getMonth()];return m+' '+d.getFullYear();};
+  const ctxHtml=`
+      <div style="border:1px solid ${tim.color||'var(--border)'};border-left:4px solid ${tim.color||'var(--border)'};border-radius:var(--radsm);padding:12px;background:#fff;">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:8px;">📌 Contexto para la llamada</div>
+        <div style="font-size:13px;font-weight:700;color:${tim.color||'var(--text)'};">${tim.txt||''}</div>
+        ${tim.detalle?`<div style="font-size:11px;color:var(--text2);margin-top:2px;">${tim.detalle}</div>`:''}
+        <div style="margin-top:8px;display:grid;gap:3px;font-size:11.5px;color:var(--text2);">
+          ${(ctx.sistemas||[]).length?(ctx.sistemas||[]).map(s=>{const m=sisModalidad(s.version_licencia);
+            return `<div>🧩 <b>${s.sistema}</b> · ${solEsc(s.version_licencia||'sin versión')}${m?` <span style="color:${m==='compra'?'#1e8449':'#c0392b'};font-weight:700;">(${sisModalidadTxt(m)})</span>`:' <span style="color:#F5A623;font-weight:700;">(falta la modalidad)</span>'}${s.usuarios?` · ${s.usuarios} usuarios`:''}</div>`;}).join('')
+            :`<div style="color:var(--text3);font-style:italic;">Sin versiones registradas — el CRM no tiene la modalidad de sus sistemas.</div>`}
+        </div>
+        <div style="margin-top:9px;border-top:1px solid var(--border);padding-top:8px;display:grid;gap:4px;font-size:11.5px;color:var(--text2);">
+          <div>⏱ <b>Último movimiento:</b> ${ctx.ultMov?`${haceCuanto(ctx.ultMov)} (${fmtMes(ctx.ultMov)})`:'<span style="color:#E07B39;">sin registro alguno</span>'}</div>
+          ${ctx.ultimaCompra?`<div>🏆 <b>Última compra:</b> ${solEsc(ctx.ultimaCompra.nombre_oportunidad||'')}${ctx.ultimaCompra.monto?' · '+fmt(ctx.ultimaCompra.monto):''} · ${fmtMes(ctx.ultimaCompra.fecha_creacion_crm)}</div>`:'<div style="color:var(--text3);">🏆 Sin compras registradas en el CRM</div>'}
+          ${(ctx.abiertas||[]).length?`<div>💼 <b>Abiertas:</b> ${ctx.abiertas.map(o=>solEsc(o.nombre_oportunidad||'')+' ('+(o.fase_venta||'')+')').join(' · ')}</div>`:''}
+          ${(ctx.proyActivos||[]).length?`<div>🛠 <b>Proyecto activo:</b> ${ctx.proyActivos.map(p=>solEsc(p.nombre_proyecto||'')+(p.tiempo_restante?' · '+solEsc(p.tiempo_restante):'')).join(' · ')}</div>`:''}
+          ${ctx.ultLlamada?`<div>📞 <b>Última llamada en la app:</b> ${ctx.ultLlamada.resultado||''} · ${haceCuanto(ctx.ultLlamada.created_at)}${ctx.ultLlamada.notas?` — <i>${solEsc(String(ctx.ultLlamada.notas).slice(0,120))}</i>`:''}</div>`:''}
+        </div>
+        <div style="margin-top:9px;border-top:1px solid var(--border);padding-top:8px;">
+          <div style="font-size:11px;font-weight:700;color:var(--text3);margin-bottom:4px;">💬 Último comentario en el CRM</div>
+          <div id="teleUltComentario_${clienteId}" style="font-size:11.5px;color:var(--text3);font-style:italic;">Cargando del CRM…</div>
+        </div>
+      </div>
+  `;
   const modal=document.createElement('div');
   modal.id='modalDetalleCuenta';
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px;overflow-y:auto;';
@@ -19733,6 +19798,7 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
         ${c.escritorio_servicios?`<div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3);">🔑 ${c.escritorio_servicios}</div>`:''}
         ${vendedor?`<div style="font-size:11px;color:var(--text3);">Vendedor: <strong>${vendedor.nombre}</strong></div>`:''}
       </div>
+      ${ctxHtml}
       ${suscs.length?`<div>
         <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Suscripciones</div>
         <div style="display:grid;gap:4px;">
@@ -19868,6 +19934,33 @@ async function abrirDetalleCuentaTele(clienteId, campanaId){
     </div>
   </div>`;
   document.body.appendChild(modal);
+  // El último comentario del CRM se pide aparte para que la ficha abra ya; si
+  // el CRM tarda o falla, la llamada se puede hacer igual.
+  teleUltimoComentarioCrm(clienteId,c.num_cliente);
+}
+
+// Trae el comentario más reciente de la Cuenta en el CRM (el "último
+// seguimiento" real, que es lo que Jp revisaba a mano abriendo Vtiger).
+async function teleUltimoComentarioCrm(clienteId,numCliente){
+  const box=document.getElementById('teleUltComentario_'+clienteId);
+  if(!box) return;
+  if(!numCliente){box.textContent='Esta cuenta no tiene número ACC, no se puede ligar al CRM.';return;}
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch(`/api/crm-comentarios?tipo=cuenta&num_cliente=${encodeURIComponent(numCliente)}`,{
+      headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){box.textContent='No se pudo leer el CRM ('+(j.error||res.status)+').';return;}
+    const coms=(j.comentarios||[]).slice().sort((a,b)=>String(b.fecha||'').localeCompare(String(a.fecha||'')));
+    if(!coms.length){box.innerHTML='<span style="color:#E07B39;">Nadie ha dejado un comentario en el CRM.</span>';return;}
+    const u=coms[0];
+    box.style.fontStyle='normal';
+    box.innerHTML=`<div style="color:var(--text2);">“${solEsc(String(u.contenido||'').slice(0,260))}”</div>
+      <div style="color:var(--text3);margin-top:2px;">${u.fecha?String(u.fecha).slice(0,10):''} · ${haceCuanto(u.fecha)} · ${coms.length} comentario${coms.length>1?'s':''} en total</div>`;
+  }catch(e){
+    box.textContent='No se pudo conectar al CRM.';
+  }
 }
 
 async function guardarNotasGeneralesCuenta(clienteId){
@@ -20864,6 +20957,89 @@ const PROSPECTO_ORIGENES=['Cartera de ventas','Telemarketing','Facebook','Google
 // editable de sistemas en la ficha del prospecto (prospectos.sistemas_aspel).
 const SISTEMAS_ASPEL_LIST=[{v:'SAE',l:'SAE'},{v:'COI',l:'COI'},{v:'NOI',l:'NOI'},{v:'FACTURE',l:'FACTURe'},{v:'BANCO',l:'Banco'},{v:'CAJA',l:'Caja'},{v:'PROD',l:'Producción'},{v:'ADM',l:'Administración'},{v:'SIIGO_FISCAL',l:'Siigo Fiscal'},{v:'SIIGO_NUBE',l:'Siigo Nube'}];
 const PROSPECTO_INTERESES=['Cursos gratuitos','Curso empresarial','Diplomado NOI','Diplomado COI','Diplomado Excel','Taller SAE','Soporte Aspel','Sistema Aspel','Siigo Fiscal'];
+
+// ===== Contexto para llamar a una cuenta (Jp, 2026-11-18) ==================
+// Saber que el cliente "tiene SAE" no alcanza para una campaña de timbres: si
+// el SAE es de SUSCRIPCIÓN los timbres ya van incluidos y ofrecérselos es
+// perder la llamada; si lo COMPRÓ, se le acaban y sí aplica. Esa modalidad ya
+// viene del CRM pegada a la versión ("v9.0 Suscripción", "v10.0 Compra"), en
+// clientes_cartera_sistemas.version_licencia — antes no se mostraba en ningún
+// lado, así que había que abrir el CRM cuenta por cuenta.
+const SISTEMAS_TIMBRAN=['SAE','NOI','FACTURE','CAJA'];
+// El CRM trae la modalidad escrita a mano, con erratas reales en los datos
+// ("Suscrición", "Suscrpción", "Suscripcíón"), así que se compara sin acentos
+// y por pedazo de palabra en vez de por texto exacto.
+function sisModalidad(ver){
+  const t=String(ver||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+  if(!t) return '';
+  if(t.includes('compra')) return 'compra';
+  if(t.includes('suscri')||t.includes('suscrp')||t.includes('nube')) return 'suscripcion';
+  return '';
+}
+function sisModalidadTxt(m){return m==='compra'?'Compra':m==='suscripcion'?'Suscripción':'Sin dato';}
+
+// Veredicto de la campaña de timbres para una cuenta.
+function timbresVeredicto(filas,sistemasArr){
+  const rel=(filas||[]).filter(f=>SISTEMAS_TIMBRAN.includes(f.sistema));
+  const compra=rel.filter(f=>sisModalidad(f.version_licencia)==='compra');
+  const susc=rel.filter(f=>sisModalidad(f.version_licencia)==='suscripcion');
+  const sinDato=(sistemasArr||[]).filter(s=>SISTEMAS_TIMBRAN.includes(s)&&!rel.some(f=>f.sistema===s&&sisModalidad(f.version_licencia)));
+  if(compra.length) return {estado:'aplica',txt:'🎟️ Sí aplica timbres',detalle:compra.map(f=>f.sistema+' comprado').join(', ')+' — los timbres se compran aparte',color:'#27AE60'};
+  if(sinDato.length) return {estado:'revisar',txt:'❓ Preguntar en la llamada',detalle:'No sabemos si su '+sinDato.join(' / ')+' es compra o suscripción',color:'#F5A623'};
+  if(susc.length) return {estado:'no',txt:'🚫 No aplica: está en suscripción',detalle:susc.map(f=>f.sistema).join(', ')+' ya incluye timbres',color:'#E84040'};
+  return {estado:'na',txt:'— Sin sistemas que timbren',detalle:'',color:'var(--text3)'};
+}
+
+function haceCuanto(f){
+  if(!f) return '';
+  const d=Math.floor((Date.now()-new Date(f).getTime())/86400000);
+  if(d<0) return '';
+  if(d===0) return 'hoy';
+  if(d===1) return 'ayer';
+  if(d<31) return 'hace '+d+' días';
+  const m=Math.round(d/30.4);
+  if(m<12) return 'hace '+m+' mes'+(m===1?'':'es');
+  const a=Math.floor(d/365);
+  const r=Math.round((d-a*365)/30.4);
+  return 'hace '+a+' año'+(a===1?'':'s')+(r>0?' y '+r+' mes'+(r===1?'':'es'):'');
+}
+
+// Una oportunidad "cerrada" se detecta por la fase, no por el campo `abierta`
+// del CRM: en los datos reales hay oportunidades Cerrada-Perdida con
+// abierta=true (quedaron así tras el cierre masivo de diciembre).
+function opCerrada(fase){
+  const t=String(fase||'').toLowerCase();
+  return t.includes('cerrad')||t.includes('closed')||t.includes('perdid')||t.includes('won');
+}
+function opGanada(fase){
+  const t=String(fase||'').toLowerCase();
+  return t.includes('won')||t.includes('ganad');
+}
+
+// Arma el contexto de una cuenta a partir de lo que ya está en la app.
+// OJO con las fechas: fecha_actualizacion_crm NO sirve como "último
+// seguimiento" porque el cierre masivo de oportunidades viejas la movió toda
+// de golpe. Por eso se usa la fecha de CREACIÓN de oportunidades y proyectos,
+// y las llamadas registradas aquí.
+function cuentaContexto(cl,sis,ops,proy,llam){
+  const fechas=[];
+  (ops||[]).forEach(o=>{if(o.fecha_creacion_crm)fechas.push(o.fecha_creacion_crm);});
+  (proy||[]).forEach(p=>{if(p.fecha_inicio)fechas.push(p.fecha_inicio);});
+  (llam||[]).forEach(l=>{if(l.created_at)fechas.push(l.created_at);});
+  fechas.sort();
+  const ganadas=(ops||[]).filter(o=>opGanada(o.fase_venta)).sort((a,b)=>String(b.fecha_creacion_crm||'').localeCompare(String(a.fecha_creacion_crm||'')));
+  const abiertas=(ops||[]).filter(o=>!opCerrada(o.fase_venta));
+  return {
+    sistemas:sis||[],
+    ops:(ops||[]).slice().sort((a,b)=>String(b.fecha_creacion_crm||'').localeCompare(String(a.fecha_creacion_crm||''))),
+    proyActivos:(proy||[]).filter(p=>p.activo!==false&&!String(p.estatus_proyecto||'').toLowerCase().includes('cerrad')),
+    abiertas,
+    ultimaCompra:ganadas[0]||null,
+    ultLlamada:(llam||[])[0]||null,
+    ultMov:fechas.length?fechas[fechas.length-1]:null,
+    timbres:timbresVeredicto(sis,cl.sistemas_aspel)
+  };
+}
 // Construye las <option> de una picklist, agregando el valor actual al
 // principio (marcado) si viene de datos viejos y no está en la lista oficial
 // — así nunca se pierde en silencio un valor histórico al abrir el modal.
@@ -37565,6 +37741,60 @@ async function respondSincronizar(reiniciar,simulacion){
   }finally{
     if(btn){btn.disabled=false;btn.textContent='🔄 Sincronizar ahora';}
     respondPintarEstado();
+  }
+}
+
+// Jp, 2026-11-18 — al elegir a alguien en el panel de usuarios, se cargan sus
+// datos actuales y se abre el resto de las opciones.
+function dirUsuarioElegido(){
+  const sel=document.getElementById('pwUsuario');
+  const panel=document.getElementById('pwPanel');
+  const u=(window._pwUsuarios||[]).find(x=>x.id===sel.value);
+  ['pwResultado','pwDatosResultado'].forEach(id=>{const e=document.getElementById(id);if(e)e.innerHTML='';});
+  ['pwNueva','pwNueva2'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  if(!u){panel.style.display='none';return;}
+  document.getElementById('pwNombre').value=u.nombre||'';
+  document.getElementById('pwEmail').value=u.email||'';
+  panel.style.display='block';
+}
+
+// Guarda nombre y correo. El correo se cambia también en el acceso de Supabase,
+// porque si no, la app muestra uno y el inicio de sesión pide otro.
+async function dirGuardarUsuario(){
+  const sel=document.getElementById('pwUsuario');
+  const out=document.getElementById('pwDatosResultado');
+  const btn=document.getElementById('btnPwDatos');
+  const pinta=(txt,color)=>{out.innerHTML=`<span style="color:${color};font-weight:600;">${txt}</span>`;};
+  const u=(window._pwUsuarios||[]).find(x=>x.id===sel.value);
+  if(!u){pinta('Elige primero al usuario.','#E84040');return;}
+  const nombre=(document.getElementById('pwNombre').value||'').trim().replace(/\s+/g,' ');
+  const email=(document.getElementById('pwEmail').value||'').trim().toLowerCase();
+  if(nombre.length<2){pinta('Escribe el nombre completo.','#E84040');return;}
+  if(email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){pinta('Ese correo no se ve bien escrito.','#E84040');return;}
+  const cambiaCorreo=email&&email!==String(u.email||'').toLowerCase();
+  if(nombre===(u.nombre||'')&&!cambiaCorreo){pinta('No hay nada que cambiar.','var(--text3)');return;}
+  if(cambiaCorreo&&!confirm(`Vas a cambiar el correo de ${u.nombre||'este usuario'}:\n\n${u.email||'(sin correo)'}\n→ ${email}\n\nA partir de ahora entrará con el correo nuevo. La contraseña no cambia.\n\n¿Continuar?`))return;
+  btn.disabled=true;const txtOrig=btn.textContent;btn.textContent='Guardando...';
+  pinta('Guardando...','var(--text3)');
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/admin-usuario-editar',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},
+      body:JSON.stringify({usuario_id:u.id,nombre,email:email||null})
+    });
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||!j.ok){pinta('No se pudo: '+(j.error||('error '+res.status)),'#E84040');return;}
+    if(j.sin_cambios){pinta('No hubo cambios que guardar.','var(--text3)');return;}
+    // Refresca la lista de arriba sin recargar toda la pantalla.
+    u.nombre=j.usuario||nombre; u.email=j.email||u.email;
+    const op=sel.options[sel.selectedIndex];
+    if(op) op.textContent=(u.nombre||'')+(u.email?' · '+u.email:'');
+    pinta(`✅ Guardado (${(j.cambios||['datos']).join(' y ')}).`+(cambiaCorreo?' Avísale que desde ahora entra con el correo nuevo.':''),'#27AE60');
+  }catch(e){
+    pinta('No se pudo: '+String(e.message||e),'#E84040');
+  }finally{
+    btn.disabled=false;btn.textContent=txtOrig;
   }
 }
 
