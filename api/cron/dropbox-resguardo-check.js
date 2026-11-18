@@ -108,6 +108,39 @@ function fechaEfectivaArchivo(nombre, fechaModificacion) {
   return fechaDesdeNombreArchivo(nombre) || fechaModificacion || null;
 }
 
+// ── Constancia en el servidor cloud (Jp, 2026-11-18) ─────────────────────
+// "cada que se valide el resguardo, sea manual o automático, se tiene que
+// lanzar un comentario hacia el servidor como evidencia de que se está
+// resguardando": además del comentario en el proyecto del CRM de la póliza,
+// se deja una entrada en la bitácora del servidor cloud del cliente y, si ese
+// servidor tiene su propio proyecto en el CRM, también se comenta ahí.
+async function constanciaEnServidor({ servidor, polizaId, periodo, origen, texto, archivo, crmComentarioId }) {
+  if (!servidor) return null;
+  let crmServidorId = null;
+  if (servidor.numero_proyecto_crm) {
+    crmServidorId = await comentarEnProyectoCrm(servidor.numero_proyecto_crm, texto);
+  }
+  try {
+    await sbPost('servidores_bitacora', {
+      servidor_cloud_id: servidor.id,
+      cliente_poliza_id: polizaId,
+      tipo: 'resguardo_validado',
+      periodo_fecha: periodo,
+      origen,
+      texto,
+      archivo: archivo || null,
+      crm_comentario_id: crmComentarioId ? String(crmComentarioId) : null,
+      crm_comentario_servidor_id: crmServidorId ? String(crmServidorId) : null,
+    });
+  } catch (e) {
+    // El índice único evita constancias repetidas del mismo periodo; si choca
+    // o falla, no se detiene la revisión (la evidencia ya quedó registrada).
+    console.error('servidores_bitacora', e.message || e);
+  }
+  return crmServidorId;
+}
+
+
 
 async function sbPost(path, body) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
@@ -276,8 +309,18 @@ export default async function handler(req, res) {
   try {
     // 2026-11-09: ?poliza_id=<uuid> revisa solo esa póliza (botón "Revisar Dropbox ahora" del detalle).
     const soloId = req.query && req.query.poliza_id ? `&id=eq.${encodeURIComponent(req.query.poliza_id)}` : '';
+    // Jp, 2026-11-18 — RAMTAV CONTADORES: "ellos tienen 3 tareas... todos están en
+    // Dropbox, entonces se necesitan 3 carpetas". Igual que Drive, una póliza puede
+    // tener varias carpetas de Dropbox (tabla resguardo_origenes, proveedor='dropbox');
+    // se siguen aceptando las pólizas con la carpeta única de siempre
+    // (clientes_polizas.resguardo_dropbox_folder). El periodo se da por cumplido
+    // cuando TODAS tienen archivo del periodo.
+    let origenesDropbox = [];
+    try { origenesDropbox = await sbGet(`resguardo_origenes?activo=eq.true&proveedor=eq.dropbox&select=*`); } catch (_) { /* tabla aún no creada */ }
+    const idsConCarpetasDropbox = [...new Set(origenesDropbox.map((o) => o.cliente_poliza_id))].join(',')
+      || '00000000-0000-0000-0000-000000000000';
     const polizas = await sbGet(
-      `clientes_polizas?estatus=neq.CERRADA&resguardo_dropbox_folder=not.is.null${soloId}&select=id,cliente_nombre,fecha_inicio,resguardo_periodicidad_dias_override,resguardo_dropbox_folder,servidor_cloud_id,numero_proyecto_crm,polizas_catalogo!inner(nombre,categoria,resguardo_periodicidad_dias)&polizas_catalogo.categoria=eq.RESGUARDO`
+      `clientes_polizas?estatus=neq.CERRADA&or=(resguardo_dropbox_folder.not.is.null,id.in.(${idsConCarpetasDropbox}))${soloId}&select=id,cliente_nombre,fecha_inicio,resguardo_periodicidad_dias_override,resguardo_dropbox_folder,servidor_cloud_id,numero_proyecto_crm,polizas_catalogo!inner(nombre,categoria,resguardo_periodicidad_dias)&polizas_catalogo.categoria=eq.RESGUARDO`
     );
     if (!polizas.length) {
       return res.status(200).json({ ok: true, hoy, mensaje: 'Sin pólizas de resguardo con carpeta de Dropbox capturada.' });
@@ -287,7 +330,7 @@ export default async function handler(req, res) {
     let servidorMap = {};
     if (servidorIds.length) {
       const servidores = await sbGet(
-        `clientes_servidores_cloud?id=in.(${servidorIds.join(',')})&select=id,productos_servidores(specs)`
+        `clientes_servidores_cloud?id=in.(${servidorIds.join(',')})&select=id,nombre_servidor,numero_proyecto_crm,productos_servidores(specs)`
       );
       servidores.forEach((s) => { servidorMap[s.id] = s; });
     }
@@ -300,7 +343,11 @@ export default async function handler(req, res) {
     // 2026-11-17: si la póliza además tiene carpetas de Google Drive (resguardo_origenes), el periodo lo cierra
     // api/cron/drive-resguardo-check.js cuando TODAS las carpetas (Dropbox + Drive) tienen archivo del periodo.
     let conOrigenes = new Set();
-    try { conOrigenes = new Set((await sbGet(`resguardo_origenes?activo=eq.true&select=cliente_poliza_id`)).map((o) => o.cliente_poliza_id)); } catch (_) { /* tabla aún no creada */ }
+    try {
+      conOrigenes = new Set(
+        (await sbGet(`resguardo_origenes?activo=eq.true&proveedor=eq.drive&select=cliente_poliza_id`)).map((o) => o.cliente_poliza_id)
+      );
+    } catch (_) { /* tabla aún no creada */ }
 
     let accessToken = null;
     let registrosCreados = 0;
@@ -322,46 +369,87 @@ export default async function handler(req, res) {
 
       try {
         if (!accessToken) accessToken = await dropboxAccessToken();
-        // Se consulta Dropbox siempre (aunque el periodo ya esté cubierto) para dejar
-        // registrado cuál es el último archivo real de la carpeta.
-        const archivos = (await dropboxListarArchivos(accessToken, p.resguardo_dropbox_folder))
-          .map((f) => ({ ...f, fechaEfectiva: fechaEfectivaArchivo(f.name, f.server_modified) }));
-        const masReciente = archivos.length ? archivos.reduce((a, b) => (a.fechaEfectiva > b.fechaEfectiva ? a : b)) : null;
-        await sbPatch(`clientes_polizas?id=eq.${p.id}`, {
-          dropbox_revision_at: new Date().toISOString(),
-          dropbox_ultimo_archivo: masReciente ? masReciente.path_display : null,
-          dropbox_ultimo_archivo_fecha: masReciente ? masReciente.fechaEfectiva : null,
-          dropbox_archivos_total: archivos.length,
-          dropbox_revision_error: null,
-        });
-        if (!masReciente) { detalle.push({ cliente: p.cliente_nombre, resultado: 'carpeta sin archivos' }); continue; }
-        if (yaCubierto) { detalle.push({ cliente: p.cliente_nombre, resultado: 'periodo ya cubierto', ultimo: masReciente.path_display }); continue; }
-
-        const fechaArchivo = fechaMexico(masReciente.fechaEfectiva);
-        if (fechaArchivo >= periodoActual && conOrigenes.has(p.id)) {
-          detalle.push({ cliente: p.cliente_nombre, resultado: 'Dropbox al corriente; falta validar las carpetas de Drive', archivo: masReciente.name, fecha: fechaArchivo });
-        } else if (fechaArchivo >= periodoActual) {
-          let crmComentarioId = null;
-          if (p.numero_proyecto_crm) {
-            crmComentarioId = await comentarEnProyectoCrm(
-              p.numero_proyecto_crm,
-              `✅ Evidencia de resguardo detectada automáticamente en Dropbox (${p.resguardo_dropbox_folder}) — archivo "${masReciente.name}" del ${fechaArchivo}.`
-            );
-          }
-          await sbPost('resguardo_evidencias', {
-            cliente_poliza_id: p.id,
-            periodo_fecha: periodoActual,
-            fecha_subida: masReciente.fechaEfectiva,
-            origen: 'dropbox',
-            dropbox_path: masReciente.path_display,
-            crm_comentario_id: crmComentarioId ? String(crmComentarioId) : null,
-            nota: `Detectado automático en Dropbox (${p.resguardo_dropbox_folder}) — archivo "${masReciente.name}" del ${fechaArchivo}.`,
-          });
-          registrosCreados++;
-          detalle.push({ cliente: p.cliente_nombre, resultado: 'evidencia registrada', archivo: masReciente.name, fecha: fechaArchivo });
-        } else {
-          detalle.push({ cliente: p.cliente_nombre, resultado: 'sin archivo del periodo', ultimo: masReciente.path_display, fecha: fechaArchivo, periodo: periodoActual });
+        // Todas las carpetas de Dropbox de esta póliza: la "clásica" (una sola, en
+        // clientes_polizas) más las que estén capturadas en resguardo_origenes.
+        const carpetas = [];
+        if (p.resguardo_dropbox_folder) carpetas.push({ legacy: true, path: p.resguardo_dropbox_folder, etiqueta: p.resguardo_dropbox_folder });
+        for (const o of origenesDropbox.filter((x) => x.cliente_poliza_id === p.id)) {
+          carpetas.push({ origen: o, path: o.carpeta_id, etiqueta: o.etiqueta || o.carpeta_id });
         }
+        if (!carpetas.length) { detalle.push({ cliente: p.cliente_nombre, resultado: 'sin carpetas de Dropbox' }); continue; }
+
+        // Se consulta Dropbox siempre (aunque el periodo ya esté cubierto) para dejar
+        // registrado cuál es el último archivo real de cada carpeta.
+        const estados = [];
+        for (const c of carpetas) {
+          try {
+            const archivos = (await dropboxListarArchivos(accessToken, c.path))
+              .map((f) => ({ ...f, fechaEfectiva: fechaEfectivaArchivo(f.name, f.server_modified) }));
+            const ult = archivos.length ? archivos.reduce((a, b) => (a.fechaEfectiva > b.fechaEfectiva ? a : b)) : null;
+            if (c.legacy) {
+              await sbPatch(`clientes_polizas?id=eq.${p.id}`, {
+                dropbox_revision_at: new Date().toISOString(),
+                dropbox_ultimo_archivo: ult ? ult.path_display : null,
+                dropbox_ultimo_archivo_fecha: ult ? ult.fechaEfectiva : null,
+                dropbox_archivos_total: archivos.length,
+                dropbox_revision_error: null,
+              });
+            } else {
+              await sbPatch(`resguardo_origenes?id=eq.${c.origen.id}`, {
+                revision_at: new Date().toISOString(),
+                ultimo_archivo: ult ? ult.name : null,
+                ultimo_archivo_fecha: ult ? ult.fechaEfectiva : null,
+                archivos_total: archivos.length,
+                error: null,
+              });
+            }
+            const fecha = ult ? fechaMexico(ult.fechaEfectiva) : null;
+            estados.push({ etiqueta: c.etiqueta, ok: !!(fecha && fecha >= periodoActual), fecha, archivo: ult ? ult.name : null, path: ult ? ult.path_display : null });
+          } catch (e) {
+            errores.push({ poliza_id: p.id, cliente: p.cliente_nombre, carpeta: c.path, error: e.message });
+            estados.push({ etiqueta: c.etiqueta, ok: false, error: e.message });
+            try {
+              if (c.legacy) await sbPatch(`clientes_polizas?id=eq.${p.id}`, { dropbox_revision_at: new Date().toISOString(), dropbox_revision_error: String(e.message).slice(0, 400) });
+              else await sbPatch(`resguardo_origenes?id=eq.${c.origen.id}`, { revision_at: new Date().toISOString(), error: String(e.message).slice(0, 400) });
+            } catch (_) { /* no bloquea el resto */ }
+          }
+        }
+
+        const resumen = estados.map((e) => `${e.etiqueta} (${e.fecha || (e.error ? 'error' : 'vacía')})`).join('; ');
+        if (yaCubierto) { detalle.push({ cliente: p.cliente_nombre, resultado: 'periodo ya cubierto', estados }); continue; }
+        if (!estados.every((e) => e.ok)) {
+          detalle.push({ cliente: p.cliente_nombre, resultado: carpetas.length > 1 ? 'faltan carpetas con respaldo del periodo' : 'sin archivo del periodo', periodo: periodoActual, estados });
+          continue;
+        }
+        if (conOrigenes.has(p.id)) {
+          detalle.push({ cliente: p.cliente_nombre, resultado: 'Dropbox al corriente; falta validar las carpetas de Drive', estados });
+          continue;
+        }
+
+        const textoEvidencia = carpetas.length > 1
+          ? `Detectado automático en Dropbox — las ${carpetas.length} tareas de respaldo tienen archivo del periodo: ${resumen}.`
+          : `Detectado automático en Dropbox (${carpetas[0].etiqueta}) — archivo "${estados[0].archivo}" del ${estados[0].fecha}.`;
+        let crmComentarioId = null;
+        if (p.numero_proyecto_crm) crmComentarioId = await comentarEnProyectoCrm(p.numero_proyecto_crm, `✅ Evidencia de resguardo — ${textoEvidencia}`);
+        const fechaMasReciente = estados.map((e) => e.fecha).filter(Boolean).sort().slice(-1)[0] || null;
+        await sbPost('resguardo_evidencias', {
+          cliente_poliza_id: p.id,
+          periodo_fecha: periodoActual,
+          fecha_subida: new Date().toISOString(),
+          origen: 'dropbox',
+          dropbox_path: estados.map((e) => e.path).filter(Boolean).join(' · ').slice(0, 400) || null,
+          crm_comentario_id: crmComentarioId ? String(crmComentarioId) : null,
+          nota: textoEvidencia,
+        });
+        await constanciaEnServidor({
+          servidor: p.servidor_cloud_id ? servidorMap[p.servidor_cloud_id] : null,
+          polizaId: p.id, periodo: periodoActual, origen: 'dropbox',
+          texto: `✅ Resguardo validado (Dropbox) — ${p.cliente_nombre}, periodo ${periodoActual}. ${resumen}.`,
+          archivo: estados.map((e) => e.archivo).filter(Boolean).join(' · ').slice(0, 300) || null,
+          crmComentarioId: crmComentarioId,
+        });
+        registrosCreados++;
+        detalle.push({ cliente: p.cliente_nombre, resultado: 'evidencia registrada', fecha: fechaMasReciente, estados });
       } catch (e) {
         errores.push({ poliza_id: p.id, cliente: p.cliente_nombre, carpeta: p.resguardo_dropbox_folder, error: e.message });
         detalle.push({ cliente: p.cliente_nombre, resultado: 'error', error: e.message });

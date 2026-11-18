@@ -77,6 +77,39 @@ function fechaEfectivaArchivo(nombre, fechaModificacion) {
   return fechaDesdeNombreArchivo(nombre) || fechaModificacion || null;
 }
 
+// ── Constancia en el servidor cloud (Jp, 2026-11-18) ─────────────────────
+// "cada que se valide el resguardo, sea manual o automático, se tiene que
+// lanzar un comentario hacia el servidor como evidencia de que se está
+// resguardando": además del comentario en el proyecto del CRM de la póliza,
+// se deja una entrada en la bitácora del servidor cloud del cliente y, si ese
+// servidor tiene su propio proyecto en el CRM, también se comenta ahí.
+async function constanciaEnServidor({ servidor, polizaId, periodo, origen, texto, archivo, crmComentarioId }) {
+  if (!servidor) return null;
+  let crmServidorId = null;
+  if (servidor.numero_proyecto_crm) {
+    crmServidorId = await comentarEnProyectoCrm(servidor.numero_proyecto_crm, texto);
+  }
+  try {
+    await sbPost('servidores_bitacora', {
+      servidor_cloud_id: servidor.id,
+      cliente_poliza_id: polizaId,
+      tipo: 'resguardo_validado',
+      periodo_fecha: periodo,
+      origen,
+      texto,
+      archivo: archivo || null,
+      crm_comentario_id: crmComentarioId ? String(crmComentarioId) : null,
+      crm_comentario_servidor_id: crmServidorId ? String(crmServidorId) : null,
+    });
+  } catch (e) {
+    // El índice único evita constancias repetidas del mismo periodo; si choca
+    // o falla, no se detiene la revisión (la evidencia ya quedó registrada).
+    console.error('servidores_bitacora', e.message || e);
+  }
+  return crmServidorId;
+}
+
+
 
 async function sbPost(path, body) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
@@ -234,7 +267,13 @@ export default async function handler(req, res) {
   const hoy = hoyMexico();
   try {
     const soloId = req.query && req.query.poliza_id ? `&cliente_poliza_id=eq.${encodeURIComponent(req.query.poliza_id)}` : '';
-    const origenes = await sbGet(`resguardo_origenes?activo=eq.true${soloId}&select=*`);
+    // Jp, 2026-11-18: resguardo_origenes ya guarda carpetas de los dos proveedores
+    // (RAMTAV tiene 3 tareas de respaldo, todas en Dropbox). Aquí solo se revisan
+    // las de Drive; las de Dropbox las revisa api/cron/dropbox-resguardo-check.js,
+    // pero sí cuentan para dar el periodo por cumplido (abajo).
+    const origenesTodos = await sbGet(`resguardo_origenes?activo=eq.true${soloId}&select=*`);
+    const origenes = origenesTodos.filter((o) => (o.proveedor || 'drive') === 'drive');
+    const origenesDropbox = origenesTodos.filter((o) => o.proveedor === 'dropbox');
     if (!origenes.length) return res.status(200).json({ ok: true, hoy, mensaje: 'Sin carpetas de Drive capturadas.' });
 
     const polizaIds = [...new Set(origenes.map((o) => o.cliente_poliza_id))];
@@ -244,7 +283,7 @@ export default async function handler(req, res) {
     const servidorIds = [...new Set(polizas.map((p) => p.servidor_cloud_id).filter(Boolean))];
     const servidorMap = {};
     if (servidorIds.length) {
-      (await sbGet(`clientes_servidores_cloud?id=in.(${servidorIds.join(',')})&select=id,productos_servidores(specs)`)).forEach((s) => { servidorMap[s.id] = s; });
+      (await sbGet(`clientes_servidores_cloud?id=in.(${servidorIds.join(',')})&select=id,nombre_servidor,numero_proyecto_crm,productos_servidores(specs)`)).forEach((s) => { servidorMap[s.id] = s; });
     }
     const evidencias = await sbGet(`resguardo_evidencias?cliente_poliza_id=in.(${polizaIds.join(',')})&select=cliente_poliza_id,periodo_fecha`);
     const cubiertos = new Set(evidencias.map((e) => `${e.cliente_poliza_id}|${e.periodo_fecha}`));
@@ -279,7 +318,13 @@ export default async function handler(req, res) {
           try { await sbPatch(`resguardo_origenes?id=eq.${o.id}`, { revision_at: new Date().toISOString(), error: String(e.message).slice(0, 400) }); } catch (_) {}
         }
       }
-      // Si además tiene carpeta de Dropbox, esa también debe estar al corriente (la revisa el cron de Dropbox, que corre antes).
+      // Las carpetas de Dropbox de esta póliza (revisadas por el cron de Dropbox,
+      // que corre antes) también deben tener archivo del periodo.
+      for (const o of origenesDropbox.filter((x) => x.cliente_poliza_id === p.id)) {
+        const f = o.ultimo_archivo_fecha ? fechaMexico(o.ultimo_archivo_fecha) : null;
+        estados.push({ etiqueta: 'Dropbox: ' + (o.etiqueta || o.carpeta_id), ok: !!(f && f >= periodo && !o.error), fecha: f, archivo: o.ultimo_archivo || null });
+      }
+      // Si además tiene la carpeta de Dropbox "clásica" (una sola), esa también cuenta.
       let dropboxOk = true;
       if (p.resguardo_dropbox_folder) {
         const fd = p.dropbox_ultimo_archivo_fecha ? fechaMexico(p.dropbox_ultimo_archivo_fecha) : null;
@@ -299,6 +344,12 @@ export default async function handler(req, res) {
           cliente_poliza_id: p.id, periodo_fecha: periodo, fecha_subida: new Date().toISOString(), origen: 'drive',
           crm_comentario_id: crmId ? String(crmId) : null,
           nota: `Detectado automático — todas las carpetas con respaldo del periodo: ${resumen}.`,
+        });
+        await constanciaEnServidor({
+          servidor: p.servidor_cloud_id ? servidorMap[p.servidor_cloud_id] : null,
+          polizaId: p.id, periodo, origen: 'drive',
+          texto: `✅ Resguardo validado (Google Drive) — ${p.cliente_nombre}, periodo ${periodo}. Todas las tareas de respaldo tienen archivo: ${resumen}.`,
+          crmComentarioId: crmId,
         });
         registros++;
         detalle.push({ cliente: p.cliente_nombre, resultado: 'evidencia registrada', fecha: masReciente, estados });
