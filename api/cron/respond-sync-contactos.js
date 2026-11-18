@@ -108,6 +108,45 @@ function correoNorm(e) {
   return s ? s.toLowerCase() : null;
 }
 
+// ── Lo que trae Respond y cómo se traduce a la app (Jp, 2026-11-18) ──────
+// Respond ya sabe a quién le toca el contacto, en qué etapa va y con qué
+// etiquetas quedó. Antes todo eso caía como texto en las notas y no servía
+// para filtrar; ahora se convierte en campos de verdad.
+
+// Nombres comparables: sin acentos, sin mayúsculas, sin dobles espacios.
+function nombreComparable(t) {
+  return String(t || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+// Las cuentas genéricas de Respond no son personas: no asignan a nadie.
+const ASIGNADOS_GENERICOS = new Set(['venta innovaci', 'grupo innovaci', 'innovaci']);
+
+// Etiquetas de importaciones automáticas (imported_20260604_070618): basura.
+function limpiarEtiquetas(tags) {
+  const ls = (Array.isArray(tags) ? tags : [])
+    .map((t) => String(t || '').trim())
+    .filter((t) => t && !/^imported[_-]/i.test(t));
+  return ls.length ? [...new Set(ls)] : null;
+}
+
+// Etapa de Respond -> estatus del prospecto. Lo que no esté aquí entra como
+// 'Nuevo'. Los valores permitidos los fija un CHECK en la tabla prospectos.
+const ETAPA_A_ESTATUS = {
+  'no respondio': 'No contestó',
+  'prospecto calificado': 'Interesado',
+  'interesado': 'Interesado',
+};
+// Etapas que dicen que ya es cliente: esos no se dan de alta como prospecto.
+const ETAPAS_DE_CLIENTE = new Set(['cliente 24/7', 'cliente sxe o poliza', 'cliente']);
+function esClienteEnRespond(lifecycle) {
+  return ETAPAS_DE_CLIENTE.has(nombreComparable(lifecycle));
+}
+function estatusDesdeEtapa(lifecycle) {
+  return ETAPA_A_ESTATUS[nombreComparable(lifecycle)] || ESTATUS_NUEVO;
+}
+
 // ── Respond.io ───────────────────────────────────────────────────────────
 async function respondListar(cursorId) {
   const q = new URLSearchParams({ limit: String(POR_PAGINA) });
@@ -200,6 +239,7 @@ export default async function handler(req, res) {
   const cuenta = {
     paginas: 0, contactos: 0, prospecto_creado: 0, ligado_prospecto: 0,
     ligado_cartera: 0, sin_datos_para_ligar: 0, ya_ligado: 0,
+    ya_es_cliente_en_respond: 0, asignados_a_vendedor: 0,
   };
   const errores = [];
 
@@ -210,11 +250,25 @@ export default async function handler(req, res) {
     let cursor = reiniciar ? null : (estado?.ultimo_cursor || null);
 
     // ── Índices en memoria (una sola vez por corrida) ──
-    const [prospectos, cartera, espejo] = await Promise.all([
-      sbTodo('prospectos', 'id,telefono,email,cliente_cartera_id,respond_contacto_id'),
-      sbTodo('clientes_cartera', 'id,telefono,telefono_whatsapp,correo_principal'),
+    const [prospectos, cartera, espejo, usuarios] = await Promise.all([
+      sbTodo('prospectos', 'id,telefono,email,cliente_cartera_id,respond_contacto_id,vendedor_asignado,etiquetas'),
+      sbTodo('clientes_cartera', 'id,telefono,telefono2,telefono_whatsapp,correo_principal'),
       sbTodo('respond_contactos', 'respond_id,prospecto_id,cliente_cartera_id,resultado'),
+      sbTodo('usuarios', 'id,nombre,email,rol,activo'),
     ]);
+    // A qué vendedor de la app corresponde cada nombre de Respond.
+    const vendPorNombre = new Map(), vendPorMail = new Map();
+    usuarios.filter((u) => u.rol === 'vendedor' && u.activo !== false).forEach((u) => {
+      const n = nombreComparable(u.nombre); if (n) vendPorNombre.set(n, u.id);
+      const e = correoNorm(u.email); if (e) vendPorMail.set(e, u.id);
+    });
+    const vendedorDeRespond = (f) => {
+      const e = correoNorm(f.asignado_email);
+      if (e && vendPorMail.has(e)) return vendPorMail.get(e);
+      const n = nombreComparable(f.asignado_nombre);
+      if (!n || ASIGNADOS_GENERICOS.has(n)) return null;
+      return vendPorNombre.get(n) || null;
+    };
     const proPorTel = new Map(), proPorMail = new Map();
     prospectos.forEach((p) => {
       const t = ultimos10(p.telefono); if (t && !proPorTel.has(t)) proPorTel.set(t, p);
@@ -222,7 +276,7 @@ export default async function handler(req, res) {
     });
     const carPorTel = new Map(), carPorMail = new Map();
     cartera.forEach((c) => {
-      [c.telefono, c.telefono_whatsapp].forEach((v) => {
+      [c.telefono, c.telefono2, c.telefono_whatsapp].forEach((v) => {
         const t = ultimos10(v); if (t && !carPorTel.has(t)) carPorTel.set(t, c);
       });
       const e = correoNorm(c.correo_principal); if (e && !carPorMail.has(e)) carPorMail.set(e, c);
@@ -290,12 +344,19 @@ export default async function handler(req, res) {
 
         const cta = (telN && carPorTel.get(telN)) || (mail && carPorMail.get(mail)) || null;
         const pro = (telN && proPorTel.get(telN)) || (mail && proPorMail.get(mail)) || null;
+        const etiquetas = limpiarEtiquetas(fila.etiquetas);
+        const vendedorId = vendedorDeRespond(fila);
 
         if (pro) {
           const cambios = { respond_contacto_id: c.id, updated_at: new Date().toISOString() };
           if (!pro.telefono && fila.telefono) cambios.telefono = fila.telefono;
           if (!pro.email && mail) cambios.email = mail;
           if (cta && !pro.cliente_cartera_id) cambios.cliente_cartera_id = cta.id;
+          // El vendedor y las etiquetas solo se rellenan si en la app están
+          // vacíos: lo que alguien ya decidió aquí nunca se pisa.
+          if (vendedorId && !pro.vendedor_asignado) cambios.vendedor_asignado = vendedorId;
+          if (etiquetas && !(pro.etiquetas && pro.etiquetas.length)) cambios.etiquetas = etiquetas;
+          if (fila.lifecycle) cambios.etapa_respond = fila.lifecycle;
           // Solo se escribe si de verdad cambia algo más que la marca de tiempo.
           if (pro.respond_contacto_id !== c.id || Object.keys(cambios).length > 2) {
             parches.push({ id: pro.id, cambios });
@@ -315,6 +376,16 @@ export default async function handler(req, res) {
           fila.resultado = 'ligado_cartera';
           filasEspejo.push(fila);
           cuenta.ligado_cartera++;
+          continue;
+        }
+
+        // Jp, 2026-11-18: si Respond ya lo tiene marcado como cliente
+        // ("Cliente 24/7", "Cliente SxE o Póliza"), no es prospecto. Queda en
+        // el espejo; si algún día se cruza con una cuenta, se liga solo.
+        if (esClienteEnRespond(fila.lifecycle)) {
+          fila.resultado = 'ya_es_cliente_en_respond';
+          filasEspejo.push(fila);
+          cuenta.ya_es_cliente_en_respond = (cuenta.ya_es_cliente_en_respond || 0) + 1;
           continue;
         }
 
@@ -342,7 +413,10 @@ export default async function handler(req, res) {
             email: mail,
             origen: 'respond',
             evento: 'WhatsApp (Respond.io)',
-            estatus: ESTATUS_NUEVO,
+            estatus: estatusDesdeEtapa(fila.lifecycle),
+            vendedor_asignado: vendedorId,
+            etiquetas,
+            etapa_respond: fila.lifecycle || null,
             anio: hoy.getFullYear(),
             mes: hoy.getMonth() + 1,
             fecha_contacto: hoy.toISOString().slice(0, 10),
@@ -354,6 +428,7 @@ export default async function handler(req, res) {
             ].filter(Boolean).join(' · ') || null,
           },
         });
+        if (vendedorId) cuenta.asignados_a_vendedor++;
         const idx = nuevosProspectos.length - 1;
         if (telN) pendientePorTel.set(telN, idx);
         if (mail) pendientePorMail.set(mail, idx);
