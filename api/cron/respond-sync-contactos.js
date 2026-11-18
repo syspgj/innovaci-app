@@ -15,13 +15,27 @@
 //   POST https://api.respond.io/v2/contact/list?limit=99&cursorId=<id>
 //   cuerpo: {"search":"","filter":{"$and":[]},"timezone":"America/Mexico_City"}
 //   respuesta: { items:[...], pagination:{...} }
-//   campos del contacto: id, firstName, lastName, phone, email, language,
-//   profilePic, locale, countryCode, status, isBlocked, custom_fields, tags,
-//   assignee, lifecycle, created_at
+//   campos: id, firstName, lastName, phone, email, language, profilePic,
+//   locale, countryCode, status, isBlocked, custom_fields, tags, assignee,
+//   lifecycle, created_at
+//
+// ── Por qué el cruce se hace en memoria y no con consultas por contacto ──
+// Auditoría del 2026-11-18, antes de la primera corrida:
+//   1. Los teléfonos de la app NO están normalizados: de 5,244 prospectos,
+//      1,715 traen espacios o guiones, 2,195 traen lada 52 pegada y 1,182
+//      están limpios. Buscar con "termina en estos 10 dígitos" fallaba en
+//      los 1,715 con separadores, o sea que habría duplicado a un tercio de
+//      la base. Ahora se normaliza en memoria (solo dígitos, últimos 10),
+//      que es lo único que cruza bien los tres formatos.
+//   2. Consultar por contacto eran ~4 llamadas × 99 contactos × 8 páginas:
+//      miles de peticiones en serie, imposible dentro del tiempo máximo de
+//      una función. Ahora se cargan los índices UNA vez por corrida y las
+//      escrituras van en lote.
 //
 // El barrido es continuable: se guarda el cursor en respond_sync_estado y la
-// corrida siguiente sigue donde se quedó, para no pasarse del tiempo máximo
-// de ejecución ni del límite de peticiones por segundo.
+// corrida siguiente sigue donde se quedó.
+
+export const config = { maxDuration: 60 };
 
 const RESPOND_TOKEN = process.env.RESPOND_API_TOKEN;
 const RESPOND_BASE = process.env.RESPOND_API_BASE || 'https://api.respond.io/v2';
@@ -29,8 +43,14 @@ const TZ = process.env.RESPOND_TIMEZONE || 'America/Mexico_City';
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const PAGINAS_POR_CORRIDA = Number(process.env.RESPOND_PAGINAS_POR_CORRIDA || 8);
-const POR_PAGINA = 99; // el máximo documentado es 99
+const PAGINAS_POR_CORRIDA = Number(process.env.RESPOND_PAGINAS_POR_CORRIDA || 6);
+const POR_PAGINA = 99;            // máximo que acepta la API
+const MS_MAX = Number(process.env.RESPOND_MS_MAX || 45000); // margen antes del corte de Vercel
+
+// Estatus válido en prospectos (hay CHECK en la tabla: 'Nuevo', 'Contactado',
+// 'No contestó', 'En WhatsApp', 'Interesado', 'Canalizado a ventas',
+// 'No interesado', 'Perdido'). Se puede cambiar por variable de entorno.
+const ESTATUS_NUEVO = process.env.RESPOND_ESTATUS_NUEVO || 'Nuevo';
 
 // ── Supabase (REST) ──────────────────────────────────────────────────────
 const cab = {
@@ -40,8 +60,18 @@ const cab = {
 };
 async function sbGet(path) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: cab });
-  if (!res.ok) throw new Error(`GET ${path} falló (${res.status}): ${await res.text()}`);
+  if (!res.ok) throw new Error(`GET ${path} falló (${res.status}): ${(await res.text()).slice(0, 200)}`);
   return res.json();
+}
+// Trae una tabla completa en páginas de 1000.
+async function sbTodo(tabla, select) {
+  let out = [];
+  for (let p = 0; p < 40; p++) {
+    const lote = await sbGet(`${tabla}?select=${select}&limit=1000&offset=${p * 1000}`);
+    out = out.concat(lote);
+    if (lote.length < 1000) break;
+  }
+  return out;
 }
 async function sbPost(table, fila, prefer) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
@@ -49,7 +79,7 @@ async function sbPost(table, fila, prefer) {
     headers: { ...cab, Prefer: prefer || 'return=representation' },
     body: JSON.stringify(fila),
   });
-  if (!res.ok) throw new Error(`POST ${table} falló (${res.status}): ${await res.text()}`);
+  if (!res.ok) throw new Error(`POST ${table} falló (${res.status}): ${(await res.text()).slice(0, 300)}`);
   const t = await res.text();
   return t ? JSON.parse(t) : null;
 }
@@ -59,22 +89,23 @@ async function sbPatch(pathConFiltro, cambios) {
     headers: { ...cab, Prefer: 'return=minimal' },
     body: JSON.stringify(cambios),
   });
-  if (!res.ok) throw new Error(`PATCH ${pathConFiltro} falló (${res.status}): ${await res.text()}`);
+  if (!res.ok) throw new Error(`PATCH ${pathConFiltro} falló (${res.status}): ${(await res.text()).slice(0, 200)}`);
 }
 
-// ── Teléfonos ────────────────────────────────────────────────────────────
-// Jp, 2026-11-17: "por teléfono ignorando el +52". Se guardan los últimos 10
-// dígitos, que es lo que de verdad identifica a un número mexicano, sin
-// importar cómo venga escrito (+52, 52, 521, con espacios o guiones).
+// ── Teléfonos y textos ───────────────────────────────────────────────────
+// Jp, 2026-11-17: "por teléfono ignorando el +52". Los últimos 10 dígitos son
+// lo único que identifica un número mexicano sin importar cómo esté escrito.
 function ultimos10(t) {
   const d = String(t || '').replace(/\D/g, '');
-  if (d.length < 10) return null;
-  return d.slice(-10);
+  return d.length >= 10 ? d.slice(-10) : null;
 }
-
 function limpiarTexto(t) {
   const s = String(t == null ? '' : t).trim();
   return s || null;
+}
+function correoNorm(e) {
+  const s = limpiarTexto(e);
+  return s ? s.toLowerCase() : null;
 }
 
 // ── Respond.io ───────────────────────────────────────────────────────────
@@ -94,18 +125,15 @@ async function respondListar(cursorId) {
   let cuerpo = null;
   try { cuerpo = JSON.parse(texto); } catch (_) { cuerpo = texto.slice(0, 300); }
   if (!res.ok) {
-    const msg = cuerpo && cuerpo.message ? cuerpo.message : String(cuerpo).slice(0, 200);
-    const err = new Error(`Respond.io respondió ${res.status}: ${msg}`);
+    const err = new Error(`Respond.io respondió ${res.status}: ${(cuerpo && cuerpo.message) || String(cuerpo).slice(0, 200)}`);
     err.status = res.status;
     throw err;
   }
-  const items = Array.isArray(cuerpo?.items) ? cuerpo.items : [];
-  return { items, pagination: cuerpo?.pagination || null };
+  return { items: Array.isArray(cuerpo?.items) ? cuerpo.items : [], pagination: cuerpo?.pagination || null };
 }
 
 function nombreDe(c) {
-  const n = [limpiarTexto(c.firstName), limpiarTexto(c.lastName)].filter(Boolean).join(' ');
-  return n || null;
+  return [limpiarTexto(c.firstName), limpiarTexto(c.lastName)].filter(Boolean).join(' ') || null;
 }
 function asignadoDe(c) {
   const a = c.assignee;
@@ -113,32 +141,26 @@ function asignadoDe(c) {
   if (typeof a === 'string') return { nombre: a, email: null };
   return {
     nombre: [limpiarTexto(a.firstName), limpiarTexto(a.lastName)].filter(Boolean).join(' ') || null,
-    email: limpiarTexto(a.email),
+    email: correoNorm(a.email),
   };
 }
 function creadoEnDe(c) {
   const v = c.created_at ?? c.created ?? c.createdAt;
   if (!v) return null;
   const n = Number(v);
-  if (Number.isFinite(n)) return new Date(n > 1e12 ? n : n * 1000).toISOString();
+  if (Number.isFinite(n) && n > 0) return new Date(n > 1e12 ? n : n * 1000).toISOString();
   const d = new Date(v);
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
-
-// ── Sincronización de un contacto ────────────────────────────────────────
-async function procesarContacto(c, ya) {
+function filaEspejo(c) {
   const tel = limpiarTexto(c.phone);
-  const telN = ultimos10(tel);
-  const email = limpiarTexto(c.email) ? String(c.email).trim().toLowerCase() : null;
-  const nombre = nombreDe(c);
   const asig = asignadoDe(c);
-
-  const fila = {
+  return {
     respond_id: c.id,
-    nombre,
+    nombre: nombreDe(c),
     telefono: tel,
-    telefono_norm: telN,
-    email,
+    telefono_norm: ultimos10(tel),
+    email: correoNorm(c.email),
     lifecycle: limpiarTexto(c.lifecycle),
     estatus_conversacion: limpiarTexto(c.status),
     asignado_nombre: asig.nombre,
@@ -148,93 +170,6 @@ async function procesarContacto(c, ya) {
     creado_en_respond: creadoEnDe(c),
     sincronizado_at: new Date().toISOString(),
   };
-
-  // 1) ¿Ya está ligado de antes? Entonces solo se refresca.
-  const previo = ya.get(c.id);
-  if (previo && (previo.prospecto_id || previo.cliente_cartera_id)) {
-    fila.prospecto_id = previo.prospecto_id;
-    fila.cliente_cartera_id = previo.cliente_cartera_id;
-    fila.resultado = previo.resultado;
-    await sbPost('respond_contactos', fila, 'resolution=merge-duplicates,return=minimal');
-    return { resultado: 'ya_ligado' };
-  }
-
-  // 2) Sin teléfono ni correo no hay forma de cruzarlo ni de llamarle.
-  if (!telN && !email) {
-    fila.resultado = 'sin_datos_para_ligar';
-    await sbPost('respond_contactos', fila, 'resolution=merge-duplicates,return=minimal');
-    return { resultado: 'sin_datos_para_ligar' };
-  }
-
-  // 3) ¿Existe ya en Cartera de Cuentas? (un cliente, no un prospecto)
-  let cartera = null;
-  if (telN) {
-    const r = await sbGet(`clientes_cartera?select=id,razon_social&or=(telefono.ilike.*${telN},telefono_whatsapp.ilike.*${telN})&limit=1`);
-    cartera = r[0] || null;
-  }
-  if (!cartera && email) {
-    const r = await sbGet(`clientes_cartera?select=id,razon_social&correo_principal=ilike.${encodeURIComponent(email)}&limit=1`);
-    cartera = r[0] || null;
-  }
-
-  // 4) ¿Existe ya como prospecto?
-  let prospecto = null;
-  if (telN) {
-    const r = await sbGet(`prospectos?select=id,nombre,telefono,email,respond_contacto_id&telefono=ilike.*${telN}&limit=1`);
-    prospecto = r[0] || null;
-  }
-  if (!prospecto && email) {
-    const r = await sbGet(`prospectos?select=id,nombre,telefono,email,respond_contacto_id&email=ilike.${encodeURIComponent(email)}&limit=1`);
-    prospecto = r[0] || null;
-  }
-
-  if (prospecto) {
-    // Ligar y completar lo que falte, sin pisar lo capturado en la app.
-    const parche = { respond_contacto_id: c.id, updated_at: new Date().toISOString() };
-    if (!prospecto.telefono && tel) parche.telefono = tel;
-    if (!prospecto.email && email) parche.email = email;
-    if (cartera && !prospecto.cliente_cartera_id) parche.cliente_cartera_id = cartera.id;
-    await sbPatch(`prospectos?id=eq.${prospecto.id}`, parche);
-    fila.prospecto_id = prospecto.id;
-    fila.cliente_cartera_id = cartera ? cartera.id : null;
-    fila.resultado = 'ligado_prospecto';
-    await sbPost('respond_contactos', fila, 'resolution=merge-duplicates,return=minimal');
-    return { resultado: 'ligado_prospecto' };
-  }
-
-  if (cartera) {
-    // Es un cliente que escribe por WhatsApp: se deja ligado a su cuenta y no
-    // se crea prospecto (ya es cliente, no prospecto).
-    fila.cliente_cartera_id = cartera.id;
-    fila.resultado = 'ligado_cartera';
-    await sbPost('respond_contactos', fila, 'resolution=merge-duplicates,return=minimal');
-    return { resultado: 'ligado_cartera' };
-  }
-
-  // 5) No existe en ningún lado: alta como prospecto.
-  const hoy = new Date();
-  const nuevo = await sbPost('prospectos', {
-    nombre: nombre || tel || email || 'Contacto de WhatsApp',
-    telefono: tel,
-    email,
-    origen: 'respond',
-    evento: 'WhatsApp (Respond.io)',
-    estatus: 'nuevo',
-    anio: hoy.getFullYear(),
-    mes: hoy.getMonth() + 1,
-    fecha_contacto: hoy.toISOString().slice(0, 10),
-    respond_contacto_id: c.id,
-    notas: [
-      fila.lifecycle ? 'Etapa en Respond: ' + fila.lifecycle : null,
-      fila.etiquetas && fila.etiquetas.length ? 'Etiquetas: ' + fila.etiquetas.join(', ') : null,
-      asig.nombre ? 'Atendido en Respond por: ' + asig.nombre : null,
-    ].filter(Boolean).join(' · ') || null,
-  });
-  const idNuevo = Array.isArray(nuevo) ? nuevo[0]?.id : nuevo?.id;
-  fila.prospecto_id = idNuevo || null;
-  fila.resultado = 'prospecto_creado';
-  await sbPost('respond_contactos', fila, 'resolution=merge-duplicates,return=minimal');
-  return { resultado: 'prospecto_creado' };
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────
@@ -253,19 +188,46 @@ export default async function handler(req, res) {
   if (!RESPOND_TOKEN) return res.status(200).json({ ok: false, omitido: 'Falta RESPOND_API_TOKEN en el servidor.' });
 
   const t0 = Date.now();
-  const cuenta = { paginas: 0, contactos: 0, prospecto_creado: 0, ligado_prospecto: 0, ligado_cartera: 0, sin_datos_para_ligar: 0, ya_ligado: 0 };
+  const simulacion = !!(req.query && req.query.simulacion === '1');
+  const cuenta = {
+    paginas: 0, contactos: 0, prospecto_creado: 0, ligado_prospecto: 0,
+    ligado_cartera: 0, sin_datos_para_ligar: 0, ya_ligado: 0,
+  };
   const errores = [];
 
   try {
-    // ¿Desde dónde seguimos? Si la corrida anterior terminó el barrido, se
-    // empieza de nuevo desde el principio (así se recogen los nuevos).
     let estado = null;
     try { estado = (await sbGet('respond_sync_estado?id=eq.1&select=*'))[0] || null; } catch (_) {}
-    const reiniciar = req.query && req.query.reiniciar === '1';
+    const reiniciar = !!(req.query && req.query.reiniciar === '1');
     let cursor = reiniciar ? null : (estado?.ultimo_cursor || null);
+
+    // ── Índices en memoria (una sola vez por corrida) ──
+    const [prospectos, cartera, espejo] = await Promise.all([
+      sbTodo('prospectos', 'id,telefono,email,cliente_cartera_id,respond_contacto_id'),
+      sbTodo('clientes_cartera', 'id,telefono,telefono_whatsapp,correo_principal'),
+      sbTodo('respond_contactos', 'respond_id,prospecto_id,cliente_cartera_id,resultado'),
+    ]);
+    const proPorTel = new Map(), proPorMail = new Map();
+    prospectos.forEach((p) => {
+      const t = ultimos10(p.telefono); if (t && !proPorTel.has(t)) proPorTel.set(t, p);
+      const e = correoNorm(p.email); if (e && !proPorMail.has(e)) proPorMail.set(e, p);
+    });
+    const carPorTel = new Map(), carPorMail = new Map();
+    cartera.forEach((c) => {
+      [c.telefono, c.telefono_whatsapp].forEach((v) => {
+        const t = ultimos10(v); if (t && !carPorTel.has(t)) carPorTel.set(t, c);
+      });
+      const e = correoNorm(c.correo_principal); if (e && !carPorMail.has(e)) carPorMail.set(e, c);
+    });
+    const yaEspejo = new Map(espejo.map((r) => [r.respond_id, r]));
+
     let terminado = false;
+    let cortadoPorTiempo = false;
+    let idsPaginaPrevia = '';
 
     for (let p = 0; p < PAGINAS_POR_CORRIDA; p++) {
+      if (Date.now() - t0 > MS_MAX) { cortadoPorTiempo = true; break; }
+
       let pagina;
       try {
         pagina = await respondListar(cursor);
@@ -273,54 +235,195 @@ export default async function handler(req, res) {
         if (e.status === 429) { errores.push('Respond.io limitó las peticiones; se continúa en la corrida siguiente.'); break; }
         throw e;
       }
-      cuenta.paginas++;
       const items = pagina.items;
       if (!items.length) { terminado = true; break; }
 
-      // Lo que ya teníamos de estos contactos, en una sola consulta.
-      const ids = items.map((c) => c.id).filter((x) => x != null);
-      const ya = new Map();
-      if (ids.length) {
-        try {
-          const prev = await sbGet(`respond_contactos?select=respond_id,prospecto_id,cliente_cartera_id,resultado&respond_id=in.(${ids.join(',')})`);
-          prev.forEach((r) => ya.set(r.respond_id, r));
-        } catch (_) {}
+      // Guarda contra un cursor que no avanza: si la API devolviera la misma
+      // página, el barrido se repetiría para siempre sin terminar nunca.
+      const huella = items.map((c) => c.id).join(',');
+      if (huella === idsPaginaPrevia) {
+        errores.push('La API devolvió la misma página dos veces (el cursor no avanza). Se detiene el barrido para no repetirlo.');
+        terminado = true;
+        break;
       }
+      idsPaginaPrevia = huella;
+      cuenta.paginas++;
+
+      const nuevosProspectos = [];   // {fila, respond_id, telN, mail}
+      const parches = [];            // {id, cambios}
+      const filasEspejo = [];
+      // Dos contactos de Respond pueden ser la misma persona (mismo teléfono o
+      // correo) dentro de la MISMA página. Sin esto se daban de alta dos veces,
+      // porque el índice solo se actualiza después de escribir.
+      const pendientePorTel = new Map(), pendientePorMail = new Map();
 
       for (const c of items) {
+        cuenta.contactos++;
+        const fila = filaEspejo(c);
+        const telN = fila.telefono_norm;
+        const mail = fila.email;
+
+        const previo = yaEspejo.get(c.id);
+        if (previo && (previo.prospecto_id || previo.cliente_cartera_id)) {
+          fila.prospecto_id = previo.prospecto_id;
+          fila.cliente_cartera_id = previo.cliente_cartera_id;
+          fila.resultado = previo.resultado;
+          filasEspejo.push(fila);
+          cuenta.ya_ligado++;
+          continue;
+        }
+
+        if (!telN && !mail) {
+          fila.resultado = 'sin_datos_para_ligar';
+          filasEspejo.push(fila);
+          cuenta.sin_datos_para_ligar++;
+          continue;
+        }
+
+        const cta = (telN && carPorTel.get(telN)) || (mail && carPorMail.get(mail)) || null;
+        const pro = (telN && proPorTel.get(telN)) || (mail && proPorMail.get(mail)) || null;
+
+        if (pro) {
+          const cambios = { respond_contacto_id: c.id, updated_at: new Date().toISOString() };
+          if (!pro.telefono && fila.telefono) cambios.telefono = fila.telefono;
+          if (!pro.email && mail) cambios.email = mail;
+          if (cta && !pro.cliente_cartera_id) cambios.cliente_cartera_id = cta.id;
+          // Solo se escribe si de verdad cambia algo más que la marca de tiempo.
+          if (pro.respond_contacto_id !== c.id || Object.keys(cambios).length > 2) {
+            parches.push({ id: pro.id, cambios });
+          }
+          fila.prospecto_id = pro.id;
+          fila.cliente_cartera_id = cta ? cta.id : (pro.cliente_cartera_id || null);
+          fila.resultado = 'ligado_prospecto';
+          filasEspejo.push(fila);
+          cuenta.ligado_prospecto++;
+          continue;
+        }
+
+        if (cta) {
+          // Es un cliente que escribe por WhatsApp: se liga a su cuenta y no
+          // se crea prospecto (ya es cliente, no prospecto).
+          fila.cliente_cartera_id = cta.id;
+          fila.resultado = 'ligado_cartera';
+          filasEspejo.push(fila);
+          cuenta.ligado_cartera++;
+          continue;
+        }
+
+        // ¿Ya se encoló un alta para esta misma persona en esta página?
+        const pend = (telN && pendientePorTel.get(telN)) ?? (mail && pendientePorMail.get(mail));
+        if (pend !== undefined && pend !== null && pend !== false) {
+          fila.cliente_cartera_id = null;
+          fila.resultado = 'ligado_prospecto';
+          fila._pendiente = pend;
+          filasEspejo.push(fila);
+          cuenta.ligado_prospecto++;
+          continue;
+        }
+
+        // No existe en ningún lado: alta como prospecto.
+        const hoy = new Date();
+        const asigTxt = fila.asignado_nombre ? 'Atendido en Respond por: ' + fila.asignado_nombre : null;
+        nuevosProspectos.push({
+          respond_id: c.id,
+          telN,
+          mail,
+          fila: {
+            nombre: fila.nombre || fila.telefono || mail || 'Contacto de WhatsApp',
+            telefono: fila.telefono,
+            email: mail,
+            origen: 'respond',
+            evento: 'WhatsApp (Respond.io)',
+            estatus: ESTATUS_NUEVO,
+            anio: hoy.getFullYear(),
+            mes: hoy.getMonth() + 1,
+            fecha_contacto: hoy.toISOString().slice(0, 10),
+            respond_contacto_id: c.id,
+            notas: [
+              fila.lifecycle ? 'Etapa en Respond: ' + fila.lifecycle : null,
+              fila.etiquetas && fila.etiquetas.length ? 'Etiquetas: ' + fila.etiquetas.join(', ') : null,
+              asigTxt,
+            ].filter(Boolean).join(' · ') || null,
+          },
+        });
+        const idx = nuevosProspectos.length - 1;
+        if (telN) pendientePorTel.set(telN, idx);
+        if (mail) pendientePorMail.set(mail, idx);
+        fila.resultado = 'prospecto_creado';
+        fila._pendiente = idx;
+        filasEspejo.push(fila);
+        cuenta.prospecto_creado++;
+      }
+
+      if (simulacion) {
+        // Modo prueba: cuenta lo que haría y no escribe nada.
+        cursor = items[items.length - 1].id;
+        if (items.length < POR_PAGINA) terminado = true;
+        if (terminado) break;
+        await new Promise((ok) => setTimeout(ok, 250));
+        continue;
+      }
+
+      // ── Escrituras en lote ──
+      if (nuevosProspectos.length) {
         try {
-          const r = await procesarContacto(c, ya);
-          cuenta.contactos++;
-          cuenta[r.resultado] = (cuenta[r.resultado] || 0) + 1;
+          const creados = await sbPost('prospectos', nuevosProspectos.map((x) => x.fila), 'return=representation');
+          (creados || []).forEach((row, i) => {
+            const ref = nuevosProspectos[i];
+            if (!ref) return;
+            // Todas las filas que apuntaban a este alta (la original y las
+            // repetidas de la misma persona) quedan ligadas al mismo prospecto.
+            filasEspejo.forEach((z) => { if (z._pendiente === i) z.prospecto_id = row.id; });
+            // El índice se actualiza en caliente para que dos contactos de
+            // Respond con el mismo teléfono no generen dos prospectos.
+            if (ref.telN) proPorTel.set(ref.telN, { id: row.id, telefono: ref.fila.telefono, email: ref.mail, respond_contacto_id: ref.respond_id });
+            if (ref.mail) proPorMail.set(ref.mail, { id: row.id, telefono: ref.fila.telefono, email: ref.mail, respond_contacto_id: ref.respond_id });
+          });
         } catch (e) {
-          errores.push(`contacto ${c && c.id}: ${String(e.message || e).slice(0, 180)}`);
+          errores.push('alta de prospectos: ' + String(e.message || e).slice(0, 200));
+          cuenta.prospecto_creado -= nuevosProspectos.length;
+          filasEspejo.forEach((f) => { if (f.resultado === 'prospecto_creado') f.resultado = 'sin_datos_para_ligar'; });
         }
       }
 
+      for (const pa of parches) {
+        try { await sbPatch(`prospectos?id=eq.${pa.id}`, pa.cambios); }
+        catch (e) { errores.push(`prospecto ${pa.id}: ` + String(e.message || e).slice(0, 150)); }
+      }
+
+      filasEspejo.forEach((f) => { delete f._pendiente; });
+      if (filasEspejo.length) {
+        try { await sbPost('respond_contactos', filasEspejo, 'resolution=merge-duplicates,return=minimal'); }
+        catch (e) { errores.push('espejo de contactos: ' + String(e.message || e).slice(0, 200)); }
+      }
+      filasEspejo.forEach((f) => yaEspejo.set(f.respond_id, f));
+
       cursor = items[items.length - 1].id;
       if (items.length < POR_PAGINA) { terminado = true; break; }
-      // La API limita las peticiones por segundo; se deja respirar.
       await new Promise((ok) => setTimeout(ok, 250));
     }
 
     const resumen = {
       ok: true,
+      simulacion,
       ms: Date.now() - t0,
-      barrido: terminado ? 'completo' : 'parcial (continúa en la corrida siguiente)',
+      barrido: terminado ? 'completo' : (cortadoPorTiempo ? 'parcial (se acabó el tiempo; sigue en la corrida siguiente)' : 'parcial (continúa en la corrida siguiente)'),
       ...cuenta,
       errores: errores.slice(0, 20),
     };
 
-    try {
-      await sbPatch('respond_sync_estado?id=eq.1', {
-        ultimo_cursor: terminado ? null : cursor,
-        ultimo_barrido_at: terminado ? new Date().toISOString() : estado?.ultimo_barrido_at || null,
-        modo: terminado ? 'completo' : 'parcial',
-        ultimo_resultado: resumen,
-        actualizado_at: new Date().toISOString(),
-      });
-    } catch (e) {
-      errores.push('No se pudo guardar el avance: ' + String(e.message || e));
+    if (!simulacion) {
+      try {
+        await sbPatch('respond_sync_estado?id=eq.1', {
+          ultimo_cursor: terminado ? null : cursor,
+          ultimo_barrido_at: terminado ? new Date().toISOString() : (estado?.ultimo_barrido_at || null),
+          modo: terminado ? 'completo' : 'parcial',
+          ultimo_resultado: resumen,
+          actualizado_at: new Date().toISOString(),
+        });
+      } catch (e) {
+        resumen.errores.push('No se pudo guardar el avance: ' + String(e.message || e));
+      }
     }
 
     return res.status(200).json(resumen);
