@@ -469,6 +469,7 @@ table.daily td{padding:8px 12px;vertical-align:middle;}
         <div class="uav" id="userAv">—</div>
         <span id="userName">—</span>
       </div>
+      <button class="btn-logout" id="btnOps" onclick="window.open('ops.html','_blank')" title="Operaciones — Mesa de Control" style="display:none;background:none;border:1px solid var(--border);margin-right:6px;">🛠 <span class="btn-txt">Operaciones</span></button>
       <button class="btn-logout" onclick="window.open('glosario.html','_blank')" title="Glosario y Más" style="background:none;border:1px solid var(--border);margin-right:6px;">📚 <span class="btn-txt">Glosario y Más</span></button>
       <button class="btn-logout" onclick="abrirPanelSeguridad()" title="Seguridad" style="background:none;border:1px solid var(--border);margin-right:6px;">🔒 <span class="btn-txt">Seguridad</span></button>
       <button class="btn-logout" onclick="doLogout()">Salir</button>
@@ -1206,6 +1207,9 @@ async function initApp(user){
     }
   }
   userProfile=prof;
+  // Jp, 2026-11-19: el botón de Operaciones (ops.html, Mesa de Control en su
+  // propio HTML) solo para quienes entran a esa área.
+  try{ const _bo=document.getElementById('btnOps'); if(_bo&&['director','mesa_control','gerente_operaciones','administracion','asesor'].includes(prof.rol)) _bo.style.display=''; }catch(e){}
   document.getElementById('loginScreen').style.display='none';
   document.getElementById('appScreen').style.display='block';
   mostrarBienvenidaOS(userProfile.nombre);
@@ -13540,6 +13544,7 @@ async function abrirFichaClienteModal(clienteId){
     </div>
     ${cl._mejorProyecto?.nivel_prioridad?(()=>{const cod=cl._mejorProyecto.nivel_prioridad;const col=POLIZA_NIVEL_COLOR[cod]||'#fff';return `<span title="Proyecto activo: ${cl._mejorProyecto.nombre_proyecto||cl._mejorProyecto.tipo_proyecto||''}" style="flex-shrink:0;background:${col};color:#fff;border-radius:var(--radpill);padding:6px 14px;font-size:12px;font-weight:700;">🛡 Prioridad ${cod} · ${POLIZA_NIVEL_ETIQUETA[cod]||''}</span>`;})():''}
     <button type="button" onclick="abrirCuentaEnCrm('${(cl.num_cliente||'').replace(/'/g,'')}')" style="background:#1D5FA8;color:#fff;border:none;border-radius:var(--radsm);padding:9px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;align-self:center;">🔗 Abrir en CRM ↗</button>
+    <span id="respondSlot_fc_${clienteId}" style="align-self:center;"></span>
   </div>
   <div id="fichaClienteMsg" style="font-size:12px;color:var(--red);margin-bottom:10px;"></div>
   <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:16px;align-items:start;">
@@ -13698,6 +13703,7 @@ async function abrirFichaClienteModal(clienteId){
     selNuevo.innerHTML='<option value="">-- Elegir sistema --</option>'+SISTEMAS_CATALOGO.map(d=>`<option value="${d.key}">${d.label}</option>`).join('');
   }
   window.scrollTo(0,0);
+  respondPintarBoton('respondSlot_fc_'+clienteId,{clienteCarteraId:clienteId,tel:cl.telefono_whatsapp||cl.telefono});
   fcCargarExpediente(clienteId,(subcuentas||[]).map(x=>x.id));
   fcCargarOportunidadesAbiertas(clienteId);
   fcCargarComentariosCrm(clienteId,cl.num_cliente);
@@ -20147,6 +20153,7 @@ async function abrirDetalleCuentaTeleInt(clienteId, campanaId){
         style="flex:1;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">
         Guardar y siguiente →
       </button>
+      <span id="respondSlot_cta_${clienteId}"></span>
       ${c.telefono?`<a href="https://wa.me/${(c.telefono_whatsapp||c.telefono).replace(/\D/g,'').length===10?'52'+(c.telefono_whatsapp||c.telefono).replace(/\D/g,''):(c.telefono_whatsapp||c.telefono).replace(/\D/g,'')}" target="_blank"
         style="background:#25D366;color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;white-space:nowrap;">
         WhatsApp
@@ -20154,6 +20161,7 @@ async function abrirDetalleCuentaTeleInt(clienteId, campanaId){
     </div>
   </div>`;
   document.body.appendChild(modal);
+  respondPintarBoton('respondSlot_cta_'+clienteId,{clienteCarteraId:clienteId,tel:c.telefono_whatsapp||c.telefono});
   // El último comentario del CRM se pide aparte para que la ficha abra ya; si
   // el CRM tarda o falla, la llamada se puede hacer igual.
   teleUltimoComentarioCrm(clienteId,c.num_cliente);
@@ -22076,6 +22084,31 @@ async function abrirDetalleDir(id){
   await abrirDetalle(id);
 }
 
+// ─── Botón "Abrir en Respond" (Jp, 2026-11-19) ──────────────────────────────
+// Abre la conversación de WhatsApp de ese contacto directo en Respond, usando
+// el ID que ya guardamos al sincronizar (respond_contactos.respond_id). El
+// número de espacio (371015) es fijo de la cuenta. Solo aparece si el contacto
+// existe en Respond; si no, el botón no se muestra (no confunde al vendedor).
+const RESPOND_SPACE='371015';
+function respondUrl(respondId){ return 'https://app.respond.io/space/'+RESPOND_SPACE+'/inbox/'+respondId; }
+async function respondBuscarId({prospectoId,clienteCarteraId,tel}){
+  try{
+    if(prospectoId){ const {data}=await sb.from('respond_contactos').select('respond_id').eq('prospecto_id',prospectoId).not('respond_id','is',null).limit(1); if(data&&data[0]) return data[0].respond_id; }
+    if(clienteCarteraId){ const {data}=await sb.from('respond_contactos').select('respond_id').eq('cliente_cartera_id',clienteCarteraId).not('respond_id','is',null).limit(1); if(data&&data[0]) return data[0].respond_id; }
+    const t10=String(tel||'').replace(/\D/g,'').slice(-10);
+    if(t10.length===10){ const {data}=await sb.from('respond_contactos').select('respond_id').eq('telefono_norm',t10).not('respond_id','is',null).limit(1); if(data&&data[0]) return data[0].respond_id; }
+  }catch(e){ console.warn('respondBuscarId',e); }
+  return null;
+}
+// Pinta el botón dentro de un <span id=slotId> después de que la ficha ya está
+// en el DOM (así no retrasa la apertura; aparece en cuanto se resuelve).
+async function respondPintarBoton(slotId,ctx){
+  const el=document.getElementById(slotId); if(!el) return;
+  const id=await respondBuscarId(ctx||{});
+  if(!id){ el.innerHTML=''; return; }
+  el.innerHTML=`<a href="${respondUrl(id)}" target="_blank" rel="noopener" title="Abrir la conversación de este contacto en Respond.io" style="background:#1A74E2;color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;">💬 Abrir en Respond</a>`;
+}
+
 async function abrirDetalle(id){
   const ps=window._prospectos||[];
   const idx=ps.findIndex(p=>p.id===id);
@@ -22443,6 +22476,7 @@ async function abrirDetalle(id){
             style="background:var(--teal-bg);color:var(--teal);border:1px solid var(--teal);border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">
             📞 A vendedor
           </button>
+          <span id="respondSlot_prosp_${p.id}"></span>
           <a href="https://wa.me/${telLimpio.length===10?'52'+telLimpio:telLimpio}" target="_blank"
             style="background:#25D366;color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:flex;align-items:center;white-space:nowrap;">
             WhatsApp
@@ -22454,6 +22488,7 @@ async function abrirDetalle(id){
   document.getElementById('modalDetalle')?.remove();
   document.body.appendChild(modal);
   modal.addEventListener('click',e=>{if(e.target===modal)modal.remove();});
+  respondPintarBoton('respondSlot_prosp_'+p.id,{prospectoId:p.id,clienteCarteraId:p.cliente_cartera_id,tel:p.telefono});
   // Catálogo pendiente para "+ Agregar sistema" (igual patrón que la ficha de Cartera)
   const pfSelNuevo=document.getElementById('pfSistemaNuevo_'+p.id);
   if(pfSelNuevo) pfSelNuevo.innerHTML='<option value="">-- Elegir sistema --</option>'+SISTEMAS_CATALOGO.map(d=>`<option value="${d.key}">${d.label}</option>`).join('');
