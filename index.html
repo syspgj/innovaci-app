@@ -21456,6 +21456,28 @@ async function renderProspectos(){
   const resultadoProsMap={};
   (llamadasProsExist||[]).forEach(l=>{ if(!resultadoProsMap[l.prospecto_id]) resultadoProsMap[l.prospecto_id]=l.resultado; });
   window._resultadoProspectos=resultadoProsMap;
+  // Jp, 2026-11-19: filtro de "recientes" + botón "Continuar con campaña" en
+  // Prospectos, igual que en Campañas a clientes. Actividad = días desde lo más
+  // reciente entre su última llamada, su último contacto o su última edición.
+  const ultCallPros={};
+  (llamadasProsExist||[]).forEach(l=>{ if(!ultCallPros[l.prospecto_id]) ultCallPros[l.prospecto_id]=l.created_at; });
+  window._diasActPros={};
+  ps.forEach(p=>{
+    let best=null;
+    [ultCallPros[p.id], p.fecha_contacto, p.updated_at, p.created_at].forEach(d=>{
+      if(!d) return; const t=new Date(d).getTime(); if(!isNaN(t)&&(best===null||t>best)) best=t;
+    });
+    window._diasActPros[p.id]=best!==null?Math.floor((Date.now()-best)/86400000):999999;
+  });
+  let contProsId=null;
+  try{ const raw=localStorage.getItem('prosUltima_'+currentUser.id); if(raw){ const o=JSON.parse(raw); if(o&&ps.some(p=>p.id===o.prospectoId)) contProsId=o.prospectoId; } }catch(_){}
+  if(!contProsId){ const ul=(llamadasProsExist||[]).find(l=>ps.some(p=>p.id===l.prospecto_id)); if(ul) contProsId=ul.prospecto_id; }
+  const contP=contProsId?ps.find(p=>p.id===contProsId):null;
+  const continuarProsHtml=contP?`
+    <button onclick="abrirDetalle('${contP.id}')" style="width:100%;margin-bottom:14px;display:flex;align-items:center;gap:10px;justify-content:center;padding:11px 14px;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);font-size:13px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">
+      ▶️ Continuar con campaña
+      <span style="font-weight:500;opacity:.9;font-size:12px;">· último: ${(contP.nombre||'Sin nombre').replace(/</g,'&lt;')}${contP.apellidos?' '+contP.apellidos.replace(/</g,'&lt;'):''}</span>
+    </button>`:'';
   const totalPros=ps.length, contactadosPros=contactadosIds.size, pctPros=totalPros>0?Math.round(contactadosPros/totalPros*100):0;
   const restantesPros=totalPros-contactadosPros;
   const porDiaPros={};
@@ -21488,6 +21510,7 @@ async function renderProspectos(){
     </div>
     ${proyHtmlPros}
   </div>
+  ${continuarProsHtml}
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
     <div>
       <div style="font-size:18px;font-weight:600;color:var(--text);">Mis prospectos</div>
@@ -21501,6 +21524,13 @@ async function renderProspectos(){
       <select id="filtroEstatus" onchange="filtrarProspectos()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;color:var(--text);">
         <option value="">Todos los estatus</option>
         ${Object.keys(ESTATUS_COLORS).map(e=>`<option value="${e}">${e}</option>`).join('')}
+      </select>
+      <select id="filtroActividadPros" onchange="filtrarProspectos()" title="Separa a quienes ya tocaste recientemente del resto" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;color:var(--text);">
+        <option value="">Actividad: todas</option>
+        <option value="0">🟢 Movimiento hoy</option>
+        <option value="7">🗓️ Últimos 7 días</option>
+        <option value="30">📆 Últimos 30 días</option>
+        <option value="frio">❄️ Sin movimiento reciente</option>
       </select>
       <div style="position:relative;margin-bottom:10px;">
         <input type="text" id="buscarPros" placeholder="Buscar nombre o tel..." oninput="filtrarProspectos()"
@@ -22148,6 +22178,8 @@ async function abrirDetalle(id){
   const idx=ps.findIndex(p=>p.id===id);
   if(idx<0) return;
   const p=ps[idx];
+  // Recuerda el último prospecto abierto, para el botón "Continuar con campaña".
+  try{ if(currentUser&&currentUser.id) localStorage.setItem('prosUltima_'+currentUser.id, JSON.stringify({prospectoId:id, ts:Date.now()})); }catch(_){}
 
   // Fetch historial en paralelo
   const [evRes, llRes, vendRes, campRelRes, allUsersRes, sisRes]=await Promise.all([
