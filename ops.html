@@ -50,7 +50,11 @@ label.fld>span{display:block;font-size:11px;color:var(--text2);margin-bottom:3px
 .spinner{width:18px;height:18px;border:3px solid var(--border);border-top-color:var(--teal);border-radius:50%;animation:spin .8s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg)}}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000;padding:16px;}
-.modal .box{background:#fff;border-radius:var(--rad);max-width:680px;width:100%;max-height:92vh;overflow-y:auto;padding:22px 24px;}
+.modal .box{background:#fff;border-radius:var(--rad);max-width:760px;width:100%;max-height:92vh;overflow-y:auto;padding:22px 24px;}
+.asgCols{display:grid;grid-template-columns:1fr 1fr;gap:0 20px;}
+.asgCols .colhead{font-size:11px;font-weight:800;color:var(--teal);text-transform:uppercase;letter-spacing:.03em;margin:2px 0 8px;}
+.inp[readonly]{background:var(--surf2);color:var(--text2);}
+@media(max-width:620px){.asgCols{grid-template-columns:1fr;}}
 .svc{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer;}
 .svc:hover{background:var(--surf2);}
 .svc:last-child{border-bottom:none;}
@@ -133,7 +137,8 @@ function pintarShell(){
     </div>
     <div class="muted" style="margin:2px 0 14px;">${sub}</div>
     <div id="mod"></div>`;
-  if(currentOpsTab==='asignaciones') renderAsignaciones(); else renderCatalogo();
+  if(currentOpsTab==='asignaciones'){ renderAsignaciones(); if(!_opsTick) _opsTick=setInterval(tickTiempos,30000); }
+  else{ if(_opsTick){ clearInterval(_opsTick); _opsTick=null; } renderCatalogo(); }
 }
 
 // ─── Catálogo de servicios de operación ─────────────────────────────────────
@@ -312,7 +317,7 @@ async function guardarServicio(id){
 // Coordinación toma un pendiente de Telegram (o captura directa) y lo asigna a
 // un asesor con servicio del catálogo, día y hora. Guarda en servicios_ejecutados
 // (la tabla del ticket) con estatus ASIGNADO y marca el pendiente como procesado.
-let _opsCatAsig=[], _asesores=[], _pendientes=[], _asignaciones=[], _opsFiltroTipo='todo';
+let _opsCatAsig=[], _asesores=[], _pendientes=[], _asignaciones=[], _opsFiltroTipo='todo', _opsTick=null;
 // Flujo del servicio como tablero (CRM). Cada tarjeta avanza solo cuando se cumple su candado.
 const ETAPAS=[
   {k:'SOLICITUD', t:'Solicitudes', ic:'📥', c:'#6B7280'},
@@ -343,6 +348,14 @@ function _durMin(s){ // minutos reales entre inicio y fin (o hasta ahora si en c
   const fin=s.fin_real_at?new Date(s.fin_real_at).getTime():Date.now();
   return Math.max(0,Math.round((fin-ini)/60000));
 }
+// Cronómetro en vivo de los servicios "En curso" (se actualiza sin re-dibujar el tablero)
+function _timerHtml(ini,est){
+  if(!ini) return '<span style="color:#7C3AED;">⏱ en curso</span>';
+  const d=Math.max(0,Math.round((Date.now()-new Date(ini).getTime())/60000));
+  est=est?parseInt(est,10):null; const over=est&&d>est;
+  return `<span style="color:${over?'#c0392b':'#7C3AED'};">⏱ ${_minTxt(d)} en curso${est?' / estim. '+_minTxt(est):''}${over?' ⚠️':''}</span>`;
+}
+function tickTiempos(){ try{ document.querySelectorAll('.enCursoTimer').forEach(el=>{ el.innerHTML=_timerHtml(el.dataset.ini,el.dataset.est); }); }catch(e){} }
 
 async function renderAsignaciones(){
   const m=document.getElementById('mod');
@@ -355,6 +368,8 @@ async function renderAsignaciones(){
       sb.from('servicios_ejecutados').select('*').order('fecha_asignada',{ascending:true,nullsFirst:false}).order('created_at',{ascending:false}).limit(400)
     ]);
     _opsCatAsig=cat.data||_opsCatAsig; _asesores=ases.data||[]; _pendientes=pend.data||[];
+    // Jp y cualquier staff también pueden tomar servicios: se agregan como asesor seleccionable.
+    if(userProfile&&!_asesores.some(a=>a.id===userProfile.id)) _asesores=[{id:userProfile.id,nombre:userProfile.nombre,rol:userProfile.rol},..._asesores];
     _asignaciones=(asig.data||[]).filter(s=>!s.ticket_cerrado||estEtapa(s.estatus)==='CERRADO');
   }catch(e){ m.innerHTML=`<div class="center" style="color:var(--red);">No se pudo cargar: ${esc(e.message||e)}</div>`; return; }
   pintarAsignaciones();
@@ -391,10 +406,11 @@ function pintarAsignaciones(){
       if(s.asesor_id!==vistaAsesorId) return '';
       if(et==='ASIGNADO')  return b('▶ Iniciar',`avanzaEtapa('${s.id}','EN_CURSO')`);
       if(et==='EN_CURSO')  return b('⏹ Finalizar',`avanzaEtapa('${s.id}','CONCLUIDO')`);
-      if(et==='CONCLUIDO') return b('📝 Ya reporté',`avanzaEtapa('${s.id}','REPORTADO')`);
+      if(et==='CONCLUIDO') return b('📝 Subir reporte',`reportarServicio('${s.id}')`);
       return '';
     }
     if(esStaff){ // Mesa de Control: asignar y cerrar; NO iniciar/finalizar (eso es del asesor)
+      if(!s.asesor_id && et!=='CERRADO') return b('Asignar →',`abrirAsignarServ('${s.id}')`); // sin asesor (p.ej. alerta de resguardo) → asignar
       if(et==='SOLICITUD') return b('Asignar →',`abrirAsignarServ('${s.id}')`);
       if(et==='REPORTADO') return b('🎫 Cerrar con ticket',`cerrarConTicket('${s.id}')`);
       return '';
@@ -406,7 +422,7 @@ function pintarAsignaciones(){
     const et=estEtapa(s.estatus);
     let extra='';
     if(et==='ASIGNADO'){ const prog=s.fecha_asignada&&(s.fecha_asignada+'T'+(_opsHora(s.hora_asignada)||'00:00'))<=new Date().toISOString().slice(0,16); if(prog) extra=`<div style="font-size:11px;color:#B45309;font-weight:700;margin-top:3px;">⏰ Es hora</div>`; }
-    if(et==='EN_CURSO'){ const d=_durMin(s); const est=_estimMin(s.tipo_servicio); extra=`<div style="font-size:11px;margin-top:3px;color:${est&&d>est?'#c0392b':'#7C3AED'};font-weight:700;">⏱ ${_minTxt(d)} en curso${est?' / estim. '+_minTxt(est):''}${est&&d>est?' ⚠️':''}</div>`; }
+    if(et==='EN_CURSO'){ const est=_estimMin(s.tipo_servicio); extra=`<div class="enCursoTimer" data-ini="${s.inicio_real_at||''}" data-est="${est||''}" style="font-size:11px;margin-top:3px;font-weight:700;">${_timerHtml(s.inicio_real_at,est)}</div>`; }
     if(et==='CONCLUIDO'||et==='REPORTADO'||et==='CERRADO'){ const d=_durMin(s); if(d!=null){ const est=_estimMin(s.tipo_servicio); extra=`<div style="font-size:11px;margin-top:3px;color:${est&&d>est?'#c0392b':'var(--text2)'};">⏱ duró ${_minTxt(d)}${est&&d>est?' (excedió '+_minTxt(est)+') ⚠️':''}</div>`; } }
     return `<div class="card" style="padding:10px 12px;cursor:pointer;" onclick="abrirAsignacion('${s.id}')">
       <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;">
@@ -449,6 +465,7 @@ function pintarAsignaciones(){
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
         ${fchip('todo','Todo')}${fchip('poliza','🛡 Póliza')}${fchip('evento','💵 Evento')}
         ${selAsesor}
+        <button class="btn ghost" style="padding:4px 10px;font-size:12px;" onclick="renderAsignaciones()" title="Refresca el tiempo transcurrido y trae solicitudes nuevas">↻ Actualizar tiempos</button>
       </div>
       ${(esStaff&&!vistaAsesorId)?`<div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn ghost" id="btnSyncTickets" onclick="opsSyncTickets()" title="Trae los tickets nuevos de 123FormBuilder">↻ Sincronizar tickets</button>
@@ -480,32 +497,49 @@ function abrirAsignar(pendId, servExistente){
   const d=p?(p.datos_extraidos||{}):{};
   const sx=servExistente||null;
   const hoy=new Date().toISOString().slice(0,10);
-  const tipo0=sx?(sx.tipo_flujo||'poliza'):'poliza';
+  const fijo = !!p || !!sx; // datos del cliente vienen de Telegram / del sistema → no se editan
+  const tipo0 = sx ? (sx.tipo_flujo||'poliza') : (d.tipo_sugerido==='EVENTO'?'evento':'poliza');
+  const telV = sx ? (sx.contacto_telefono||'') : (d.contacto_telefono||'');
+  const nomV = sx ? (sx.solicitado_por||'') : (d.contacto_nombre||'');
+  const corV = d.contacto_correo||'';
+  const prefV = (sx&&sx.contacto_preferido)||'';
   const opcSrv='<option value="">— Elige el servicio del catálogo —</option>'+(_opsCatAsig||[]).map(s=>`<option value="${esc(s.nombre)}" ${sx&&sx.tipo_servicio===s.nombre?'selected':''}>${esc(s.nombre)}</option>`).join('');
-  const opcAse='<option value="">— Elige al asesor —</option>'+(_asesores||[]).map(a=>`<option value="${a.id}" ${sx&&sx.asesor_id===a.id?'selected':''}>${esc(a.nombre)}${a.rol==='gerente_operaciones'?' (gerente)':''}</option>`).join('');
+  const opcAse='<option value="">— Elige al asesor —</option>'+(_asesores||[]).map(a=>`<option value="${a.id}" ${sx&&sx.asesor_id===a.id?'selected':''}>${esc(a.nombre)}${a.rol==='gerente_operaciones'?' (gerente)':a.rol==='director'?' (yo)':''}</option>`).join('');
+  const opcPref=['','Teléfono','WhatsApp','Correo','Videollamada','Presencial'].map(o=>`<option value="${o}" ${prefV===o?'selected':''}>${o||'— elige —'}</option>`).join('');
   const val=(v)=>esc(v||'');
+  const ro=(cond)=>cond?'readonly':'';
   mostrarModal(`
-    <div style="font-size:16px;font-weight:800;margin-bottom:4px;">${sx?'Asignar servicio':p?'Asignar pendiente':'Nueva asignación'}</div>
-    <div class="muted" style="margin-bottom:12px;">Elige tipo, servicio y asesor, pon día y hora. Al guardar, la tarjeta pasa a <b>Asignados</b>.</div>
-    <div style="display:flex;gap:8px;margin-bottom:10px;">
-      <label style="flex:1;cursor:pointer;" class="fld"><span>Tipo de servicio *</span>
-        <select class="inp" id="agTipo">
+    <div style="font-size:16px;font-weight:800;margin-bottom:4px;">${sx?'Asignar servicio':p?'Asignar solicitud':'Nueva asignación'}</div>
+    <div class="muted" style="margin-bottom:14px;">A la izquierda, lo que llegó del cliente (no se edita). A la derecha, lo que programa Mesa de Control.</div>
+    <div class="asgCols">
+      <div>
+        <div class="colhead">📎 Datos del cliente (de la solicitud)</div>
+        <label class="fld"><span>Cliente${fijo?'':' *'}</span><input class="inp" id="agCliente" value="${val(sx?sx.cliente_nombre:d.cliente)}" ${ro(fijo)} placeholder="Nombre del cliente / empresa"></label>
+        <label class="fld"><span>Contacto</span><input class="inp" id="agContacto" value="${val(nomV)}" ${ro(fijo&&!!nomV)} placeholder="Nombre del contacto"></label>
+        <div class="grid2">
+          <label class="fld"><span>Teléfono</span><input class="inp" id="agTel" value="${val(telV)}" ${ro(fijo&&!!telV)} placeholder="Teléfono"></label>
+          <label class="fld"><span>Correo</span><input class="inp" id="agCorreo" value="${val(corV)}" ${ro(fijo&&!!corV)} placeholder="Correo"></label>
+        </div>
+        <label class="fld"><span>Lo solicitado</span><textarea class="inp" id="agDesc" ${ro(fijo)} style="min-height:150px;" placeholder="Qué pidió el cliente.">${val((sx&&sx.descripcion_solicitud)||d.descripcion||(p?p.texto_original:''))}</textarea></label>
+      </div>
+      <div>
+        <div class="colhead">✍️ Lo que programa Mesa de Control</div>
+        <label class="fld"><span>Tipo de servicio *</span><select class="inp" id="agTipo">
           <option value="poliza" ${tipo0==='poliza'?'selected':''}>🛡 Póliza (descuenta horas)</option>
           <option value="evento" ${tipo0==='evento'?'selected':''}>💵 Evento (facturado, no descuenta)</option>
         </select></label>
+        <label class="fld"><span>Servicio del catálogo *</span><select class="inp" id="agServicio" onchange="asigPintarFicha()">${opcSrv}</select></label>
+        <div id="agFicha"></div>
+        <label class="fld"><span>Asesor *</span><select class="inp" id="agAsesor">${opcAse}</select></label>
+        <div class="grid2">
+          <label class="fld"><span>Fecha *</span><input class="inp" id="agFecha" type="date" value="${val((sx&&sx.fecha_asignada)||d.fecha_sugerida||hoy)}"></label>
+          <label class="fld"><span>Hora</span><input class="inp" id="agHora" type="time" value="${val(sx&&sx.hora_asignada?String(sx.hora_asignada).slice(0,5):'')}"></label>
+        </div>
+        <label class="fld"><span>Forma de contacto preferida</span><select class="inp" id="agPref">${opcPref}</select></label>
+        <label class="fld"><span>Nota para el asesor (opcional)</span><textarea class="inp" id="agNota" placeholder="Algo que deba saber antes de ejecutar.">${val((sx&&sx.nota)||d.nota)}</textarea></label>
+      </div>
     </div>
-    <label class="fld"><span>Cliente *</span><input class="inp" id="agCliente" value="${val(sx?sx.cliente_nombre:d.cliente)}" placeholder="Nombre del cliente / empresa"></label>
-    <label class="fld"><span>Servicio del catálogo *</span><select class="inp" id="agServicio" onchange="asigPintarFicha()">${opcSrv}</select></label>
-    <div id="agFicha"></div>
-    <div class="grid2">
-      <label class="fld"><span>Asesor *</span><select class="inp" id="agAsesor">${opcAse}</select></label>
-      <label class="fld"><span>Fecha *</span><input class="inp" id="agFecha" type="date" value="${val((sx&&sx.fecha_asignada)||d.fecha_sugerida||hoy)}"></label>
-      <label class="fld"><span>Hora</span><input class="inp" id="agHora" type="time" value="${val(sx&&sx.hora_asignada?String(sx.hora_asignada).slice(0,5):'')}"></label>
-      <label class="fld"><span>Contacto en el cliente</span><input class="inp" id="agContacto" value="${val((sx&&sx.solicitado_por)||[d.contacto_nombre,d.contacto_telefono].filter(Boolean).join(' · '))}" placeholder="Nombre · teléfono"></label>
-    </div>
-    <label class="fld"><span>Descripción de lo solicitado</span><textarea class="inp" id="agDesc" placeholder="Qué pidió el cliente.">${val((sx&&sx.descripcion_solicitud)||d.descripcion||(p?p.texto_original:''))}</textarea></label>
-    <label class="fld"><span>Nota para el asesor (opcional)</span><textarea class="inp" id="agNota" placeholder="Algo que deba saber antes de ejecutar.">${val((sx&&sx.nota)||d.nota)}</textarea></label>
-    <div id="agMsg" style="font-size:12px;margin-bottom:8px;"></div>
+    <div id="agMsg" style="font-size:12px;margin:4px 0 8px;"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn" id="agGuardar" onclick="guardarAsignacion('${pendId||''}','${sx?sx.id:''}')">${sx?'Guardar y asignar':'Asignar'}</button>
       <button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
@@ -526,7 +560,8 @@ async function guardarAsignacion(pendId, servId){
     cliente_nombre:cliente, tipo_servicio:servicio, descripcion_solicitud:g('agDesc')||null,
     asesor_id:asesorId, asesor_nombre:ases?ases.nombre:null,
     fecha_asignada:fecha, hora_asignada:g('agHora')||null,
-    estatus:'ASIGNADO', solicitado_por:g('agContacto')||null, nota:g('agNota')||null
+    estatus:'ASIGNADO', solicitado_por:g('agContacto')||null,
+    contacto_telefono:g('agTel')||null, contacto_preferido:g('agPref')||null, nota:g('agNota')||null
   };
   const btn=document.getElementById('agGuardar'); if(btn){btn.disabled=true;btn.textContent='Guardando…';}
   let error,nuevo;
@@ -547,6 +582,7 @@ async function avanzaEtapa(id,destino){
   const s=(_asignaciones||[]).find(x=>x.id===id); if(!s) return;
   // Permitido: staff (Mesa/Dirección) o el asesor asignado a este servicio.
   if(!(esStaff || (userProfile && s.asesor_id===userProfile.id))) return;
+  if(destino!=='SOLICITUD' && !s.asesor_id){ opsToast('Primero asigna un asesor a este servicio.',false); return; }
   const patch={estatus:destino,updated_at:new Date().toISOString()};
   if(destino==='EN_CURSO'&&!s.inicio_real_at) patch.inicio_real_at=new Date().toISOString();
   if(destino==='CONCLUIDO'){ if(!s.fin_real_at) patch.fin_real_at=new Date().toISOString();
@@ -566,6 +602,30 @@ async function cerrarConTicket(id){
   try{ await sb.from('servicios_ejecutados').update({estatus:'CERRADO',folio_ticket:folio.trim(),ticket_cerrado:true,updated_at:new Date().toISOString()}).eq('id',id); }catch(e){ opsToast('No se pudo: '+(e.message||e),false); return; }
   opsToast('🎫 Cerrado con ticket '+folio.trim(),true);
   renderAsignaciones();
+}
+// El asesor sube su reporte al concluir (texto; evidencias siguen en Telegram por ahora).
+function reportarServicio(id){
+  const s=(_asignaciones||[]).find(x=>x.id===id); if(!s) return;
+  if(!(esStaff || (userProfile && s.asesor_id===userProfile.id))) return;
+  mostrarModal(`
+    <div style="font-size:16px;font-weight:800;margin-bottom:2px;">📝 Reporte del servicio</div>
+    <div class="muted" style="margin-bottom:12px;">${esc(s.cliente_nombre||'')} · ${esc(s.tipo_servicio||'')}</div>
+    <label class="fld"><span>¿Qué se hizo? (servicio realizado) *</span><textarea class="inp" id="rpTrab" placeholder="Describe lo que resolviste.">${esc(s.trabajo_realizado||'')}</textarea></label>
+    <label class="fld"><span>Observaciones / pendientes (opcional)</span><textarea class="inp" id="rpObs" placeholder="Algo que falte, nota interna, etc.">${esc(s.comentarios_asesor||'')}</textarea></label>
+    <div id="rpMsg" style="font-size:12px;margin-bottom:8px;"></div>
+    <div style="display:flex;gap:8px;"><button class="btn" id="rpGuardar" onclick="guardarReporte('${id}')">Enviar reporte</button><button class="btn ghost" onclick="cerrarModal()">Cancelar</button></div>`);
+}
+async function guardarReporte(id){
+  const s=(_asignaciones||[]).find(x=>x.id===id); if(!s) return;
+  if(!(esStaff || (userProfile && s.asesor_id===userProfile.id))) return;
+  const trab=document.getElementById('rpTrab')?.value.trim();
+  const obs=document.getElementById('rpObs')?.value.trim();
+  const msg=document.getElementById('rpMsg');
+  if(!trab){ if(msg) msg.innerHTML='<span style="color:var(--red);font-weight:600;">Escribe qué se hizo.</span>'; return; }
+  const btn=document.getElementById('rpGuardar'); if(btn){btn.disabled=true;btn.textContent='Enviando…';}
+  try{ await sb.from('servicios_ejecutados').update({estatus:'REPORTADO',trabajo_realizado:trab,comentarios_asesor:obs||null,reportado_at:new Date().toISOString(),updated_at:new Date().toISOString()}).eq('id',id); }
+  catch(e){ if(btn){btn.disabled=false;btn.textContent='Enviar reporte';} if(msg) msg.innerHTML='<span style="color:var(--red);">No se pudo: '+esc(e.message||e)+'</span>'; return; }
+  opsToast('📝 Reporte enviado',true); cerrarModal(); renderAsignaciones();
 }
 function opsToast(msg,ok){
   const d=document.createElement('div');
@@ -615,7 +675,7 @@ function abrirAsignacion(id){
       if(s.asesor_id!==vistaAsesorId) return '';
       if(et==='ASIGNADO')  return `<button class="btn" onclick="avanzaEtapa('${s.id}','EN_CURSO');cerrarModal();">▶ Iniciar servicio</button>`;
       if(et==='EN_CURSO')  return `<button class="btn" onclick="avanzaEtapa('${s.id}','CONCLUIDO');cerrarModal();">⏹ Finalizar servicio</button>`;
-      if(et==='CONCLUIDO') return `<button class="btn" onclick="avanzaEtapa('${s.id}','REPORTADO');cerrarModal();">📝 Ya reporté</button>`;
+      if(et==='CONCLUIDO') return `<button class="btn" onclick="cerrarModal();reportarServicio('${s.id}')">📝 Subir reporte</button>`;
       return '';
     }
     if(esStaff){
@@ -636,12 +696,13 @@ function abrirAsignacion(id){
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:12px;padding:10px 12px;background:var(--surf2);border-radius:10px;">
       <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Asesor</div><div style="font-weight:700;">${esc(s.asesor_nombre||'—')}</div></div>
       <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Programado</div><div style="font-weight:700;">${fechaMx(s.fecha_asignada)}${s.hora_asignada?' · '+String(s.hora_asignada).slice(0,5):''}</div></div>
-      <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Contacto</div><div style="font-weight:700;">${esc(s.solicitado_por||'—')}</div></div>
+      <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Contacto</div><div style="font-weight:700;">${esc(s.solicitado_por||'—')}${s.contacto_telefono?' · '+esc(s.contacto_telefono):''}${s.contacto_preferido?' · '+esc(s.contacto_preferido):''}</div></div>
       ${dur!=null?`<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Duración</div><div style="font-weight:700;color:${est&&dur>est?'#c0392b':'var(--text)'};">${_minTxt(dur)}${est?' / est. '+_minTxt(est):''}${est&&dur>est?' ⚠️':''}</div></div>`:''}
       ${s.folio_ticket?`<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Ticket</div><div style="font-weight:700;color:#16A34A;">🎫 ${esc(s.folio_ticket)}</div></div>`:''}
     </div>
     ${s.descripcion_solicitud?`<div style="margin-top:12px;"><div style="font-size:11px;font-weight:700;color:var(--text2);">Lo solicitado</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.descripcion_solicitud)}</div></div>`:''}
     ${s.nota?`<div style="margin-top:10px;"><div style="font-size:11px;font-weight:700;color:var(--text2);">Nota para el asesor</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.nota)}</div></div>`:''}
+    ${s.trabajo_realizado?`<div style="margin-top:12px;padding:8px 10px;background:#0D948815;border-radius:8px;"><div style="font-size:11px;font-weight:700;color:#0D9488;">📝 Reporte del asesor</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.trabajo_realizado)}${s.comentarios_asesor?'\n\nObs: '+esc(s.comentarios_asesor):''}</div></div>`:''}
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;align-items:center;">
       ${accDet()}
       <button class="btn ghost" onclick="cerrarModal()">Cerrar</button>
