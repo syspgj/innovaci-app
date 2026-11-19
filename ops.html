@@ -305,76 +305,135 @@ async function guardarServicio(id){
 // Coordinación toma un pendiente de Telegram (o captura directa) y lo asigna a
 // un asesor con servicio del catálogo, día y hora. Guarda en servicios_ejecutados
 // (la tabla del ticket) con estatus ASIGNADO y marca el pendiente como procesado.
-let _opsCatAsig=[], _asesores=[], _pendientes=[], _asignaciones=[];
-const OPS_EST={ASIGNADO:{t:'Asignado',c:'#2980B9'},POR_CONTACTAR:{t:'Por contactar',c:'#F5A623'},EN_CURSO:{t:'En curso',c:'#8E44AD'},EJECUTADO:{t:'Ejecutado',c:'#16A085'},REPORTE_PENDIENTE:{t:'Reporte pendiente',c:'#E67E22'},CERRADO:{t:'Cerrado',c:'#27AE60'}};
-const OPS_EST_FLUJO=['ASIGNADO','POR_CONTACTAR','EN_CURSO','EJECUTADO','REPORTE_PENDIENTE','CERRADO'];
+let _opsCatAsig=[], _asesores=[], _pendientes=[], _asignaciones=[], _opsFiltroTipo='todo';
+// Flujo del servicio como tablero (CRM). Cada tarjeta avanza solo cuando se cumple su candado.
+const ETAPAS=[
+  {k:'SOLICITUD', t:'Solicitudes', ic:'📥', c:'#6B7280'},
+  {k:'ASIGNADO',  t:'Asignados',   ic:'📅', c:'#2563EB'},
+  {k:'EN_CURSO',  t:'En curso',    ic:'⚙️', c:'#7C3AED'},
+  {k:'CONCLUIDO', t:'Concluidos (sin ticket)', ic:'✅', c:'#0D9488'},
+  {k:'REPORTADO', t:'Reportados (sin ticket)', ic:'📝', c:'#D97706'},
+  {k:'CERRADO',   t:'Cerrados (con ticket)',   ic:'🎫', c:'#16A34A'},
+];
+const ETAPA={}; ETAPAS.forEach(e=>ETAPA[e.k]=e);
+// Estatus viejos → nuevos (compatibilidad con lo ya guardado)
+const _MAPEST={POR_CONTACTAR:'ASIGNADO',EJECUTADO:'CONCLUIDO',REPORTE_PENDIENTE:'CONCLUIDO'};
+const estEtapa=s=>{ const e=_MAPEST[s]||s; return ETAPA[e]?e:'ASIGNADO'; };
+const _opsFechaMx=f=>{ if(!f) return ''; const p=String(f).slice(0,10).split('-'); return p.length===3?p[2]+'/'+p[1]:f; };
+const _opsHora=h=>h?String(h).slice(0,5):'';
+function _minTxt(min){ if(min==null) return ''; const h=Math.floor(min/60), m=min%60; return (h?h+'h ':'')+(m||!h?m+'m':''); }
+function _estimMin(nombreServicio){ // intenta sacar minutos estimados del catálogo (tiempo_prom_txt)
+  const s=(_opsCatAsig||[]).find(x=>x.nombre===nombreServicio); if(!s) return null;
+  const t=(s.tiempo_prom_txt||s.tiempo_max_txt||'')+''; if(!t) return null;
+  let tot=0; const ho=t.match(/(\d+)\s*h/i); const mi=t.match(/(\d+)\s*m/i);
+  if(ho) tot+=parseInt(ho[1],10)*60; if(mi) tot+=parseInt(mi[1],10);
+  if(!ho&&!mi){ const n=t.match(/\d+/); if(n) tot=parseInt(n[0],10); }
+  return tot||null;
+}
+function _durMin(s){ // minutos reales entre inicio y fin (o hasta ahora si en curso)
+  if(!s.inicio_real_at) return null;
+  const ini=new Date(s.inicio_real_at).getTime();
+  const fin=s.fin_real_at?new Date(s.fin_real_at).getTime():Date.now();
+  return Math.max(0,Math.round((fin-ini)/60000));
+}
 
 async function renderAsignaciones(){
   const m=document.getElementById('mod');
-  m.innerHTML=`<div class="loading"><div class="spinner"></div> Cargando asignaciones…</div>`;
+  m.innerHTML=`<div class="loading"><div class="spinner"></div> Cargando tablero…</div>`;
   try{
     const [cat,ases,pend,asig]=await Promise.all([
       _opsCatAsig.length?Promise.resolve({data:_opsCatAsig}):sb.from('operaciones_servicios_catalogo').select('*').eq('activo',true).order('orden').order('nombre'),
       sb.from('usuarios').select('id,nombre,rol').in('rol',['asesor','gerente_operaciones']).eq('activo',true).order('nombre'),
       sb.from('mesa_control_telegram_solicitudes').select('*').eq('estado','pendiente').order('created_at',{ascending:false}).limit(150),
-      sb.from('servicios_ejecutados').select('*').order('fecha_asignada',{ascending:true,nullsFirst:false}).order('created_at',{ascending:false}).limit(300)
+      sb.from('servicios_ejecutados').select('*').order('fecha_asignada',{ascending:true,nullsFirst:false}).order('created_at',{ascending:false}).limit(400)
     ]);
     _opsCatAsig=cat.data||_opsCatAsig; _asesores=ases.data||[]; _pendientes=pend.data||[];
-    _asignaciones=(asig.data||[]).filter(s=>s.estatus!=='CERRADO'&&!s.ticket_cerrado);
+    _asignaciones=(asig.data||[]).filter(s=>!s.ticket_cerrado||estEtapa(s.estatus)==='CERRADO');
   }catch(e){ m.innerHTML=`<div class="center" style="color:var(--red);">No se pudo cargar: ${esc(e.message||e)}</div>`; return; }
   pintarAsignaciones();
 }
 function _agCanalCorto(t){ t=t||''; if(/coordinacion/i.test(t)||/ventas-coord/i.test(t)) return 'Ventas-Coordinación'; if(/factura/i.test(t)) return 'Facturación'; if(/soporte/i.test(t)) return 'Coordinación Soporte'; return t.slice(0,32); }
+function opsFiltrarTipo(v){ _opsFiltroTipo=v; pintarAsignaciones(); }
+
 function pintarAsignaciones(){
   const m=document.getElementById('mod');
-  const fechaMx=f=>{ if(!f) return ''; const p=String(f).slice(0,10).split('-'); return p.length===3?p[2]+'/'+p[1]:f; };
+  const tipoChip=s=>{ const ev=(s.tipo_flujo==='evento'); return `<span class="chip" style="background:${ev?'#F59E0B22':'#2563EB18'};color:${ev?'#B45309':'#2563EB'};font-size:10px;">${ev?'💵 Evento':'🛡 Póliza'}</span>`; };
+  // Tarjeta de una SOLICITUD pendiente de Telegram
   const pendCard=p=>{
     const d=p.datos_extraidos||{};
-    const canal=_agCanalCorto(p.telegram_chat_titulo);
-    const esFact=/factura/i.test(p.telegram_chat_titulo||'');
-    return `<div class="card" style="padding:12px 14px;">
-      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;">
-        <span class="chip" style="background:${esFact?'var(--gold-bg)':'var(--teal-bg)'};color:${esFact?'var(--gold)':'var(--teal)'};">${esc(canal)}</span>
-        <span class="muted">${fechaMx(p.created_at)}${p.foto_file_id?' · 📎 foto':''}</span>
+    return `<div class="card" style="padding:10px 12px;">
+      <div style="display:flex;justify-content:space-between;gap:6px;align-items:center;">
+        <span class="chip" style="background:var(--teal-bg);color:var(--teal);font-size:10px;">${esc(_agCanalCorto(p.telegram_chat_titulo))}</span>
+        <span class="muted" style="font-size:10px;">${_opsFechaMx(p.created_at)}</span>
       </div>
-      <div style="font-weight:700;font-size:13.5px;margin-top:6px;">${esc(d.cliente||'(sin cliente detectado)')}</div>
-      <div style="font-size:12px;color:var(--text2);margin-top:2px;line-height:1.45;">${esc((d.descripcion||p.texto_original||'').slice(0,240))}</div>
-      ${(d.contacto_nombre||d.contacto_telefono)?`<div class="muted" style="margin-top:4px;">👤 ${esc(d.contacto_nombre||'')}${d.contacto_telefono?' · '+esc(d.contacto_telefono):''}</div>`:''}
-      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
-        ${esStaff?`<button class="btn" style="padding:6px 12px;font-size:12px;" onclick="abrirAsignar('${p.id}')">Asignar a un asesor →</button>
-        <button class="btn ghost" style="padding:6px 12px;font-size:12px;" onclick="descartarPendiente('${p.id}')">Descartar</button>`:'<span class="muted">Solo Mesa de Control asigna.</span>'}
-      </div>
+      <div style="font-weight:700;font-size:13px;margin-top:5px;">${esc(d.cliente||'(sin cliente)')}</div>
+      <div style="font-size:11.5px;color:var(--text2);margin-top:2px;line-height:1.4;">${esc((d.descripcion||p.texto_original||'').slice(0,160))}</div>
+      ${esStaff?`<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+        <button class="btn" style="padding:5px 10px;font-size:11px;" onclick="abrirAsignar('${p.id}')">Asignar →</button>
+        <button class="btn ghost" style="padding:5px 10px;font-size:11px;" onclick="descartarPendiente('${p.id}')">Descartar</button></div>`:''}
     </div>`;
   };
-  const asigCard=s=>{
-    const e=OPS_EST[s.estatus]||{t:s.estatus||'—',c:'var(--text3)'};
-    return `<div class="card" style="padding:12px 14px;cursor:pointer;" onclick="abrirAsignacion('${s.id}')">
-      <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
-        <span style="font-weight:700;font-size:13.5px;">${esc(s.cliente_nombre||'Sin cliente')}</span>
-        <span class="chip" style="background:${e.c}1a;color:${e.c};">${esc(e.t)}</span>
+  // Acción principal de una tarjeta según su etapa (candado del flujo)
+  const accion=s=>{
+    if(!esStaff) return '';
+    const et=estEtapa(s.estatus);
+    const b=(txt,fn,ghost)=>`<button class="btn${ghost?' ghost':''}" style="padding:5px 10px;font-size:11px;" onclick="event.stopPropagation();${fn}">${txt}</button>`;
+    if(et==='SOLICITUD') return b('Asignar →',`abrirAsignarServ('${s.id}')`);
+    if(et==='ASIGNADO')  return b('▶ Iniciar',`avanzaEtapa('${s.id}','EN_CURSO')`);
+    if(et==='EN_CURSO')  return b('⏹ Finalizar',`avanzaEtapa('${s.id}','CONCLUIDO')`);
+    if(et==='CONCLUIDO') return b('📝 Marcar reportado',`avanzaEtapa('${s.id}','REPORTADO')`);
+    if(et==='REPORTADO') return b('🎫 Cerrar con ticket',`cerrarConTicket('${s.id}')`);
+    return '';
+  };
+  // Tarjeta de un servicio (servicios_ejecutados)
+  const servCard=s=>{
+    const et=estEtapa(s.estatus);
+    let extra='';
+    if(et==='ASIGNADO'){ const prog=s.fecha_asignada&&(s.fecha_asignada+'T'+(_opsHora(s.hora_asignada)||'00:00'))<=new Date().toISOString().slice(0,16); if(prog) extra=`<div style="font-size:11px;color:#B45309;font-weight:700;margin-top:3px;">⏰ Es hora</div>`; }
+    if(et==='EN_CURSO'){ const d=_durMin(s); const est=_estimMin(s.tipo_servicio); extra=`<div style="font-size:11px;margin-top:3px;color:${est&&d>est?'#c0392b':'#7C3AED'};font-weight:700;">⏱ ${_minTxt(d)} en curso${est?' / estim. '+_minTxt(est):''}${est&&d>est?' ⚠️':''}</div>`; }
+    if(et==='CONCLUIDO'||et==='REPORTADO'||et==='CERRADO'){ const d=_durMin(s); if(d!=null){ const est=_estimMin(s.tipo_servicio); extra=`<div style="font-size:11px;margin-top:3px;color:${est&&d>est?'#c0392b':'var(--text2)'};">⏱ duró ${_minTxt(d)}${est&&d>est?' (excedió '+_minTxt(est)+') ⚠️':''}</div>`; } }
+    return `<div class="card" style="padding:10px 12px;cursor:pointer;" onclick="abrirAsignacion('${s.id}')">
+      <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;">
+        <span style="font-weight:700;font-size:13px;">${esc(s.cliente_nombre||'Sin cliente')}</span>${tipoChip(s)}
       </div>
-      <div style="font-size:12px;color:var(--text2);margin-top:3px;">${esc(s.tipo_servicio||'(servicio sin definir)')}</div>
-      <div class="muted" style="margin-top:4px;">🧑‍🔧 ${esc(s.asesor_nombre||'sin asesor')} · 📅 ${fechaMx(s.fecha_asignada)||'sin fecha'}${s.hora_asignada?' '+String(s.hora_asignada).slice(0,5):''}${!s.aviso_asesor_at?' · <span style="color:#B45309;">✈️ sin avisar</span>':''}</div>
+      <div style="font-size:11.5px;color:var(--text2);margin-top:2px;">${esc(s.tipo_servicio||'(servicio sin definir)')}</div>
+      <div class="muted" style="margin-top:3px;font-size:11px;">🧑‍🔧 ${esc(s.asesor_nombre||'sin asesor')}${s.fecha_asignada?' · 📅 '+_opsFechaMx(s.fecha_asignada)+(s.hora_asignada?' '+_opsHora(s.hora_asignada):''):''}</div>
+      ${extra}
+      ${et==='CERRADO'&&s.folio_ticket?`<div style="font-size:11px;color:#16A34A;margin-top:3px;">🎫 Folio ${esc(s.folio_ticket)}</div>`:''}
+      ${accion(s)?`<div style="margin-top:8px;">${accion(s)}</div>`:''}
     </div>`;
   };
+  // Filtro por tipo
+  const pasaTipo=s=>_opsFiltroTipo==='todo'||(s.tipo_flujo||'poliza')===_opsFiltroTipo;
+  const asigPorEtapa={}; ETAPAS.forEach(e=>asigPorEtapa[e.k]=[]);
+  (_asignaciones||[]).filter(pasaTipo).forEach(s=>{ asigPorEtapa[estEtapa(s.estatus)].push(s); });
+  const pendVis=(_opsFiltroTipo==='evento')?[]:_pendientes; // los pendientes de Telegram son de póliza por defecto
+  // Columnas
+  const col=e=>{
+    const cards = e.k==='SOLICITUD' ? [...pendVis.map(pendCard), ...asigPorEtapa[e.k].map(servCard)] : asigPorEtapa[e.k].map(servCard);
+    const n = (e.k==='SOLICITUD'?pendVis.length:0)+asigPorEtapa[e.k].length;
+    return `<div style="flex:0 0 240px;min-width:240px;background:var(--surf2);border-radius:12px;padding:8px;">
+      <div style="display:flex;align-items:center;gap:6px;padding:4px 6px 8px;position:sticky;top:0;">
+        <span style="font-size:14px;">${e.ic}</span>
+        <span style="font-weight:800;font-size:12px;color:${e.c};">${e.t}</span>
+        <span class="chip" style="margin-left:auto;background:${e.c}1a;color:${e.c};font-size:10px;">${n}</span>
+      </div>
+      <div style="display:grid;gap:8px;">${cards.join('')||'<div class="muted" style="text-align:center;font-size:11px;padding:10px 0;">—</div>'}</div>
+    </div>`;
+  };
+  const fchip=(v,t)=>`<button class="btn${_opsFiltroTipo===v?'':' ghost'}" style="padding:4px 12px;font-size:12px;" onclick="opsFiltrarTipo('${v}')">${t}</button>`;
   m.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
-      <div>
-        <div style="font-size:15px;font-weight:700;">Asignaciones</div>
-        <div class="muted">${_pendientes.length} pendientes por asignar · ${_asignaciones.length} activas</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+        ${fchip('todo','Todo')}${fchip('poliza','🛡 Póliza')}${fchip('evento','💵 Evento')}
       </div>
       ${esStaff?`<div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button class="btn ghost" id="btnSyncTickets" onclick="opsSyncTickets()" title="Trae los tickets nuevos de 123FormBuilder para tener el consumo de pólizas al día">↻ Sincronizar tickets (123forms)</button>
-        <button class="btn" onclick="abrirAsignar(null)">＋ Nueva asignación (directa)</button>
+        <button class="btn ghost" id="btnSyncTickets" onclick="opsSyncTickets()" title="Trae los tickets nuevos de 123FormBuilder">↻ Sincronizar tickets</button>
+        <button class="btn" onclick="abrirAsignar(null)">＋ Nueva</button>
       </div>`:''}
     </div>
-    <div style="font-size:12px;font-weight:800;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;margin:8px 0 6px;">📥 Pendientes por asignar</div>
-    <div style="display:grid;gap:8px;margin-bottom:18px;">
-      ${_pendientes.length?_pendientes.map(pendCard).join(''):'<div class="center">No hay pendientes. 🎉</div>'}
-    </div>
-    <div style="font-size:12px;font-weight:800;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;margin:8px 0 6px;">🗂 Asignaciones activas</div>
-    <div style="display:grid;gap:8px;">
-      ${_asignaciones.length?_asignaciones.map(asigCard).join(''):'<div class="center">Aún no hay asignaciones activas.</div>'}
+    <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:10px;align-items:flex-start;">
+      ${ETAPAS.map(col).join('')}
     </div>`;
 }
 function asigServicioFicha(nombre){
@@ -389,34 +448,46 @@ function asigServicioFicha(nombre){
   </div>`;
 }
 function asigPintarFicha(){ const el=document.getElementById('agFicha'); if(el) el.innerHTML=asigServicioFicha(document.getElementById('agServicio')?.value||''); }
-function abrirAsignar(pendId){
+// Abrir el modal de asignar: desde un pendiente de Telegram (pendId) o una solicitud ya capturada (servId) o nuevo
+function abrirAsignarServ(servId){ abrirAsignar(null, (_asignaciones||[]).find(x=>x.id===servId)); }
+function abrirAsignar(pendId, servExistente){
   if(!esStaff) return;
   const p=pendId?_pendientes.find(x=>x.id===pendId):null;
   const d=p?(p.datos_extraidos||{}):{};
+  const sx=servExistente||null;
   const hoy=new Date().toISOString().slice(0,10);
-  const opcSrv='<option value="">— Elige el servicio del catálogo —</option>'+(_opsCatAsig||[]).map(s=>`<option value="${esc(s.nombre)}">${esc(s.nombre)}</option>`).join('');
-  const opcAse='<option value="">— Elige al asesor —</option>'+(_asesores||[]).map(a=>`<option value="${a.id}">${esc(a.nombre)}${a.rol==='gerente_operaciones'?' (gerente)':''}</option>`).join('');
+  const tipo0=sx?(sx.tipo_flujo||'poliza'):'poliza';
+  const opcSrv='<option value="">— Elige el servicio del catálogo —</option>'+(_opsCatAsig||[]).map(s=>`<option value="${esc(s.nombre)}" ${sx&&sx.tipo_servicio===s.nombre?'selected':''}>${esc(s.nombre)}</option>`).join('');
+  const opcAse='<option value="">— Elige al asesor —</option>'+(_asesores||[]).map(a=>`<option value="${a.id}" ${sx&&sx.asesor_id===a.id?'selected':''}>${esc(a.nombre)}${a.rol==='gerente_operaciones'?' (gerente)':''}</option>`).join('');
+  const val=(v)=>esc(v||'');
   mostrarModal(`
-    <div style="font-size:16px;font-weight:800;margin-bottom:4px;">${p?'Asignar pendiente':'Nueva asignación'}</div>
-    <div class="muted" style="margin-bottom:12px;">${p?'Prellené lo que detecté del mensaje. Revisa, elige servicio y asesor, pon día y hora.':'Captura una asignación directa (p. ej. llegó por WhatsApp).'}</div>
-    <label class="fld"><span>Cliente *</span><input class="inp" id="agCliente" value="${esc(d.cliente||'')}" placeholder="Nombre del cliente / empresa"></label>
+    <div style="font-size:16px;font-weight:800;margin-bottom:4px;">${sx?'Asignar servicio':p?'Asignar pendiente':'Nueva asignación'}</div>
+    <div class="muted" style="margin-bottom:12px;">Elige tipo, servicio y asesor, pon día y hora. Al guardar, la tarjeta pasa a <b>Asignados</b>.</div>
+    <div style="display:flex;gap:8px;margin-bottom:10px;">
+      <label style="flex:1;cursor:pointer;" class="fld"><span>Tipo de servicio *</span>
+        <select class="inp" id="agTipo">
+          <option value="poliza" ${tipo0==='poliza'?'selected':''}>🛡 Póliza (descuenta horas)</option>
+          <option value="evento" ${tipo0==='evento'?'selected':''}>💵 Evento (facturado, no descuenta)</option>
+        </select></label>
+    </div>
+    <label class="fld"><span>Cliente *</span><input class="inp" id="agCliente" value="${val(sx?sx.cliente_nombre:d.cliente)}" placeholder="Nombre del cliente / empresa"></label>
     <label class="fld"><span>Servicio del catálogo *</span><select class="inp" id="agServicio" onchange="asigPintarFicha()">${opcSrv}</select></label>
     <div id="agFicha"></div>
     <div class="grid2">
       <label class="fld"><span>Asesor *</span><select class="inp" id="agAsesor">${opcAse}</select></label>
-      <label class="fld"><span>Fecha *</span><input class="inp" id="agFecha" type="date" value="${esc(d.fecha_sugerida||hoy)}"></label>
-      <label class="fld"><span>Hora</span><input class="inp" id="agHora" type="time"></label>
-      <label class="fld"><span>Contacto en el cliente</span><input class="inp" id="agContacto" value="${esc([d.contacto_nombre,d.contacto_telefono].filter(Boolean).join(' · ')||'')}" placeholder="Nombre · teléfono"></label>
+      <label class="fld"><span>Fecha *</span><input class="inp" id="agFecha" type="date" value="${val((sx&&sx.fecha_asignada)||d.fecha_sugerida||hoy)}"></label>
+      <label class="fld"><span>Hora</span><input class="inp" id="agHora" type="time" value="${val(sx&&sx.hora_asignada?String(sx.hora_asignada).slice(0,5):'')}"></label>
+      <label class="fld"><span>Contacto en el cliente</span><input class="inp" id="agContacto" value="${val((sx&&sx.solicitado_por)||[d.contacto_nombre,d.contacto_telefono].filter(Boolean).join(' · '))}" placeholder="Nombre · teléfono"></label>
     </div>
-    <label class="fld"><span>Descripción de lo solicitado</span><textarea class="inp" id="agDesc" placeholder="Qué pidió el cliente.">${esc(d.descripcion||(p?p.texto_original:'')||'')}</textarea></label>
-    <label class="fld"><span>Nota para el asesor (opcional)</span><textarea class="inp" id="agNota" placeholder="Algo que deba saber antes de ejecutar.">${esc(d.nota||'')}</textarea></label>
+    <label class="fld"><span>Descripción de lo solicitado</span><textarea class="inp" id="agDesc" placeholder="Qué pidió el cliente.">${val((sx&&sx.descripcion_solicitud)||d.descripcion||(p?p.texto_original:''))}</textarea></label>
+    <label class="fld"><span>Nota para el asesor (opcional)</span><textarea class="inp" id="agNota" placeholder="Algo que deba saber antes de ejecutar.">${val((sx&&sx.nota)||d.nota)}</textarea></label>
     <div id="agMsg" style="font-size:12px;margin-bottom:8px;"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
-      <button class="btn" id="agGuardar" onclick="guardarAsignacion('${pendId||''}')">Asignar</button>
+      <button class="btn" id="agGuardar" onclick="guardarAsignacion('${pendId||''}','${sx?sx.id:''}')">${sx?'Guardar y asignar':'Asignar'}</button>
       <button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
     </div>`);
 }
-async function guardarAsignacion(pendId){
+async function guardarAsignacion(pendId, servId){
   const g=i=>document.getElementById(i)?.value.trim();
   const msg=document.getElementById('agMsg');
   const err=t=>{ if(msg) msg.innerHTML='<span style="color:var(--red);font-weight:600;">'+t+'</span>'; };
@@ -427,24 +498,49 @@ async function guardarAsignacion(pendId){
   if(!fecha) return err('Pon la fecha de la asignación.');
   const ases=(_asesores||[]).find(a=>a.id===asesorId);
   const fila={
+    tipo_flujo:g('agTipo')||'poliza',
     cliente_nombre:cliente, tipo_servicio:servicio, descripcion_solicitud:g('agDesc')||null,
     asesor_id:asesorId, asesor_nombre:ases?ases.nombre:null,
     fecha_asignada:fecha, hora_asignada:g('agHora')||null,
-    estatus:'ASIGNADO', solicitado_por:g('agContacto')||null,
-    fecha_solicitud:new Date().toISOString(), nota:g('agNota')||null
+    estatus:'ASIGNADO', solicitado_por:g('agContacto')||null, nota:g('agNota')||null
   };
-  const btn=document.getElementById('agGuardar'); if(btn){btn.disabled=true;btn.textContent='Asignando…';}
+  const btn=document.getElementById('agGuardar'); if(btn){btn.disabled=true;btn.textContent='Guardando…';}
   let error,nuevo;
-  ({data:nuevo,error}=await sb.from('servicios_ejecutados').insert(fila).select().single());
+  if(servId){ ({data:nuevo,error}=await sb.from('servicios_ejecutados').update(fila).eq('id',servId).select().single()); }
+  else{ fila.fecha_solicitud=new Date().toISOString(); ({data:nuevo,error}=await sb.from('servicios_ejecutados').insert(fila).select().single()); }
   if(error){ if(btn){btn.disabled=false;btn.textContent='Asignar';} return err('No se pudo guardar: '+esc(error.message)); }
   if(pendId){ try{ await sb.from('mesa_control_telegram_solicitudes').update({estado:'asignado',servicio_ejecutado_id:nuevo.id,procesado_por:userProfile.id,procesado_at:new Date().toISOString()}).eq('id',pendId); }catch(_){} }
-  // Aviso al asesor por Telegram (best-effort, no bloquea el guardado).
+  // Aviso al asesor por Telegram (best-effort)
   try{
     const {data:sess}=await sb.auth.getSession();
-    fetch('/api/operaciones-avisar-asesor',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({servicio_id:nuevo.id})})
+    fetch('/api/operaciones-avisar-asesor',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({servicio_id:nuevo.id,reenviar:!!servId})})
       .then(x=>x.json()).then(j=>{ if(j.ok&&!j.yaEnviado) opsToast('Asignado ✓ y avisado al asesor',true); else if(!j.ok) opsToast('Asignado ✓. No se pudo avisar: '+(j.error||'—'),false); try{renderAsignaciones();}catch(_){} }).catch(()=>{});
   }catch(_){}
   cerrarModal(); renderAsignaciones();
+}
+// Avanzar de etapa (candado del flujo): fija el estatus y los tiempos que correspondan.
+async function avanzaEtapa(id,destino){
+  if(!esStaff) return;
+  const s=(_asignaciones||[]).find(x=>x.id===id); if(!s) return;
+  const patch={estatus:destino,updated_at:new Date().toISOString()};
+  if(destino==='EN_CURSO'&&!s.inicio_real_at) patch.inicio_real_at=new Date().toISOString();
+  if(destino==='CONCLUIDO'){ if(!s.fin_real_at) patch.fin_real_at=new Date().toISOString();
+    const ini=s.inicio_real_at?new Date(s.inicio_real_at).getTime():null;
+    if(ini) patch.duracion_real_min=Math.max(0,Math.round((Date.now()-ini)/60000)); }
+  if(destino==='REPORTADO'&&!s.reportado_at) patch.reportado_at=new Date().toISOString();
+  try{ await sb.from('servicios_ejecutados').update(patch).eq('id',id); }catch(e){ opsToast('No se pudo: '+(e.message||e),false); return; }
+  // Aviso de tiempo excedido (Parte 3: alerta formal a Mesa; por ahora, aviso visible)
+  if(destino==='CONCLUIDO'){ const est=_estimMin(s.tipo_servicio); const dur=patch.duracion_real_min; if(est&&dur&&dur>est) opsToast(`⚠️ ${s.cliente_nombre}: duró ${_minTxt(dur)} (estimado ${_minTxt(est)}). Revisa el reporte del asesor.`,false); }
+  opsToast('Movido a '+(ETAPA[destino]?ETAPA[destino].t:destino),true);
+  renderAsignaciones();
+}
+async function cerrarConTicket(id){
+  if(!esStaff) return;
+  const folio=prompt('Folio / ID del ticket (de 123forms u otro). Déjalo vacío para cancelar:');
+  if(folio==null||!folio.trim()) return;
+  try{ await sb.from('servicios_ejecutados').update({estatus:'CERRADO',folio_ticket:folio.trim(),ticket_cerrado:true,updated_at:new Date().toISOString()}).eq('id',id); }catch(e){ opsToast('No se pudo: '+(e.message||e),false); return; }
+  opsToast('🎫 Cerrado con ticket '+folio.trim(),true);
+  renderAsignaciones();
 }
 function opsToast(msg,ok){
   const d=document.createElement('div');
@@ -459,10 +555,10 @@ async function opsSyncTickets(){
     const {data:sess}=await sb.auth.getSession();
     const res=await fetch('/api/servicios-historicos-sync',{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
     const j=await res.json().catch(()=>({}));
-    if(j.ok) opsToast(`✓ Tickets sincronizados: ${j.importados} nuevos (de ${j.revisados} revisados)`,true);
+    if(j.ok){ const r=(j.forms||[]).map(f=>`${f.form}: +${f.importados||0}`).join(' · '); opsToast(`✓ Tickets sincronizados: ${j.importados} nuevos${r?' ('+r+')':''}`,true); }
     else opsToast('No se pudo sincronizar: '+(j.error||res.status),false);
   }catch(e){ opsToast('Error: '+(e.message||e),false); }
-  if(b){b.disabled=false;b.textContent='↻ Sincronizar tickets (123forms)';}
+  if(b){b.disabled=false;b.textContent='↻ Sincronizar tickets';}
 }
 async function opsAvisarAsesor(id,reenviar){
   try{
@@ -477,25 +573,40 @@ async function opsAvisarAsesor(id,reenviar){
 }
 async function descartarPendiente(id){
   if(!esStaff) return;
-  if(!confirm('¿Descartar este pendiente? Sale de la lista por asignar (no es una solicitud de servicio o ya se resolvió).')) return;
+  if(!confirm('¿Descartar esta solicitud? Sale del tablero (no es un servicio o ya se resolvió).')) return;
   try{ await sb.from('mesa_control_telegram_solicitudes').update({estado:'descartado',procesado_por:userProfile.id,procesado_at:new Date().toISOString()}).eq('id',id); }catch(e){ alert('No se pudo: '+(e.message||e)); return; }
   renderAsignaciones();
 }
 function abrirAsignacion(id){
   const s=(_asignaciones||[]).find(x=>x.id===id); if(!s) return;
-  const e=OPS_EST[s.estatus]||{t:s.estatus,c:'var(--text3)'};
+  const et=estEtapa(s.estatus); const e=ETAPA[et];
   const fechaMx=f=>{ if(!f) return '—'; const p=String(f).slice(0,10).split('-'); return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:f; };
-  const opc=OPS_EST_FLUJO.map(k=>`<option value="${k}" ${s.estatus===k?'selected':''}>${OPS_EST[k].t}</option>`).join('');
+  const dur=_durMin(s); const est=_estimMin(s.tipo_servicio);
+  const pasos=ETAPAS.map(x=>`<span style="font-size:10px;padding:2px 7px;border-radius:20px;${estEtapa(s.estatus)===x.k?`background:${x.c};color:#fff;font-weight:700;`:'background:var(--surf2);color:var(--text3);'}">${x.ic} ${x.t.split(' ')[0]}</span>`).join(' ');
+  // Acción de la etapa dentro del detalle
+  const accDet=()=>{
+    if(!esStaff) return '';
+    if(et==='SOLICITUD') return `<button class="btn" onclick="cerrarModal();abrirAsignarServ('${s.id}')">Asignar →</button>`;
+    if(et==='ASIGNADO')  return `<button class="btn" onclick="avanzaEtapa('${s.id}','EN_CURSO');cerrarModal();">▶ Iniciar servicio</button>`;
+    if(et==='EN_CURSO')  return `<button class="btn" onclick="avanzaEtapa('${s.id}','CONCLUIDO');cerrarModal();">⏹ Finalizar servicio</button>`;
+    if(et==='CONCLUIDO') return `<button class="btn" onclick="avanzaEtapa('${s.id}','REPORTADO');cerrarModal();">📝 Marcar reportado</button>`;
+    if(et==='REPORTADO') return `<button class="btn" onclick="cerrarConTicket('${s.id}');cerrarModal();">🎫 Cerrar con ticket</button>`;
+    return '';
+  };
+  const opcCorr=ETAPAS.map(x=>`<option value="${x.k}" ${et===x.k?'selected':''}>${x.ic} ${x.t}</option>`).join('');
   mostrarModal(`
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
-      <div><div style="font-size:16px;font-weight:800;">${esc(s.cliente_nombre||'Sin cliente')}</div>
+      <div><div style="font-size:16px;font-weight:800;">${esc(s.cliente_nombre||'Sin cliente')} <span class="chip" style="background:${s.tipo_flujo==='evento'?'#F59E0B22':'#2563EB18'};color:${s.tipo_flujo==='evento'?'#B45309':'#2563EB'};font-size:11px;">${s.tipo_flujo==='evento'?'💵 Evento':'🛡 Póliza'}</span></div>
       <div class="muted">${esc(s.tipo_servicio||'(servicio sin definir)')}</div></div>
-      <span class="chip" style="background:${e.c}1a;color:${e.c};">${esc(e.t)}</span>
+      <span class="chip" style="background:${e.c}1a;color:${e.c};">${e.ic} ${e.t}</span>
     </div>
+    <div style="margin-top:10px;display:flex;gap:4px;flex-wrap:wrap;">${pasos}</div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:12px;padding:10px 12px;background:var(--surf2);border-radius:10px;">
       <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Asesor</div><div style="font-weight:700;">${esc(s.asesor_nombre||'—')}</div></div>
-      <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Día y hora</div><div style="font-weight:700;">${fechaMx(s.fecha_asignada)}${s.hora_asignada?' · '+String(s.hora_asignada).slice(0,5):''}</div></div>
+      <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Programado</div><div style="font-weight:700;">${fechaMx(s.fecha_asignada)}${s.hora_asignada?' · '+String(s.hora_asignada).slice(0,5):''}</div></div>
       <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Contacto</div><div style="font-weight:700;">${esc(s.solicitado_por||'—')}</div></div>
+      ${dur!=null?`<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Duración</div><div style="font-weight:700;color:${est&&dur>est?'#c0392b':'var(--text)'};">${_minTxt(dur)}${est?' / est. '+_minTxt(est):''}${est&&dur>est?' ⚠️':''}</div></div>`:''}
+      ${s.folio_ticket?`<div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Ticket</div><div style="font-weight:700;color:#16A34A;">🎫 ${esc(s.folio_ticket)}</div></div>`:''}
     </div>
     ${s.descripcion_solicitud?`<div style="margin-top:12px;"><div style="font-size:11px;font-weight:700;color:var(--text2);">Lo solicitado</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.descripcion_solicitud)}</div></div>`:''}
     ${s.nota?`<div style="margin-top:10px;"><div style="font-size:11px;font-weight:700;color:var(--text2);">Nota para el asesor</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.nota)}</div></div>`:''}
@@ -505,8 +616,13 @@ function abrirAsignacion(id){
         ?`✈️ <b>Avisado al asesor</b> · ${fechaMx(s.aviso_asesor_at)} <button class="btn ghost" style="padding:3px 10px;font-size:11px;margin-left:6px;" onclick="opsAvisarAsesor('${s.id}',true)">↻ Reenviar</button>`
         :`<span style="color:#B45309;">✈️ Aún no se avisa al asesor</span> <button class="btn" style="padding:3px 10px;font-size:11px;margin-left:6px;" onclick="opsAvisarAsesor('${s.id}',false)">Avisar al asesor</button>`}
     </div>
-    <label class="fld" style="margin-top:14px;"><span>Cambiar estatus</span><select class="inp" id="aeEst">${opc}</select></label>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" onclick="guardarEstatusAsig('${s.id}')">Guardar estatus</button><button class="btn ghost" onclick="cerrarModal()">Cerrar</button></div>`
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:center;">
+      ${accDet()}
+      <button class="btn ghost" onclick="cerrarModal()">Cerrar</button>
+    </div>
+    <details style="margin-top:10px;"><summary style="font-size:11px;color:var(--text3);cursor:pointer;">Corregir etapa (solo para pruebas / errores)</summary>
+      <div style="display:flex;gap:8px;margin-top:6px;align-items:center;"><select class="inp" id="aeEst" style="max-width:220px;">${opcCorr}</select>
+      <button class="btn ghost" style="font-size:11px;" onclick="guardarEstatusAsig('${s.id}')">Aplicar</button></div></details>`
     :'<div style="margin-top:16px;"><button class="btn ghost" onclick="cerrarModal()">Cerrar</button></div>'}`);
 }
 async function guardarEstatusAsig(id){
