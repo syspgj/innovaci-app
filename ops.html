@@ -397,7 +397,7 @@ function abrirAsignar(pendId){
     <div style="font-size:16px;font-weight:800;margin-bottom:4px;">${p?'Asignar pendiente':'Nueva asignación'}</div>
     <div class="muted" style="margin-bottom:12px;">${p?'Prellené lo que detecté del mensaje. Revisa, elige servicio y asesor, pon día y hora.':'Captura una asignación directa (p. ej. llegó por WhatsApp).'}</div>
     <label class="fld"><span>Cliente *</span><input class="inp" id="agCliente" value="${esc(d.cliente||'')}" placeholder="Nombre del cliente / empresa"></label>
-    <label class="fld"><span>Servicio del catálogo</span><select class="inp" id="agServicio" onchange="asigPintarFicha()">${opcSrv}</select></label>
+    <label class="fld"><span>Servicio del catálogo *</span><select class="inp" id="agServicio" onchange="asigPintarFicha()">${opcSrv}</select></label>
     <div id="agFicha"></div>
     <div class="grid2">
       <label class="fld"><span>Asesor *</span><select class="inp" id="agAsesor">${opcAse}</select></label>
@@ -417,13 +417,14 @@ async function guardarAsignacion(pendId){
   const g=i=>document.getElementById(i)?.value.trim();
   const msg=document.getElementById('agMsg');
   const err=t=>{ if(msg) msg.innerHTML='<span style="color:var(--red);font-weight:600;">'+t+'</span>'; };
-  const cliente=g('agCliente'), asesorId=g('agAsesor'), fecha=g('agFecha');
+  const cliente=g('agCliente'), servicio=g('agServicio'), asesorId=g('agAsesor'), fecha=g('agFecha');
   if(!cliente) return err('El cliente es obligatorio.');
+  if(!servicio) return err('Elige el servicio del catálogo.');
   if(!asesorId) return err('Elige al asesor.');
   if(!fecha) return err('Pon la fecha de la asignación.');
   const ases=(_asesores||[]).find(a=>a.id===asesorId);
   const fila={
-    cliente_nombre:cliente, tipo_servicio:g('agServicio')||null, descripcion_solicitud:g('agDesc')||null,
+    cliente_nombre:cliente, tipo_servicio:servicio, descripcion_solicitud:g('agDesc')||null,
     asesor_id:asesorId, asesor_nombre:ases?ases.nombre:null,
     fecha_asignada:fecha, hora_asignada:g('agHora')||null,
     estatus:'ASIGNADO', solicitado_por:g('agContacto')||null,
@@ -434,6 +435,30 @@ async function guardarAsignacion(pendId){
   ({data:nuevo,error}=await sb.from('servicios_ejecutados').insert(fila).select().single());
   if(error){ if(btn){btn.disabled=false;btn.textContent='Asignar';} return err('No se pudo guardar: '+esc(error.message)); }
   if(pendId){ try{ await sb.from('mesa_control_telegram_solicitudes').update({estado:'asignado',servicio_ejecutado_id:nuevo.id,procesado_por:userProfile.id,procesado_at:new Date().toISOString()}).eq('id',pendId); }catch(_){} }
+  // Aviso al asesor por Telegram (best-effort, no bloquea el guardado).
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    fetch('/api/operaciones-avisar-asesor',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({servicio_id:nuevo.id})})
+      .then(x=>x.json()).then(j=>{ if(j.ok&&!j.yaEnviado) opsToast('Asignado ✓ y avisado al asesor',true); else if(!j.ok) opsToast('Asignado ✓. No se pudo avisar: '+(j.error||'—'),false); try{renderAsignaciones();}catch(_){} }).catch(()=>{});
+  }catch(_){}
+  cerrarModal(); renderAsignaciones();
+}
+function opsToast(msg,ok){
+  const d=document.createElement('div');
+  d.textContent=msg;
+  d.style.cssText='position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:9999;background:'+(ok?'#16603a':'#8a2a2a')+';color:#fff;padding:10px 16px;border-radius:10px;font-size:13px;max-width:90vw;box-shadow:0 6px 24px rgba(0,0,0,.25);';
+  document.body.appendChild(d);
+  setTimeout(()=>{d.style.transition='opacity .4s';d.style.opacity='0';setTimeout(()=>d.remove(),400);},4200);
+}
+async function opsAvisarAsesor(id,reenviar){
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/operaciones-avisar-asesor',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({servicio_id:id,reenviar:!!reenviar})});
+    const j=await res.json().catch(()=>({}));
+    if(j.ok&&!j.yaEnviado) opsToast('✈️ Aviso enviado al asesor',true);
+    else if(j.yaEnviado) opsToast('Ya estaba avisado.',true);
+    else opsToast('No se pudo avisar: '+(j.error||res.status),false);
+  }catch(e){ opsToast('Error: '+(e.message||e),false); }
   cerrarModal(); renderAsignaciones();
 }
 async function descartarPendiente(id){
