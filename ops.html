@@ -32,6 +32,7 @@ a{color:var(--teal);}
 .topbar a.app{color:#fff;text-decoration:none;background:rgba(255,255,255,.12);border-radius:8px;padding:6px 12px;font-weight:600;}
 .topbar .av{width:30px;height:30px;border-radius:50%;background:var(--teal);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;}
 .wrap{max-width:1100px;margin:0 auto;padding:18px 16px 60px;}
+.wrap.full{max-width:1680px;}
 .tabs{display:flex;gap:6px;flex-wrap:wrap;margin:14px 0 4px;}
 .tab{padding:7px 14px;border-radius:var(--radpill);border:1px solid var(--border);background:#fff;color:var(--text2);font-size:12.5px;font-weight:600;cursor:pointer;}
 .tab.active{background:var(--teal);color:#fff;border-color:var(--teal);}
@@ -78,7 +79,7 @@ const sb=supabase.createClient(SURL,SKEY);
 
 // Roles que entran a Operaciones. El asesor (Soporte) entra en modo lectura.
 const ROLES_OPS=['director','mesa_control','gerente_operaciones','administracion','asesor'];
-let userProfile=null, esStaff=false, _servicios=[], _busca='', _filtroCat='';
+let userProfile=null, esStaff=false, esAsesor=false, _actuarComo=null, _servicios=[], _busca='', _filtroCat='';
 
 function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function tiempoTxt(min){ if(min==null||min==='') return '—'; min=+min; if(min<60) return min+' min'; const h=Math.floor(min/60),m=min%60; return h+'h'+(m?' '+m+'m':''); }
@@ -105,6 +106,8 @@ async function arrancar(){
     return;
   }
   esStaff=['director','mesa_control','gerente_operaciones','administracion'].includes(prof.rol);
+  esAsesor=(prof.rol==='asesor');
+  if(esAsesor) currentOpsTab='asignaciones'; // el asesor entra directo a sus servicios
   document.getElementById('topRight').innerHTML=`
     <a class="app" href="/">← App principal</a>
     <span>${esc(prof.nombre||'')}</span>
@@ -115,13 +118,17 @@ async function arrancar(){
 let currentOpsTab='catalogo';
 function irOps(tab){ currentOpsTab=tab; pintarShell(); }
 function pintarShell(){
+  const tabAsigTxt = esAsesor ? '📅 Mis servicios' : '📅 Asignaciones';
   const sub = currentOpsTab==='asignaciones'
-    ? 'Toma los pendientes de Telegram (o captura directa) y asígnalos a un asesor con día y hora. El detalle, en segundo nivel.'
+    ? (esAsesor ? 'Tus servicios asignados. Cuando estés con el cliente, dale ▶ Iniciar; al terminar, ⏹ Finalizar.'
+                : 'Tablero del servicio: solicitudes → asignados → en curso → concluidos → reportados → cerrados con ticket.')
     : 'El catálogo que es cimiento de todo: qué es cada servicio, qué pedirle al cliente, qué valida Mesa de Control, alcances y tiempo.';
-  document.getElementById('root').innerHTML=`
+  const rootEl=document.getElementById('root');
+  rootEl.className='wrap'+(currentOpsTab==='asignaciones'?' full':'');
+  rootEl.innerHTML=`
     <div class="tabs">
       <div class="tab ${currentOpsTab==='catalogo'?'active':''}" onclick="irOps('catalogo')">🧾 Catálogo de servicios</div>
-      <div class="tab ${currentOpsTab==='asignaciones'?'active':''}" onclick="irOps('asignaciones')">📅 Asignaciones</div>
+      <div class="tab ${currentOpsTab==='asignaciones'?'active':''}" onclick="irOps('asignaciones')">${tabAsigTxt}</div>
       <div class="tab soon" title="Próxima fase">🎫 Tickets</div>
     </div>
     <div class="muted" style="margin:2px 0 14px;">${sub}</div>
@@ -354,9 +361,12 @@ async function renderAsignaciones(){
 }
 function _agCanalCorto(t){ t=t||''; if(/coordinacion/i.test(t)||/ventas-coord/i.test(t)) return 'Ventas-Coordinación'; if(/factura/i.test(t)) return 'Facturación'; if(/soporte/i.test(t)) return 'Coordinación Soporte'; return t.slice(0,32); }
 function opsFiltrarTipo(v){ _opsFiltroTipo=v; pintarAsignaciones(); }
+function opsActuarComo(v){ _actuarComo=v||null; pintarAsignaciones(); }
 
 function pintarAsignaciones(){
   const m=document.getElementById('mod');
+  // Vista: el asesor (real) ve solo sus servicios; staff puede "actuar como" un asesor para probar.
+  const vistaAsesorId = esAsesor ? (userProfile&&userProfile.id) : _actuarComo;
   const tipoChip=s=>{ const ev=(s.tipo_flujo==='evento'); return `<span class="chip" style="background:${ev?'#F59E0B22':'#2563EB18'};color:${ev?'#B45309':'#2563EB'};font-size:10px;">${ev?'💵 Evento':'🛡 Póliza'}</span>`; };
   // Tarjeta de una SOLICITUD pendiente de Telegram
   const pendCard=p=>{
@@ -375,14 +385,20 @@ function pintarAsignaciones(){
   };
   // Acción principal de una tarjeta según su etapa (candado del flujo)
   const accion=s=>{
-    if(!esStaff) return '';
     const et=estEtapa(s.estatus);
     const b=(txt,fn,ghost)=>`<button class="btn${ghost?' ghost':''}" style="padding:5px 10px;font-size:11px;" onclick="event.stopPropagation();${fn}">${txt}</button>`;
-    if(et==='SOLICITUD') return b('Asignar →',`abrirAsignarServ('${s.id}')`);
-    if(et==='ASIGNADO')  return b('▶ Iniciar',`avanzaEtapa('${s.id}','EN_CURSO')`);
-    if(et==='EN_CURSO')  return b('⏹ Finalizar',`avanzaEtapa('${s.id}','CONCLUIDO')`);
-    if(et==='CONCLUIDO') return b('📝 Marcar reportado',`avanzaEtapa('${s.id}','REPORTADO')`);
-    if(et==='REPORTADO') return b('🎫 Cerrar con ticket',`cerrarConTicket('${s.id}')`);
+    if(vistaAsesorId){ // vista del asesor: SOLO sus servicios, SOLO iniciar/finalizar/reportar
+      if(s.asesor_id!==vistaAsesorId) return '';
+      if(et==='ASIGNADO')  return b('▶ Iniciar',`avanzaEtapa('${s.id}','EN_CURSO')`);
+      if(et==='EN_CURSO')  return b('⏹ Finalizar',`avanzaEtapa('${s.id}','CONCLUIDO')`);
+      if(et==='CONCLUIDO') return b('📝 Ya reporté',`avanzaEtapa('${s.id}','REPORTADO')`);
+      return '';
+    }
+    if(esStaff){ // Mesa de Control: asignar y cerrar; NO iniciar/finalizar (eso es del asesor)
+      if(et==='SOLICITUD') return b('Asignar →',`abrirAsignarServ('${s.id}')`);
+      if(et==='REPORTADO') return b('🎫 Cerrar con ticket',`cerrarConTicket('${s.id}')`);
+      return '';
+    }
     return '';
   };
   // Tarjeta de un servicio (servicios_ejecutados)
@@ -405,9 +421,10 @@ function pintarAsignaciones(){
   };
   // Filtro por tipo
   const pasaTipo=s=>_opsFiltroTipo==='todo'||(s.tipo_flujo||'poliza')===_opsFiltroTipo;
+  const pasaVista=s=>!vistaAsesorId||s.asesor_id===vistaAsesorId;
   const asigPorEtapa={}; ETAPAS.forEach(e=>asigPorEtapa[e.k]=[]);
-  (_asignaciones||[]).filter(pasaTipo).forEach(s=>{ asigPorEtapa[estEtapa(s.estatus)].push(s); });
-  const pendVis=(_opsFiltroTipo==='evento')?[]:_pendientes; // los pendientes de Telegram son de póliza por defecto
+  (_asignaciones||[]).filter(s=>pasaTipo(s)&&pasaVista(s)).forEach(s=>{ asigPorEtapa[estEtapa(s.estatus)].push(s); });
+  const pendVis=(vistaAsesorId||_opsFiltroTipo==='evento')?[]:_pendientes; // el asesor no ve solicitudes sin asignar
   // Columnas
   const col=e=>{
     const cards = e.k==='SOLICITUD' ? [...pendVis.map(pendCard), ...asigPorEtapa[e.k].map(servCard)] : asigPorEtapa[e.k].map(servCard);
@@ -422,16 +439,23 @@ function pintarAsignaciones(){
     </div>`;
   };
   const fchip=(v,t)=>`<button class="btn${_opsFiltroTipo===v?'':' ghost'}" style="padding:4px 12px;font-size:12px;" onclick="opsFiltrarTipo('${v}')">${t}</button>`;
+  const selAsesor = esStaff ? `<select class="inp" style="width:auto;padding:5px 9px;font-size:12px;" onchange="opsActuarComo(this.value)">
+      <option value="">👁 Vista Mesa de Control</option>
+      ${(_asesores||[]).map(a=>`<option value="${a.id}" ${_actuarComo===a.id?'selected':''}>🧑‍🔧 Ver como ${esc(a.nombre)}</option>`).join('')}
+    </select>` : '';
+  const nombreAct = _actuarComo ? ((_asesores||[]).find(a=>a.id===_actuarComo)||{}).nombre : '';
   m.innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
         ${fchip('todo','Todo')}${fchip('poliza','🛡 Póliza')}${fchip('evento','💵 Evento')}
+        ${selAsesor}
       </div>
-      ${esStaff?`<div style="display:flex;gap:8px;flex-wrap:wrap;">
+      ${(esStaff&&!vistaAsesorId)?`<div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn ghost" id="btnSyncTickets" onclick="opsSyncTickets()" title="Trae los tickets nuevos de 123FormBuilder">↻ Sincronizar tickets</button>
         <button class="btn" onclick="abrirAsignar(null)">＋ Nueva</button>
       </div>`:''}
     </div>
+    ${_actuarComo?`<div style="background:var(--gold-bg);color:var(--gold);border:1px solid var(--gold-b);border-radius:8px;padding:6px 10px;font-size:12px;margin-bottom:10px;">🧪 Modo prueba — estás viendo el tablero como el asesor <b>${esc(nombreAct)}</b>. Aquí puedes Iniciar/Finalizar sus servicios. <button class="btn ghost" style="padding:2px 10px;font-size:11px;margin-left:6px;" onclick="opsActuarComo('')">Volver a Mesa</button></div>`:''}
     <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:10px;align-items:flex-start;">
       ${ETAPAS.map(col).join('')}
     </div>`;
@@ -520,8 +544,9 @@ async function guardarAsignacion(pendId, servId){
 }
 // Avanzar de etapa (candado del flujo): fija el estatus y los tiempos que correspondan.
 async function avanzaEtapa(id,destino){
-  if(!esStaff) return;
   const s=(_asignaciones||[]).find(x=>x.id===id); if(!s) return;
+  // Permitido: staff (Mesa/Dirección) o el asesor asignado a este servicio.
+  if(!(esStaff || (userProfile && s.asesor_id===userProfile.id))) return;
   const patch={estatus:destino,updated_at:new Date().toISOString()};
   if(destino==='EN_CURSO'&&!s.inicio_real_at) patch.inicio_real_at=new Date().toISOString();
   if(destino==='CONCLUIDO'){ if(!s.fin_real_at) patch.fin_real_at=new Date().toISOString();
@@ -583,14 +608,21 @@ function abrirAsignacion(id){
   const fechaMx=f=>{ if(!f) return '—'; const p=String(f).slice(0,10).split('-'); return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:f; };
   const dur=_durMin(s); const est=_estimMin(s.tipo_servicio);
   const pasos=ETAPAS.map(x=>`<span style="font-size:10px;padding:2px 7px;border-radius:20px;${estEtapa(s.estatus)===x.k?`background:${x.c};color:#fff;font-weight:700;`:'background:var(--surf2);color:var(--text3);'}">${x.ic} ${x.t.split(' ')[0]}</span>`).join(' ');
-  // Acción de la etapa dentro del detalle
+  // Acción de la etapa dentro del detalle (mismo permiso que el tablero)
+  const vistaAsesorId = esAsesor ? (userProfile&&userProfile.id) : _actuarComo;
   const accDet=()=>{
-    if(!esStaff) return '';
-    if(et==='SOLICITUD') return `<button class="btn" onclick="cerrarModal();abrirAsignarServ('${s.id}')">Asignar →</button>`;
-    if(et==='ASIGNADO')  return `<button class="btn" onclick="avanzaEtapa('${s.id}','EN_CURSO');cerrarModal();">▶ Iniciar servicio</button>`;
-    if(et==='EN_CURSO')  return `<button class="btn" onclick="avanzaEtapa('${s.id}','CONCLUIDO');cerrarModal();">⏹ Finalizar servicio</button>`;
-    if(et==='CONCLUIDO') return `<button class="btn" onclick="avanzaEtapa('${s.id}','REPORTADO');cerrarModal();">📝 Marcar reportado</button>`;
-    if(et==='REPORTADO') return `<button class="btn" onclick="cerrarConTicket('${s.id}');cerrarModal();">🎫 Cerrar con ticket</button>`;
+    if(vistaAsesorId){
+      if(s.asesor_id!==vistaAsesorId) return '';
+      if(et==='ASIGNADO')  return `<button class="btn" onclick="avanzaEtapa('${s.id}','EN_CURSO');cerrarModal();">▶ Iniciar servicio</button>`;
+      if(et==='EN_CURSO')  return `<button class="btn" onclick="avanzaEtapa('${s.id}','CONCLUIDO');cerrarModal();">⏹ Finalizar servicio</button>`;
+      if(et==='CONCLUIDO') return `<button class="btn" onclick="avanzaEtapa('${s.id}','REPORTADO');cerrarModal();">📝 Ya reporté</button>`;
+      return '';
+    }
+    if(esStaff){
+      if(et==='SOLICITUD') return `<button class="btn" onclick="cerrarModal();abrirAsignarServ('${s.id}')">Asignar →</button>`;
+      if(et==='REPORTADO') return `<button class="btn" onclick="cerrarConTicket('${s.id}');cerrarModal();">🎫 Cerrar con ticket</button>`;
+      return '';
+    }
     return '';
   };
   const opcCorr=ETAPAS.map(x=>`<option value="${x.k}" ${et===x.k?'selected':''}>${x.ic} ${x.t}</option>`).join('');
@@ -610,20 +642,19 @@ function abrirAsignacion(id){
     </div>
     ${s.descripcion_solicitud?`<div style="margin-top:12px;"><div style="font-size:11px;font-weight:700;color:var(--text2);">Lo solicitado</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.descripcion_solicitud)}</div></div>`:''}
     ${s.nota?`<div style="margin-top:10px;"><div style="font-size:11px;font-weight:700;color:var(--text2);">Nota para el asesor</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.nota)}</div></div>`:''}
-    ${esStaff?`
-    <div style="margin-top:14px;padding:8px 10px;background:var(--surf2);border-radius:8px;font-size:12px;">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;align-items:center;">
+      ${accDet()}
+      <button class="btn ghost" onclick="cerrarModal()">Cerrar</button>
+    </div>
+    ${(esStaff&&!vistaAsesorId)?`
+    <div style="margin-top:12px;padding:8px 10px;background:var(--surf2);border-radius:8px;font-size:12px;">
       ${s.aviso_asesor_at
         ?`✈️ <b>Avisado al asesor</b> · ${fechaMx(s.aviso_asesor_at)} <button class="btn ghost" style="padding:3px 10px;font-size:11px;margin-left:6px;" onclick="opsAvisarAsesor('${s.id}',true)">↻ Reenviar</button>`
         :`<span style="color:#B45309;">✈️ Aún no se avisa al asesor</span> <button class="btn" style="padding:3px 10px;font-size:11px;margin-left:6px;" onclick="opsAvisarAsesor('${s.id}',false)">Avisar al asesor</button>`}
     </div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:center;">
-      ${accDet()}
-      <button class="btn ghost" onclick="cerrarModal()">Cerrar</button>
-    </div>
     <details style="margin-top:10px;"><summary style="font-size:11px;color:var(--text3);cursor:pointer;">Corregir etapa (solo para pruebas / errores)</summary>
       <div style="display:flex;gap:8px;margin-top:6px;align-items:center;"><select class="inp" id="aeEst" style="max-width:220px;">${opcCorr}</select>
-      <button class="btn ghost" style="font-size:11px;" onclick="guardarEstatusAsig('${s.id}')">Aplicar</button></div></details>`
-    :'<div style="margin-top:16px;"><button class="btn ghost" onclick="cerrarModal()">Cerrar</button></div>'}`);
+      <button class="btn ghost" style="font-size:11px;" onclick="guardarEstatusAsig('${s.id}')">Aplicar</button></div></details>`:''}`);
 }
 async function guardarEstatusAsig(id){
   const est=document.getElementById('aeEst')?.value; if(!est) return;
