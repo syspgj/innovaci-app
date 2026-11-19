@@ -19796,11 +19796,28 @@ async function renderTeleClientes(){
   window._carteraVendedores=vendedoresList||[];
   window._teleCampActiva=campActiva;
 
-  // Cargar llamadas ya hechas en esta campaña
+  // Cargar llamadas ya hechas en esta campaña (orden: la más reciente primero,
+  // para poder ofrecer "Continuar con campaña" desde la última que trabajó).
   const {data:llamadasExist}=await sb.from('llamadas_cartera')
-    .select('cliente_id,resultado').eq('campana_id',campActiva.id).eq('usuario_id',currentUser.id);
+    .select('cliente_id,resultado,created_at').eq('campana_id',campActiva.id).eq('usuario_id',currentUser.id)
+    .order('created_at',{ascending:false});
   const llamadasMap={};
   (llamadasExist||[]).forEach(l=>{ if(!llamadasMap[l.cliente_id]) llamadasMap[l.cliente_id]=l.resultado; });
+  // Jp, 2026-11-19: "un botón de Continuar con campaña que me regrese a la última
+  // cuenta donde me quedé, para seguir el hilo sin buscar". Se prefiere la última
+  // que abrió (guardada en este equipo); si no hay, la última que llamó.
+  let continuarId=null;
+  try{
+    const raw=localStorage.getItem('teleUltima_'+currentUser.id);
+    if(raw){ const o=JSON.parse(raw); if(o&&o.campanaId===campActiva.id&&clientesList.some(c=>c.id===o.clienteId)) continuarId=o.clienteId; }
+  }catch(_){}
+  if(!continuarId){ const ul=(llamadasExist||[]).find(l=>clientesList.some(c=>c.id===l.cliente_id)); if(ul) continuarId=ul.cliente_id; }
+  const contCli=continuarId?clientesList.find(c=>c.id===continuarId):null;
+  const continuarHtml=contCli?`
+    <button onclick="abrirDetalleCuentaTele('${contCli.id}','${campActiva.id}')" style="width:100%;margin-bottom:12px;display:flex;align-items:center;gap:10px;justify-content:center;padding:11px 14px;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);font-size:13px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">
+      ▶️ Continuar con campaña
+      <span style="font-weight:500;opacity:.9;font-size:12px;">· última: ${(contCli.razon_social||'Sin nombre').replace(/</g,'&lt;')}</span>
+    </button>`:'';
   const total=ids.length;
   const contactadas=Object.keys(llamadasMap).length;
   const pct=total>0?Math.round(contactadas/total*100):0;
@@ -19858,8 +19875,16 @@ async function renderTeleClientes(){
       return desgloseHtml?`<div style="margin-top:10px;padding:10px 14px;background:var(--surface-2,#f8f9fa);border-radius:8px;display:flex;gap:16px;flex-wrap:wrap;">${desgloseHtml}</div>`:'';
     })()}
   </div>
+  ${continuarHtml}
   <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center;">
     <input type="text" id="teleClienteBuscar" placeholder="Buscar cliente..." oninput="filtrarTeleClientes()" style="flex:1;min-width:200px;padding:9px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+    <select id="teleFiltroActividad" onchange="filtrarTeleClientes()" title="Separa a quienes ya tocaste recientemente del resto" style="padding:9px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
+      <option value="">Actividad: todas</option>
+      <option value="0">🟢 Movimiento hoy</option>
+      <option value="7">🗓️ Últimos 7 días</option>
+      <option value="30">📆 Últimos 30 días</option>
+      <option value="frio">❄️ Sin movimiento reciente</option>
+    </select>
     <select id="teleFiltroTimbres" onchange="filtrarTeleClientes()" title="Filtra por si al cliente le sirven los timbres" style="padding:9px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
       <option value="">Timbres: todos</option>
       <option value="aplica">🎟️ Sí aplica (compra)</option>
@@ -19878,7 +19903,8 @@ async function renderTeleClientes(){
       const tim=ctx.timbres||{};
       const sinContacto=ctx.ultMov?haceCuanto(ctx.ultMov):'sin registro';
       const frio=ctx.ultMov?((Date.now()-new Date(ctx.ultMov).getTime())/86400000)>180:true;
-      return `<div class="card" style="padding:14px;cursor:pointer;${venceProximo?'border-left:3px solid var(--red);':''}" onclick="abrirDetalleCuentaTele('${cl.id}','${campActiva.id}')" data-razon="${(cl.razon_social||'').toLowerCase()}" data-resultado="${(resultado||'Pendiente').toLowerCase()}" data-timbres="${tim.estado||'na'}">
+      const recDias=ctx.ultMov?Math.floor((Date.now()-new Date(ctx.ultMov).getTime())/86400000):999999;
+      return `<div class="card" style="padding:14px;cursor:pointer;${venceProximo?'border-left:3px solid var(--red);':''}" onclick="abrirDetalleCuentaTele('${cl.id}','${campActiva.id}')" data-razon="${(cl.razon_social||'').toLowerCase()}" data-resultado="${(resultado||'Pendiente').toLowerCase()}" data-timbres="${tim.estado||'na'}" data-recdias="${recDias}">
         <div style="display:flex;align-items:flex-start;gap:12px;">
           <div style="flex:1;min-width:0;">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -19938,11 +19964,17 @@ function filtrarTeleClientes(){
   const q=(document.getElementById('teleClienteBuscar')?.value||'').toLowerCase();
   const r=_teleClientesFiltroResultado.toLowerCase();
   const t=document.getElementById('teleFiltroTimbres')?.value||'';
+  const a=document.getElementById('teleFiltroActividad')?.value||'';
   document.querySelectorAll('#listaTeleClientes .card').forEach(el=>{
     const coincideTexto=!q||el.dataset.razon?.includes(q);
     const coincideRes=!r||el.dataset.resultado===r;
     const coincideTim=!t||el.dataset.timbres===t;
-    el.style.display=(coincideTexto&&coincideRes&&coincideTim)?'':'none';
+    let coincideAct=true;
+    if(a){
+      const d=parseInt(el.dataset.recdias||'999999',10);
+      coincideAct = a==='frio' ? d>30 : d<=parseInt(a,10);
+    }
+    el.style.display=(coincideTexto&&coincideRes&&coincideTim&&coincideAct)?'':'none';
   });
 }
 
@@ -19964,6 +19996,8 @@ async function abrirDetalleCuentaTeleInt(clienteId, campanaId){
     alert('Esta cuenta ya no está cargada en pantalla (seguramente se recargó la lista). Vuelve a entrar a la campaña e inténtalo de nuevo.');
     return;
   }
+  // Recuerda la última cuenta abierta para el botón "Continuar con campaña".
+  try{ if(campanaId) localStorage.setItem('teleUltima_'+currentUser.id, JSON.stringify({campanaId, clienteId, ts:Date.now()})); }catch(_){}
   const vendedor=(window._carteraVendedores||[]).find(v=>v.id===c.vendedor_asignado);
   // Jp, 2026-10-16: "necesito que la ventana sea muy similar a la de
   // telemarketing [prospectos]... sistemas, eventos, historial de campañas,

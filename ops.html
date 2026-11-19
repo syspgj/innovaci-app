@@ -78,7 +78,7 @@ const sb=supabase.createClient(SURL,SKEY);
 
 // Roles que entran a Operaciones. El asesor (Soporte) entra en modo lectura.
 const ROLES_OPS=['director','mesa_control','gerente_operaciones','administracion','asesor'];
-let userProfile=null, esStaff=false, _servicios=[], _busca='';
+let userProfile=null, esStaff=false, _servicios=[], _busca='', _filtroCat='';
 
 function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function tiempoTxt(min){ if(min==null||min==='') return '—'; min=+min; if(min<60) return min+' min'; const h=Math.floor(min/60),m=min%60; return h+'h'+(m?' '+m+'m':''); }
@@ -133,74 +133,128 @@ async function renderCatalogo(){
   _servicios=data||[];
   pintarCatalogo();
 }
+function catLabel(c){ return c||'Sin clasificar'; }
+function filtrarCat(v){ _filtroCat=v; pintarCatalogo(); }
 function pintarCatalogo(){
   const m=document.getElementById('mod');
   const q=_busca.trim().toLowerCase();
+  // categorías presentes, para los filtros
+  const cats=[...new Set(_servicios.map(s=>catLabel(s.categoria)))].sort();
   let lista=_servicios;
-  if(q) lista=_servicios.filter(s=>[s.nombre,s.codigo,s.categoria,s.aplica_poliza].join(' ').toLowerCase().includes(q));
+  if(_filtroCat) lista=lista.filter(s=>catLabel(s.categoria)===_filtroCat);
+  if(q) lista=lista.filter(s=>[s.nombre,s.codigo,s.categoria,s.aplica_poliza,s.resumen_claro,s.a_que_se_refiere].join(' ').toLowerCase().includes(q));
+  const chip=(txt,val)=>`<button class="btn ${_filtroCat===val?'':'ghost'}" style="padding:4px 11px;font-size:12px;" onclick='filtrarCat(${esc(JSON.stringify(val))})'>${esc(txt)}</button>`;
   m.innerHTML=`
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
       <div style="flex:1;min-width:200px;">
         <div style="font-size:15px;font-weight:700;">Catálogo de servicios</div>
-        <div class="muted">${_servicios.length} servicio${_servicios.length===1?'':'s'} · de aquí salen los requisitos y el tiempo aproximado de cada uno.</div>
+        <div class="muted">${_servicios.length} servicio${_servicios.length===1?'':'s'} · el manual de cada servicio: qué es, qué pedirle al cliente, qué valida Mesa de Control, alcances y tiempo.</div>
       </div>
       <input class="inp" style="flex:0 0 220px;max-width:240px;" placeholder="🔍 Buscar servicio…" value="${esc(_busca)}" oninput="_busca=this.value;pintarCatalogo()">
       ${esStaff?`<button class="btn" onclick="editarServicio(null)">＋ Nuevo servicio</button>`:''}
     </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+      ${chip('Todas','')}${cats.map(c=>chip(c,c)).join('')}
+    </div>
     <div class="card">
-      ${lista.length?lista.map(filaServicio).join(''):'<div class="center">'+(q?'Sin coincidencias.':'Aún no hay servicios en el catálogo.'+(esStaff?' Empieza con “＋ Nuevo servicio”.':''))+'</div>'}
+      ${lista.length?lista.map(filaServicio).join(''):'<div class="center">'+(q||_filtroCat?'Sin coincidencias.':'Aún no hay servicios en el catálogo.'+(esStaff?' Empieza con “＋ Nuevo servicio”.':''))+'</div>'}
     </div>`;
 }
 function filaServicio(s){
   const t=tiempoTxt(s.tiempo_aprox_min);
+  const pol=(s.aplica_poliza||'').toUpperCase();
+  const polChip = pol.startsWith('SI') ? '<span class="chip" style="background:var(--green-bg,#e7f6ec);color:var(--green,#1a7f3c);">en póliza</span>'
+                : pol==='NO' ? '<span class="chip" style="background:var(--amber-bg,#fdf3e3);color:var(--amber,#9a6a12);">no incluido</span>' : '';
   return `<div class="svc" onclick="verServicio('${s.id}')">
     <div style="flex:1;min-width:0;">
-      <div class="nom">${esc(s.nombre)}${s.activo?'':' <span class="chip" style="background:var(--red-bg);color:var(--red);">inactivo</span>'}</div>
-      <div class="meta">${s.categoria?esc(s.categoria)+' · ':''}${s.aplica_poliza?'Póliza: '+esc(s.aplica_poliza)+' · ':''}⏱ ${t}${s.codigo?' · '+esc(s.codigo):''}</div>
+      <div class="nom">${esc(s.nombre)} ${polChip}${s.activo?'':' <span class="chip" style="background:var(--red-bg);color:var(--red);">inactivo</span>'}</div>
+      <div class="meta">${s.categoria?esc(s.categoria)+' · ':''}${s.nivel_asesor?esc(s.nivel_asesor)+' · ':''}⏱ ${t}${s.precio_recomendado!=null?' · $'+(+s.precio_recomendado).toLocaleString('es-MX'):''}${s.codigo?' · '+esc(s.codigo):''}</div>
     </div>
     <div style="color:var(--text3);font-size:12px;white-space:nowrap;">ver →</div>
   </div>`;
 }
 
-// Detalle en segundo nivel (UX: entrada básica, detalle al abrir).
+// Detalle en segundo nivel = el MANUAL del servicio (UX: entrada básica, manual al abrir).
 function verServicio(id){
   const s=_servicios.find(x=>x.id===id); if(!s) return;
-  const bloque=(t,v)=>v?`<div style="margin-top:10px;"><div style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;">${t}</div><div style="font-size:13px;color:var(--text);margin-top:2px;white-space:pre-wrap;">${esc(v)}</div></div>`:'';
+  // bloque normal
+  const bloque=(t,v,icon)=>v?`<div style="margin-top:14px;"><div style="font-size:11px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;">${icon?icon+' ':''}${t}</div><div style="font-size:13px;color:var(--text);margin-top:3px;white-space:pre-wrap;line-height:1.5;">${esc(v)}</div></div>`:'';
+  // bloque resaltado (Mesa de Control)
+  const bloqueMC=(t,v,icon)=>v?`<div style="margin-top:14px;background:var(--navy-bg,#eef2fb);border:1px solid var(--navy-bd,#d4ddf4);border-radius:10px;padding:11px 13px;"><div style="font-size:11px;font-weight:800;color:var(--navy,#2a3f7a);text-transform:uppercase;letter-spacing:.04em;">${icon?icon+' ':''}${t}</div><div style="font-size:13px;color:var(--text);margin-top:4px;white-space:pre-wrap;line-height:1.5;">${esc(v)}</div></div>`:'';
+  const pol=(s.aplica_poliza||'').toUpperCase();
+  const polTxt = pol.startsWith('SI') ? '✅ Incluido en póliza'+(pol.length>2?' — '+esc(s.aplica_poliza):'')
+               : pol==='NO' ? '⚠️ NO incluido en póliza (se cobra aparte)'
+               : s.aplica_poliza ? esc(s.aplica_poliza) : '';
+  // ficha de datos duros
+  const dato=(et,val)=>val?`<div style="min-width:120px;"><div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;">${et}</div><div style="font-size:13px;font-weight:700;color:var(--text);">${val}</div></div>`:'';
+  const money=v=>v!=null?'$'+(+v).toLocaleString('es-MX',{minimumFractionDigits:0}):'';
+  const qué = s.resumen_claro || s.a_que_se_refiere;
   mostrarModal(`
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
-      <div>
+      <div style="min-width:0;">
         <div style="font-size:16px;font-weight:800;">${esc(s.nombre)}</div>
-        <div class="muted">${s.categoria?esc(s.categoria)+' · ':''}${s.aplica_poliza?'Aplica a póliza: '+esc(s.aplica_poliza)+' · ':''}⏱ ${tiempoTxt(s.tiempo_aprox_min)}${s.codigo?' · '+esc(s.codigo):''}</div>
+        <div class="muted">${s.categoria?esc(s.categoria):''}${s.codigo?' · '+esc(s.codigo):''}${s.nivel_asesor?' · '+esc(s.nivel_asesor):''}${s.activo?'':' · <span style="color:var(--red);">inactivo</span>'}</div>
       </div>
       <button class="btn ghost" onclick="cerrarModal()" style="padding:5px 10px;">✕</button>
     </div>
-    ${bloque('Descripción',s.descripcion)}
-    ${bloque('Requisitos del cliente',s.requisitos_cliente)}
-    ${bloque('Requisitos del asesor',s.requisitos_asesor)}
-    ${bloque('Consideraciones para Ventas',s.consideraciones_ventas)}
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:12px;padding:11px 13px;background:var(--bg2,#f6f7f9);border-radius:10px;">
+      ${dato('Tiempo aprox.', s.tiempo_prom_txt?esc(s.tiempo_prom_txt):tiempoTxt(s.tiempo_aprox_min))}
+      ${dato('Rango', [s.tiempo_min_txt,s.tiempo_max_txt].filter(Boolean).map(esc).join(' – '))}
+      ${dato('Precio recomendado', money(s.precio_recomendado))}
+      ${dato('Precio mínimo', money(s.precio_minimo))}
+    </div>
+    ${polTxt?`<div style="margin-top:10px;font-size:13px;font-weight:700;color:${pol.startsWith('SI')?'var(--green,#1a7f3c)':pol==='NO'?'var(--amber,#9a6a12)':'var(--text)'};">${polTxt}</div>`:''}
+    ${bloque('¿Qué es y cuándo se usa?',qué,'💡')}
+    ${bloque('Qué incluye el servicio',s.observacion_partida,'📦')}
+    ${bloque('Qué debe tener listo el cliente',s.requisitos_cliente,'📋')}
+    ${bloqueMC('Antes de asignar — valida Mesa de Control',s.consideraciones_mc,'🔎')}
+    ${bloque('Lo que Ventas debe decir al cliente',s.consideraciones_ventas,'🗣')}
+    ${bloque('Requisitos del asesor',s.requisitos_asesor,'🧰')}
     <div style="display:flex;gap:8px;margin-top:18px;flex-wrap:wrap;">
       ${esStaff?`<button class="btn" onclick="editarServicio('${s.id}')">✏️ Editar</button>`:''}
       <button class="btn ghost" onclick="cerrarModal()">Cerrar</button>
     </div>`);
 }
 
-// Alta / edición (solo staff).
+// Alta / edición (solo staff). Cubre TODO el manual del servicio.
 function editarServicio(id){
   const s=id?_servicios.find(x=>x.id===id):{};
   if(!esStaff) return;
+  const num=v=>v!=null?v:'';
   mostrarModal(`
-    <div style="font-size:16px;font-weight:800;margin-bottom:12px;">${id?'Editar servicio':'Nuevo servicio'}</div>
-    <label class="fld"><span>Nombre del servicio *</span><input class="inp" id="svNombre" value="${esc(s.nombre||'')}" placeholder="Ej. Respaldo y restauración de base NOI"></label>
+    <div style="font-size:16px;font-weight:800;margin-bottom:4px;">${id?'Editar servicio':'Nuevo servicio'}</div>
+    <div class="muted" style="margin-bottom:12px;">Todo lo que escribas aquí es lo que verá Mesa de Control y Ventas al cotizar y asignar. Escríbelo claro, como para explicárselo a alguien de 12 años.</div>
+    <label class="fld"><span>Nombre del servicio *</span><input class="inp" id="svNombre" value="${esc(s.nombre||'')}" placeholder="Ej. Alta de RFC adicional en Siigo Aspel Facture"></label>
     <div class="grid2">
-      <label class="fld"><span>Categoría</span><input class="inp" id="svCat" value="${esc(s.categoria||'')}" placeholder="NOI / COI / SAE / Resguardo / General"></label>
-      <label class="fld"><span>Código (opcional)</span><input class="inp" id="svCod" value="${esc(s.codigo||'')}" placeholder="NOI-RESP"></label>
-      <label class="fld"><span>Aplica a póliza</span><input class="inp" id="svPol" value="${esc(s.aplica_poliza||'')}" placeholder="Infinito / Profesionista / Resguardo…"></label>
-      <label class="fld"><span>Tiempo aproximado (minutos)</span><input class="inp" id="svTiempo" type="number" min="0" value="${s.tiempo_aprox_min!=null?s.tiempo_aprox_min:''}" placeholder="60"></label>
+      <label class="fld"><span>Categoría</span><input class="inp" id="svCat" value="${esc(s.categoria||'')}" placeholder="Servicios Aspel / Servicios IT"></label>
+      <label class="fld"><span>Código (opcional)</span><input class="inp" id="svCod" value="${esc(s.codigo||'')}" placeholder="AASFA"></label>
+      <label class="fld"><span>Línea</span>
+        <select class="inp" id="svLinea">
+          <option value="" ${!s.linea?'selected':''}>—</option>
+          <option value="AS" ${s.linea==='AS'?'selected':''}>AS · Aspel</option>
+          <option value="IT" ${s.linea==='IT'?'selected':''}>IT</option>
+        </select></label>
+      <label class="fld"><span>Nivel de asesor</span><input class="inp" id="svNivel" value="${esc(s.nivel_asesor||'')}" placeholder="Junior / Senior / Master Aspel"></label>
+      <label class="fld"><span>Clave SAT</span><input class="inp" id="svSat" value="${esc(s.clave_sat||'')}" placeholder="81112200"></label>
+      <label class="fld"><span>Clave unidad</span><input class="inp" id="svUni" value="${esc(s.clave_unidad||'')}" placeholder="E48"></label>
+      <label class="fld"><span>Precio recomendado ($)</span><input class="inp" id="svPrecR" type="number" min="0" step="0.01" value="${num(s.precio_recomendado)}" placeholder="300"></label>
+      <label class="fld"><span>Precio mínimo ($)</span><input class="inp" id="svPrecM" type="number" min="0" step="0.01" value="${num(s.precio_minimo)}" placeholder="200"></label>
     </div>
-    <label class="fld"><span>Descripción (base del entregable al cliente)</span><textarea class="inp" id="svDesc" placeholder="En qué consiste el servicio, en lenguaje claro.">${esc(s.descripcion||'')}</textarea></label>
-    <label class="fld"><span>Requisitos del cliente</span><textarea class="inp" id="svReqCli" placeholder="Qué debe tener listo el cliente (accesos, respaldos previos, etc.).">${esc(s.requisitos_cliente||'')}</textarea></label>
-    <label class="fld"><span>Requisitos del asesor</span><textarea class="inp" id="svReqAse" placeholder="Qué debe preparar o llevar el asesor.">${esc(s.requisitos_asesor||'')}</textarea></label>
-    <label class="fld"><span>Consideraciones para Ventas</span><textarea class="inp" id="svVen" placeholder="Qué debe saber Ventas al ofrecer o agendar este servicio.">${esc(s.consideraciones_ventas||'')}</textarea></label>
+    <div class="grid2">
+      <label class="fld"><span>Tiempo mínimo</span><input class="inp" id="svTmin" value="${esc(s.tiempo_min_txt||'')}" placeholder="30 minutos"></label>
+      <label class="fld"><span>Tiempo promedio</span><input class="inp" id="svTprom" value="${esc(s.tiempo_prom_txt||'')}" placeholder="45 min"></label>
+      <label class="fld"><span>Tiempo máximo</span><input class="inp" id="svTmax" value="${esc(s.tiempo_max_txt||'')}" placeholder="1 hora"></label>
+      <label class="fld"><span>Tiempo aprox. (minutos, para cálculos)</span><input class="inp" id="svTiempo" type="number" min="0" value="${num(s.tiempo_aprox_min)}" placeholder="45"></label>
+    </div>
+    <label class="fld"><span>Aplica a póliza</span><input class="inp" id="svPol" value="${esc(s.aplica_poliza||'')}" placeholder="SI / NO / texto de la condición"></label>
+    <label class="fld"><span>💡 ¿Qué es y cuándo se usa? (en palabras simples)</span><textarea class="inp" id="svQue" placeholder="Explica en qué caso se pide este servicio, como una receta.">${esc(s.a_que_se_refiere||'')}</textarea></label>
+    <label class="fld"><span>Resumen claro (opcional · si lo dejas vacío se usa el de arriba)</span><textarea class="inp" id="svResumen" placeholder="Versión corta y clara para mostrar primero.">${esc(s.resumen_claro||'')}</textarea></label>
+    <label class="fld"><span>📦 Qué incluye el servicio (alcances / partida)</span><textarea class="inp" id="svObs" placeholder="Qué se entrega y qué NO incluye.">${esc(s.observacion_partida||'')}</textarea></label>
+    <label class="fld"><span>📋 Qué debe tener listo el cliente</span><textarea class="inp" id="svReqCli" placeholder="Accesos, respaldos, datos fiscales, etc.">${esc(s.requisitos_cliente||'')}</textarea></label>
+    <label class="fld"><span>🔎 Antes de asignar — valida Mesa de Control</span><textarea class="inp" id="svMC" placeholder="Lo que Mesa de Control revisa antes de pasar el servicio a soporte.">${esc(s.consideraciones_mc||'')}</textarea></label>
+    <label class="fld"><span>🗣 Lo que Ventas debe decir al cliente</span><textarea class="inp" id="svVen" placeholder="Qué advertir antes de cerrar la venta.">${esc(s.consideraciones_ventas||'')}</textarea></label>
+    <label class="fld"><span>🧰 Requisitos del asesor (opcional)</span><textarea class="inp" id="svReqAse" placeholder="Qué debe preparar o llevar el asesor.">${esc(s.requisitos_asesor||'')}</textarea></label>
+    <label class="fld"><span>Descripción (base del entregable)</span><textarea class="inp" id="svDesc" placeholder="Texto que sirve de base para el entregable al cliente.">${esc(s.descripcion||'')}</textarea></label>
     <label style="display:flex;align-items:center;gap:7px;font-size:13px;margin:4px 0 14px;cursor:pointer;"><input type="checkbox" id="svActivo" ${s.activo===false?'':'checked'}> Activo</label>
     <div id="svMsg" style="font-size:12px;margin-bottom:8px;"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -213,13 +267,24 @@ async function guardarServicio(id){
   const nombre=v('svNombre');
   const msg=document.getElementById('svMsg');
   if(!nombre){ msg.innerHTML='<span style="color:var(--red);font-weight:600;">El nombre es obligatorio.</span>'; return; }
-  const tiempoRaw=v('svTiempo');
+  const n=i=>{ const r=v(i); return r!==''&&r!=null?Number(r):null; };
+  const iv=i=>{ const r=v(i); return r!==''&&r!=null?parseInt(r,10):null; };
   const fila={
     nombre,
-    categoria:v('svCat')||null, codigo:v('svCod')||null, aplica_poliza:v('svPol')||null,
-    tiempo_aprox_min:tiempoRaw!==''?parseInt(tiempoRaw,10):null,
-    descripcion:v('svDesc')||null, requisitos_cliente:v('svReqCli')||null,
-    requisitos_asesor:v('svReqAse')||null, consideraciones_ventas:v('svVen')||null,
+    categoria:v('svCat')||null, codigo:v('svCod')||null, linea:v('svLinea')||null,
+    nivel_asesor:v('svNivel')||null, clave_sat:v('svSat')||null, clave_unidad:v('svUni')||null,
+    precio_recomendado:n('svPrecR'), precio_minimo:n('svPrecM'),
+    tiempo_min_txt:v('svTmin')||null, tiempo_prom_txt:v('svTprom')||null, tiempo_max_txt:v('svTmax')||null,
+    tiempo_aprox_min:iv('svTiempo'),
+    aplica_poliza:v('svPol')||null,
+    a_que_se_refiere:v('svQue')||null,
+    resumen_claro:(v('svResumen')||v('svQue'))||null,
+    observacion_partida:v('svObs')||null,
+    requisitos_cliente:v('svReqCli')||null,
+    consideraciones_mc:v('svMC')||null,
+    consideraciones_ventas:v('svVen')||null,
+    requisitos_asesor:v('svReqAse')||null,
+    descripcion:v('svDesc')||null,
     activo:document.getElementById('svActivo').checked, updated_at:new Date().toISOString()
   };
   const btn=document.getElementById('svGuardar'); btn.disabled=true; btn.textContent='Guardando…';
