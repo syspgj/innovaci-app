@@ -354,7 +354,7 @@ function pintarAsignaciones(){
         <span class="chip" style="background:${e.c}1a;color:${e.c};">${esc(e.t)}</span>
       </div>
       <div style="font-size:12px;color:var(--text2);margin-top:3px;">${esc(s.tipo_servicio||'(servicio sin definir)')}</div>
-      <div class="muted" style="margin-top:4px;">🧑‍🔧 ${esc(s.asesor_nombre||'sin asesor')} · 📅 ${fechaMx(s.fecha_asignada)||'sin fecha'}${s.hora_asignada?' '+String(s.hora_asignada).slice(0,5):''}</div>
+      <div class="muted" style="margin-top:4px;">🧑‍🔧 ${esc(s.asesor_nombre||'sin asesor')} · 📅 ${fechaMx(s.fecha_asignada)||'sin fecha'}${s.hora_asignada?' '+String(s.hora_asignada).slice(0,5):''}${!s.aviso_asesor_at?' · <span style="color:#B45309;">✈️ sin avisar</span>':''}</div>
     </div>`;
   };
   m.innerHTML=`
@@ -363,7 +363,10 @@ function pintarAsignaciones(){
         <div style="font-size:15px;font-weight:700;">Asignaciones</div>
         <div class="muted">${_pendientes.length} pendientes por asignar · ${_asignaciones.length} activas</div>
       </div>
-      ${esStaff?`<button class="btn" onclick="abrirAsignar(null)">＋ Nueva asignación (directa)</button>`:''}
+      ${esStaff?`<div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn ghost" id="btnSyncTickets" onclick="opsSyncTickets()" title="Trae los tickets nuevos de 123FormBuilder para tener el consumo de pólizas al día">↻ Sincronizar tickets (123forms)</button>
+        <button class="btn" onclick="abrirAsignar(null)">＋ Nueva asignación (directa)</button>
+      </div>`:''}
     </div>
     <div style="font-size:12px;font-weight:800;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;margin:8px 0 6px;">📥 Pendientes por asignar</div>
     <div style="display:grid;gap:8px;margin-bottom:18px;">
@@ -450,6 +453,17 @@ function opsToast(msg,ok){
   document.body.appendChild(d);
   setTimeout(()=>{d.style.transition='opacity .4s';d.style.opacity='0';setTimeout(()=>d.remove(),400);},4200);
 }
+async function opsSyncTickets(){
+  const b=document.getElementById('btnSyncTickets'); if(b){b.disabled=true;b.textContent='Sincronizando…';}
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/servicios-historicos-sync',{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
+    const j=await res.json().catch(()=>({}));
+    if(j.ok) opsToast(`✓ Tickets sincronizados: ${j.importados} nuevos (de ${j.revisados} revisados)`,true);
+    else opsToast('No se pudo sincronizar: '+(j.error||res.status),false);
+  }catch(e){ opsToast('Error: '+(e.message||e),false); }
+  if(b){b.disabled=false;b.textContent='↻ Sincronizar tickets (123forms)';}
+}
 async function opsAvisarAsesor(id,reenviar){
   try{
     const {data:sess}=await sb.auth.getSession();
@@ -485,7 +499,13 @@ function abrirAsignacion(id){
     </div>
     ${s.descripcion_solicitud?`<div style="margin-top:12px;"><div style="font-size:11px;font-weight:700;color:var(--text2);">Lo solicitado</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.descripcion_solicitud)}</div></div>`:''}
     ${s.nota?`<div style="margin-top:10px;"><div style="font-size:11px;font-weight:700;color:var(--text2);">Nota para el asesor</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.nota)}</div></div>`:''}
-    ${esStaff?`<label class="fld" style="margin-top:16px;"><span>Cambiar estatus</span><select class="inp" id="aeEst">${opc}</select></label>
+    ${esStaff?`
+    <div style="margin-top:14px;padding:8px 10px;background:var(--surf2);border-radius:8px;font-size:12px;">
+      ${s.aviso_asesor_at
+        ?`✈️ <b>Avisado al asesor</b> · ${fechaMx(s.aviso_asesor_at)} <button class="btn ghost" style="padding:3px 10px;font-size:11px;margin-left:6px;" onclick="opsAvisarAsesor('${s.id}',true)">↻ Reenviar</button>`
+        :`<span style="color:#B45309;">✈️ Aún no se avisa al asesor</span> <button class="btn" style="padding:3px 10px;font-size:11px;margin-left:6px;" onclick="opsAvisarAsesor('${s.id}',false)">Avisar al asesor</button>`}
+    </div>
+    <label class="fld" style="margin-top:14px;"><span>Cambiar estatus</span><select class="inp" id="aeEst">${opc}</select></label>
     <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" onclick="guardarEstatusAsig('${s.id}')">Guardar estatus</button><button class="btn ghost" onclick="cerrarModal()">Cerrar</button></div>`
     :'<div style="margin-top:16px;"><button class="btn ghost" onclick="cerrarModal()">Cerrar</button></div>'}`);
 }
