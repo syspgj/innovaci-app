@@ -18606,6 +18606,23 @@ async function renderDirectorVendedores(){
   const vendedores=users.filter(u=>u.rol==='vendedor');
   const telemarketing=users.filter(u=>u.rol==='telemarketing');
   const comTeleFin=await calcComisionTeleFin(currentYear,currentMonth); // ventas reales de Carolina desde Finanzas
+  // Jp, 2026-11-19: el bono de telemarketing se paga por lo canalizado REAL
+  // (ficha "Canalizado a ventas" o pase a vendedor), no por el contador manual.
+  const prospRealTele={};
+  try{
+    const _tids=telemarketing.map(u=>u.id);
+    if(_tids.length){
+      const _finTs=new Date(currentYear,currentMonth,1).toISOString();
+      const [{data:_fc},{data:_ha}]=await Promise.all([
+        sb.from('prospectos').select('id,asignado_a').eq('estatus','Canalizado a ventas').in('asignado_a',_tids).gte('updated_at',desde).lt('updated_at',_finTs),
+        sb.from('prospecto_llamadas_asignadas').select('prospecto_id,asignado_por').in('asignado_por',_tids).gte('created_at',desde).lt('created_at',_finTs)
+      ]);
+      const _sets={}; _tids.forEach(id=>_sets[id]=new Set());
+      (_fc||[]).forEach(r=>{ if(_sets[r.asignado_a]) _sets[r.asignado_a].add(r.id); });
+      (_ha||[]).forEach(r=>{ if(_sets[r.asignado_por]&&r.prospecto_id) _sets[r.asignado_por].add(r.prospecto_id); });
+      _tids.forEach(id=>{ prospRealTele[id]=_sets[id].size; });
+    }
+  }catch(e){ console.error('prospRealTele',e); }
   // Recalcular deptoAlcanzado para el mes actual — getRate() depende de esto y no debe
   // quedarse con el valor de un render anterior (mismo fix aplicado en renderDirectorResumen)
   const metaDeptoRowV=kpiConfig.find(k=>k.kpi_key==='meta_depto');
@@ -18722,13 +18739,14 @@ async function renderDirectorVendedores(){
       const tot=getTotals(allRegistros,u.id);
       const col='#5B4FCF';
       const ini=u.nombre.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase();
+      const prReal=prospRealTele[u.id]||0;
       const kpiTele=[
         {n:'Llamadas efectivas',v:tot.llamadas,m:300},
-        {n:'Prospectos canalizados',v:tot.prospectos,m:40},
+        {n:'Canalizados a ventas (real)',v:prReal,m:40},
         {n:'Confirmaciones',v:tot.confirmaciones,m:60},
         {n:'Seguimientos',v:tot.seguimientos,m:100},
       ];
-      const bonoPros=tot.prospectos>=15?tot.prospectos*50:0;
+      const bonoPros=prReal>=15?prReal*50:0;
       const esCarolina=/carolina/i.test(u.nombre||'')&&comTeleFin.ventas.total>0;
       const bonoVista=bonoPros+(esCarolina?comTeleFin.bono:0);
       const kpiRows=kpiTele.map(k=>{
@@ -18755,7 +18773,7 @@ async function renderDirectorVendedores(){
         +'</div>'
         +'<div style="text-align:right;">'
         +'<div style="font-size:18px;font-weight:700;color:#fff;">'+(bonoVista>0?'$'+bonoVista.toLocaleString('es-MX',{maximumFractionDigits:2}):'Sin bono')+'</div>'
-        +'<div style="font-size:11px;color:rgba(255,255,255,0.55);">'+tot.prospectos+' prospectos'+(esCarolina?' · ventas '+fmt(comTeleFin.ventas.total):'')+'</div>'
+        +'<div style="font-size:11px;color:rgba(255,255,255,0.55);">'+prReal+' canalizados (real)'+(esCarolina?' · ventas '+fmt(comTeleFin.ventas.total):'')+'</div>'
         +'</div></div>'
         +'<div style="padding:12px 18px 0;">'+kpiRows+'</div>'
         +(esCarolina?'<div style="margin:10px 18px 0;padding:8px 10px;background:rgba(91,79,207,0.08);border-radius:8px;font-size:11px;color:var(--text2);line-height:1.6;"><b>Ventas cobradas (Finanzas, sin IVA):</b> Círculo '+fmt(comTeleFin.ventas.circulo)+' · Cursos en vivo '+fmt(comTeleFin.ventas.cursos_vivo)+' · Timbres '+fmt(comTeleFin.ventas.timbres)+'<br>Comisión base '+fmt(comTeleFin.base)+' × '+comTeleFin.escala.mult+' ('+comTeleFin.escala.txt+': '+Math.round(comTeleFin.pct*100)+'% de '+fmt(comTeleFin.meta)+') = <b>'+fmt(comTeleFin.bono)+'</b></div>':'')
@@ -20662,10 +20680,10 @@ async function guardarYSiguienteCuenta(cuentaId, campanaId){
 // timbres: comisión sobre lo COBRADO en Finanzas (vendedor CAROLINA), base
 // sin IVA, con tasa por categoría y multiplicador escalonado por meta mensual
 // (meta = kpi_config 'meta_cursos_tele', default $20,000).
-const TELE_COM_TASAS={circulo:0.08,cursos_vivo:0.05,timbres:0.03};
+const TELE_COM_TASAS={circulo:0.08,cursos_vivo:0.05,cursos247:0.05,timbres:0.03};
 const TELE_COM_ESCALA=[{desde:1.2,mult:1.25,txt:'≥120% de meta'},{desde:1,mult:1,txt:'≥100% de meta'},{desde:0.7,mult:0.5,txt:'70–99% de meta'},{desde:0,mult:0,txt:'<70% de meta'}];
 async function calcVentasTeleFinanzas(anio,mes){
-  const out={circulo:0,cursos_vivo:0,timbres:0,total:0};
+  const out={circulo:0,cursos_vivo:0,cursos247:0,timbres:0,total:0};
   const {data}=await sb.from('fact_ingresos').select('rubro,subtotal_original,descuento,costo_licencias,vendedor,cobrado').eq('anio',anio).eq('mes',mes).eq('cobrado',true).ilike('vendedor','%CAROLINA%');
   (data||[]).forEach(r=>{
     const ru=(r.rubro||'').toUpperCase().trim();
@@ -20673,7 +20691,7 @@ async function calcVentasTeleFinanzas(anio,mes){
     if(!(cat in TELE_COM_TASAS)) return;
     out[cat]+=Math.max(0,(r.subtotal_original||0)-(r.descuento||0)-(r.costo_licencias||0));
   });
-  out.total=out.circulo+out.cursos_vivo+out.timbres;
+  out.total=out.circulo+out.cursos_vivo+out.cursos247+out.timbres;
   return out;
 }
 async function calcComisionTeleFin(anio,mes){
@@ -20682,7 +20700,7 @@ async function calcComisionTeleFin(anio,mes){
   const meta=cfg&&cfg[0]?cfg[0].meta_dulce:20000;
   const pct=meta>0?v.total/meta:0;
   const escala=TELE_COM_ESCALA.find(e=>pct>=e.desde)||TELE_COM_ESCALA[TELE_COM_ESCALA.length-1];
-  const base=v.circulo*TELE_COM_TASAS.circulo+v.cursos_vivo*TELE_COM_TASAS.cursos_vivo+v.timbres*TELE_COM_TASAS.timbres;
+  const base=v.circulo*TELE_COM_TASAS.circulo+v.cursos_vivo*TELE_COM_TASAS.cursos_vivo+v.cursos247*TELE_COM_TASAS.cursos247+v.timbres*TELE_COM_TASAS.timbres;
   return {ventas:v,meta,pct,escala,base,bono:base*escala.mult};
 }
 async function renderTele(){
@@ -20722,9 +20740,25 @@ async function renderTele(){
   // Sumar canalizados manuales (CRM directas) a prospectos, y llamadas efectivas del CRM
   tot.prospectos+=crmTot.canalizado;
   tot.llamadas+=crmTot.efectivas;
+  const prospReportado=tot.prospectos; // lo que capturó a mano en "Registrar día" (solo informativo)
+  // Jp, 2026-11-19: el bono de prospectos se paga por lo REALMENTE canalizado y
+  // validado por la app, no por el contador que se teclea. Cuenta (unión, sin
+  // duplicar): fichas de Carolina con estatus "Canalizado a ventas" + pases a
+  // vendedor con el botón "A vendedor" (prospecto_llamadas_asignadas).
+  const _finMesTs=new Date(currentYear,currentMonth,1).toISOString();
+  let prospReal=0;
+  try{
+    const [{data:_fc},{data:_ha}]=await Promise.all([
+      sb.from('prospectos').select('id').eq('estatus','Canalizado a ventas').eq('asignado_a',currentUser.id).gte('updated_at',desde).lt('updated_at',_finMesTs),
+      sb.from('prospecto_llamadas_asignadas').select('prospecto_id').eq('asignado_por',currentUser.id).gte('created_at',desde).lt('created_at',_finMesTs)
+    ]);
+    const _set=new Set((_fc||[]).map(r=>r.id));
+    (_ha||[]).forEach(r=>{ if(r.prospecto_id) _set.add(r.prospecto_id); });
+    prospReal=_set.size;
+  }catch(e){ console.error('prospReal',e); prospReal=0; }
   // Bono prospectos
   const MINIMO=15;
-  const bonoPros=tot.prospectos>=MINIMO?tot.prospectos*50:0;
+  const bonoPros=prospReal>=MINIMO?prospReal*50:0;
   // Bono cursos 24/7 — regla fija (todo o nada): meta y tasa configurables por el director en kpi_config
   const {data:cfgTeleRows}=await sb.from('kpi_config').select('*').eq('anio',currentYear).eq('mes',currentMonth).in('kpi_key',['meta_cursos_tele','tasa_cursos_tele']);
   const metaCursosRow=(cfgTeleRows||[]).find(k=>k.kpi_key==='meta_cursos_tele');
@@ -20739,7 +20773,7 @@ async function renderTele(){
   const usaFin=ventasFin.total>0;
   const pctMeta=META_CURSOS>0?ventasFin.total/META_CURSOS:0;
   const escala=TELE_COM_ESCALA.find(e=>pctMeta>=e.desde)||TELE_COM_ESCALA[TELE_COM_ESCALA.length-1];
-  const comBase=ventasFin.circulo*TELE_COM_TASAS.circulo+ventasFin.cursos_vivo*TELE_COM_TASAS.cursos_vivo+ventasFin.timbres*TELE_COM_TASAS.timbres;
+  const comBase=ventasFin.circulo*TELE_COM_TASAS.circulo+ventasFin.cursos_vivo*TELE_COM_TASAS.cursos_vivo+ventasFin.cursos247*TELE_COM_TASAS.cursos247+ventasFin.timbres*TELE_COM_TASAS.timbres;
   const bonoVentasFin=comBase*escala.mult;
   const bonoCursos=usaFin?bonoVentasFin:tot.cursos*tasaCursos;
   const bonoTotal=bonoPros+bonoCursos;
@@ -20748,12 +20782,12 @@ async function renderTele(){
   const esEsteMes=hoy.getMonth()+1===currentMonth&&hoy.getFullYear()===currentYear;
   const diasTrans=esEsteMes?getDiasTranscurridos(currentYear,currentMonth):diasHab;
   const diasRest=Math.max(diasHab-diasTrans,0);
-  const proyPros=diasTrans>0?Math.round(tot.prospectos/diasTrans*diasHab):0;
+  const proyPros=diasTrans>0?Math.round(prospReal/diasTrans*diasHab):0;
   const proyCursos=diasTrans>0?Math.round(tot.cursos/diasTrans*diasHab):0;
   const proyBonoPros=proyPros>=MINIMO?proyPros*50:0;
   const proyBonoCursos=proyCursos*getTasaCursos(proyCursos,META_CURSOS);
   const proyBono=proyBonoPros+proyBonoCursos;
-  const falta=Math.max(MINIMO-tot.prospectos,0);
+  const falta=Math.max(MINIMO-prospReal,0);
   const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
   // Load dept status for telemarketing view too
@@ -20785,11 +20819,12 @@ async function renderTele(){
     <div class="hero-lbl">Compensación variable — ${meses[currentMonth]} ${currentYear}</div>
     <div class="hero-grid">
       <div>
-        <div class="comm-num" style="color:${bonoTotal>0?'#fff':'rgba(255,255,255,0.3)'};">${fmt(bonoTotal)}</div>
+        <div class="comm-num" style="color:${bonoTotal<=0?'rgba(255,255,255,0.3)':deptoAlcanzado?'#fff':'#F5A623'};">${fmt(bonoTotal)}</div>
         <div class="comm-sub">
           Prospectos <b style="color:var(--teal);">${fmt(bonoPros)}</b> + ${usaFin?'Ventas (Finanzas)':'Cursos'} <b style="color:var(--teal);">${fmt(bonoCursos)}</b>
         </div>
-        ${usaFin?`<div style="font-size:10px;color:rgba(255,255,255,0.55);margin-top:6px;line-height:1.5;">Cobrado sin IVA: Círculo ${fmt(ventasFin.circulo)} (8%) · Cursos en vivo ${fmt(ventasFin.cursos_vivo)} (5%) · Timbres ${fmt(ventasFin.timbres)} (3%)<br>Comisión base ${fmt(comBase)} × ${escala.mult} (${escala.txt}: ${Math.round(pctMeta*100)}% de ${fmt(META_CURSOS)})</div>`:''}
+        ${bonoTotal>0?`<div style="font-size:11px;font-weight:700;margin-top:6px;color:${deptoAlcanzado?'#27AE60':'#F5A623'};">${deptoAlcanzado?'✅ Liberado — la meta de servicios del departamento se cumplió':'🔒 Acumulado · se libera al cumplir la meta de servicios del depto (faltan '+fmt(metaDepto-totalDeptoSvc2)+')'}</div>`:''}
+        ${usaFin?`<div style="font-size:10px;color:rgba(255,255,255,0.55);margin-top:6px;line-height:1.5;">Cobrado sin IVA: Círculo ${fmt(ventasFin.circulo)} (8%) · Cursos en vivo ${fmt(ventasFin.cursos_vivo)} (5%) · 24/7 ${fmt(ventasFin.cursos247)} (5%) · Timbres ${fmt(ventasFin.timbres)} (3%)<br>Comisión base ${fmt(comBase)} × ${escala.mult} (${escala.txt}: ${Math.round(pctMeta*100)}% de ${fmt(META_CURSOS)})</div>`:''}
         <div style="display:flex;gap:8px;margin-top:8px;">
           <div class="rate-chip">$50/prospecto · mín. ${MINIMO}</div>
           <div class="rate-chip">Cursos ${(tasaCursos*100).toFixed(1)}% · ${Math.round(tot.cursos/META_CURSOS*100)}% meta</div>
@@ -20808,7 +20843,7 @@ async function renderTele(){
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px;">
     ${[
       {icon:'📞',n:'Llamadas efectivas',v:tot.llamadas,m:300,col:'#0D2240'},
-      {icon:'🎯',n:'Prospectos canalizados',v:tot.prospectos,m:40,col:'#00A99D'},
+      {icon:'🎯',n:'Canalizados a ventas (real)',v:prospReal,m:40,col:'#00A99D'},
       {icon:'🎓',n:'Cursos 24/7 / Membresías',v:fmt(tot.cursos),m:fmt(META_CURSOS),col:tasaCursos>0?'#00A99D':'#E84040',raw:true},
       {icon:'💼',n:'Siigo Fiscal',v:tot.siigo,m:2,col:'#F5A623'},
     ].map(k=>{
@@ -20841,12 +20876,15 @@ async function renderTele(){
   <!-- PROGRESO BONOS -->
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--rad);padding:18px 22px;margin-bottom:18px;">
     <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px;">Progreso hacia compensación</div>
-    <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px;">
-      <span style="font-size:12px;color:var(--text2);min-width:160px;">Prospectos (mín. ${MINIMO})</span>
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:4px;">
+      <span style="font-size:12px;color:var(--text2);min-width:160px;">Canalizados a ventas (mín. ${MINIMO})</span>
       <div style="flex:1;height:8px;background:var(--bg);border-radius:4px;overflow:hidden;">
-        <div style="height:100%;width:${Math.min(tot.prospectos/MINIMO*100,100)}%;background:${tot.prospectos>=MINIMO?'#27AE60':'#F5A623'};border-radius:4px;"></div>
+        <div style="height:100%;width:${Math.min(prospReal/MINIMO*100,100)}%;background:${prospReal>=MINIMO?'#27AE60':'#F5A623'};border-radius:4px;"></div>
       </div>
-      <span style="font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${tot.prospectos>=MINIMO?'#27AE60':'#F5A623'};">${tot.prospectos}/${MINIMO}</span>
+      <span style="font-size:12px;font-weight:600;font-family:'JetBrains Mono',monospace;color:${prospReal>=MINIMO?'#27AE60':'#F5A623'};">${prospReal}/${MINIMO}</span>
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin:0 0 10px 0;">
+      Pagan los <b>${prospReal}</b> canalizados que la app validó (ficha "Canalizado a ventas" o pase a vendedor).${prospReportado!==prospReal?` Capturaste <b>${prospReportado}</b> en "Registrar día" — esa cifra es solo actividad, no paga.`:''}
     </div>
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px;">
       <span style="font-size:12px;color:var(--text2);min-width:160px;">Cursos 24/7</span>
@@ -20859,7 +20897,7 @@ async function renderTele(){
       <div style="background:var(--surf2);border-radius:var(--radsm);padding:10px 14px;">
         <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Bono prospectos</div>
         <div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:${bonoPros>0?'#27AE60':'var(--text3)'};">${fmt(bonoPros)}</div>
-        <div style="font-size:10px;color:var(--text3);">${tot.prospectos>=MINIMO?'Activo ✓':falta+' faltan'}</div>
+        <div style="font-size:10px;color:var(--text3);">${prospReal>=MINIMO?'Activo ✓':falta+' faltan'}</div>
       </div>
       <div style="background:var(--surf2);border-radius:var(--radsm);padding:10px 14px;">
         <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Comisión cursos</div>
