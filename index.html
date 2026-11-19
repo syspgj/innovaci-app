@@ -8699,6 +8699,7 @@ function modalPipeTeleHTML(r,hoy){
         <label>Servicio / Póliza</label>
         <select id="pProductoSel" onchange="catProyElegir()" style="display:none;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;width:100%;margin-bottom:6px;"></select>
         <input type="text" id="pProducto" value="${v.producto||''}" placeholder="Ej. Póliza Infinito · Curso Empresarial · Servidor Cloud…" ${TIPOS_SOLO_CATALOGO.includes(v.tipo_servicio||'')?'style="display:none"':''}>
+        <div id="opsFichaVenta"></div>
         <img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="display:none" onload="catProyCargar().then(()=>{catProyPintar();pipeRepintarPartidas();})">
         <div id="pPartidasLista">${(Array.isArray(v.partidas)?v.partidas:[]).map(pipePartidaHtml).join('')}</div>
         <button type="button" onclick="pipeAgregarPartida()" style="margin-top:8px;background:#fff;border:1px dashed var(--teal);color:var(--teal);border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;">➕ Agregar otra partida (otro producto o servicio en la misma venta)</button>
@@ -9968,7 +9969,7 @@ async function consumirCreditoEdicion(){
 // de Servicio" que Jp dio de alta en Vtiger (Potentials) — mismas 9 opciones
 // en ambos lados, para poder enviarlo al CRM sin tabla de equivalencias.
 const TIPOS_CRM=['Póliza','Curso Empresarial','IT','Servicio por Evento','Suscripción Aspel','Licenciamiento Aspel','Servidor Cloud','24/7','Curso o Diplomado en Vivo'];
-const TIPOS_SERVICIO=[...TIPOS_CRM,'Membresías']; // Membresías no existe en el picklist del CRM: no se envía
+const TIPOS_SERVICIO=[...TIPOS_CRM,'Membresías','Servicio de soporte Aspel']; // Membresías y Servicio de soporte Aspel no existen en el picklist del CRM: no se envían
 // Catálogo de Servicio/Póliza por tipo (tabla catalogo_proyeccion). Si falla la carga, queda texto libre.
 let CAT_PROY=null;
 // Jp, 2026-11-18: el catálogo se guardaba en memoria para toda la sesión, así
@@ -10045,8 +10046,42 @@ async function catProyCargar(){
       }
     }catch(e){console.error('catProy catálogo único',e);}
   }catch(e){CAT_PROY=[];}
+  // Jp, 2026-11-19: engancha el catálogo de servicios Aspel (operaciones) al
+  // cotizador. Se suman como el tipo "Servicio de soporte Aspel" (solo catálogo)
+  // y, al elegir uno, Ventas ve solas sus consideraciones, alcances y requisitos.
+  try{
+    if(!Array.isArray(CAT_PROY)) CAT_PROY=[];
+    const {data:ops}=await sb.from('operaciones_servicios_catalogo')
+      .select('codigo,nombre,categoria,consideraciones_ventas,observacion_partida,requisitos_cliente,a_que_se_refiere,resumen_claro,precio_recomendado,aplica_poliza,nivel_asesor,tiempo_prom_txt')
+      .eq('activo',true).order('orden');
+    window._opsCat={};
+    CAT_PROY=CAT_PROY.filter(c=>c.tipo_servicio!=='Servicio de soporte Aspel');
+    (ops||[]).forEach(s=>{
+      if(s.nombre && !window._opsCat[s.nombre]) window._opsCat[s.nombre]=s;
+      CAT_PROY.push({tipo_servicio:'Servicio de soporte Aspel',nombre:s.nombre,orden:0,solo_para:null,grupo:s.categoria||'Servicios Aspel'});
+    });
+  }catch(e){console.error('catProy ops',e);}
   return CAT_PROY;
 }
+// Ficha de ventas de un servicio Aspel (se muestra sola al elegirlo en el cotizador).
+function opsFichaVentaHtml(nombre){
+  const s=(window._opsCat||{})[nombre]; if(!s) return '';
+  const esc=t=>String(t==null?'':t).replace(/</g,'&lt;');
+  const blk=(ic,t,v)=>v?`<div style="margin-top:7px;"><div style="font-size:10px;font-weight:800;color:var(--teal);text-transform:uppercase;letter-spacing:.03em;">${ic} ${t}</div><div style="font-size:11.5px;color:var(--text);white-space:pre-wrap;line-height:1.45;margin-top:2px;">${esc(v)}</div></div>`:'';
+  const pol=(s.aplica_poliza||'').toUpperCase();
+  const polTxt=pol.startsWith('SI')?'✅ Incluido en póliza':pol==='NO'?'⚠️ NO incluido en póliza (se cobra aparte)':'';
+  const meta=[s.precio_recomendado!=null?'Precio sugerido $'+(+s.precio_recomendado).toLocaleString('es-MX'):'',s.tiempo_prom_txt?'⏱ '+esc(s.tiempo_prom_txt):'',s.nivel_asesor?esc(s.nivel_asesor):''].filter(Boolean).join(' · ');
+  return `<div style="border:1px solid var(--teal);background:#f6fcfc;border-radius:8px;padding:9px 11px;margin:6px 0 4px;">
+    <div style="font-size:11px;font-weight:800;color:var(--teal);">📖 Lo que debes saber de este servicio</div>
+    ${meta?`<div style="font-size:10.5px;color:var(--text3);margin-top:2px;">${meta}</div>`:''}
+    ${polTxt?`<div style="font-size:11px;font-weight:700;margin-top:3px;color:${pol.startsWith('SI')?'var(--green,#1a7f3c)':'var(--gold,#9a6a12)'};">${polTxt}</div>`:''}
+    ${blk('💡','¿Qué es?',s.resumen_claro||s.a_que_se_refiere)}
+    ${blk('📦','Qué incluye / alcances',s.observacion_partida)}
+    ${blk('🗣','Qué decirle al cliente antes de cerrar',s.consideraciones_ventas)}
+    ${blk('📋','Qué debe tener listo el cliente',s.requisitos_cliente)}
+  </div>`;
+}
+function opsPintarFicha(nombre,el){ if(el) el.innerHTML=opsFichaVentaHtml(nombre); }
 // Fuerza una relectura del catálogo y vuelve a pintar la lista del modal
 // abierto (sirve cuando Capacitación acaba de ligar un curso nuevo).
 async function catProyRecargar(){
@@ -10066,7 +10101,7 @@ function catProyItems(tipo){
 }
 // Jp, 2026-11-17: en estos tipos NO se puede escribir a mano: solo se elige del catálogo
 // (cursos en vivo con generación vigente en Academia, cursos 24/7 y membresías) para no crear productos de más.
-const TIPOS_SOLO_CATALOGO=['Curso o Diplomado en Vivo','24/7','Membresías'];
+const TIPOS_SOLO_CATALOGO=['Curso o Diplomado en Vivo','24/7','Membresías','Servicio de soporte Aspel'];
 function catProyLlenar(tipo,sel,inp,actual){
   if(!sel||!inp) return;
   const soloCat=TIPOS_SOLO_CATALOGO.includes(tipo);
@@ -10088,12 +10123,16 @@ function catProyLlenar(tipo,sel,inp,actual){
 function catProyPintar(actual){
   const tipo=document.getElementById('pTipo')?.value, sel=document.getElementById('pProductoSel'), inp=document.getElementById('pProducto');
   catProyLlenar(tipo,sel,inp,actual);
+  const val=(actual!==undefined?actual:(inp?inp.value:''))||'';
+  opsPintarFicha(tipo==='Servicio de soporte Aspel'?val:'', document.getElementById('opsFichaVenta'));
 }
 function catProyElegir(){
   const sel=document.getElementById('pProductoSel'), inp=document.getElementById('pProducto');
   if(sel.value==='__otro'){inp.style.display='';inp.focus();return;}
   if(sel.value==='__anterior') return;
   inp.style.display='none'; inp.value=sel.value; inp.dispatchEvent(new Event('input',{bubbles:true}));
+  const tipo=document.getElementById('pTipo')?.value;
+  opsPintarFicha(tipo==='Servicio de soporte Aspel'?inp.value:'', document.getElementById('opsFichaVenta'));
 }
 // ── Partidas adicionales (varios productos/servicios en una misma venta o cotización) ──
 function pipePartidaHtml(pt){
@@ -10105,14 +10144,22 @@ function pipePartidaHtml(pt){
     <select class="ptSel" onchange="pipePartidaElegir(this.closest('.pPartida'))" style="${st}display:none;"></select>
     <input class="ptInp" type="text" value="${String(pt.producto||'').replace(/"/g,'&quot;')}" placeholder="Producto o servicio" style="${st}">
     <input class="ptMonto" type="number" step="0.01" min="0" value="${pt.subtotal||''}" placeholder="Subtotal de esta partida (opcional)" style="${st}margin-bottom:0;">
+    <div class="ptFicha"></div>
   </div>`;
 }
-function pipePartidaPintar(row,actual){ if(row) catProyLlenar(row.querySelector('.ptTipo').value,row.querySelector('.ptSel'),row.querySelector('.ptInp'),actual); }
+function pipePartidaPintar(row,actual){
+  if(!row) return;
+  catProyLlenar(row.querySelector('.ptTipo').value,row.querySelector('.ptSel'),row.querySelector('.ptInp'),actual);
+  const f=row.querySelector('.ptFicha');
+  if(f){ const val=(actual!==undefined?actual:(row.querySelector('.ptInp').value||''))||''; opsPintarFicha(row.querySelector('.ptTipo').value==='Servicio de soporte Aspel'?val:'', f); }
+}
 function pipePartidaElegir(row){
   const sel=row.querySelector('.ptSel'), inp=row.querySelector('.ptInp');
   if(sel.value==='__otro'){inp.style.display='';inp.focus();return;}
   if(sel.value==='__anterior') return;
   inp.style.display='none'; inp.value=sel.value;
+  const f=row.querySelector('.ptFicha');
+  if(f) opsPintarFicha(row.querySelector('.ptTipo').value==='Servicio de soporte Aspel'?inp.value:'', f);
 }
 async function pipeAgregarPartida(pt){
   await catProyCargar();
@@ -10659,6 +10706,7 @@ function modalPipeHTML(r,hoy){
         <label>Servicio / Póliza</label>
         <select id="pProductoSel" onchange="catProyElegir()" style="display:none;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;width:100%;margin-bottom:6px;"></select>
         <input type="text" id="pProducto" value="${v.producto||''}" placeholder="Ej. Póliza Infinito · Curso Empresarial · Servidor Cloud…" ${TIPOS_SOLO_CATALOGO.includes(v.tipo_servicio||'')?'style="display:none"':''}>
+        <div id="opsFichaVenta"></div>
         <img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="display:none" onload="catProyCargar().then(()=>{catProyPintar();pipeRepintarPartidas();})">
         <div id="pPartidasLista">${(Array.isArray(v.partidas)?v.partidas:[]).map(pipePartidaHtml).join('')}</div>
         <button type="button" onclick="pipeAgregarPartida()" style="margin-top:8px;background:#fff;border:1px dashed var(--teal);color:var(--teal);border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;">➕ Agregar otra partida (otro producto o servicio en la misma venta)</button>
@@ -38619,11 +38667,13 @@ async function respondTraerContacto(){
     if(!j.encontrado){ msg.innerHTML='<span style="color:#c47f0a;">Ese número no tiene conversación en WhatsApp.</span>'; return; }
     const quien=esc(j.nombre||j.telefono||'');
     const extra=[j.lifecycle?'etapa '+esc(j.lifecycle):'',j.etiquetas&&j.etiquetas.length?esc(j.etiquetas.join(', ')):''].filter(Boolean).join(' · ');
+    // Botón para abrir la ficha al instante — así no hay que buscarlo en la lista.
+    const verLink=j.prospecto_id?` <a onclick="abrirProspectoPorId('${j.prospecto_id}')" style="color:var(--teal);font-weight:700;cursor:pointer;text-decoration:underline;">Ver ficha →</a>`:'';
     if(j.resultado==='prospecto_creado'){
-      msg.innerHTML=`<span style="color:#16a34a;font-weight:600;">✅ ${quien} ya está en Prospectos${extra?' ('+extra+')':''}.</span>`;
+      msg.innerHTML=`<span style="color:#16a34a;font-weight:600;">✅ ${quien} ya está en Prospectos${extra?' ('+extra+')':''}.</span>${verLink}`;
       uiToast('✓ '+quien+' agregado a Prospectos');
     }else if(j.resultado==='ya_existia_prospecto'){
-      msg.innerHTML=`<span style="color:#16a34a;">Ya estaba en Prospectos: <b>${quien}</b>. Se actualizó con lo de WhatsApp${j.es_cliente?' · ojo: ya es cliente ('+esc(j.cliente)+')':''}.</span>`;
+      msg.innerHTML=`<span style="color:#16a34a;">Ya estaba en Prospectos: <b>${quien}</b>. Se actualizó con lo de WhatsApp${j.es_cliente?' · ojo: ya es cliente ('+esc(j.cliente)+')':''}.</span>${verLink}`;
     }else if(j.resultado==='ya_es_cliente_en_respond'){
       msg.innerHTML=`<span style="color:#1D5FA8;">No se dio de alta: en WhatsApp <b>${quien}</b> está marcado como <b>${esc(j.lifecycle||'cliente')}</b>, así que no es prospecto. Búscalo en Cartera de Cuentas.</span>`;
     }else{
