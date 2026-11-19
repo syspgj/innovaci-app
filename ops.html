@@ -110,18 +110,23 @@ async function arrancar(){
     <span>${esc(prof.nombre||'')}</span>
     <span class="av">${esc((prof.nombre||'?').substring(0,2).toUpperCase())}</span>`;
   pintarShell();
-  renderCatalogo();
 }
 
+let currentOpsTab='catalogo';
+function irOps(tab){ currentOpsTab=tab; pintarShell(); }
 function pintarShell(){
+  const sub = currentOpsTab==='asignaciones'
+    ? 'Toma los pendientes de Telegram (o captura directa) y asígnalos a un asesor con día y hora. El detalle, en segundo nivel.'
+    : 'El catálogo que es cimiento de todo: qué es cada servicio, qué pedirle al cliente, qué valida Mesa de Control, alcances y tiempo.';
   document.getElementById('root').innerHTML=`
     <div class="tabs">
-      <div class="tab active">🧾 Catálogo de servicios</div>
-      <div class="tab soon" title="Próxima fase">📅 Asignaciones</div>
+      <div class="tab ${currentOpsTab==='catalogo'?'active':''}" onclick="irOps('catalogo')">🧾 Catálogo de servicios</div>
+      <div class="tab ${currentOpsTab==='asignaciones'?'active':''}" onclick="irOps('asignaciones')">📅 Asignaciones</div>
       <div class="tab soon" title="Próxima fase">🎫 Tickets</div>
     </div>
-    <div class="muted" style="margin:2px 0 14px;">Asignaciones y Tickets llegan en las siguientes fases del plan. Hoy: el catálogo que es cimiento de todo.</div>
+    <div class="muted" style="margin:2px 0 14px;">${sub}</div>
     <div id="mod"></div>`;
+  if(currentOpsTab==='asignaciones') renderAsignaciones(); else renderCatalogo();
 }
 
 // ─── Catálogo de servicios de operación ─────────────────────────────────────
@@ -294,6 +299,175 @@ async function guardarServicio(id){
   if(error){ btn.disabled=false; btn.textContent='Guardar'; msg.innerHTML=`<span style="color:var(--red);font-weight:600;">No se pudo guardar: ${esc(error.message)}</span>`; return; }
   cerrarModal();
   renderCatalogo();
+}
+
+// ═══ ASIGNACIONES (Fase 1 del plan de Mesa de Control) ══════════════════════
+// Coordinación toma un pendiente de Telegram (o captura directa) y lo asigna a
+// un asesor con servicio del catálogo, día y hora. Guarda en servicios_ejecutados
+// (la tabla del ticket) con estatus ASIGNADO y marca el pendiente como procesado.
+let _opsCatAsig=[], _asesores=[], _pendientes=[], _asignaciones=[];
+const OPS_EST={ASIGNADO:{t:'Asignado',c:'#2980B9'},POR_CONTACTAR:{t:'Por contactar',c:'#F5A623'},EN_CURSO:{t:'En curso',c:'#8E44AD'},EJECUTADO:{t:'Ejecutado',c:'#16A085'},REPORTE_PENDIENTE:{t:'Reporte pendiente',c:'#E67E22'},CERRADO:{t:'Cerrado',c:'#27AE60'}};
+const OPS_EST_FLUJO=['ASIGNADO','POR_CONTACTAR','EN_CURSO','EJECUTADO','REPORTE_PENDIENTE','CERRADO'];
+
+async function renderAsignaciones(){
+  const m=document.getElementById('mod');
+  m.innerHTML=`<div class="loading"><div class="spinner"></div> Cargando asignaciones…</div>`;
+  try{
+    const [cat,ases,pend,asig]=await Promise.all([
+      _opsCatAsig.length?Promise.resolve({data:_opsCatAsig}):sb.from('operaciones_servicios_catalogo').select('*').eq('activo',true).order('orden').order('nombre'),
+      sb.from('usuarios').select('id,nombre,rol').in('rol',['asesor','gerente_operaciones']).eq('activo',true).order('nombre'),
+      sb.from('mesa_control_telegram_solicitudes').select('*').eq('estado','pendiente').order('created_at',{ascending:false}).limit(150),
+      sb.from('servicios_ejecutados').select('*').order('fecha_asignada',{ascending:true,nullsFirst:false}).order('created_at',{ascending:false}).limit(300)
+    ]);
+    _opsCatAsig=cat.data||_opsCatAsig; _asesores=ases.data||[]; _pendientes=pend.data||[];
+    _asignaciones=(asig.data||[]).filter(s=>s.estatus!=='CERRADO'&&!s.ticket_cerrado);
+  }catch(e){ m.innerHTML=`<div class="center" style="color:var(--red);">No se pudo cargar: ${esc(e.message||e)}</div>`; return; }
+  pintarAsignaciones();
+}
+function _agCanalCorto(t){ t=t||''; if(/coordinacion/i.test(t)||/ventas-coord/i.test(t)) return 'Ventas-Coordinación'; if(/factura/i.test(t)) return 'Facturación'; if(/soporte/i.test(t)) return 'Coordinación Soporte'; return t.slice(0,32); }
+function pintarAsignaciones(){
+  const m=document.getElementById('mod');
+  const fechaMx=f=>{ if(!f) return ''; const p=String(f).slice(0,10).split('-'); return p.length===3?p[2]+'/'+p[1]:f; };
+  const pendCard=p=>{
+    const d=p.datos_extraidos||{};
+    const canal=_agCanalCorto(p.telegram_chat_titulo);
+    const esFact=/factura/i.test(p.telegram_chat_titulo||'');
+    return `<div class="card" style="padding:12px 14px;">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;">
+        <span class="chip" style="background:${esFact?'var(--gold-bg)':'var(--teal-bg)'};color:${esFact?'var(--gold)':'var(--teal)'};">${esc(canal)}</span>
+        <span class="muted">${fechaMx(p.created_at)}${p.foto_file_id?' · 📎 foto':''}</span>
+      </div>
+      <div style="font-weight:700;font-size:13.5px;margin-top:6px;">${esc(d.cliente||'(sin cliente detectado)')}</div>
+      <div style="font-size:12px;color:var(--text2);margin-top:2px;line-height:1.45;">${esc((d.descripcion||p.texto_original||'').slice(0,240))}</div>
+      ${(d.contacto_nombre||d.contacto_telefono)?`<div class="muted" style="margin-top:4px;">👤 ${esc(d.contacto_nombre||'')}${d.contacto_telefono?' · '+esc(d.contacto_telefono):''}</div>`:''}
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+        ${esStaff?`<button class="btn" style="padding:6px 12px;font-size:12px;" onclick="abrirAsignar('${p.id}')">Asignar a un asesor →</button>
+        <button class="btn ghost" style="padding:6px 12px;font-size:12px;" onclick="descartarPendiente('${p.id}')">Descartar</button>`:'<span class="muted">Solo Mesa de Control asigna.</span>'}
+      </div>
+    </div>`;
+  };
+  const asigCard=s=>{
+    const e=OPS_EST[s.estatus]||{t:s.estatus||'—',c:'var(--text3)'};
+    return `<div class="card" style="padding:12px 14px;cursor:pointer;" onclick="abrirAsignacion('${s.id}')">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
+        <span style="font-weight:700;font-size:13.5px;">${esc(s.cliente_nombre||'Sin cliente')}</span>
+        <span class="chip" style="background:${e.c}1a;color:${e.c};">${esc(e.t)}</span>
+      </div>
+      <div style="font-size:12px;color:var(--text2);margin-top:3px;">${esc(s.tipo_servicio||'(servicio sin definir)')}</div>
+      <div class="muted" style="margin-top:4px;">🧑‍🔧 ${esc(s.asesor_nombre||'sin asesor')} · 📅 ${fechaMx(s.fecha_asignada)||'sin fecha'}${s.hora_asignada?' '+String(s.hora_asignada).slice(0,5):''}</div>
+    </div>`;
+  };
+  m.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+      <div>
+        <div style="font-size:15px;font-weight:700;">Asignaciones</div>
+        <div class="muted">${_pendientes.length} pendientes por asignar · ${_asignaciones.length} activas</div>
+      </div>
+      ${esStaff?`<button class="btn" onclick="abrirAsignar(null)">＋ Nueva asignación (directa)</button>`:''}
+    </div>
+    <div style="font-size:12px;font-weight:800;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;margin:8px 0 6px;">📥 Pendientes por asignar</div>
+    <div style="display:grid;gap:8px;margin-bottom:18px;">
+      ${_pendientes.length?_pendientes.map(pendCard).join(''):'<div class="center">No hay pendientes. 🎉</div>'}
+    </div>
+    <div style="font-size:12px;font-weight:800;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;margin:8px 0 6px;">🗂 Asignaciones activas</div>
+    <div style="display:grid;gap:8px;">
+      ${_asignaciones.length?_asignaciones.map(asigCard).join(''):'<div class="center">Aún no hay asignaciones activas.</div>'}
+    </div>`;
+}
+function asigServicioFicha(nombre){
+  const s=(_opsCatAsig||[]).find(x=>x.nombre===nombre); if(!s) return '';
+  const blk=(ic,t,v)=>v?`<div style="margin-top:7px;"><div style="font-size:10px;font-weight:800;color:var(--teal);text-transform:uppercase;">${ic} ${t}</div><div style="font-size:12px;color:var(--text);white-space:pre-wrap;line-height:1.45;margin-top:2px;">${esc(v)}</div></div>`:'';
+  return `<div style="border:1px solid var(--teal-b);background:var(--teal-bg);border-radius:10px;padding:10px 12px;margin:6px 0;">
+    <div style="font-size:11px;font-weight:800;color:var(--teal);">📖 Guía del servicio (para asignar bien)</div>
+    ${s.tiempo_prom_txt||s.nivel_asesor?`<div class="muted" style="margin-top:2px;">${s.tiempo_prom_txt?'⏱ '+esc(s.tiempo_prom_txt):''}${s.nivel_asesor?' · '+esc(s.nivel_asesor):''}</div>`:''}
+    ${blk('🔎','Antes de asignar — valida Mesa de Control',s.consideraciones_mc)}
+    ${blk('📋','Qué debe tener listo el cliente',s.requisitos_cliente)}
+    ${blk('📦','Alcances',s.observacion_partida)}
+  </div>`;
+}
+function asigPintarFicha(){ const el=document.getElementById('agFicha'); if(el) el.innerHTML=asigServicioFicha(document.getElementById('agServicio')?.value||''); }
+function abrirAsignar(pendId){
+  if(!esStaff) return;
+  const p=pendId?_pendientes.find(x=>x.id===pendId):null;
+  const d=p?(p.datos_extraidos||{}):{};
+  const hoy=new Date().toISOString().slice(0,10);
+  const opcSrv='<option value="">— Elige el servicio del catálogo —</option>'+(_opsCatAsig||[]).map(s=>`<option value="${esc(s.nombre)}">${esc(s.nombre)}</option>`).join('');
+  const opcAse='<option value="">— Elige al asesor —</option>'+(_asesores||[]).map(a=>`<option value="${a.id}">${esc(a.nombre)}${a.rol==='gerente_operaciones'?' (gerente)':''}</option>`).join('');
+  mostrarModal(`
+    <div style="font-size:16px;font-weight:800;margin-bottom:4px;">${p?'Asignar pendiente':'Nueva asignación'}</div>
+    <div class="muted" style="margin-bottom:12px;">${p?'Prellené lo que detecté del mensaje. Revisa, elige servicio y asesor, pon día y hora.':'Captura una asignación directa (p. ej. llegó por WhatsApp).'}</div>
+    <label class="fld"><span>Cliente *</span><input class="inp" id="agCliente" value="${esc(d.cliente||'')}" placeholder="Nombre del cliente / empresa"></label>
+    <label class="fld"><span>Servicio del catálogo</span><select class="inp" id="agServicio" onchange="asigPintarFicha()">${opcSrv}</select></label>
+    <div id="agFicha"></div>
+    <div class="grid2">
+      <label class="fld"><span>Asesor *</span><select class="inp" id="agAsesor">${opcAse}</select></label>
+      <label class="fld"><span>Fecha *</span><input class="inp" id="agFecha" type="date" value="${esc(d.fecha_sugerida||hoy)}"></label>
+      <label class="fld"><span>Hora</span><input class="inp" id="agHora" type="time"></label>
+      <label class="fld"><span>Contacto en el cliente</span><input class="inp" id="agContacto" value="${esc([d.contacto_nombre,d.contacto_telefono].filter(Boolean).join(' · ')||'')}" placeholder="Nombre · teléfono"></label>
+    </div>
+    <label class="fld"><span>Descripción de lo solicitado</span><textarea class="inp" id="agDesc" placeholder="Qué pidió el cliente.">${esc(d.descripcion||(p?p.texto_original:'')||'')}</textarea></label>
+    <label class="fld"><span>Nota para el asesor (opcional)</span><textarea class="inp" id="agNota" placeholder="Algo que deba saber antes de ejecutar.">${esc(d.nota||'')}</textarea></label>
+    <div id="agMsg" style="font-size:12px;margin-bottom:8px;"></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn" id="agGuardar" onclick="guardarAsignacion('${pendId||''}')">Asignar</button>
+      <button class="btn ghost" onclick="cerrarModal()">Cancelar</button>
+    </div>`);
+}
+async function guardarAsignacion(pendId){
+  const g=i=>document.getElementById(i)?.value.trim();
+  const msg=document.getElementById('agMsg');
+  const err=t=>{ if(msg) msg.innerHTML='<span style="color:var(--red);font-weight:600;">'+t+'</span>'; };
+  const cliente=g('agCliente'), asesorId=g('agAsesor'), fecha=g('agFecha');
+  if(!cliente) return err('El cliente es obligatorio.');
+  if(!asesorId) return err('Elige al asesor.');
+  if(!fecha) return err('Pon la fecha de la asignación.');
+  const ases=(_asesores||[]).find(a=>a.id===asesorId);
+  const fila={
+    cliente_nombre:cliente, tipo_servicio:g('agServicio')||null, descripcion_solicitud:g('agDesc')||null,
+    asesor_id:asesorId, asesor_nombre:ases?ases.nombre:null,
+    fecha_asignada:fecha, hora_asignada:g('agHora')||null,
+    estatus:'ASIGNADO', solicitado_por:g('agContacto')||null,
+    fecha_solicitud:new Date().toISOString(), nota:g('agNota')||null
+  };
+  const btn=document.getElementById('agGuardar'); if(btn){btn.disabled=true;btn.textContent='Asignando…';}
+  let error,nuevo;
+  ({data:nuevo,error}=await sb.from('servicios_ejecutados').insert(fila).select().single());
+  if(error){ if(btn){btn.disabled=false;btn.textContent='Asignar';} return err('No se pudo guardar: '+esc(error.message)); }
+  if(pendId){ try{ await sb.from('mesa_control_telegram_solicitudes').update({estado:'asignado',servicio_ejecutado_id:nuevo.id,procesado_por:userProfile.id,procesado_at:new Date().toISOString()}).eq('id',pendId); }catch(_){} }
+  cerrarModal(); renderAsignaciones();
+}
+async function descartarPendiente(id){
+  if(!esStaff) return;
+  if(!confirm('¿Descartar este pendiente? Sale de la lista por asignar (no es una solicitud de servicio o ya se resolvió).')) return;
+  try{ await sb.from('mesa_control_telegram_solicitudes').update({estado:'descartado',procesado_por:userProfile.id,procesado_at:new Date().toISOString()}).eq('id',id); }catch(e){ alert('No se pudo: '+(e.message||e)); return; }
+  renderAsignaciones();
+}
+function abrirAsignacion(id){
+  const s=(_asignaciones||[]).find(x=>x.id===id); if(!s) return;
+  const e=OPS_EST[s.estatus]||{t:s.estatus,c:'var(--text3)'};
+  const fechaMx=f=>{ if(!f) return '—'; const p=String(f).slice(0,10).split('-'); return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:f; };
+  const opc=OPS_EST_FLUJO.map(k=>`<option value="${k}" ${s.estatus===k?'selected':''}>${OPS_EST[k].t}</option>`).join('');
+  mostrarModal(`
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+      <div><div style="font-size:16px;font-weight:800;">${esc(s.cliente_nombre||'Sin cliente')}</div>
+      <div class="muted">${esc(s.tipo_servicio||'(servicio sin definir)')}</div></div>
+      <span class="chip" style="background:${e.c}1a;color:${e.c};">${esc(e.t)}</span>
+    </div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:12px;padding:10px 12px;background:var(--surf2);border-radius:10px;">
+      <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Asesor</div><div style="font-weight:700;">${esc(s.asesor_nombre||'—')}</div></div>
+      <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Día y hora</div><div style="font-weight:700;">${fechaMx(s.fecha_asignada)}${s.hora_asignada?' · '+String(s.hora_asignada).slice(0,5):''}</div></div>
+      <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;">Contacto</div><div style="font-weight:700;">${esc(s.solicitado_por||'—')}</div></div>
+    </div>
+    ${s.descripcion_solicitud?`<div style="margin-top:12px;"><div style="font-size:11px;font-weight:700;color:var(--text2);">Lo solicitado</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.descripcion_solicitud)}</div></div>`:''}
+    ${s.nota?`<div style="margin-top:10px;"><div style="font-size:11px;font-weight:700;color:var(--text2);">Nota para el asesor</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.nota)}</div></div>`:''}
+    ${esStaff?`<label class="fld" style="margin-top:16px;"><span>Cambiar estatus</span><select class="inp" id="aeEst">${opc}</select></label>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;"><button class="btn" onclick="guardarEstatusAsig('${s.id}')">Guardar estatus</button><button class="btn ghost" onclick="cerrarModal()">Cerrar</button></div>`
+    :'<div style="margin-top:16px;"><button class="btn ghost" onclick="cerrarModal()">Cerrar</button></div>'}`);
+}
+async function guardarEstatusAsig(id){
+  const est=document.getElementById('aeEst')?.value; if(!est) return;
+  try{ await sb.from('servicios_ejecutados').update({estatus:est,updated_at:new Date().toISOString()}).eq('id',id); }catch(e){ alert('No se pudo: '+(e.message||e)); return; }
+  cerrarModal(); renderAsignaciones();
 }
 
 // ─── Modal genérico ─────────────────────────────────────────────────────────

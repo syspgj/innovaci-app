@@ -20911,6 +20911,14 @@ async function renderTele(){
   </div>`:`<div style="font-size:12px;color:var(--text3);margin-bottom:6px;">Sin ventas cobradas registradas en Finanzas este mes.</div>`}
   <div style="font-size:11px;color:var(--text3);margin:0 0 16px;">Total cobrado que comisiona: <b>${fmt(ventasFin.total)}</b> · ${Math.round(pctMeta*100)}% de la meta (${fmt(META_CURSOS)}). Lo marcado 🧾 "no comisiona" se muestra como actividad de venta.</div>
 
+  <!-- VENDIDO, PENDIENTE DE COBRO -->
+  ${ventasPend.length?`
+  <div class="shead">Vendido, pendiente de cobro (aún no comisiona)</div>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:6px;">
+    ${ventasPend.map(p=>'<div class="sc"><div class="sc-icon">⏳</div><div class="sc-val" style="font-size:16px;color:#B45309;">'+fmt(p.monto)+'</div><div class="sc-name">'+p.label+'</div><div class="sc-sub" style="font-size:10px;color:var(--text3);">'+p.num+' venta'+(p.num===1?'':'s')+'</div></div>').join('')}
+  </div>
+  <div style="font-size:11px;color:#B45309;margin:0 0 16px;">⏳ <b>${fmt(pendTotal)}</b> vendido que Finanzas aún no cobra — comisiona en cuanto se marque cobrado. Vale la pena darle seguimiento.</div>`:''}
+
   <!-- ACTIVIDAD CAPTURADA (no verificada, no paga) -->
   <div class="shead">Actividad capturada en "Registrar día" (solo referencia, no paga)</div>
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px;">
@@ -35655,8 +35663,18 @@ async function solInscribirAcademia(r,silencioso){
     if(!pidPrimero) pidPrimero=pid;
     for(const g0 of ac.generaciones){
       const gen=(gens||[]).find(x=>x.id===g0.id);if(!gen) continue;
-      const {data:ya}=await sb.from('academia_inscripciones').select('id').eq('participante_id',pid).eq('generacion_id',gen.id).maybeSingle();
-      if(ya){out.push(`• ${a.nombre} ya estaba en ${gen.clave}`);ok++;continue;}
+      const {data:ya}=await sb.from('academia_inscripciones').select('id,telegram_avisado_at').eq('participante_id',pid).eq('generacion_id',gen.id).maybeSingle();
+      if(ya){
+        out.push(`• ${a.nombre} ya estaba en ${gen.clave}`);ok++;
+        // Jp, 2026-11-19: re-pago / re-ingreso (p. ej. se le cortó el acceso por un
+        // pago que no llegó y ahora volvió a pagar). La inscripción ya existe, así
+        // que NO se crea otra, pero sí se liga a ESTA solicitud para que el botón
+        // "Enviar a Telegram" la encuentre, y se manda a avisar a Capacitación.
+        // El endpoint no repite el aviso si la fila ya tenía telegram_avisado_at.
+        try{ await sb.from('academia_inscripciones').update({origen_solicitud_id:r.id}).eq('id',ya.id); }catch(e){}
+        if(!ya.telegram_avisado_at) nuevosIdsInsc.push(ya.id);
+        continue;
+      }
       const sis=(gen.curso?.sistema?.codigo_clave||gen.curso?.sistema?.clave||'').toUpperCase();
       const auto=!!(gen.clave&&sis&&gen.clave.toUpperCase().startsWith(sis+'-'));
       // Clave auto (NOI-TEMA-MESAA): el folio se arma con la clave y p_sistema va vacío (igual que Facturación).
