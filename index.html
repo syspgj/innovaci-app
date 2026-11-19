@@ -28577,6 +28577,7 @@ const FIN_TABS=[
   {id:'balance',   label:'📈 Balance anual'},
   {id:'facturacion',label:'🧾 Facturación'},
   {id:'timbres',label:'🎟 Timbres'},
+  {id:'licencias',label:'🔑 Licencias prepago'},
   {id:'catalogo',label:'📦 Catálogo'},
 ];
 
@@ -28620,6 +28621,7 @@ function dispatchFinTab(id){
   else if(id==='balance')   renderFinBalance();
   else if(id==='facturacion') renderSolFacturaGestion(finCont());
   else if(id==='timbres') renderFinTimbres();
+  else if(id==='licencias') renderFinLicencias();
   else if(id==='catalogo') renderFinCatalogo();
 }
 
@@ -37398,6 +37400,237 @@ async function catPaginar(q){ // q: función (from,to)=>query
   for(;;){const {data,error}=await q(from,from+999);if(error)throw error;all=all.concat(data||[]);if(!data||data.length<1000)break;from+=1000;}
   return all;
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// LICENCIAS DE PREPAGO (Jp, 2026-11-18)
+// Hermano del control de timbres, pero para las claves de prepago de Aspel /
+// Siigo. Hoy casi todas son NOI Asistente; se van a vender de más sistemas.
+// Lo que hay que vigilar aquí NO es solo la entrega, es la RENOVACIÓN: cada
+// clave tiene periodicidad (mensual, semestral o anual) y vence. Jp pidió
+// guardar LAS DOS fechas —la de facturación y la de activación del sistema—
+// porque el cliente no siempre activa el día que compra; el vencimiento se
+// cuenta desde la activación si ya la hay, y si no, desde la factura.
+// La renovación la negocia Ventas con el cliente (venta nueva, clave nueva):
+// la app solo avisa con tiempo y deja ver de quién es cada cuenta.
+// Tabla: licencias_claves (misma que usa la entrega dentro de cada solicitud).
+// ════════════════════════════════════════════════════════════════════════════
+let _licRows=[], _licSols={}, _licFiltro='todas', _licBusca='', _licOrden={c:'fecha_vencimiento',asc:true};
+const LIC_PERIODOS=[['mensual','Mensual'],['semestral','Semestral'],['anual','Anual']];
+function licPeriodoTxt(p){return (LIC_PERIODOS.find(x=>x[0]===p)||[])[1]||'—';}
+function licDiasPara(iso){
+  if(!iso) return null;
+  return Math.round((new Date(iso+'T12:00:00').getTime()-new Date(todayLocal()+'T12:00:00').getTime())/86400000);
+}
+function licPlanTxt(p){return (p.plan_min||p.plan_max)?`${p.plan_min||'?'}–${p.plan_max||'?'}`:'—';}
+
+async function renderFinLicencias(){
+  finLoading();
+  const c=finCont();
+  const [{data:claves,error},{data:pend}]=await Promise.all([
+    sb.from('licencias_claves').select('*').order('created_at',{ascending:false}).limit(1500),
+    sb.from('solicitudes_factura').select('id,cliente_nombre,vendedor_nombre,concepto,created_at').eq('licencia_estado','pendiente')
+  ]);
+  if(error){c.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(error.message)}</div>`;return;}
+  _licRows=claves||[];
+  const ids=[...new Set(_licRows.filter(p=>p.solicitud_id).map(p=>p.solicitud_id))];
+  _licSols={};
+  if(ids.length){
+    const {data}=await sb.from('solicitudes_factura').select('id,cliente_nombre,vendedor_nombre,cliente_cartera_id').in('id',ids);
+    (data||[]).forEach(s=>_licSols[s.id]=s);
+  }
+  const disp=_licRows.filter(p=>p.estatus==='disponible');
+  const asig=_licRows.filter(p=>p.estatus==='asignada');
+  // Renovaciones: lo que vence en 60 días o menos (o ya venció) y sigue asignado.
+  const porRenovar=asig.filter(p=>{const d=licDiasPara(p.fecha_vencimiento);return d!=null&&d<=60;})
+    .sort((a,b)=>String(a.fecha_vencimiento).localeCompare(String(b.fecha_vencimiento)));
+  const vencidas=porRenovar.filter(p=>licDiasPara(p.fecha_vencimiento)<0);
+  const sinPeriodo=_licRows.filter(p=>!p.periodicidad);
+  const porProd={};disp.forEach(p=>{const k=(p.producto||'—')+' · '+licPlanTxt(p);porProd[k]=(porProd[k]||0)+1;});
+  const kpi=(t,v,s,col,extra)=>`<div style="background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 16px;min-width:150px;${extra||''}"><div style="font-size:11px;color:var(--text3);">${t}</div><div style="font-size:22px;font-weight:800;color:${col||'var(--navy)'};">${v}</div><div style="font-size:11px;color:var(--text3);">${s}</div></div>`;
+  const cardsProd=Object.keys(porProd).sort().map(k=>kpi(k,porProd[k],porProd[k]===1?'clave libre':'claves libres','var(--teal)','min-width:150px;border-color:#9fd3d0;background:#f3fafa;')).join('');
+  c.innerHTML=`
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+    <div>
+      <div style="font-size:15px;font-weight:600;color:var(--text);">🔑 Licencias de prepago</div>
+      <div style="font-size:11px;color:var(--text3);">Claves de prepago de Aspel/Siigo (NOI Asistente y los que se vayan sumando). La vigencia corre desde la activación; si todavía no se activa, desde la factura.</div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button onclick="licPegarCorreoModal()" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">📋 Pegar correo de Aspel</button>
+      <button onclick="licAltaModal()" style="background:#fff;color:var(--text2);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar clave</button>
+    </div>
+  </div>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+    ${kpi('Claves disponibles',disp.length,'listas para asignar','var(--teal)')}
+    ${cardsProd}
+    ${kpi('Entregadas a clientes',asig.length,asig.length===1?'clave':'claves','#B45309')}
+    ${kpi('Por renovar',porRenovar.length,'vencen en 60 días o menos',porRenovar.length?'#B45309':'var(--navy)')}
+    ${kpi('Ya vencidas',vencidas.length,'sin renovar',vencidas.length?'#c0392b':'var(--navy)')}
+    ${kpi('Solicitudes pendientes',(pend||[]).length,'esperando clave',(pend||[]).length?'#c0392b':'var(--navy)')}
+  </div>
+  ${porRenovar.length?`<div style="background:#FFF8EC;border:1px solid #F5A623;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px;">
+    <b>🔄 Renovaciones por negociar</b> <span style="color:var(--text3);">— Ventas tiene que contactar al cliente antes de que venza.</span>
+    ${porRenovar.map(p=>{const s=_licSols[p.solicitud_id]||{};const d=licDiasPara(p.fecha_vencimiento);
+      return `<div style="margin-top:5px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <b style="color:${d<0?'#c0392b':'#B45309'};">${d<0?`vencida hace ${Math.abs(d)} día${Math.abs(d)===1?'':'s'}`:(d===0?'vence hoy':`en ${d} día${d===1?'':'s'}`)}</b>
+        · ${solEsc(s.cliente_nombre||p.cliente_portal||'(sin cliente)')} · ${solEsc(p.producto||'')} ${licPlanTxt(p)} · ${licPeriodoTxt(p.periodicidad)}
+        · vence ${licFmtFecha(p.fecha_vencimiento)} · 👤 ${solEsc(s.vendedor_nombre||'sin vendedor')}</div>`;}).join('')}
+  </div>`:''}
+  ${sinPeriodo.length?`<div style="background:#fff;border:1px dashed #F5A623;border-radius:10px;padding:8px 14px;margin-bottom:12px;font-size:11.5px;color:#8a5a00;">⚠️ ${sinPeriodo.length} clave(s) sin periodicidad capturada: sin ese dato no se puede calcular cuándo renovar. Ábrelas en la tabla y complétalas.</div>`:''}
+  ${(pend||[]).length?`<div style="background:#FFF8EC;border:1px solid #F5A623;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:12px;"><b>⚠️ Pendientes de clave (pago validado):</b>${pend.map(s=>`<div style="margin-top:4px;">${solEsc(s.cliente_nombre)} · ${solEsc(s.concepto)} · 👤 ${solEsc(s.vendedor_nombre||'')}</div>`).join('')}<div style="margin-top:6px;color:var(--text3);">Al cargar las claves de ese plan se asignan solas.</div></div>`:''}
+  <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+    ${[['disponible','Disponibles'],['asignada','Entregadas'],['renovar','Por renovar'],['todas','Todas']].map(([k,l])=>`<button onclick="_licFiltro='${k}';renderFinLicencias()" style="padding:6px 13px;border-radius:16px;border:1px solid ${_licFiltro===k?'var(--teal)':'var(--border)'};background:${_licFiltro===k?'var(--teal)':'#fff'};color:${_licFiltro===k?'#fff':'var(--text2)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${l}</button>`).join('')}
+    </div>
+    <input id="licBuscar" type="search" value="${solEsc(_licBusca)}" oninput="_licBusca=this.value;licPintarTabla()" placeholder="🔍 Buscar clave, producto, cliente, OV…" style="flex:1;min-width:220px;max-width:360px;padding:7px 11px;border:1px solid var(--border);border-radius:8px;font-size:12px;font-family:'Inter',sans-serif;">
+    <span id="licConteo" style="font-size:11px;color:var(--text3);"></span>
+  </div>
+  <div id="licTabla" style="background:#fff;border:1px solid var(--border);border-radius:10px;overflow-x:auto;"></div>`;
+  licPintarTabla();
+}
+function licOrdenar(col){
+  _licOrden=_licOrden.c===col?{c:col,asc:!_licOrden.asc}:{c:col,asc:true};
+  licPintarTabla();
+}
+function licPintarTabla(){
+  const box=document.getElementById('licTabla');if(!box) return;
+  const estChip=e=>({disponible:['#E8F5E9','#2E7D32','Disponible'],asignada:['#FFF3E0','#B45309','Entregada'],vencida:['#FFEBEE','#c0392b','Vencida']}[e]||['#eee','#555',e]);
+  const nombreCli=p=>{const s=_licSols[p.solicitud_id];return s?s.cliente_nombre:'';};
+  let lista=_licRows.slice();
+  if(_licFiltro==='renovar') lista=lista.filter(p=>{const d=licDiasPara(p.fecha_vencimiento);return p.estatus==='asignada'&&d!=null&&d<=60;});
+  else if(_licFiltro!=='todas') lista=lista.filter(p=>p.estatus===_licFiltro);
+  const q=_licBusca.trim().toLowerCase();
+  if(q) lista=lista.filter(p=>[p.clave,p.producto,p.orden_venta,p.estatus,p.periodicidad,nombreCli(p)].join(' ').toLowerCase().includes(q));
+  const {c,asc}=_licOrden;
+  const val=p=>c==='cliente'?nombreCli(p).toLowerCase():(p[c]??'');
+  lista.sort((x,y)=>{const a=val(x),b=val(y);
+    if(a===''&&b!=='') return 1; if(b===''&&a!=='') return -1;
+    const r=typeof a==='number'&&typeof b==='number'?a-b:String(a).localeCompare(String(b),'es',{numeric:true});
+    return asc?r:-r;});
+  const th=(col,label)=>`<th onclick="licOrdenar('${col}')" style="padding:8px 12px;cursor:pointer;user-select:none;white-space:nowrap;${c===col?'color:var(--teal);':''}">${label} ${c===col?(asc?'▲':'▼'):'<span style="opacity:.35;">↕</span>'}</th>`;
+  box.innerHTML=`<table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <thead><tr style="background:#f4f7f9;color:var(--text3);text-align:left;">${th('clave','Clave')}${th('producto','Producto')}${th('plan_min','Plan')}${th('periodicidad','Vigencia')}${th('fecha_facturacion','Facturada')}${th('fecha_activacion','Activada')}${th('fecha_vencimiento','Vence')}${th('estatus','Estatus')}${th('cliente','Cliente')}<th style="padding:8px 12px;"></th></tr></thead>
+    <tbody>${lista.length?lista.map(p=>{
+      const ec=estChip(p.estatus);const s=_licSols[p.solicitud_id];const d=licDiasPara(p.fecha_vencimiento);
+      const colVence=d==null?'var(--text3)':(d<0?'#c0392b':(d<=60?'#B45309':'var(--text2)'));
+      return `<tr style="border-top:1px solid var(--border);">
+      <td style="padding:7px 12px;font-family:'JetBrains Mono',monospace;">${solEsc(p.clave)}</td>
+      <td style="padding:7px 12px;">${solEsc(p.producto||'—')}</td>
+      <td style="padding:7px 12px;">${licPlanTxt(p)}</td>
+      <td style="padding:7px 12px;">${p.periodicidad?licPeriodoTxt(p.periodicidad):'<span style="color:#B45309;">falta</span>'}</td>
+      <td style="padding:7px 12px;">${p.fecha_facturacion?licFmtFecha(p.fecha_facturacion):'—'}</td>
+      <td style="padding:7px 12px;">${p.fecha_activacion?licFmtFecha(p.fecha_activacion):'<span style="color:var(--text3);">sin activar</span>'}</td>
+      <td style="padding:7px 12px;color:${colVence};font-weight:${d!=null&&d<=60?'700':'400'};">${p.fecha_vencimiento?licFmtFecha(p.fecha_vencimiento):'—'}${d!=null&&d<=60?`<div style="font-size:10px;">${d<0?'vencida':(d===0?'hoy':'en '+d+' d')}</div>`:''}</td>
+      <td style="padding:7px 12px;"><span style="background:${ec[0]};color:${ec[1]};border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700;">${ec[2]}</span></td>
+      <td style="padding:7px 12px;">${solEsc(s?s.cliente_nombre:'')}${s&&s.vendedor_nombre?`<div style="font-size:10px;color:var(--text3);">👤 ${solEsc(s.vendedor_nombre)}</div>`:''}</td>
+      <td style="padding:7px 12px;white-space:nowrap;"><button onclick="licEditarModal('${p.id}')" style="border:1px solid var(--border);background:#fff;border-radius:5px;font-size:10px;padding:2px 8px;cursor:pointer;">Editar</button></td>
+    </tr>`;}).join(''):'<tr><td colspan="10" style="padding:16px;text-align:center;color:var(--text3);font-size:12px;">Sin claves en esta vista.</td></tr>'}</tbody></table>`;
+  const cn=document.getElementById('licConteo');if(cn) cn.textContent=`${lista.length} de ${_licRows.length}`;
+}
+function licCampoPeriodo(id,val){
+  return `<select id="${id}" style="${SOL_INPUT_STYLE}"><option value="">— sin definir —</option>${LIC_PERIODOS.map(([k,l])=>`<option value="${k}" ${val===k?'selected':''}>${l}</option>`).join('')}</select>`;
+}
+function licAltaModal(){
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">+ Agregar clave de prepago</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Para capturar una clave suelta. Si tienes el correo completo de Aspel, usa "Pegar correo de Aspel": lee todas de un jalón.</div>
+    ${solFld('Clave','<input id="laClave" placeholder="P79931512367888512" style="'+SOL_INPUT_STYLE+'">')}
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 12px;">
+      ${solFld('Producto','<input id="laProd" placeholder="NOI ASISTENTE" style="'+SOL_INPUT_STYLE+'">')}
+      ${solFld('Vigencia',licCampoPeriodo('laPer',''))}
+      ${solFld('Plan desde','<input id="laMin" type="number" min="0" placeholder="6" style="'+SOL_INPUT_STYLE+'">')}
+      ${solFld('Plan hasta','<input id="laMax" type="number" min="0" placeholder="25" style="'+SOL_INPUT_STYLE+'">')}
+      ${solFld('Orden de venta','<input id="laOv" placeholder="16606" style="'+SOL_INPUT_STYLE+'">')}
+      ${solFld('Activar antes del','<input id="laFmax" type="date" style="'+SOL_INPUT_STYLE+'">')}
+    </div>
+    <div style="display:flex;gap:8px;"><button onclick="licAltaGuardar()" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar</button><button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`);
+}
+async function licAltaGuardar(){
+  const v=id=>document.getElementById(id)?.value.trim()||'';
+  const clave=v('laClave');
+  if(!clave) return alert('Captura la clave.');
+  const fila={clave,producto:v('laProd').toUpperCase()||null,periodicidad:v('laPer')||null,
+    plan_min:parseInt(v('laMin'),10)||null,plan_max:parseInt(v('laMax'),10)||null,
+    orden_venta:v('laOv')||null,fecha_max_activacion:v('laFmax')||null,estatus:'disponible'};
+  const {error}=await sb.from('licencias_claves').insert(fila);
+  if(error) return alert(/duplicate|unique/i.test(error.message)?'Esa clave ya está dada de alta.':'No se pudo guardar: '+error.message);
+  solCerrarModal();
+  renderFinLicencias();
+}
+function licEditarModal(id){
+  const p=_licRows.find(x=>x.id===id);if(!p) return;
+  const s=_licSols[p.solicitud_id];
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:2px;">🔑 ${solEsc(p.clave)}</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(p.producto||'')} ${licPlanTxt(p)}${s?' · '+solEsc(s.cliente_nombre):''}${p.orden_venta?' · OV.'+solEsc(p.orden_venta):''}</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 12px;">
+      ${solFld('Vigencia',licCampoPeriodo('leP',p.periodicidad||''))}
+      ${solFld('Fecha de facturación','<input id="leFfac" type="date" value="'+(p.fecha_facturacion||'')+'" style="'+SOL_INPUT_STYLE+'">')}
+      ${solFld('Fecha de activación','<input id="leFact" type="date" value="'+(p.fecha_activacion||'')+'" style="'+SOL_INPUT_STYLE+'">')}
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin:-4px 0 10px;">El vencimiento se calcula solo: se cuenta desde la activación; si todavía no se activa, desde la factura. Hoy vence: <b>${p.fecha_vencimiento?licFmtFecha(p.fecha_vencimiento):'sin calcular (falta vigencia o fecha)'}</b></div>
+    ${solFld('Notas','<input id="leNotas" value="'+solEsc(p.notas||'')+'" placeholder="Ej: el cliente pidió activarla hasta enero" style="'+SOL_INPUT_STYLE+'">')}
+    <div style="display:flex;gap:8px;"><button onclick="licEditarGuardar('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar</button><button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`);
+}
+async function licEditarGuardar(id){
+  const v=i=>document.getElementById(i)?.value||'';
+  const {error}=await sb.from('licencias_claves').update({
+    periodicidad:v('leP')||null,
+    fecha_facturacion:v('leFfac')||null,
+    fecha_activacion:v('leFact')||null,
+    notas:v('leNotas').trim()||null
+  }).eq('id',id);
+  if(error) return alert('No se pudo guardar: '+error.message);
+  solCerrarModal();
+  renderFinLicencias();
+}
+// Pega el correo de Aspel y da de alta todas las claves que traiga, con la
+// vigencia que se elija (viene igual para todo el lote de una orden de venta).
+function licPegarCorreoModal(){
+  _licParsed=[];
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">📋 Pegar correo de Aspel</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">Copia el correo con las claves de pre-registro y pégalo aquí. Se leen producto, plan, clave y fecha máxima de activación.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 12px;">
+      ${solFld('Vigencia de este lote',licCampoPeriodo('lpPer','anual'))}
+      ${solFld('Fecha de facturación','<input id="lpFfac" type="date" value="'+todayLocal()+'" style="'+SOL_INPUT_STYLE+'">')}
+    </div>
+    <textarea id="lpTexto" rows="8" oninput="licPegarVista()" placeholder="Pega aquí el correo…" style="${SOL_INPUT_STYLE}font-family:'JetBrains Mono',monospace;font-size:11px;"></textarea>
+    <div id="lpVista" style="font-size:12px;margin:8px 0;max-height:240px;overflow-y:auto;"></div>
+    <div style="display:flex;gap:8px;"><button id="lpBtn" onclick="licPegarOk()" disabled style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;opacity:.5;">Dar de alta</button><button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`);
+}
+function licPegarVista(){
+  _licParsed=licParsearCorreo(document.getElementById('lpTexto').value);
+  const ex={};_licRows.forEach(p=>ex[p.clave]=p);
+  const nuevos=_licParsed.filter(x=>!ex[x.clave]).length;
+  const v=document.getElementById('lpVista'),b=document.getElementById('lpBtn');
+  if(!_licParsed.length){v.innerHTML='<span style="color:var(--text3);">No encuentro claves en el texto.</span>';b.disabled=true;b.style.opacity='.5';return;}
+  v.innerHTML=`<div style="margin-bottom:6px;"><b>${_licParsed.length}</b> claves leídas · <span style="color:#2E7D32;">${nuevos} nuevas</span> · ${_licParsed.length-nuevos} ya estaban</div>
+    <table style="width:100%;font-size:11px;border-collapse:collapse;">${_licParsed.map(x=>`<tr style="border-top:1px solid var(--border);"><td style="padding:3px 6px;font-family:'JetBrains Mono',monospace;">${solEsc(x.clave)}</td><td style="padding:3px 6px;">${solEsc(x.prod||'')}</td><td style="padding:3px 6px;">${x.min||'?'}–${x.max||'?'}</td><td style="padding:3px 6px;">${x.fecha?licFmtFecha(x.fecha):'—'}</td><td style="padding:3px 6px;color:${ex[x.clave]?'#B45309':'#2E7D32'};">${ex[x.clave]?'ya existe':'nueva'}</td></tr>`).join('')}</table>`;
+  b.disabled=false;b.style.opacity='1';
+}
+async function licPegarOk(){
+  const per=document.getElementById('lpPer')?.value||null;
+  const ffac=document.getElementById('lpFfac')?.value||null;
+  const ex={};_licRows.forEach(p=>ex[p.clave]=p);
+  const nuevos=_licParsed.filter(x=>!ex[x.clave]).map(x=>({
+    clave:x.clave,producto:(x.prod||'').toUpperCase()||null,plan_min:x.min||null,plan_max:x.max||null,
+    vigencia:x.vig||null,orden_venta:x.ov||null,fecha_max_activacion:x.fecha||null,
+    periodicidad:per||null,fecha_facturacion:ffac||null,estatus:'disponible'
+  }));
+  if(!nuevos.length){solCerrarModal();return alert('Todas esas claves ya estaban dadas de alta.');}
+  const {error}=await sb.from('licencias_claves').insert(nuevos);
+  if(error) return alert('No se pudo dar de alta: '+error.message);
+  solCerrarModal();
+  // Si había solicitudes esperando una clave de ese plan, se les asigna ya.
+  const msgs=[];
+  try{
+    const {data:pend}=await sb.from('solicitudes_factura').select('*').eq('licencia_estado','pendiente');
+    for(const r of (pend||[])){
+      const res=await licAsignarAutomatica(r); // devuelve el texto del resultado
+      if(res&&String(res).startsWith('🔑')) msgs.push(String(res));
+    }
+  }catch(e){console.error('licencias pendientes',e);}
+  renderFinLicencias();
+  if(msgs.length) setTimeout(()=>alert(msgs.join('\n\n')),200);
+}
+
 async function renderFinCatalogo(){
   finLoading();
   const c=finCont();
