@@ -35413,7 +35413,11 @@ function solAcadEditarModal(id){
   (async()=>{
     try{
       const box=document.getElementById('saAcadGens');
-      if(box&&r.shopify_pedido_id&&!((ac.generaciones||[]).length)){
+      // Jp, 2026-11-19: antes esto solo corría cuando la solicitud NO traía
+      // generación todavía, así que al reabrir una que ya la tenía marcada se
+      // volvían a mostrar las 20 vigentes. Ahora siempre se resuelve a qué
+      // generaciones corresponde lo vendido, para poder esconder el resto.
+      if(box&&r.shopify_pedido_id){
         const [{data:p},{data:mp}]=await Promise.all([sb.from('shopify_pedidos').select('lineas').eq('id',r.shopify_pedido_id).single(),sb.from('shopify_producto_map').select('clave,generacion_ids')]);
         const mapa={};(mp||[]).forEach(m=>mapa[m.clave]=m);
         const linked=[...new Set((p?.lineas||[]).flatMap(l=>mapa[shpClave(l)]?.generacion_ids||[]))];
@@ -35422,16 +35426,23 @@ function solAcadEditarModal(id){
           const {data:gl}=await sb.from('academia_generaciones').select('id,curso_id').in('id',linked);
           const porCurso={};(gl||[]).filter(g=>solEsVig(g.id)).forEach(g=>{(porCurso[g.curso_id]=porCurso[g.curso_id]||[]).push(g.id);});
           window._solGenSug=new Set(linked.filter(solEsVig));
-          box.dataset.sel=Object.values(porCurso).filter(a=>a.length===1).map(a=>a[0]).join(',');
+          // Si la solicitud ya traía generación marcada, se respeta; si no, se
+          // marca sola la única de cada curso.
+          if(!((ac.generaciones||[]).length)) box.dataset.sel=Object.values(porCurso).filter(a=>a.length===1).map(a=>a[0]).join(',');
         }
       }
     }catch(e){console.error('solAcadEditarModal gens',e);}
-    try{ if(!window._solGenSug&&!((ac.generaciones||[]).length)) await solSugerirGensPorConcepto('sa',r.concepto); }catch(e){}
+    try{ if(!window._solGenSug) await solSugerirGensPorConcepto('sa',r.concepto); }catch(e){}
     // Jp, 2026-11-18: si ya sabemos a qué generación(es) corresponde lo que se
     // vendió, la lista se limita a esas — antes salían las 20 vigentes y era
     // fácil marcar la equivocada. El enlace "ver todas" la libera por si hubo
     // un error de captura.
-    if(window._solGenSug&&window._solGenSug.size){ window._solGenSolo=new Set(window._solGenSug); window._solGenVerTodas=false; }
+    if(window._solGenSug&&window._solGenSug.size){
+      // Las ya marcadas en la solicitud nunca se esconden, aunque no estén
+      // entre las del producto (p. ej. una corrección hecha a mano antes).
+      window._solGenSolo=new Set([...window._solGenSug,...((ac.generaciones||[]).map(g=>g.id))]);
+      window._solGenVerTodas=false;
+    }
     solAcadCargarGens('sa');
   })();
 }
@@ -36051,6 +36062,7 @@ function solTarjeta(r,modo){
   const pago=r.tipo==='con_pago'
     ?`<div style="font-size:12px;color:var(--text2);">💵 Pago: ${fmt(r.pago_monto)} · ${solFecha(r.pago_fecha)}${r.pago_hora?' '+solEsc(r.pago_hora):''}${r.pago_validado?` · ✅ validado${r.pago_validado_por?' por '+solEsc(r.pago_validado_por):''}`:''}</div>`
     :`<div style="font-size:12px;color:var(--text2);">⏳ Liberar pago · pagará ${solFecha(r.fecha_pago_esperada)}${r.pago_monto?` · comprobante: ${fmt(r.pago_monto)} ${solFecha(r.pago_fecha)}`:''}${r.pago_validado?' · ✅ pago validado':''}</div>`;
+  const avisoCheque=solChequeAvisoHtml(r);
   const faltaCrm=(r.estado==='facturada'||r.estado==='cerrada')&&!r.comentario_crm_hecho;
   const cancel=r.estado==='cancelada'; // Jp, 2026-11-10: las canceladas quedan inhabilitadas (solo lectura)
   return `<div style="background:${cancel?'#f3f4f6':'#fff'};border:1px solid var(--border);border-radius:10px;padding:13px 16px;margin-bottom:10px;${cancel?'opacity:.6;filter:grayscale(1);':''}">
@@ -36063,7 +36075,7 @@ function solTarjeta(r,modo){
     <div style="font-size:11px;color:var(--text3);margin-top:2px;">${solEsc(r.rfc)} · ${solEsc(r.forma_pago)} · ${solEsc(r.metodo_pago)} · ${solEsc(r.uso_cfdi)} · ${solEsc(r.regimen)}</div>
     ${r.shopify_pedido?`<div style="font-size:11px;color:#5b3fa0;margin-top:3px;">🛍 Pedido de Shopify: <b>${solEsc(r.shopify_pedido)}</b></div>`:''}
     ${String(r.notas||'').startsWith(SOL_PG_MARCA)?`<div style="font-size:11px;font-weight:700;color:#8a6d00;background:#fffbea;border:1px solid #f3dc8a;border-radius:6px;padding:3px 8px;margin-top:5px;display:inline-block;">🧾 FACTURAR A VIOLETA — el cliente no requiere factura · C.P. ${SOL_VIOLETA.cp}</div>`:''}
-    ${pago}${solAvisoPagoVencido(r,esVend)}${fact}
+    ${pago}${avisoCheque}${solAvisoPagoVencido(r,esVend)}${fact}
     ${solPrecioBannerHtml(r,esDir)}${solCancelBannerHtml(r,esDir,esAdm)}
     ${cancel?'':timTarjetaHtml(r,esDir,esVend)}
     ${cancel?'':licTarjetaHtml(r,esDir,esVend)}
@@ -36723,8 +36735,51 @@ async function solConfirmarCasado(i,j){
   const m=x.cands[j];if(!m) return;
   await solValidarPago(x.r.id,m,`Casado con captura del banco: ${m.descripcion||''}`.trim(),true);
 }
+// ── Cheques: 24 horas de espera y segunda validación (Jp, 2026-11-19) ──────
+// Un cheque de otro banco no es dinero hasta que el banco lo libera. Si se
+// valida el mismo día, la captura del banco muestra el depósito y la app lo da
+// por bueno; si el cheque rebota, ya se facturó. Por eso: desde el depósito se
+// cuentan 24 horas, y pasadas esas horas hay que CONFIRMAR que el monto sigue
+// ahí antes de liberar la factura. Caso que lo originó: MARIO GARCIA CARO,
+// 18-nov, $8,099.10 en cheque.
+const SOL_CHEQUE_HORAS=24;
+function solEsCheque(r){return /cheque/i.test(String(r?.forma_pago||''));}
+// Momento en que se puede validar: depósito + 24 h (si no hay fecha de pago,
+// se cuenta desde que entró la solicitud).
+function solChequeLibreEn(r){
+  if(!solEsCheque(r)) return null;
+  const base=r.pago_fecha?new Date(`${String(r.pago_fecha).slice(0,10)}T${(r.pago_hora||'12:00').slice(0,5)}:00`):new Date(r.created_at);
+  if(isNaN(base.getTime())) return null;
+  return new Date(base.getTime()+SOL_CHEQUE_HORAS*3600000);
+}
+function solChequeHorasRestantes(r){
+  const libre=solChequeLibreEn(r); if(!libre) return 0;
+  return Math.max(0,Math.ceil((libre.getTime()-Date.now())/3600000));
+}
+function solChequeAvisoHtml(r){
+  if(!solEsCheque(r)||r.pago_validado||r.estado==='cancelada') return '';
+  const libre=solChequeLibreEn(r); if(!libre) return '';
+  const faltan=solChequeHorasRestantes(r);
+  const cuando=libre.toLocaleString('es-MX',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+  return faltan>0
+    ? `<div style="background:#FFF8EC;border:1px solid #F5A623;border-radius:8px;padding:7px 10px;margin-top:7px;font-size:11.5px;color:#8a5a00;">🏦 <b>Cheque — en espera de que el banco lo libere.</b> No se puede validar hasta el <b>${cuando}</b> (faltan ${faltan} h). Aunque el depósito ya aparezca en la captura del banco, el cheque todavía puede rebotar.</div>`
+    : `<div style="background:#E8F5E9;border:1px solid #2E7D32;border-radius:8px;padding:7px 10px;margin-top:7px;font-size:11.5px;color:#1b5e20;">🏦 <b>Cheque — ya pasaron las ${SOL_CHEQUE_HORAS} h</b> (desde el ${cuando}). Antes de validar, confirma en el banco que el monto sigue ahí.</div>`;
+}
+
 async function solValidarPago(id,mov,nota,desdeCasado,desdeShopify,quien){
   const r=_solRows.find(z=>z.id===id);if(!r) return;
+  // Candado del cheque: ni a mano ni desde el casado del banco.
+  if(solEsCheque(r)&&!r.pago_validado){
+    const faltan=solChequeHorasRestantes(r);
+    const libre=solChequeLibreEn(r);
+    const cuando=libre?libre.toLocaleString('es-MX',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'—';
+    if(faltan>0){
+      alert(`🏦 Pago con CHEQUE — todavía no se puede validar.\n\nSe liberan hasta el ${cuando} (faltan ${faltan} h).\n\nUn cheque de otro banco tarda 24 horas en hacerse efectivo: aunque el depósito ya aparezca en el banco, puede rebotar. Vuelve después de esa hora y confirma que el monto sigue ahí.`);
+      return;
+    }
+    if(!confirm(`🏦 Pago con CHEQUE — segunda validación.\n\nYa pasaron las ${SOL_CHEQUE_HORAS} horas (desde el ${cuando}).\n\n¿Confirmas que entraste al banco y el monto de ${fmt(r.pago_monto||r.monto_total)} SIGUE ahí (el cheque no rebotó)?`)) return;
+    nota=(nota?nota+' · ':'')+`Cheque: segunda validación tras ${SOL_CHEQUE_HORAS} h, monto confirmado en el banco.`;
+  }
   const upd={pago_validado:true,pago_validado_at:new Date().toISOString(),pago_validado_por:quien||userProfile?.nombre||'Dirección',pago_nota:nota||null,pago_movimiento:mov||null,estado:r.factura_folio?'cerrada':(r.estado==='facturada'?'cerrada':'pago_validado')};
   const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
   if(error) return alert('No se pudo validar: '+error.message);
@@ -37216,13 +37271,20 @@ async function timBarEntendido(id){
 // validar el pago. Tablas: licencias_claves + solicitudes_factura.licencia_*.
 // ════════════════════════════════════════════════════════════════════════════
 let _solLicencias={}, _licParsed=[], _licCands=[];
-function licNormProd(s){return String(s||'').toUpperCase().replace(/SIIGO|ASPEL/g,'').replace(/\s+/g,' ').trim();}
+function licNormProd(s){return String(s||'').toUpperCase().replace(/SIIGO|ASPEL/g,'').replace(/\s+/g,' ').replace(/[—–-]+$/,'').trim();}
 function licPlanDeConcepto(txt){
   const t=String(txt||'');
-  const m=t.match(/PLAN\s+(\d+)\s*(?:A|-|–)\s*(\d+)/i); if(!m) return null;
+  // Jp, 2026-11-19: el concepto no siempre trae la palabra "PLAN". El
+  // cotizador escribe "NOI Asistente — 1 a 25 empleados (Anual)" y así la
+  // licencia nunca se detectaba, así que esa venta se quedaba sin control de
+  // clave. Ahora se reconocen las dos formas.
+  const m=t.match(/PLAN\s+(\d+)\s*(?:A|-|–)\s*(\d+)/i)
+        ||t.match(/(\d[\d,]*)\s*(?:A|-|–)\s*(\d[\d,]*)\s*EMPLEADOS/i);
+  if(!m) return null;
   const prod=licNormProd(t.slice(0,m.index));
   if(!/ASISTENTE/.test(prod)) return null;
-  return {prod,min:+m[1],max:+m[2]};
+  const n=x=>parseInt(String(x).replace(/,/g,''),10);
+  return {prod,min:n(m[1]),max:n(m[2])};
 }
 function licFmtFecha(iso){if(!iso) return '—';const [y,m,d]=String(iso).slice(0,10).split('-');return `${d}/${m}/${y}`;}
 async function licCargarDeSolicitudes(ids){
@@ -37242,8 +37304,70 @@ function licTarjetaHtml(r,esDir,esVend){
   }
   if(!plan||!r.pago_validado||r.estado==='cancelada') return '';
   if(esVend) return caja('#F5A623','#FFF8EC','⏳ <b>Licencia por entregar:</b> en cuanto lleguen las claves de Aspel se asignan aquí y te llega el aviso.');
-  return caja('#F5A623','#FFF8EC',`🔑 <b>Licencia ${solEsc(plan.prod)} ${plan.min}-${plan.max} por entregar.</b> <button onclick="licAbrirCorreo('${r.id}')" style="border:1px solid var(--teal);background:var(--teal);color:#fff;border-radius:5px;font-size:11px;padding:3px 10px;cursor:pointer;font-weight:700;">Cargar claves de Aspel</button>`);
+  // Jp, 2026-11-19: primero hay que PEDIRLE la clave a la marca; ese paso no
+  // estaba en ningún lado y se hacía de memoria. Queda registrado quién la
+  // pidió y cuándo, y luego se cargan las claves cuando llega la respuesta.
+  const pedida=r.licencia_pedida_at
+    ? `<span style="color:#2E7D32;font-weight:600;">✉️ Pedida a la marca el ${new Date(r.licencia_pedida_at).toLocaleDateString('es-MX')}${r.licencia_pedida_por?' por '+solEsc(r.licencia_pedida_por):''}</span> <button onclick="licPedirMarcaModal('${r.id}')" style="border:1px solid var(--border);background:#fff;border-radius:5px;font-size:10px;padding:1px 7px;cursor:pointer;">Ver / reenviar</button>`
+    : `<button onclick="licPedirMarcaModal('${r.id}')" style="border:1px solid #1D5FA8;background:#1D5FA8;color:#fff;border-radius:5px;font-size:11px;padding:3px 10px;cursor:pointer;font-weight:700;">✉️ Pedir licencia a la marca</button>`;
+  return caja('#F5A623','#FFF8EC',`🔑 <b>Licencia ${solEsc(plan.prod)} ${plan.min}-${plan.max} por entregar.</b>
+    <div style="margin-top:5px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">${pedida}
+    <button onclick="licAbrirCorreo('${r.id}')" style="border:1px solid var(--teal);background:var(--teal);color:#fff;border-radius:5px;font-size:11px;padding:3px 10px;cursor:pointer;font-weight:700;">Cargar claves de Aspel</button></div>`);
 }
+// ── Pedirle la clave a la marca (Jp, 2026-11-19) ──────────────────────────
+// Cuando se valida el pago de una licencia de prepago, el siguiente paso es
+// pedirle la clave a Aspel/Siigo por correo. La app arma el correo con el
+// mismo texto que Jp manda a mano, lo deja listo para copiar o abrir en
+// Outlook, y guarda cuándo y quién lo pidió para que no se pida dos veces
+// ni se quede sin pedir.
+function licCorreoTexto(r){
+  const plan=licPlanDeConcepto(r.concepto);
+  const per=/anual/i.test(r.concepto||'')?'Anual':(/semestral/i.test(r.concepto||'')?'Semestral':(/mensual/i.test(r.concepto||'')?'Mensual':''));
+  const prod=(plan?plan.prod:'NOI ASISTENTE').replace(/[—–-]+$/,'').trim();
+  const rango=plan?`${plan.min} a ${plan.max} empleados`:'';
+  const asunto=`COTIZACION ${prod} - ${String(r.cliente_nombre||'').toUpperCase()}`;
+  const cuerpo=`Buenas tardes\n\nMe ayudan con una cotización de\n\n${prod}${rango?' — '+rango:''}${per?' ('+per+')':''}\n\nGracias\n\n${userProfile?.nombre||'Grupo Innovaci'}`;
+  return {asunto,cuerpo};
+}
+function licPedirMarcaModal(id){
+  const r=_solRows.find(z=>z.id===id);if(!r) return;
+  const {asunto,cuerpo}=licCorreoTexto(r);
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">✉️ Pedir la licencia a la marca</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(r.cliente_nombre)} · ${solEsc(r.concepto)}</div>
+    ${r.licencia_pedida_at?`<div style="background:#FFF8EC;border:1px solid #F5A623;border-radius:8px;padding:7px 10px;margin-bottom:10px;font-size:11.5px;color:#8a5a00;">⚠️ Ya se pidió el ${new Date(r.licencia_pedida_at).toLocaleString('es-MX')}${r.licencia_pedida_por?' por '+solEsc(r.licencia_pedida_por):''}. Si lo vuelves a mandar, avisa que es recordatorio.</div>`:''}
+    ${solFld('Asunto','<input id="lpmAsunto" value="'+solEsc(asunto)+'" style="'+SOL_INPUT_STYLE+'">')}
+    ${solFld('Mensaje','<textarea id="lpmCuerpo" rows="8" style="'+SOL_INPUT_STYLE+'">'+solEsc(cuerpo)+'</textarea>')}
+    <div style="font-size:11px;color:var(--text3);margin:-4px 0 10px;">Se abre en tu correo con el texto listo; ahí eliges a quién se lo mandas (DL-centro, tu contacto de la marca). Al abrirlo se marca como pedida.</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button onclick="licPedirMarcaAbrir('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">📧 Abrir en mi correo</button>
+      <button onclick="licPedirMarcaCopiar('${id}')" style="background:#fff;color:var(--navy);border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">📋 Copiar texto</button>
+      <button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button>
+    </div>
+    <div id="lpmMsg" style="font-size:11px;margin-top:8px;"></div>`,560);
+}
+async function licMarcarPedida(id){
+  const upd={licencia_pedida_at:new Date().toISOString(),licencia_pedida_por:userProfile?.nombre||'Dirección'};
+  const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
+  if(!error){const r=_solRows.find(z=>z.id===id);if(r) Object.assign(r,upd);}
+  return !error;
+}
+async function licPedirMarcaAbrir(id){
+  const a=document.getElementById('lpmAsunto')?.value||'';
+  const c=document.getElementById('lpmCuerpo')?.value||'';
+  window.open(`mailto:?subject=${encodeURIComponent(a)}&body=${encodeURIComponent(c)}`,'_self');
+  await licMarcarPedida(id);
+  solCerrarModal();
+  solRefrescar();
+}
+async function licPedirMarcaCopiar(id){
+  const a=document.getElementById('lpmAsunto')?.value||'';
+  const c=document.getElementById('lpmCuerpo')?.value||'';
+  try{await navigator.clipboard.writeText(a+'\n\n'+c);}catch(e){}
+  const m=document.getElementById('lpmMsg');
+  if(m) m.innerHTML='<span style="color:#27AE60;font-weight:600;">Copiado. Pégalo en tu correo.</span>';
+  await licMarcarPedida(id);
+}
+
 // Lee el correo de Aspel (texto pegado) → [{prod,min,max,vig,ov,fecha,clave}]
 function licParsearCorreo(txt){
   const t=String(txt||'').replace(/\r/g,'').replace(/ /g,' ');
