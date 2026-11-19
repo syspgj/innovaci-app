@@ -21399,45 +21399,57 @@ function opcionesPicklist(lista,valorActual,permiteVacio){
   return (permiteVacio?'<option value="">—</option>':'')+opciones.map(o=>`<option value="${o}" ${o===valorActual?'selected':''}>${o}</option>`).join('');
 }
 
-async function renderProspectos(){
+async function renderProspectos(modo){
+  // Jp, 2026-11-19: la vista se divide en dos. "Campaña actual" (lo de siempre:
+  // los prospectos de la campaña activa asignados a ti) y "Todos los prospectos"
+  // (recientes de todo el equipo, SIN limitarse a la campaña) para encontrar a
+  // quien llega por WhatsApp/Respond — que no entra a ninguna campaña.
+  modo=(modo==='general'||modo==='campana')?modo:(window._prospModo||'campana');
+  window._prospModo=modo;
   window._prospectosVCtx=false; // este flujo (telemarketing) no es el módulo de Prospectos de Ventas — oculta el botón "+ Proyección" del modal si quedó prendido de una visita anterior
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando prospectos...</div>';
 
   const pendHoyHtml=await pendientesHoyHtml('prospecto');
+  const _btnTog=(m,txt)=>`<button onclick="renderProspectos('${m}')" style="padding:7px 14px;border-radius:var(--radsm);font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;border:1px solid ${modo===m?'var(--teal)':'var(--border)'};background:${modo===m?'var(--teal)':'#fff'};color:${modo===m?'#fff':'var(--text2)'};">${txt}</button>`;
+  const toggleHtml=`<div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">${_btnTog('campana','📣 Campaña actual')}${_btnTog('general','🗂️ Todos los prospectos')}</div>`;
 
-  // Buscar campaña activa — solo una a la vez para todo el equipo
+  // Campaña activa — solo una a la vez para todo el equipo (se usa en modo campaña).
   const {data:campanaActiva}=await sb.from('campanas').select('*').eq('activa',true).maybeSingle();
-  if(!campanaActiva){
-    mc.innerHTML=`${pendHoyHtml}
-    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;text-align:center;">
-      <div style="font-size:40px;margin-bottom:12px;">🎯</div>
-      <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:6px;">No hay campaña activa</div>
-      <div style="font-size:13px;color:var(--text3);max-width:340px;">Espera a que el director active una campaña para empezar a ver tus prospectos asignados aquí.</div>
-    </div>`;
-    return;
+  let ps=[];
+  if(modo==='campana'){
+    if(!campanaActiva){
+      mc.innerHTML=`${pendHoyHtml}${llamadasBarraHtml()}${respondBarraProspectosHtml()}${toggleHtml}
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;text-align:center;">
+        <div style="font-size:40px;margin-bottom:12px;">🎯</div>
+        <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:6px;">No hay campaña activa</div>
+        <div style="font-size:13px;color:var(--text3);max-width:360px;">Espera a que el director active una campaña. Mientras, los prospectos que llegan por WhatsApp los ves en <b>🗂️ Todos los prospectos</b>.</div>
+      </div>`;
+      return;
+    }
+    const {data:relCampana}=await sb.from('campana_prospectos').select('prospecto_id').eq('campana_id',campanaActiva.id);
+    const idsCampana=(relCampana||[]).map(r=>r.prospecto_id);
+    if(!idsCampana.length){
+      mc.innerHTML=`${pendHoyHtml}${llamadasBarraHtml()}${respondBarraProspectosHtml()}${toggleHtml}
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;text-align:center;">
+        <div style="font-size:40px;margin-bottom:12px;">🎯</div>
+        <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:4px;">${campanaActiva.nombre}</div>
+        <div style="font-size:13px;color:var(--text3);max-width:360px;">Esta campaña está activa pero todavía no tiene prospectos asignados. Los de WhatsApp los ves en <b>🗂️ Todos los prospectos</b>.</div>
+      </div>`;
+      return;
+    }
+    // Jp, 2026-10-27: con campañas grandes (600-700+ prospectos) el .in en un
+    // solo request excedía el límite de URL; se consulta por lotes de 200 ids.
+    const prospectos=await seleccionarPorLotesIds('prospectos','*',idsCampana,q=>q.eq('asignado_a',currentUser.id).or('no_contactar.is.null,no_contactar.eq.false')); // Jp 2026-11-17: ⛔ No volver a contactar sale de la lista
+    ps=(prospectos||[]).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+  } else {
+    // Todos los prospectos, recientes primero: lo recién traído de WhatsApp
+    // (que actualiza updated_at) queda hasta arriba, fácil de encontrar.
+    const {data:g}=await sb.from('prospectos').select('*')
+      .or('no_contactar.is.null,no_contactar.eq.false')
+      .order('updated_at',{ascending:false,nullsFirst:false}).limit(400);
+    ps=(g||[]).slice().sort((a,b)=>(b.updated_at||b.created_at||'').localeCompare(a.updated_at||a.created_at||''));
   }
-
-  // Prospectos de la campaña activa asignados a este usuario
-  const {data:relCampana}=await sb.from('campana_prospectos').select('prospecto_id').eq('campana_id',campanaActiva.id);
-  const idsCampana=(relCampana||[]).map(r=>r.prospecto_id);
-  if(!idsCampana.length){
-    mc.innerHTML=`${pendHoyHtml}
-    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;text-align:center;">
-      <div style="font-size:40px;margin-bottom:12px;">🎯</div>
-      <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:4px;">${campanaActiva.nombre}</div>
-      <div style="font-size:13px;color:var(--text3);max-width:340px;">Esta campaña está activa pero todavía no tiene prospectos asignados.</div>
-    </div>`;
-    return;
-  }
-  // Jp, 2026-10-27: con campañas grandes (600-700+ prospectos) el
-  // .in('id',idsCampana) en un solo request excedía el límite de URL y
-  // Supabase respondía "Bad Request" sin que se revisara — por eso Carolina
-  // veía "0 asignados" aunque sí tenía prospectos en la campaña activa.
-  // Se consulta en lotes de 200 ids (seleccionarPorLotesIds, definida junto
-  // a aplicarAsignacionProspectosCampana) y se ordena en memoria.
-  const prospectos=await seleccionarPorLotesIds('prospectos','*',idsCampana,q=>q.eq('asignado_a',currentUser.id).or('no_contactar.is.null,no_contactar.eq.false')); // Jp 2026-11-17: ⛔ No volver a contactar sale de la lista de llamadas
-  const ps=(prospectos||[]).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
   const porEstatus={};
   for(const p of ps) porEstatus[p.estatus]=(porEstatus[p.estatus]||0)+1;
   const canalizados=porEstatus['Canalizado a ventas']||0;
@@ -21448,8 +21460,15 @@ async function renderProspectos(){
   // en clientes" — mismo cálculo que renderTeleClientes: % de contactados
   // (con al menos una llamada tuya registrada) sobre el total asignado, más
   // la proyección de cuándo terminas al ritmo actual.
-  const {data:llamadasProsExist}=await sb.from('prospecto_llamadas')
-    .select('prospecto_id,created_at,resultado').in('prospecto_id',ps.map(p=>p.id)).eq('usuario_id',currentUser.id).order('created_at',{ascending:false});
+  let llamadasProsExist=[];
+  { const _idsPs=ps.map(p=>p.id);
+    for(let i=0;i<_idsPs.length;i+=200){
+      const _lote=_idsPs.slice(i,i+200);
+      const {data:_d}=await sb.from('prospecto_llamadas').select('prospecto_id,created_at,resultado').in('prospecto_id',_lote).eq('usuario_id',currentUser.id);
+      if(_d&&_d.length) llamadasProsExist=llamadasProsExist.concat(_d);
+    }
+    llamadasProsExist.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+  }
   const contactadosIds=new Set((llamadasProsExist||[]).map(l=>l.prospecto_id));
   // Jp, 2026-10-16 (auditoría de cierre): resultado de la llamada más
   // reciente por prospecto, para mostrarlo en la tabla (filaProspecto).
@@ -21475,7 +21494,7 @@ async function renderProspectos(){
   const contP=contProsId?ps.find(p=>p.id===contProsId):null;
   const continuarProsHtml=contP?`
     <button onclick="abrirDetalle('${contP.id}')" style="width:100%;margin-bottom:14px;display:flex;align-items:center;gap:10px;justify-content:center;padding:11px 14px;background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);font-size:13px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">
-      ▶️ Continuar con campaña
+      ▶️ Continuar donde me quedé
       <span style="font-weight:500;opacity:.9;font-size:12px;">· último: ${(contP.nombre||'Sin nombre').replace(/</g,'&lt;')}${contP.apellidos?' '+contP.apellidos.replace(/</g,'&lt;'):''}</span>
     </button>`:'';
   const totalPros=ps.length, contactadosPros=contactadosIds.size, pctPros=totalPros>0?Math.round(contactadosPros/totalPros*100):0;
@@ -21496,9 +21515,10 @@ async function renderProspectos(){
     proyHtmlPros=`<div style="margin-top:6px;font-size:11px;color:var(--text3);">Registra tu primera llamada para ver la proyección de completado.</div>`;
   }
 
-  mc.innerHTML=`${pendHoyHtml}${llamadasBarraHtml()}${respondBarraProspectosHtml()}
+  mc.innerHTML=`${pendHoyHtml}${llamadasBarraHtml()}${respondBarraProspectosHtml()}${toggleHtml}
+  ${modo==='campana'?`
   <div style="background:var(--teal-bg);border:1px solid rgba(0,169,157,0.25);border-radius:var(--radsm);padding:8px 14px;margin-bottom:14px;font-size:12px;color:var(--teal);font-weight:600;">
-    🎯 Campaña activa: ${campanaActiva.nombre}
+    🎯 Campaña activa: ${campanaActiva?campanaActiva.nombre:''}
   </div>
   <div class="card" style="padding:12px 16px;margin-bottom:14px;">
     <div style="display:flex;gap:12px;font-size:12px;">
@@ -21509,12 +21529,15 @@ async function renderProspectos(){
       <div style="height:100%;width:${pctPros}%;background:var(--teal);border-radius:3px;"></div>
     </div>
     ${proyHtmlPros}
-  </div>
+  </div>`:`
+  <div style="background:var(--surf2,#f6f7f9);border:1px solid var(--border);border-radius:var(--radsm);padding:9px 14px;margin-bottom:14px;font-size:12px;color:var(--text2);">
+    🗂️ <b>Todos los prospectos</b> — ${ps.length} más recientes. Aquí también aparecen los que llegan por WhatsApp aunque no estén en la campaña. Usa el buscador para encontrar a alguien por nombre o teléfono.
+  </div>`}
   ${continuarProsHtml}
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
     <div>
-      <div style="font-size:18px;font-weight:600;color:var(--text);">Mis prospectos</div>
-      <div style="font-size:12px;color:var(--text3);">${ps.length} asignados · ${canalizados} canalizados a ventas</div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);">${modo==='campana'?'Mis prospectos':'Todos los prospectos'}</div>
+      <div style="font-size:12px;color:var(--text3);">${modo==='campana'?(ps.length+' asignados · '+canalizados+' canalizados a ventas'):(ps.length+' más recientes')}</div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
       <select id="filtroEvento" onchange="filtrarProspectos()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;color:var(--text);">
@@ -21549,12 +21572,12 @@ async function renderProspectos(){
       </div>`).join('')}
   </div>
 
-  <!-- BONO ALERT -->
-  ${canalizados>=MINIMO
+  <!-- BONO ALERT (solo en modo campaña) -->
+  ${modo!=='campana'?'':(canalizados>=MINIMO
     ? `<div style="background:var(--green-bg);border:1px solid rgba(39,174,96,0.25);border-radius:var(--radsm);padding:10px 16px;margin-bottom:14px;font-size:12px;color:var(--green);">
         ✓ <strong>Bono activo</strong> — ${canalizados} prospectos canalizados × $50 = <strong>$${(canalizados*50).toLocaleString('es-MX')}</strong></div>`
     : `<div style="background:var(--gold-bg);border:1px solid var(--gold-b);border-radius:var(--radsm);padding:10px 16px;margin-bottom:14px;font-size:12px;color:var(--gold);">
-        Faltan <strong>${MINIMO-canalizados} prospectos</strong> canalizados para activar el bono de $50 c/u</div>`}
+        Faltan <strong>${MINIMO-canalizados} prospectos</strong> canalizados para activar el bono de $50 c/u</div>`)}
 
   <!-- TABLA -->
   <div class="card" id="tablaProspectos">
@@ -21634,13 +21657,20 @@ function filaProspecto(p){
 function filtrarProspectos(){
   const filtro=document.getElementById('filtroEstatus')?.value||'';
   const filtroEv=document.getElementById('filtroEvento')?.value||'';
+  const filtroAct=document.getElementById('filtroActividadPros')?.value||'';
   const buscar=document.getElementById('buscarPros')?.value.toLowerCase()||'';
   const ps=window._prospectos||[];
+  const dias=window._diasActPros||{};
   const filtrados=ps.filter(p=>{
     const matchEstatus=!filtro||p.estatus===filtro;
     const matchEvento=!filtroEv||p.evento===filtroEv;
     const matchBuscar=!buscar||(p.nombre||'').toLowerCase().includes(buscar)||(p.telefono||'').includes(buscar);
-    return matchEstatus&&matchEvento&&matchBuscar;
+    let matchAct=true;
+    if(filtroAct){
+      const d=dias[p.id]!=null?dias[p.id]:999999;
+      matchAct = filtroAct==='frio' ? d>30 : d<=parseInt(filtroAct,10);
+    }
+    return matchEstatus&&matchEvento&&matchBuscar&&matchAct;
   });
   const tbody=document.getElementById('bodyProspectos');
   if(tbody) tbody.innerHTML=filtrados.map(p=>filaProspecto(p)).join('');
@@ -22173,6 +22203,20 @@ async function respondPintarBoton(slotId,ctx){
   el.innerHTML=`<a href="${respondUrl(id)}" target="_blank" rel="noopener" title="Abrir la conversación de este contacto en Respond.io" style="background:#1A74E2;color:#fff;border:none;border-radius:var(--radsm);padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;">💬 Abrir en Respond</a>`;
 }
 
+// Jp, 2026-11-19: abre la ficha de un prospecto por su id aunque no esté en la
+// lista cargada (p. ej. el que acabas de traer de WhatsApp y no está en la
+// campaña). Lo busca, lo mete a la lista en memoria y abre su ficha.
+async function abrirProspectoPorId(id){
+  try{
+    let ps=window._prospectos||[];
+    if(!ps.some(p=>p.id===id)){
+      const {data:p}=await sb.from('prospectos').select('*').eq('id',id).maybeSingle();
+      if(!p){ alert('No encontré ese prospecto. Prueba abrir "🗂️ Todos los prospectos".'); return; }
+      window._prospectos=[p,...ps];
+    }
+    await abrirDetalle(id);
+  }catch(e){ console.error('abrirProspectoPorId',e); alert('No se pudo abrir la ficha.'); }
+}
 async function abrirDetalle(id){
   const ps=window._prospectos||[];
   const idx=ps.findIndex(p=>p.id===id);
