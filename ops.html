@@ -317,7 +317,25 @@ async function guardarServicio(id){
 // Coordinación toma un pendiente de Telegram (o captura directa) y lo asigna a
 // un asesor con servicio del catálogo, día y hora. Guarda en servicios_ejecutados
 // (la tabla del ticket) con estatus ASIGNADO y marca el pendiente como procesado.
-let _opsCatAsig=[], _asesores=[], _pendientes=[], _asignaciones=[], _opsFiltroTipo='todo', _opsTick=null;
+let _opsCatAsig=[], _asesores=[], _pendientes=[], _asignaciones=[], _opsFiltroTipo='todo', _opsTick=null, _polVig=[];
+// Nivel de póliza (igual que Cartera de cuentas): N1 Black · Crítico … N5 Gray · Básica
+const POLIZA_NIVEL_COLOR={N1:'#1A1F29',N2:'#1D5FA8',N3:'#E0A324',N4:'#1D9E75',N5:'#9AA3AB'};
+const POLIZA_NIVEL_ETIQUETA={N1:'Black',N2:'Blue',N3:'Gold',N4:'Green',N5:'Gray'};
+const _norm=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\([^)]*\)/g,'').replace(/[^a-z0-9 ]/g,'').replace(/\s+/g,' ').trim();
+// Resuelve la póliza VIGENTE de un servicio/solicitud (por id de póliza, por cuenta, o por nombre)
+function _polizaDe(o){
+  if(!_polVig||!_polVig.length||!o) return null;
+  const pid=o.cliente_poliza_id, cid=o.cliente_cartera_id, nom=o.cliente_nombre||o.cliente||'';
+  let p = pid&&_polVig.find(x=>x.id===pid);
+  if(!p && cid) p=_polVig.find(x=>x.cliente_cartera_id===cid);
+  if(!p && nom){ const n=_norm(nom); if(n) p=_polVig.find(x=>{const pn=_norm(x.cliente_nombre); return pn&&(pn===n||n.startsWith(pn)||pn.startsWith(n)||(pn.length>4&&n.includes(pn))||(n.length>4&&pn.includes(n)));}); }
+  return p||null;
+}
+const _nivelDe=p=>p&&p.polizas_catalogo?p.polizas_catalogo.prioridad_codigo:null;
+function _horasRest(p){ if(!p) return null; const t=parseFloat(p.horas_totales)||0,c=parseFloat(p.horas_consumidas)||0; return Math.max(0,Math.round((t-c)*100)/100); }
+function _polVigente(p){ if(!p) return false; if(!p.fecha_vencimiento) return true; return String(p.fecha_vencimiento).slice(0,10)>=new Date().toISOString().slice(0,10); }
+function _nivelBadge(niv){ if(!niv) return ''; const c=POLIZA_NIVEL_COLOR[niv]||'#555'; return `<span class="chip" style="background:${c};color:#fff;font-size:10px;">🛡 ${niv} ${POLIZA_NIVEL_ETIQUETA[niv]||''}</span>`; }
+const _nivOrden=niv=>niv?parseInt(String(niv).replace(/\D/g,''),10)||9:9;
 // Flujo del servicio como tablero (CRM). Cada tarjeta avanza solo cuando se cumple su candado.
 const ETAPAS=[
   {k:'SOLICITUD', t:'Solicitudes', ic:'📥', c:'#6B7280'},
@@ -361,13 +379,14 @@ async function renderAsignaciones(){
   const m=document.getElementById('mod');
   m.innerHTML=`<div class="loading"><div class="spinner"></div> Cargando tablero…</div>`;
   try{
-    const [cat,ases,pend,asig]=await Promise.all([
+    const [cat,ases,pend,asig,pol]=await Promise.all([
       _opsCatAsig.length?Promise.resolve({data:_opsCatAsig}):sb.from('operaciones_servicios_catalogo').select('*').eq('activo',true).order('orden').order('nombre'),
       sb.from('usuarios').select('id,nombre,rol').in('rol',['asesor','gerente_operaciones']).eq('activo',true).order('nombre'),
       sb.from('mesa_control_telegram_solicitudes').select('*').eq('estado','pendiente').order('created_at',{ascending:false}).limit(150),
-      sb.from('servicios_ejecutados').select('*').order('fecha_asignada',{ascending:true,nullsFirst:false}).order('created_at',{ascending:false}).limit(400)
+      sb.from('servicios_ejecutados').select('*').order('fecha_asignada',{ascending:true,nullsFirst:false}).order('created_at',{ascending:false}).limit(400),
+      sb.from('clientes_polizas').select('id,cliente_cartera_id,cliente_nombre,horas_totales,horas_consumidas,fecha_vencimiento,polizas_catalogo(nombre,prioridad_codigo,prioridad_nombre)').eq('estatus','VIGENTE')
     ]);
-    _opsCatAsig=cat.data||_opsCatAsig; _asesores=ases.data||[]; _pendientes=pend.data||[];
+    _opsCatAsig=cat.data||_opsCatAsig; _asesores=ases.data||[]; _pendientes=pend.data||[]; _polVig=pol.data||[];
     // Jp y cualquier staff también pueden tomar servicios: se agregan como asesor seleccionable.
     if(userProfile&&!_asesores.some(a=>a.id===userProfile.id)) _asesores=[{id:userProfile.id,nombre:userProfile.nombre,rol:userProfile.rol},..._asesores];
     _asignaciones=(asig.data||[]).filter(s=>!s.ticket_cerrado||estEtapa(s.estatus)==='CERRADO');
@@ -386,10 +405,13 @@ function pintarAsignaciones(){
   // Tarjeta de una SOLICITUD pendiente de Telegram
   const pendCard=p=>{
     const d=p.datos_extraidos||{};
-    return `<div class="card" style="padding:10px 12px;">
-      <div style="display:flex;justify-content:space-between;gap:6px;align-items:center;">
+    const pol=_polizaDe({cliente_nombre:d.cliente}); const niv=_nivelDe(pol);
+    const bord=niv?`border-left:4px solid ${POLIZA_NIVEL_COLOR[niv]};`:'';
+    return `<div class="card" style="padding:10px 12px;${bord}">
+      <div style="display:flex;justify-content:space-between;gap:6px;align-items:center;flex-wrap:wrap;">
         <span class="chip" style="background:var(--teal-bg);color:var(--teal);font-size:10px;">${esc(_agCanalCorto(p.telegram_chat_titulo))}</span>
-        <span class="muted" style="font-size:10px;">${_opsFechaMx(p.created_at)}</span>
+        ${niv?_nivelBadge(niv):''}
+        <span class="muted" style="font-size:10px;margin-left:auto;">${_opsFechaMx(p.created_at)}</span>
       </div>
       <div style="font-weight:700;font-size:13px;margin-top:5px;">${esc(d.cliente||'(sin cliente)')}</div>
       <div style="font-size:11.5px;color:var(--text2);margin-top:2px;line-height:1.4;">${esc((d.descripcion||p.texto_original||'').slice(0,160))}</div>
@@ -424,9 +446,12 @@ function pintarAsignaciones(){
     if(et==='ASIGNADO'){ const prog=s.fecha_asignada&&(s.fecha_asignada+'T'+(_opsHora(s.hora_asignada)||'00:00'))<=new Date().toISOString().slice(0,16); if(prog) extra=`<div style="font-size:11px;color:#B45309;font-weight:700;margin-top:3px;">⏰ Es hora</div>`; }
     if(et==='EN_CURSO'){ const est=_estimMin(s.tipo_servicio); extra=`<div class="enCursoTimer" data-ini="${s.inicio_real_at||''}" data-est="${est||''}" style="font-size:11px;margin-top:3px;font-weight:700;">${_timerHtml(s.inicio_real_at,est)}</div>`; }
     if(et==='CONCLUIDO'||et==='REPORTADO'||et==='CERRADO'){ const d=_durMin(s); if(d!=null){ const est=_estimMin(s.tipo_servicio); extra=`<div style="font-size:11px;margin-top:3px;color:${est&&d>est?'#c0392b':'var(--text2)'};">⏱ duró ${_minTxt(d)}${est&&d>est?' (excedió '+_minTxt(est)+') ⚠️':''}</div>`; } }
-    return `<div class="card" style="padding:10px 12px;cursor:pointer;" onclick="abrirAsignacion('${s.id}')">
-      <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;">
-        <span style="font-weight:700;font-size:13px;">${esc(s.cliente_nombre||'Sin cliente')}</span>${tipoChip(s)}
+    const pol=_polizaDe(s); const niv=_nivelDe(pol);
+    const bord=niv?`border-left:4px solid ${POLIZA_NIVEL_COLOR[niv]};`:'';
+    return `<div class="card" style="padding:10px 12px;cursor:pointer;${bord}" onclick="abrirAsignacion('${s.id}')">
+      <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;flex-wrap:wrap;">
+        <span style="font-weight:700;font-size:13px;">${esc(s.cliente_nombre||'Sin cliente')}</span>
+        <span style="display:flex;gap:4px;flex-wrap:wrap;">${niv?_nivelBadge(niv):''}${tipoChip(s)}</span>
       </div>
       <div style="font-size:11.5px;color:var(--text2);margin-top:2px;">${esc(s.tipo_servicio||'(servicio sin definir)')}</div>
       <div class="muted" style="margin-top:3px;font-size:11px;">🧑‍🔧 ${esc(s.asesor_nombre||'sin asesor')}${s.fecha_asignada?' · 📅 '+_opsFechaMx(s.fecha_asignada)+(s.hora_asignada?' '+_opsHora(s.hora_asignada):''):''}</div>
@@ -440,7 +465,13 @@ function pintarAsignaciones(){
   const pasaVista=s=>!vistaAsesorId||s.asesor_id===vistaAsesorId;
   const asigPorEtapa={}; ETAPAS.forEach(e=>asigPorEtapa[e.k]=[]);
   (_asignaciones||[]).filter(s=>pasaTipo(s)&&pasaVista(s)).forEach(s=>{ asigPorEtapa[estEtapa(s.estatus)].push(s); });
-  const pendVis=(vistaAsesorId||_opsFiltroTipo==='evento')?[]:_pendientes; // el asesor no ve solicitudes sin asignar
+  asigPorEtapa['SOLICITUD'].sort((a,b)=>_nivOrden(_nivelDe(_polizaDe(a)))-_nivOrden(_nivelDe(_polizaDe(b))));
+  // Solicitudes de Telegram: se ordenan por prioridad de póliza (N1 primero), luego por fecha.
+  const pendVis=(vistaAsesorId||_opsFiltroTipo==='evento')?[]:[..._pendientes].sort((a,b)=>{
+    const na=_nivOrden(_nivelDe(_polizaDe({cliente_nombre:(a.datos_extraidos||{}).cliente})));
+    const nb=_nivOrden(_nivelDe(_polizaDe({cliente_nombre:(b.datos_extraidos||{}).cliente})));
+    return na!==nb ? na-nb : (b.created_at||'').localeCompare(a.created_at||'');
+  });
   // Columnas
   const col=e=>{
     const cards = e.k==='SOLICITUD' ? [...pendVis.map(pendCard), ...asigPorEtapa[e.k].map(servCard)] : asigPorEtapa[e.k].map(servCard);
@@ -508,12 +539,25 @@ function abrirAsignar(pendId, servExistente){
   const opcPref=['','Teléfono','WhatsApp','Correo','Videollamada','Presencial'].map(o=>`<option value="${o}" ${prefV===o?'selected':''}>${o||'— elige —'}</option>`).join('');
   const val=(v)=>esc(v||'');
   const ro=(cond)=>cond?'readonly':'';
+  const clienteNombre = sx ? (sx.cliente_nombre||'') : (d.cliente||'');
+  const pol=_polizaDe({cliente_nombre:clienteNombre, cliente_cartera_id:sx&&sx.cliente_cartera_id, cliente_poliza_id:sx&&sx.cliente_poliza_id});
+  const niv=_nivelDe(pol), rest=_horasRest(pol), vig=_polVigente(pol);
+  const polPanel = pol
+    ? `<div style="margin-bottom:12px;padding:8px 10px;border-radius:8px;background:${POLIZA_NIVEL_COLOR[niv]||'#555'}14;border:1px solid ${(POLIZA_NIVEL_COLOR[niv]||'#555')}44;font-size:12px;">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${_nivelBadge(niv)} <b>${esc(pol.polizas_catalogo?pol.polizas_catalogo.nombre:'')}</b></div>
+        <div style="margin-top:4px;">${vig?'✅ Vigente':'⚠️ <b>VENCIDA</b>'} · vence ${pol.fecha_vencimiento?_opsFechaMx(pol.fecha_vencimiento):'—'}</div>
+        <div>⏱ ${rest!=null?'<b>'+rest+' h</b> disponibles de '+(pol.horas_totales||'?')+' h':'—'}</div>
+      </div>`
+    : `<div style="margin-bottom:12px;padding:8px 10px;border-radius:8px;background:var(--gold-bg);color:var(--gold);font-size:12px;">⚠️ No encontré póliza vigente ligada a este cliente. Si es servicio de póliza, revísalo en Cartera.</div>`;
   mostrarModal(`
     <div style="font-size:16px;font-weight:800;margin-bottom:4px;">${sx?'Asignar servicio':p?'Asignar solicitud':'Nueva asignación'}</div>
     <div class="muted" style="margin-bottom:14px;">A la izquierda, lo que llegó del cliente (no se edita). A la derecha, lo que programa Mesa de Control.</div>
     <div class="asgCols">
       <div>
         <div class="colhead">📎 Datos del cliente (de la solicitud)</div>
+        ${polPanel}
+        <input type="hidden" id="agPolId" value="${pol?pol.id:''}">
+        <input type="hidden" id="agCarteraId" value="${pol?(pol.cliente_cartera_id||''):''}">
         <label class="fld"><span>Cliente${fijo?'':' *'}</span><input class="inp" id="agCliente" value="${val(sx?sx.cliente_nombre:d.cliente)}" ${ro(fijo)} placeholder="Nombre del cliente / empresa"></label>
         <label class="fld"><span>Contacto</span><input class="inp" id="agContacto" value="${val(nomV)}" ${ro(fijo&&!!nomV)} placeholder="Nombre del contacto"></label>
         <div class="grid2">
@@ -554,14 +598,27 @@ async function guardarAsignacion(pendId, servId){
   if(!servicio) return err('Elige el servicio del catálogo.');
   if(!asesorId) return err('Elige al asesor.');
   if(!fecha) return err('Pon la fecha de la asignación.');
+  const tipo=g('agTipo')||'poliza';
+  const polId=g('agPolId'), carteraId=g('agCarteraId');
+  // Antes de asignar un servicio de póliza: debe haber póliza vigente y con horas disponibles.
+  if(tipo==='poliza'){
+    const pol=polId?(_polVig||[]).find(x=>x.id===polId):null;
+    if(!pol){ if(!confirm('Este cliente no tiene una póliza vigente ligada. ¿Asignar de todos modos?')) return; }
+    else{
+      if(!_polVigente(pol)){ if(!confirm('La póliza de este cliente está VENCIDA (venció el '+_opsFechaMx(pol.fecha_vencimiento)+'). ¿Asignar de todos modos?')) return; }
+      const rest=_horasRest(pol), est=_estimMin(servicio);
+      if(rest!=null&&est&&rest*60<est){ if(!confirm('La póliza solo tiene '+rest+' h disponibles y este servicio estima '+_minTxt(est)+'. ¿Asignar de todos modos?')) return; }
+    }
+  }
   const ases=(_asesores||[]).find(a=>a.id===asesorId);
   const fila={
-    tipo_flujo:g('agTipo')||'poliza',
+    tipo_flujo:tipo,
     cliente_nombre:cliente, tipo_servicio:servicio, descripcion_solicitud:g('agDesc')||null,
     asesor_id:asesorId, asesor_nombre:ases?ases.nombre:null,
     fecha_asignada:fecha, hora_asignada:g('agHora')||null,
     estatus:'ASIGNADO', solicitado_por:g('agContacto')||null,
-    contacto_telefono:g('agTel')||null, contacto_preferido:g('agPref')||null, nota:g('agNota')||null
+    contacto_telefono:g('agTel')||null, contacto_preferido:g('agPref')||null, nota:g('agNota')||null,
+    cliente_poliza_id:polId||null, cliente_cartera_id:carteraId||null
   };
   const btn=document.getElementById('agGuardar'); if(btn){btn.disabled=true;btn.textContent='Guardando…';}
   let error,nuevo;
@@ -665,6 +722,7 @@ async function descartarPendiente(id){
 function abrirAsignacion(id){
   const s=(_asignaciones||[]).find(x=>x.id===id); if(!s) return;
   const et=estEtapa(s.estatus); const e=ETAPA[et];
+  const polD=_polizaDe(s), nivD=_nivelDe(polD), restD=_horasRest(polD);
   const fechaMx=f=>{ if(!f) return '—'; const p=String(f).slice(0,10).split('-'); return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:f; };
   const dur=_durMin(s); const est=_estimMin(s.tipo_servicio);
   const pasos=ETAPAS.map(x=>`<span style="font-size:10px;padding:2px 7px;border-radius:20px;${estEtapa(s.estatus)===x.k?`background:${x.c};color:#fff;font-weight:700;`:'background:var(--surf2);color:var(--text3);'}">${x.ic} ${x.t.split(' ')[0]}</span>`).join(' ');
@@ -688,7 +746,8 @@ function abrirAsignacion(id){
   const opcCorr=ETAPAS.map(x=>`<option value="${x.k}" ${et===x.k?'selected':''}>${x.ic} ${x.t}</option>`).join('');
   mostrarModal(`
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
-      <div><div style="font-size:16px;font-weight:800;">${esc(s.cliente_nombre||'Sin cliente')} <span class="chip" style="background:${s.tipo_flujo==='evento'?'#F59E0B22':'#2563EB18'};color:${s.tipo_flujo==='evento'?'#B45309':'#2563EB'};font-size:11px;">${s.tipo_flujo==='evento'?'💵 Evento':'🛡 Póliza'}</span></div>
+      <div><div style="font-size:16px;font-weight:800;">${esc(s.cliente_nombre||'Sin cliente')} <span class="chip" style="background:${s.tipo_flujo==='evento'?'#F59E0B22':'#2563EB18'};color:${s.tipo_flujo==='evento'?'#B45309':'#2563EB'};font-size:11px;">${s.tipo_flujo==='evento'?'💵 Evento':'🛡 Póliza'}</span> ${nivD?_nivelBadge(nivD):''}</div>
+      ${polD?`<div class="muted" style="margin-top:2px;">${esc(polD.polizas_catalogo?polD.polizas_catalogo.nombre:'')} · ${_polVigente(polD)?'vigente':'⚠️ vencida'} · ⏱ ${restD!=null?restD+' h disp.':'—'}</div>`:''}
       <div class="muted">${esc(s.tipo_servicio||'(servicio sin definir)')}</div></div>
       <span class="chip" style="background:${e.c}1a;color:${e.c};">${e.ic} ${e.t}</span>
     </div>

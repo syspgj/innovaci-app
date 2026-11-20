@@ -12836,7 +12836,11 @@ async function renderProyectosModulo(scope){
   mc.classList.remove('full-width');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando proyectos...</div>';
   const [{data:proyectos},{data:vendedores}]=await Promise.all([
-    sb.from('proyectos_crm').select('*,cliente_cartera:cliente_cartera_id(id,razon_social,num_cliente,vendedor_asignado)').order('fecha_actualizacion_crm',{ascending:false}),
+    // Jp, 2026-11-20: proyectos = pólizas; solo se cargan los ACTIVOS (activo=true).
+    // Antes se traían los ~2,689 (incluidos los Concluidos) y Supabase topaba la
+    // consulta, por lo que se perdían proyectos activos. Ahora se cargan completos
+    // los activos (≈810). Los "Históricos" (Concluidos) ya no viven en este módulo.
+    sb.from('proyectos_crm').select('*,cliente_cartera:cliente_cartera_id(id,razon_social,num_cliente,vendedor_asignado)').eq('activo',true).order('fecha_actualizacion_crm',{ascending:false}),
     sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'),
   ]);
   window._proyectosCRM=proyectos||[];
@@ -12845,7 +12849,7 @@ async function renderProyectosModulo(scope){
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
     <div style="font-size:18px;font-weight:600;color:var(--text);">Proyectos</div>
-    <div style="font-size:12px;color:var(--text3);">Proyectos de CRM (pólizas, servicios, capacitaciones). Sincronizan a diario. Por default solo se muestran los que están "En curso".</div>
+    <div style="font-size:12px;color:var(--text3);">Proyectos de CRM = pólizas y servicios ACTIVOS (sincronizan a diario). Los concluidos no se muestran aquí.</div>
   </div>
   <div id="proyectosStatsWrap"></div>
   ${window._proyectosScope==='director'?'':`
@@ -12859,8 +12863,7 @@ async function renderProyectosModulo(scope){
   </div>
   <div style="display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
     <button onclick="swProyectosEstado('activos')" id="proyectosEstado_activos" class="cartera-subtab">✅ Activos (en curso)</button>
-    <button onclick="swProyectosEstado('historicos')" id="proyectosEstado_historicos" class="cartera-subtab">🗂 Históricos</button>
-    <button onclick="swProyectosEstado('otros')" id="proyectosEstado_otros" class="cartera-subtab">⏸ Otros</button>
+    <button onclick="swProyectosEstado('otros')" id="proyectosEstado_otros" class="cartera-subtab">⏸ En asignación / otros</button>
   </div>
   <div style="margin-bottom:12px;">
     <input type="text" id="proyectosFiltroTextoInput" placeholder="Buscar por nombre del proyecto, cliente, RFC, número de cliente..." value="${proyectosFiltroTexto}" oninput="onProyectosFiltroChange()" style="width:100%;max-width:420px;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;box-sizing:border-box;">
