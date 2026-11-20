@@ -188,7 +188,8 @@ async function crearDesdeCuentaApp(res, clienteId) {
       accountname: c.razon_social,
       siccode: c.rfc || undefined, // el CRM usa siccode como RFC
       phone: c.telefono || undefined,
-      email1: c.correo_principal || undefined,
+      email1: c.correo_principal || 'sin-correo@innovaci.com.mx', // Vtiger lo exige
+
       assigned_user_id,
       description: `Alta directa desde App VENTAS el ${new Date().toISOString().slice(0, 10)}.${padreNombre ? ' Subcuenta de ' + padreNombre + '.' : ''}`,
     };
@@ -230,7 +231,7 @@ export default async function handler(req, res) {
   const usuario = await validarUsuarioSupabase(accessToken);
   if (!usuario) return res.status(401).json({ ok: false, error: 'sesión inválida — vuelve a iniciar sesión' });
 
-  const { prospecto_id, vendedor_usuario_id, cliente_cartera_id } = req.body || {};
+  const { prospecto_id, vendedor_usuario_id, cliente_cartera_id, email } = req.body || {};
   // Jp, 2026-11-04 — cuentas dadas de alta directo en la App ("➕ Nuevo cliente",
   // num_cliente 'ALT-…') nunca llegaban al CRM: al abrirlas decía "aún no está en
   // el espejo del CRM" y no se podía crear su Oportunidad. Con cliente_cartera_id
@@ -258,11 +259,17 @@ export default async function handler(req, res) {
       assigned_user_id = usuarios[0]?.crm_user_id || VTIGER_USUARIO_RESPALDO;
     }
 
+    // Vtiger exige email1. Si el prospecto no trae correo, se usa el que el
+    // vendedor capturó al convertir; y si tampoco hay, un marcador neutro para
+    // no bloquear el alta (se completa a mano después). Jp, 2026-11-20.
+    const correoReal = (p.email || (typeof email === 'string' ? email.trim() : '') || '').trim();
+    const correoVtiger = correoReal || 'sin-correo@innovaci.com.mx';
+
     const sessionName = await vtigerLogin();
     const element = {
       accountname: razonSocial,
       phone: p.telefono || undefined,
-      email1: p.email || undefined,
+      email1: correoVtiger,
       assigned_user_id,
       description: `Convertido desde Prospectos en App VENTAS el ${new Date().toISOString().slice(0, 10)}.${p.notas ? ' Notas: ' + p.notas : ''}`,
     };
@@ -278,14 +285,16 @@ export default async function handler(req, res) {
       num_cliente: creado.account_no,
       razon_social: razonSocial,
       telefono: p.telefono || null,
-      correo_principal: p.email || null,
+      correo_principal: correoReal || null, // solo el correo real, nunca el marcador
       origen: 'prospecto_app',
       notas: `Convertida desde Prospectos (App) el ${new Date().toISOString().slice(0, 10)}.${p.notas ? '\n\nNotas del prospecto: ' + p.notas : ''}`,
     });
 
-    await supabasePatch('prospectos', `id=eq.${encodeURIComponent(prospecto_id)}`, {
-      cliente_cartera_id: nuevaCuenta.id,
-    });
+    // Si el vendedor capturó el correo al convertir y el prospecto no lo tenía,
+    // se guarda también en el prospecto para no perderlo.
+    const patchProsp = { cliente_cartera_id: nuevaCuenta.id };
+    if (correoReal && !p.email) patchProsp.email = correoReal;
+    await supabasePatch('prospectos', `id=eq.${encodeURIComponent(prospecto_id)}`, patchProsp);
 
     return res.status(200).json({
       ok: true,
