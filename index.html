@@ -8586,7 +8586,95 @@ async function renderProyeccionTele(){
     .eq('usuario_id',currentUser.id).eq('perfil','telemarketing')
     .order('updated_at',{ascending:false});
   window._teleRows=rows||[];
-  renderProyeccionTeleTabla();
+  renderProyeccionTeleVista();
+}
+
+// ── Tablero (kanban) de Telemarketing — Jp, 2026-11-20 ──────────────────────
+const TELE_TABLERO_COLS=[
+  {k:'cotizado',    t:'Cotizado',            ic:'💬', c:'#8BA0B8', def:'Cotizado',               fases:['Cotizado']},
+  {k:'seguimiento', t:'En seguimiento',      ic:'🔄', c:'#F5A623', def:'En seguimiento',         fases:['En seguimiento']},
+  {k:'canalizado',  t:'Canalizado a Ventas', ic:'📈', c:'#00A99D', def:'Canalizado a vendedor',  fases:['Canalizado a vendedor'], canaliza:true},
+  {k:'cerrados',    t:'Cerrados',            ic:'🏁', c:'#334155', def:null,                      fases:['Cerrado-Ganado','Cerrado-Perdido','Cerrado-Sin interés']},
+];
+const TELE_FASE_A_GRUPO={};
+TELE_TABLERO_COLS.forEach(col=>col.fases.forEach(f=>TELE_FASE_A_GRUPO[f]=col.k));
+let _teleVista='tabla';
+function teleToggleVistaHtml(){
+  const b=(v,ic,lbl)=>`<button onclick="teleSetVista('${v}')" style="background:${_teleVista===v?'var(--navy)':'none'};color:${_teleVista===v?'#fff':'var(--text2)'};border:none;padding:8px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${ic} ${lbl}</button>`;
+  return `<div style="display:inline-flex;border:1px solid var(--border);border-radius:var(--radsm);overflow:hidden;">${b('tabla','📋','Tabla')}${b('tablero','🗂️','Tablero')}</div>`;
+}
+function teleSetVista(v){ _teleVista=v; renderProyeccionTeleVista(); }
+function renderProyeccionTeleVista(){ if(_teleVista==='tablero') renderProyeccionTeleTablero(); else renderProyeccionTeleTabla(); }
+
+function renderProyeccionTeleTablero(){
+  const mc=document.getElementById('mainContent'); if(!mc) return;
+  const rows=window._teleRows||[];
+  const porGrupo={}; TELE_TABLERO_COLS.forEach(c=>porGrupo[c.k]=[]);
+  rows.forEach(r=>{ const g=TELE_FASE_A_GRUPO[r.estatus]; if(g)(porGrupo[g]=porGrupo[g]||[]).push(r); });
+  Object.values(porGrupo).forEach(arr=>arr.sort((a,b)=>(b.monto_total||0)-(a.monto_total||0)));
+  const columnas=TELE_TABLERO_COLS.map(col=>{
+    const items=porGrupo[col.k]||[]; const totalCol=items.reduce((s,r)=>s+(r.monto_total||0),0);
+    return `<div class="pipe-col" ondragover="teleTableroSobre(event)" ondrop="teleTableroSoltar(event,'${col.k}')"
+        style="flex:1;min-width:220px;background:var(--surface-2,#f4f6f8);border-radius:var(--rad);border-top:3px solid ${col.c};display:flex;flex-direction:column;max-height:calc(100vh - 210px);">
+      <div style="padding:10px 12px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface-2,#f4f6f8);border-radius:var(--rad) var(--rad) 0 0;z-index:1;">
+        <div style="font-size:12px;font-weight:800;color:${col.c};">${col.ic} ${col.t} <span style="color:var(--text3);font-weight:600;">· ${items.length}</span></div>
+        <div style="font-size:10px;color:var(--text3);margin-top:1px;">${fmt(totalCol)}${col.canaliza?' · suelta aquí para canalizar':''}</div>
+      </div>
+      <div style="padding:8px;overflow-y:auto;flex:1;min-height:60px;">
+        ${items.map(r=>teleTarjetaTablero(r)).join('')||'<div style="text-align:center;color:var(--text3);font-size:11px;padding:16px 4px;">—</div>'}
+      </div>
+    </div>`;
+  }).join('');
+  mc.innerHTML=`
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:10px;">
+    <div>
+      <div style="font-size:18px;font-weight:600;color:var(--text);">📊 Mi Proyección — Tablero</div>
+      <div style="font-size:12px;color:var(--text3);">${rows.length} negociaciones · arrastra para cambiar la etapa</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      ${teleToggleVistaHtml()}
+      <button onclick="agregarFilaPipeTele()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nueva</button>
+    </div>
+  </div>
+  <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;align-items:flex-start;">${columnas}</div>`;
+}
+function teleTarjetaTablero(r){
+  const estColor=ESTATUS_PIPE_TELE_COLOR[r.estatus]||'#888';
+  const sig=r.siguiente_paso?`<div style="font-size:10px;color:var(--text3);margin-top:4px;">➡ ${solEsc(r.siguiente_paso)}${r.fecha_siguiente_paso?' · '+fechaLegible(r.fecha_siguiente_paso):''}</div>`:'';
+  const lig=r.cliente_cartera_id?'<span title="Cuenta de Cartera">🏢</span>':r.prospecto_app_id?'<span title="Prospecto">🧲</span>':'';
+  return `<div draggable="true" ondragstart="teleTableroArrastrar(event,'${r.id}')" ondragend="pipeTableroFin(event)" onclick="editarFilaPipeTele('${r.id}')"
+      style="background:var(--surface);border:1px solid var(--border);border-left:3px solid ${estColor};border-radius:var(--radsm);padding:8px 10px;margin-bottom:8px;cursor:grab;box-shadow:var(--shadow-sm);">
+    <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;">
+      <div style="font-size:12px;font-weight:700;color:var(--text);line-height:1.25;">${r.cliente||'—'}</div>
+      <span style="flex-shrink:0;">${lig}</span>
+    </div>
+    <div style="font-size:11px;color:var(--text2);margin-top:2px;line-height:1.3;">${r.producto||'—'}</div>
+    <div style="margin-top:6px;font-size:12px;font-weight:700;color:var(--navy);">${fmt(r.monto_total||0)}</div>
+    ${sig}
+  </div>`;
+}
+function teleTableroArrastrar(ev,id){ window._pipeDrag=id; try{ev.dataTransfer.effectAllowed='move';ev.dataTransfer.setData('text/plain',id);}catch(e){} }
+function teleTableroSobre(ev){ ev.preventDefault(); try{ev.dataTransfer.dropEffect='move';}catch(e){} const col=ev.currentTarget; if(col) col.style.outline='2px dashed var(--teal)'; }
+async function teleTableroSoltar(ev,grupoK){
+  ev.preventDefault();
+  document.querySelectorAll('.pipe-col').forEach(c=>c.style.outline='');
+  const id=window._pipeDrag; window._pipeDrag=null; if(!id) return;
+  const row=(window._teleRows||[]).find(r=>r.id===id); if(!row) return;
+  const grupoActual=TELE_FASE_A_GRUPO[row.estatus];
+  if(grupoActual===grupoK) return;
+  const col=TELE_TABLERO_COLS.find(c=>c.k===grupoK);
+  // Canalizar a Ventas: abre el selector de vendedor (crea la fila en Ventas).
+  if(col.canaliza){ teleAbrirCanalizar(id); return; }
+  let nuevaFase=col.def;
+  if(grupoK==='cerrados'){
+    const op=(prompt('Cerrar como:\n\nG = Ganado   ·   P = Perdido   ·   S = Sin interés','G')||'').trim().toUpperCase()[0];
+    if(op!=='G'&&op!=='P'&&op!=='S') return;
+    nuevaFase=op==='G'?'Cerrado-Ganado':op==='P'?'Cerrado-Perdido':'Cerrado-Sin interés';
+  }
+  const faseAnterior=row.estatus; row.estatus=nuevaFase; renderProyeccionTeleTablero();
+  const {error}=await sb.from('pipeline_vendedor').update({estatus:nuevaFase,updated_at:new Date().toISOString()}).eq('id',id);
+  if(error){ row.estatus=faseAnterior; renderProyeccionTeleTablero(); uiToast('No se pudo mover: '+(error.message||error),false); return; }
+  uiToast('Movido a '+col.t);
 }
 
 function renderProyeccionTeleTabla(){
@@ -8601,7 +8689,10 @@ function renderProyeccionTeleTabla(){
   mc.innerHTML=`
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
     <div style="font-size:18px;font-weight:600;color:var(--text);">📊 Mi Proyección</div>
-    <button onclick="agregarFilaPipeTele()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nueva negociación</button>
+    <div style="display:flex;gap:8px;align-items:center;">
+      ${teleToggleVistaHtml()}
+      <button onclick="agregarFilaPipeTele()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nueva negociación</button>
+    </div>
   </div>
   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
     <div onclick="window._teleProyFiltro='';renderProyeccionTeleTabla();" style="cursor:pointer;padding:5px 12px;border-radius:14px;font-size:11px;font-weight:600;${!filtro?'background:var(--navy);color:#fff;':'background:var(--surface-2,#f0f1f3);color:var(--text2);'}">${verGan?'Todas':'Abiertas'} (${verGan?rows.length:rows.filter(r=>r.estatus!=='Cerrado-Ganado').length})</div>
@@ -10250,12 +10341,15 @@ const PROB_OPTS=[10,25,50,70,90,100];
 // a otra columna cambia la fase y la escribe de vuelta al CRM (misma vía que el
 // modal de edición). Dentro de una columna con varias sub-fases, el ✏️ permite
 // afinar la fase exacta.
+// Jp, 2026-11-20: 5 columnas estructurales. La 1 recibe lo que Telemarketing
+// canaliza a Ventas (entra como "Prospectando", con etiqueta 📞). La 5 junta
+// ganadas y perdidas distinguidas por color (al soltar ahí se pregunta cuál).
 const PIPE_TABLERO_COLS=[
-  {k:'prospeccion', t:'Prospección',            ic:'🔍', c:'#64748B', def:'Prospectando',                          fases:['Prospectando','Evaluando Requerimientos']},
-  {k:'cotizacion',  t:'Cotización',             ic:'📝', c:'#1D5FA8', def:'Cotización enviada',                    fases:['Valoración con Soporte','Valoración con Dirección','Preparando Propuesta','Cotización enviada']},
-  {k:'negociacion', t:'Negociación / Seguim.',  ic:'🤝', c:'#F5A623', def:'Negociación o Revisión con Cliente',    fases:['Negociación o Revisión con Cliente','Pausada por Cliente','CAP']},
-  {k:'ganada',      t:'Ganada',                 ic:'✅', c:'#27AE60', def:'Cerrada-Ganada',                        fases:['Cerrada-Ganada']},
-  {k:'perdida',     t:'Perdida',                ic:'❌', c:'#E84040', def:'Cerrada-Perdida',                       fases:['Cerrada-Perdida']},
+  {k:'asignados',   t:'Asignados / Nuevos',       ic:'📥', c:'#64748B', def:'Prospectando',                       fases:['Prospectando']},
+  {k:'evaluacion',  t:'Evaluación / Valoración',  ic:'🔎', c:'#1D5FA8', def:'Evaluando Requerimientos',           fases:['Evaluando Requerimientos','Valoración con Soporte','Valoración con Dirección']},
+  {k:'propuesta',   t:'Propuesta / Cotización',   ic:'📝', c:'#7C3AED', def:'Cotización enviada',                 fases:['Preparando Propuesta','Cotización enviada']},
+  {k:'negociacion', t:'Negociación / Seguim.',    ic:'🤝', c:'#F5A623', def:'Negociación o Revisión con Cliente', fases:['Negociación o Revisión con Cliente','Pausada por Cliente','CAP']},
+  {k:'cerrados',    t:'Cerrados',                 ic:'🏁', c:'#334155', def:null,                                 fases:['Cerrada-Ganada','Cerrada-Perdida']},
 ];
 const PIPE_FASE_A_GRUPO={};
 PIPE_TABLERO_COLS.forEach(col=>col.fases.forEach(f=>PIPE_FASE_A_GRUPO[f]=col.k));
@@ -10664,6 +10758,9 @@ function pipeTarjetaTablero(r){
   const sigVencido=r.fecha_siguiente_paso&&r.fecha_siguiente_paso<hoyStr&&!estaCerrada;
   const folioCrm=r.oportunidades_crm?.crm_folio||null;
   const badgeCrm=r.oportunidad_crm_id?`<span title="Oportunidad del CRM${folioCrm?' '+folioCrm:''}" style="background:rgba(0,169,157,0.14);color:var(--teal);border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;">📡${folioCrm?' '+folioCrm:''}</span>`:(r.cliente_cartera_id?`<span title="Ligada a una cuenta real de Cartera" style="background:rgba(29,95,168,0.12);color:#1D5FA8;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;">🔗</span>`:'');
+  // Jp, 2026-11-20: etiqueta si la negociación llegó canalizada desde Telemarketing
+  // (teleCanalizarAVendedor hereda prospecto_app_id al crear la fila del vendedor).
+  const badgeTele=r.prospecto_app_id?`<span title="Canalizada desde Telemarketing" style="background:rgba(245,166,35,0.16);color:#B8740A;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;">📞 Tele</span>`:'';
   return `<div draggable="true" ondragstart="pipeTableroArrastrar(event,'${r.id}')" ondragend="pipeTableroFin(event)" onclick="editarFilaPipe('${r.id}')"
       style="background:var(--surface);border:1px solid var(--border);border-left:3px solid ${estColor};border-radius:var(--radsm);padding:8px 10px;margin-bottom:8px;cursor:grab;box-shadow:var(--shadow-sm);">
     <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;">
@@ -10673,7 +10770,7 @@ function pipeTarjetaTablero(r){
     <div style="font-size:11px;color:var(--text2);margin-top:2px;line-height:1.3;">${r.producto||r.tipo_servicio||'—'}</div>
     <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:6px;">
       <span style="font-size:12px;font-weight:700;color:var(--navy);">${fmt(r.monto_total||0)}</span>
-      <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">${badgeCrm}</div>
+      <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">${badgeTele}${badgeCrm}</div>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:5px;">
       <span style="font-size:9px;color:${estColor};font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;">${r.estatus||'—'}</span>
@@ -10697,11 +10794,13 @@ async function pipeTableroSoltar(ev,grupoK){
   const grupoActual=PIPE_FASE_A_GRUPO[row.estatus]||'negociacion';
   if(grupoActual===grupoK) return; // soltó en la misma columna: nada que cambiar
   const col=PIPE_TABLERO_COLS.find(c=>c.k===grupoK);
-  const nuevaFase=col.def;
-  if(grupoK==='ganada'||grupoK==='perdida'){
-    if(!confirm(`¿Marcar "${row.cliente||row.producto||'esta negociación'}" como ${col.t}?\nEsto actualiza la fase en el CRM.`)){ return; }
+  let nuevaFase=col.def;
+  if(grupoK==='cerrados'){
+    // Columna Cerrados junta ganada/perdida: se pregunta cuál.
+    const esGanada=confirm(`Cerrar "${row.cliente||row.producto||'esta negociación'}":\n\nAceptar = GANADA   ·   Cancelar = PERDIDA\n\n(Esto actualiza la fase en el CRM.)`);
+    nuevaFase=esGanada?'Cerrada-Ganada':'Cerrada-Perdida';
   }
-  const nuevaProb = grupoK==='ganada'?100 : grupoK==='perdida'?0 : (row.probabilidad||50);
+  const nuevaProb = nuevaFase==='Cerrada-Ganada'?100 : nuevaFase==='Cerrada-Perdida'?0 : (row.probabilidad||50);
   // Optimista: mueve la tarjeta de inmediato, revierte si la base falla.
   const faseAnterior=row.estatus, probAnterior=row.probabilidad;
   row.estatus=nuevaFase; row.probabilidad=nuevaProb;
@@ -21820,6 +21919,72 @@ const ESTATUS_COLORS = {
   'Canalizado a ventas':'#1a7a4a','Cliente 24/7':'#00A99D','No interesado':'#E84040','Perdido':'#999'
 };
 
+// ── Tablero (kanban) de Prospectos por estatus de llamada — Jp, 2026-11-20 ──
+const PROS_TABLERO_COLS=[
+  {k:'porllamar',  t:'Por llamar',          ic:'📇', c:'#8BA0B8', def:'Nuevo',               fases:['Nuevo']},
+  {k:'nocontesto', t:'No contestó',         ic:'📵', c:'#F5A623', def:'No contestó',         fases:['No contestó']},
+  {k:'contactado', t:'Contactado',          ic:'💬', c:'#0D2240', def:'Contactado',          fases:['Contactado','En WhatsApp']},
+  {k:'interesado', t:'Interesado',          ic:'🌟', c:'#27AE60', def:'Interesado',          fases:['Interesado']},
+  {k:'canalizado', t:'Canalizado a Ventas', ic:'📈', c:'#1a7a4a', def:'Canalizado a ventas', fases:['Canalizado a ventas']},
+  {k:'descartado', t:'Descartados',         ic:'🗑️', c:'#9AA3AB', def:'No interesado',       fases:['No interesado']},
+];
+const PROS_FASE_A_GRUPO={}; PROS_TABLERO_COLS.forEach(c=>c.fases.forEach(f=>PROS_FASE_A_GRUPO[f]=c.k));
+let _prospVista='tabla';
+function prospToggleVistaHtml(){
+  const b=(v,ic,lbl)=>`<button data-prosv="${v}" onclick="prospSetVista('${v}')" style="background:${_prospVista===v?'var(--navy)':'none'};color:${_prospVista===v?'#fff':'var(--text2)'};border:none;padding:7px 11px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${ic} ${lbl}</button>`;
+  return `<div style="display:inline-flex;border:1px solid var(--border);border-radius:var(--radsm);overflow:hidden;">${b('tabla','📋','Tabla')}${b('tablero','🗂️','Tablero')}</div>`;
+}
+function prospTablaHtml(ps){
+  return `<div class="card"><table class="daily" style="font-size:12px;"><thead><tr><th>Nombre</th><th>Teléfono</th><th>Evento</th><th>Estatus</th><th>Último contacto</th><th>Resultado</th><th>Acciones</th></tr></thead><tbody id="bodyProspectos">${(ps||[]).map(p=>filaProspecto(p)).join('')}</tbody></table></div>`;
+}
+function prospTableroHtml(ps){
+  const porGrupo={}; PROS_TABLERO_COLS.forEach(c=>porGrupo[c.k]=[]);
+  (ps||[]).forEach(p=>{ const g=PROS_FASE_A_GRUPO[p.estatus]; if(g) porGrupo[g].push(p); });
+  const cols=PROS_TABLERO_COLS.map(col=>{
+    const items=porGrupo[col.k]||[];
+    return `<div class="pipe-col" ondragover="prosTableroSobre(event)" ondrop="prosTableroSoltar(event,'${col.k}')" style="flex:1;min-width:200px;background:var(--surface-2,#f4f6f8);border-radius:var(--rad);border-top:3px solid ${col.c};display:flex;flex-direction:column;max-height:calc(100vh - 180px);">
+      <div style="padding:9px 11px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface-2,#f4f6f8);border-radius:var(--rad) var(--rad) 0 0;z-index:1;">
+        <div style="font-size:12px;font-weight:800;color:${col.c};">${col.ic} ${col.t} <span style="color:var(--text3);font-weight:600;">· ${items.length}</span></div>
+      </div>
+      <div style="padding:7px;overflow-y:auto;flex:1;min-height:50px;">
+        ${items.map(p=>prosTarjeta(p)).join('')||'<div style="text-align:center;color:var(--text3);font-size:11px;padding:14px 4px;">—</div>'}
+      </div>
+    </div>`;
+  }).join('');
+  return `<div style="font-size:11px;color:var(--text3);margin-bottom:6px;">Arrastra una tarjeta para cambiar su estatus. (Los filtros de arriba aplican a la vista de tabla.)</div>
+  <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;align-items:flex-start;">${cols}</div>`;
+}
+function prosTarjeta(p){
+  const nombre=((p.nombre||'Sin nombre')+(p.apellidos?' '+p.apellidos:'')).replace(/</g,'&lt;');
+  const res=window._resultadoProspectos?.[p.id];
+  return `<div draggable="true" ondragstart="prosTableroArrastrar(event,'${p.id}')" ondragend="pipeTableroFin(event)" onclick="abrirDetalle('${p.id}')"
+    style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radsm);padding:8px 10px;margin-bottom:7px;cursor:grab;box-shadow:var(--shadow-sm);">
+    <div style="font-size:12px;font-weight:700;color:var(--text);line-height:1.2;">${nombre}</div>
+    <div style="font-size:10px;color:var(--text3);margin-top:2px;">${(p.telefono||p.tel10||'—')}${p.evento?' · '+(p.evento||'').replace(/</g,'&lt;'):''}</div>
+    ${res?`<div style="font-size:10px;color:var(--text2);margin-top:3px;">🗓 ${String(res).replace(/</g,'&lt;')}</div>`:''}
+  </div>`;
+}
+function prosTableroArrastrar(ev,id){ window._pipeDrag=id; try{ev.dataTransfer.effectAllowed='move';ev.dataTransfer.setData('text/plain',id);}catch(e){} }
+function prosTableroSobre(ev){ ev.preventDefault(); const col=ev.currentTarget; if(col) col.style.outline='2px dashed var(--teal)'; }
+async function prosTableroSoltar(ev,grupoK){
+  ev.preventDefault(); document.querySelectorAll('.pipe-col').forEach(c=>c.style.outline='');
+  const id=window._pipeDrag; window._pipeDrag=null; if(!id) return;
+  const p=(window._prospectos||[]).find(x=>x.id===id); if(!p) return;
+  if((PROS_FASE_A_GRUPO[p.estatus])===grupoK) return;
+  const col=PROS_TABLERO_COLS.find(c=>c.k===grupoK); const nuevo=col.def;
+  const prev=p.estatus; p.estatus=nuevo;
+  const cont=document.getElementById('tablaProspectos'); if(cont) cont.innerHTML=prospTableroHtml(window._prospectos);
+  const {error}=await sb.from('prospectos').update({estatus:nuevo,updated_at:new Date().toISOString()}).eq('id',id);
+  if(error){ p.estatus=prev; if(cont) cont.innerHTML=prospTableroHtml(window._prospectos); uiToast('No se pudo mover: '+(error.message||error),false); return; }
+  uiToast('Movido a '+col.t);
+}
+function prospSetVista(v){
+  _prospVista=v;
+  const cont=document.getElementById('tablaProspectos');
+  if(cont) cont.innerHTML = v==='tablero' ? prospTableroHtml(window._prospectos) : prospTablaHtml(window._prospectos);
+  document.querySelectorAll('[data-prosv]').forEach(b=>{ const on=b.dataset.prosv===v; b.style.background=on?'var(--navy)':'none'; b.style.color=on?'#fff':'var(--text2)'; });
+}
+
 // Picklists calcadas del CRM Vtiger (confirmadas por Jp, 2026-10-16) — ver
 // claude/prospectos-crm-sincronizacion.md. "Origen del Prospecto" e "Interés"
 // se muestran/editan con esta misma lista para que el valor que se guarda en
@@ -22064,6 +22229,7 @@ async function renderProspectos(modo){
       <div style="font-size:12px;color:var(--text3);">${modo==='campana'?(ps.length+' asignados · '+canalizados+' canalizados a ventas'):(ps.length+' más recientes')}</div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+      ${prospToggleVistaHtml()}
       <select id="filtroEvento" onchange="filtrarProspectos()" style="padding:7px 12px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;color:var(--text);">
         <option value="">Todos los eventos</option>
         ${eventosUnicos.map(e=>`<option value="${e}">${e}</option>`).join('')}
@@ -22103,17 +22269,9 @@ async function renderProspectos(modo){
     : `<div style="background:var(--gold-bg);border:1px solid var(--gold-b);border-radius:var(--radsm);padding:10px 16px;margin-bottom:14px;font-size:12px;color:var(--gold);">
         Faltan <strong>${MINIMO-canalizados} prospectos</strong> canalizados para activar el bono de $50 c/u</div>`)}
 
-  <!-- TABLA -->
-  <div class="card" id="tablaProspectos">
-    <table class="daily" style="font-size:12px;">
-      <thead><tr>
-        <th>Nombre</th><th>Teléfono</th><th>Evento</th>
-        <th>Estatus</th><th>Último contacto</th><th>Resultado</th><th>Acciones</th>
-      </tr></thead>
-      <tbody id="bodyProspectos">
-        ${ps.map(p=>filaProspecto(p)).join('')}
-      </tbody>
-    </table>
+  <!-- TABLA / TABLERO -->
+  <div id="tablaProspectos">
+    ${_prospVista==='tablero'?prospTableroHtml(ps):prospTablaHtml(ps)}
   </div>`;
 
   // Store data globally for filtering
@@ -36035,25 +36193,42 @@ async function solInscribirAcademia(r,silencioso){
     if(!pidPrimero) pidPrimero=pid;
     for(const g0 of ac.generaciones){
       const gen=(gens||[]).find(x=>x.id===g0.id);if(!gen) continue;
-      const {data:ya}=await sb.from('academia_inscripciones').select('id,telegram_avisado_at').eq('participante_id',pid).eq('generacion_id',gen.id).maybeSingle();
+      // Prefijo del folio: clave auto (NOI-TEMA-MESAA) → p_sistema vacío; clave
+      // antigua → sistema + versión del nombre del curso (ej. NOI11).
+      const sis=(gen.curso?.sistema?.codigo_clave||gen.curso?.sistema?.clave||'').toUpperCase();
+      const auto=!!(gen.clave&&sis&&gen.clave.toUpperCase().startsWith(sis+'-'));
+      const ver=((gen.curso?.nombre||'').match(new RegExp(sis+'\\s*(\\d{1,2})','i'))||[])[1]||'';
+      const generarFolio=async()=>{ const {data:f,error:ef}=await sb.rpc('academia_generar_folio',{p_sistema:auto?'':(sis+ver),p_generacion:gen.clave,p_acceso:academiaAccesoLetra(ac.nivel)}); if(ef) throw new Error(ef.message); return f; };
+      // La BD tiene UNIQUE(participante_id, generacion_id): solo puede existir una
+      // inscripción por participante+generación. Por eso una recompra NO crea otra fila.
+      const {data:ya}=await sb.from('academia_inscripciones').select('id,telegram_avisado_at,estatus_final,folio,fecha_inicio_laboratorio,fecha_fin_laboratorio').eq('participante_id',pid).eq('generacion_id',gen.id).maybeSingle();
       if(ya){
+        // Jp, 2026-11-20 (caso Ezequiel): si la inscripción previa está TERMINADA
+        // (no acreditada / finalizada) y vuelve a comprar, es una RECOMPRA → se
+        // REACTIVA como periodo nuevo (folio nuevo, nueva factura, ventana nueva de
+        // 30 días, estatus limpio) y el intento anterior queda en la bitácora.
+        // Capacitación solo asigna la empresa de laboratorio del nuevo periodo.
+        if(ya.estatus_final){
+          let nuevoFolio=null; try{ nuevoFolio=await generarFolio(); }catch(e){ fallos++; out.push(`✖ ${a.nombre} / ${gen.clave}: no se pudo generar el folio de reactivación (${e.message})`); continue; }
+          const hoy=todayLocal(); const finD=new Date(); finD.setDate(finD.getDate()+30); const fin=finD.toISOString().slice(0,10);
+          try{ await sb.from('academia_bitacora').insert({inscripcion_id:ya.id,tipo:'observacion',detalle:`HISTORIAL / Reactivada por recompra. Intento anterior: folio ${ya.folio||'—'}, ${ya.fecha_inicio_laboratorio||'—'} a ${ya.fecha_fin_laboratorio||'—'}, resultado: ${ya.estatus_final}. Nuevo folio ${nuevoFolio}.`}); }catch(e){}
+          const upd={folio:nuevoFolio,nivel_acceso:ac.nivel||'esencial',tipo:'entero',fecha_inicio_laboratorio:hoy,fecha_fin_laboratorio:fin,fecha_fin_sesion_privada:null,estatus_final:null,estatus_final_motivo:null,estatus_final_fecha:null,estatus_final_por:null,examen_calificacion:null,practicas_extension:false,practicas_extension_dias_aplicados:null,practicas_evidencia_path:null,practicas_observaciones:null,empresa_aspel:null,usuario_aspel:null,contrasena_aspel:null,servidor:null,usuario_rdp:null,contrasena_rdp:null,origen:'facturacion',origen_solicitud_id:r.id,atendido_at:null,atendido_por:null,observaciones:`Reactivada por recompra. Periodo nuevo ${hoy} a ${fin}. Intento anterior ${ya.folio||'—'} (${ya.estatus_final}) en bitácora. FALTA asignar empresa de laboratorio del nuevo periodo.`};
+          if(r.fact_ingreso_id) upd.fact_ingreso_id=r.fact_ingreso_id;
+          let {error:eu}=await sb.from('academia_inscripciones').update(upd).eq('id',ya.id);
+          if(eu&&/fact_ingreso_id|origen|atendido/.test(eu.message||'')){ delete upd.fact_ingreso_id;delete upd.origen;delete upd.origen_solicitud_id;delete upd.atendido_at;delete upd.atendido_por; ({error:eu}=await sb.from('academia_inscripciones').update(upd).eq('id',ya.id)); }
+          if(eu){ fallos++; out.push(`✖ ${a.nombre} / ${gen.clave}: no se pudo reactivar (${eu.message})`); }
+          else { ok++; nuevosIdsInsc.push(ya.id); out.push(`♻ ${a.nombre} → ${gen.clave} REACTIVADA (${ac.nivel}) ${nuevoFolio} · asignar empresa del nuevo periodo`); }
+          continue;
+        }
+        // Inscripción aún ACTIVA: re-pago/re-ingreso del mismo periodo. NO se crea
+        // otra; se liga a ESTA solicitud (para "Enviar a Telegram") y se re-avisa
+        // (el endpoint no repite si ya tenía telegram_avisado_at).
         out.push(`• ${a.nombre} ya estaba en ${gen.clave}`);ok++;
-        // Jp, 2026-11-19: re-pago / re-ingreso (p. ej. se le cortó el acceso por un
-        // pago que no llegó y ahora volvió a pagar). La inscripción ya existe, así
-        // que NO se crea otra, pero sí se liga a ESTA solicitud para que el botón
-        // "Enviar a Telegram" la encuentre, y se manda a avisar a Capacitación.
-        // El endpoint no repite el aviso si la fila ya tenía telegram_avisado_at.
         try{ await sb.from('academia_inscripciones').update({origen_solicitud_id:r.id}).eq('id',ya.id); }catch(e){}
         if(!ya.telegram_avisado_at) nuevosIdsInsc.push(ya.id);
         continue;
       }
-      const sis=(gen.curso?.sistema?.codigo_clave||gen.curso?.sistema?.clave||'').toUpperCase();
-      const auto=!!(gen.clave&&sis&&gen.clave.toUpperCase().startsWith(sis+'-'));
-      // Clave auto (NOI-TEMA-MESAA): el folio se arma con la clave y p_sistema va vacío (igual que Facturación).
-      // Clave antigua: prefijo = sistema + versión del nombre del curso (ej. NOI11).
-      const ver=((gen.curso?.nombre||'').match(new RegExp(sis+'\\s*(\\d{1,2})','i'))||[])[1]||'';
-      const {data:folio,error:ef}=await sb.rpc('academia_generar_folio',{p_sistema:auto?'':(sis+ver),p_generacion:gen.clave,p_acceso:academiaAccesoLetra(ac.nivel)});
-      if(ef){fallos++;out.push(`✖ ${a.nombre} / ${gen.clave}: no se pudo generar el folio (${ef.message})`);continue;}
+      let folio=null; try{ folio=await generarFolio(); }catch(e){ fallos++; out.push(`✖ ${a.nombre} / ${gen.clave}: no se pudo generar el folio (${e.message})`); continue; }
       const filaInsc={participante_id:pid,generacion_id:gen.id,nivel_acceso:ac.nivel||'esencial',tipo:'entero',folio,vendedor_nombre_original:r.vendedor_nombre||null,origen:'facturacion',origen_solicitud_id:r.id};
       let {data:insNueva,error:ei}=await sb.from('academia_inscripciones').insert(filaInsc).select('id').single();
       if(ei&&/origen/.test(ei.message||'')){delete filaInsc.origen;delete filaInsc.origen_solicitud_id;({data:insNueva,error:ei}=await sb.from('academia_inscripciones').insert(filaInsc).select('id').single());} // falta sql_academia_nuevos_asistentes.sql
