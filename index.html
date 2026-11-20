@@ -11701,16 +11701,40 @@ async function reenviarDocumentosPendientesCrm(pipelineId,containerId){
   cargarDocumentosAdjuntos('oportunidad',pipelineId,containerId);
 }
 
+// Jp, 2026-11-20: evitar el error "sesión inválida" al escribir al CRM cuando la
+// pestaña llevaba mucho rato abierta y el access_token ya caducó. Antes de llamar,
+// refrescamos la sesión si el token está por expirar; y si el server igual la
+// rechaza por sesión, refrescamos y reintentamos una vez.
+async function sbTokenFresco(){
+  try{
+    let { data:{ session } } = await sb.auth.getSession();
+    const expMs = session?.expires_at ? session.expires_at*1000 : 0;
+    if(!session || !expMs || (expMs - Date.now() < 60000)){
+      const { data:rf } = await sb.auth.refreshSession();
+      if(rf?.session) session = rf.session;
+    }
+    return session?.access_token || null;
+  }catch(e){ return null; }
+}
+async function crmLlamar(path, body){
+  const hacer = tok => fetch(path,{ method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+(tok||'')}, body:JSON.stringify(body) });
+  let tok = await sbTokenFresco();
+  let res = await hacer(tok);
+  let j = await res.json().catch(()=>({}));
+  if(res.status===401 || /sesi[oó]n/i.test(j.error||'')){
+    try{ await sb.auth.refreshSession(); }catch(_){}
+    tok = await sbTokenFresco();
+    res = await hacer(tok);
+    j = await res.json().catch(()=>({}));
+  }
+  return { res, j };
+}
+
 async function crmCrearOportunidadDesdeNuevaFila(fila,cuentaId,payload){
   try{
     const clienteNombre=document.getElementById('pCliente')?.value||payload.cliente||'';
     const nombreOportunidad=`${clienteNombre} | ${payload.producto||''}`.trim();
-    const {data:sess}=await sb.auth.getSession();
-    const token=sess?.session?.access_token;
-    const res=await fetch('/api/crm-crear-oportunidad',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({
+    const { res, j } = await crmLlamar('/api/crm-crear-oportunidad',{
         cliente_cartera_id:cuentaId,
         nombre_oportunidad:nombreOportunidad,
         cliente_nombre:clienteNombre,producto:payload.producto,
@@ -11721,9 +11745,7 @@ async function crmCrearOportunidadDesdeNuevaFila(fila,cuentaId,payload){
         fecha_prevista:payload.fecha_prevista,
         vendedor_usuario_id:currentUser.id,
         tipo_servicio:payload.tipo_servicio,
-      }),
     });
-    const j=await res.json().catch(()=>({}));
     if(!res.ok||!j.ok){
       console.error('CRM create failed',j);
       alert('⚠️ Se guardó en Proyección, pero no se pudo crear la Oportunidad en el CRM.\nDetalle: '+(j.error||res.status)+'\nLa negociación queda como texto libre, sin liga al CRM.');
@@ -11758,12 +11780,7 @@ async function sincronizarPipelinesDeProspectoConvertido(prospectoId,clienteCart
     for(const fila of filas||[]){
       await sb.from('pipeline_vendedor').update({cliente_cartera_id:clienteCarteraId}).eq('id',fila.id);
       const nombreOportunidad=`${nombreCliente||fila.cliente||''} | ${fila.producto||''}`.trim();
-      const {data:sess}=await sb.auth.getSession();
-      const token=sess?.session?.access_token;
-      const res=await fetch('/api/crm-crear-oportunidad',{
-        method:'POST',
-        headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-        body:JSON.stringify({
+      const { res, j } = await crmLlamar('/api/crm-crear-oportunidad',{
           cliente_cartera_id:clienteCarteraId,
           nombre_oportunidad:nombreOportunidad,
           cliente_nombre:nombreCliente||fila.cliente,producto:fila.producto,
@@ -11774,9 +11791,7 @@ async function sincronizarPipelinesDeProspectoConvertido(prospectoId,clienteCart
           fecha_prevista:fila.fecha_prevista,
           vendedor_usuario_id:fila.usuario_id,
           tipo_servicio:TIPOS_CRM.includes(fila.tipo_servicio)?fila.tipo_servicio:undefined,
-        }),
       });
-      const j=await res.json().catch(()=>({}));
       if(!res.ok||!j.ok){ console.error('sincronizarPipelinesDeProspectoConvertido: CRM create falló',j); continue; }
       await sb.from('pipeline_vendedor').update({oportunidad_crm_id:j.oportunidad_crm_id}).eq('id',fila.id);
     }
@@ -11942,14 +11957,7 @@ async function crmActualizarOportunidad(oportunidadCrmId,fase_venta,probabilidad
   try{
     const {data:o}=await sb.from('oportunidades_crm').select('crm_potentialid').eq('id',oportunidadCrmId).single();
     if(!o?.crm_potentialid) return;
-    const {data:sess}=await sb.auth.getSession();
-    const token=sess?.session?.access_token;
-    const res=await fetch('/api/crm-actualizar-oportunidad',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({crm_potentialid:o.crm_potentialid,fase_venta,probabilidad,tipo_servicio}),
-    });
-    const j=await res.json().catch(()=>({}));
+    const { res, j } = await crmLlamar('/api/crm-actualizar-oportunidad',{crm_potentialid:o.crm_potentialid,fase_venta,probabilidad,tipo_servicio});
     if(!res.ok||!j.ok){
       console.error('CRM write-back failed',j);
       alert('⚠️ Se guardó en Proyección, pero no se pudo reflejar el cambio en el CRM.\nDetalle: '+(j.error||res.status)+'\nAvisa a sistemas si se repite.');
@@ -16044,6 +16052,9 @@ async function mostrarAvisoSuscPendientes(soloRefrescar){
   if(esDir){
     const porVend={}; let sinVend=0;
     pend.forEach(s=>{const v=s.clientes_cartera?.vendedor_asignado; if(!v){sinVend++;return;} porVend[v]=(porVend[v]||0)+1;});
+    // Cargar nombres de vendedores (al iniciar sesión window._carteraVendedores aún no existe).
+    const _vids=Object.keys(porVend);
+    if(_vids.length){ try{ const {data:_vs}=await sb.from('usuarios').select('id,nombre').in('id',_vids); (_vs||[]).forEach(v=>{vendMap[v.id]=v.nombre;}); }catch(e){} }
     const filas=Object.entries(porVend).sort((a,b)=>b[1]-a[1])
       .map(([vid,n])=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;"><span>${licEsc(nombreVend(vid)||'(vendedor)')}</span><b style="color:#C0392B;">${n}</b></div>`).join('');
     cuerpo=`<div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${politica}</div>
@@ -36478,12 +36489,17 @@ async function solAcadGuardar(id){
 function solTgCapacitacionHtml(r,ac){
   if(!ac||!ac.inscrito_at) return '';
   const fmtTg=t=>{try{return new Date(t).toLocaleString('es-MX',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});}catch(e){return '';}};
-  const btn=(txt,reenv)=>`<button id="tgCap_${r.id}" onclick="solTgCapacitacionEnviar('${r.id}',${reenv})" style="font-size:10px;padding:1px 8px;margin-left:6px;border:1px solid var(--border);background:#fff;border-radius:6px;cursor:pointer;">${txt}</button>`;
+  // Jp, 2026-11-20: el aviso a Capacitación por Telegram lo maneja Dirección/
+  // Administración/Academia. El vendedor/telemarketing SOLO ve el estado, sin
+  // botón de enviar/reenviar (un vendedor lo reenvió por error).
+  const puedeEnviar=['director','administracion','academia'].includes(userProfile?.rol);
+  const btn=(txt,reenv)=>puedeEnviar?`<button id="tgCap_${r.id}" onclick="solTgCapacitacionEnviar('${r.id}',${reenv})" style="font-size:10px;padding:1px 8px;margin-left:6px;border:1px solid var(--border);background:#fff;border-radius:6px;cursor:pointer;">${txt}</button>`:'';
   return r.telegram_capacitacion_at
     ?`<div style="margin-top:2px;color:#0369a1;"><b>✈️ Enviado a Telegram (Capacitación)</b> · ${fmtTg(r.telegram_capacitacion_at)}${r.telegram_capacitacion_por?' · '+solEsc(r.telegram_capacitacion_por):''}${btn('↻ Reenviar',true)}</div>`
     :`<div style="margin-top:2px;color:#B45309;"><b>✈️ Aún no enviado a Telegram</b>${btn('Enviar a Telegram',false)}</div>`;
 }
 async function solTgCapacitacionEnviar(id,reenviar){
+  if(!['director','administracion','academia'].includes(userProfile?.rol)) return; // solo staff puede avisar a Capacitación
   const r=_solRows.find(z=>z.id===id);if(!r) return;
   if(reenviar&&!confirm('Este aviso ya se envió el '+new Date(r.telegram_capacitacion_at).toLocaleString('es-MX')+'. ¿Volver a enviarlo al canal de Capacitación?')) return;
   const b=document.getElementById('tgCap_'+id);if(b){b.disabled=true;b.textContent='Enviando…';}
@@ -36942,13 +36958,88 @@ async function solEnviar(){
 }
 async function solCargarListaVendedor(){
   const cont=document.getElementById('sfLista');
-  const {data,error}=await sb.from('solicitudes_factura').select('*').eq('vendedor_id',userProfile?.id||currentUser.id).order('created_at',{ascending:false}).limit(60);
+  const [resSol, cloud]=await Promise.all([
+    sb.from('solicitudes_factura').select('*').eq('vendedor_id',userProfile?.id||currentUser.id).order('created_at',{ascending:false}).limit(120),
+    solCloudPendientesCargar()
+  ]);
+  const {data,error}=resSol;
   if(error){cont.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(error.message)}</div>`;return;}
   _solRows=data||[];
+  window._solCloudPend=cloud;
   await timCargarDeSolicitudes(_solRows.filter(r=>r.timbres_estado==='asignados').map(r=>r.id));
   await licCargarDeSolicitudes(_solRows.filter(r=>r.licencia_estado==='asignadas').map(r=>r.id));
-  if(!_solRows.length){cont.innerHTML='<div style="font-size:12px;color:var(--text3);">Aún no has enviado solicitudes.</div>';return;}
-  cont.innerHTML=_solRows.map(r=>solTarjeta(r,'vendedor')).join('');
+  solPintarListaVendedor();
+}
+// Jp, 2026-11-20: lista del vendedor con filtros (por default solo Pendientes, para
+// que no haya que bajar hasta abajo) + sección de comprobantes de servidores cloud.
+function solPintarListaVendedor(){
+  const cont=document.getElementById('sfLista'); if(!cont) return;
+  const cloud=window._solCloudPend||[];
+  const por={
+    pendientes:_solRows.filter(r=> r.estado!=='cancelada' && r.estado!=='cerrada' && (!r.factura_folio || !r.pago_validado)),
+    cerradas:_solRows.filter(r=> r.estado==='cerrada' || (r.factura_folio && r.pago_validado)),
+    todas:_solRows,
+  };
+  const filtros=[['pendientes','⏳ Pendientes'],['cerradas','✅ Cerradas'],['todas','Todas']];
+  if(!filtros.some(f=>f[0]===window._solFiltroVend)) window._solFiltroVend='pendientes';
+  const lista=por[window._solFiltroVend]||[];
+  cont.innerHTML=`
+    ${solCloudSeccionHtml(cloud)}
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+      ${filtros.map(([k,l])=>`<button onclick="window._solFiltroVend='${k}';solPintarListaVendedor()" style="padding:6px 13px;border-radius:16px;border:1px solid ${window._solFiltroVend===k?'var(--teal)':'var(--border)'};background:${window._solFiltroVend===k?'var(--teal)':'#fff'};color:${window._solFiltroVend===k?'#fff':'var(--text2)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${l} (${(por[k]||[]).length})</button>`).join('')}
+    </div>
+    ${lista.length?lista.map(r=>solTarjeta(r,'vendedor')).join(''):`<div style="font-size:12px;color:var(--text3);padding:16px;text-align:center;">${_solRows.length?'No hay solicitudes en esta vista.':'Aún no has enviado solicitudes.'}</div>`}`;
+}
+
+// ─── Servidores en la nube: subir el comprobante de pago desde Solicitar factura ──
+// Las facturas CLOUD se emiten directo en Finanzas (no pasan por solicitud), así que
+// aquí aparecen las de las cuentas del vendedor (o todas, para Dirección) que siguen
+// sin comprobante de pago, para subirlo sin salir de esta pantalla.
+async function solCloudPendientesCargar(){
+  const esVend = userProfile?.rol==='vendedor';
+  let q = sb.from('fact_ingresos')
+    .select('id,fecha,serie,folio,cliente,total,cobrado,comprobante_pago_path,cliente_cartera_id,clientes_cartera!inner(razon_social,vendedor_asignado)')
+    .eq('rubro','CLOUD').is('comprobante_pago_path',null).or('cobrado.is.null,cobrado.eq.false')
+    .order('fecha',{ascending:false});
+  if(esVend) q = q.eq('clientes_cartera.vendedor_asignado', userProfile?.id||currentUser.id);
+  try{ const {data}=await q; return data||[]; }catch(e){ console.error('cloud pendientes',e); return []; }
+}
+function solCloudSeccionHtml(lista){
+  if(!lista||!lista.length) return '';
+  const tarjeta=f=>{
+    const nom=f.clientes_cartera?.razon_social||f.cliente||'—';
+    return `<div id="cloudPend_${f.id}" style="background:#fff;border:1px solid #d7c7f0;border-left:4px solid #7C3AED;border-radius:10px;padding:11px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+      <div>
+        <div style="font-size:13px;font-weight:700;color:var(--navy);">🖥️ ${solEsc(nom)}</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px;">Factura ${solEsc((f.serie||'')+(f.folio||'')||'—')} · ${fmt(f.total)} · ${solFecha(f.fecha)} · <b style="color:#b4791f;">pendiente de pago</b></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input id="cloudFile_${f.id}" type="file" accept="image/*,.pdf" style="display:none;" onchange="solSubirComprobanteCloud('${f.id}')">
+        <button onclick="document.getElementById('cloudFile_${f.id}').click()" style="background:#7C3AED;color:#fff;border:none;border-radius:7px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">📎 Subir comprobante</button>
+      </div>
+    </div>`;
+  };
+  return `<div style="margin-bottom:16px;">
+    <div style="font-size:13px;font-weight:700;color:#7C3AED;margin-bottom:4px;">🖥️ Servidores en la nube — comprobante de pago pendiente (${lista.length})</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Estas facturas se emiten directo. Cuando el cliente pague, sube aquí su comprobante.</div>
+    ${lista.map(tarjeta).join('')}
+  </div>`;
+}
+async function solSubirComprobanteCloud(factId){
+  const inp=document.getElementById('cloudFile_'+factId); const file=inp?.files?.[0];
+  if(!file) return;
+  const card=document.getElementById('cloudPend_'+factId);
+  try{
+    if(card) card.style.opacity='0.5';
+    const path=`comprobante_cloud/${factId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9_.\-]/g,'_')}`;
+    const {error:upErr}=await sb.storage.from('crm-documentos').upload(path,file,{upsert:false});
+    if(upErr) throw upErr;
+    const {error}=await sb.from('fact_ingresos').update({comprobante_pago_path:path,comprobante_pago_subido_por:currentUser.id,comprobante_pago_at:new Date().toISOString()}).eq('id',factId);
+    if(error) throw error;
+    uiToast('✓ Comprobante subido');
+    window._solCloudPend=(window._solCloudPend||[]).filter(x=>x.id!==factId);
+    if(card) card.remove();
+  }catch(e){ if(card) card.style.opacity='1'; alert('No se pudo subir el comprobante: '+(e.message||e)); }
 }
 
 // ─── PAGO ESPERADO VENCIDO (Jp, 2026-11-09) ──────────────────────────────────
@@ -37458,6 +37549,7 @@ async function renderSolFacturaGestion(el){
   _solRows=data||[];
   await timCargarDeSolicitudes(_solRows.filter(r=>r.timbres_estado==='asignados').map(r=>r.id));
   await licCargarDeSolicitudes(_solRows.filter(r=>r.licencia_estado==='asignadas').map(r=>r.id));
+  const _cloudPend=await solCloudPendientesCargar(); // Servidores cloud sin comprobante (Jp, 2026-11-20)
   const por={validar:_solRows.filter(r=>!r.devuelta_motivo&&!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada')),
     facturar:_solRows.filter(r=>!r.devuelta_motivo&&(r.estado==='pago_validado'||r.estado==='pendiente_pago')),
     devueltas:_solRows.filter(r=>r.devuelta_motivo&&!['cancelada','cerrada'].includes(r.estado)),
@@ -37484,6 +37576,7 @@ async function renderSolFacturaGestion(el){
     </div>`:''}
   </div>
   ${por.sin_gen.length&&_solFiltro!=='sin_gen'?`<div onclick="_solFiltro='sin_gen';renderSolFacturaGestion(_solContenedor)" style="cursor:pointer;background:#fff1dc;border:1px solid #F5A623;border-left:5px solid #F5A623;border-radius:10px;padding:9px 14px;margin-bottom:12px;font-size:12.5px;color:#8a4b00;"><b>🎓 ${por.sin_gen.length} solicitud${por.sin_gen.length>1?'es':''} facturada${por.sin_gen.length>1?'s':''} sin asignar en Academia/generación.</b> Clic para verlas.</div>`:''}
+  ${solCloudSeccionHtml(_cloudPend)}
   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
     ${filtros.map(([k,l])=>`<button onclick="_solFiltro='${k}';renderSolFacturaGestion(_solContenedor)" style="padding:6px 13px;border-radius:16px;border:1px solid ${_solFiltro===k?'var(--teal)':'var(--border)'};background:${_solFiltro===k?'var(--teal)':'#fff'};color:${_solFiltro===k?'#fff':'var(--text2)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${l} (${(por[k]||[]).length})</button>`).join('')}
   </div>
