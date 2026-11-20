@@ -10811,6 +10811,113 @@ async function pipeTableroSoltar(ev,grupoK){
   if(row.oportunidad_crm_id){ await crmActualizarOportunidad(row.oportunidad_crm_id,nuevaFase,nuevaProb,row.tipo_servicio||null); }
 }
 
+// ─── TABLERO del DIRECTOR (compilado del equipo) — Jp, 2026-11-20 ───────────
+// Reutiliza las 5 columnas de Ventas sobre window._dirPipeRows (todas las
+// negociaciones del mes, de todos los vendedores), respetando los filtros de la
+// Proyección del director. Cada tarjeta muestra el vendedor. Arrastrar escribe
+// la fase al CRM igual que en la vista del vendedor.
+function dirPipeFiltrados(){
+  window._pipeRows=window._dirPipeRows||[];
+  const resumen=pipeCalcularResumenDashboard();
+  const filtVend=document.getElementById('dpFiltVend')?.value||'';
+  const filtEst=document.getElementById('dpFiltEst')?.value||'';
+  const filtTipo=document.getElementById('dpFiltTipo')?.value||'';
+  const filtBus=(document.getElementById('dpBus')?.value||'').toLowerCase();
+  return (window._dirPipeRows||[]).filter(r=>{
+    // En tablero se ven TODAS las columnas (incl. cerradas), por eso no se
+    // ocultan ganadas/perdidas aquí.
+    if(window._dpFiltroEspecial){ const ids=new Set((resumen[window._dpFiltroEspecial]||[]).map(x=>x.id)); if(!ids.has(r.id)) return false; }
+    if(filtVend&&r.usuario_id!==filtVend) return false;
+    if(filtEst&&r.estatus!==filtEst) return false;
+    if(filtTipo&&r.tipo_servicio!==filtTipo) return false;
+    if(filtBus&&!((r.cliente||'').toLowerCase().includes(filtBus)||(r.producto||'').toLowerCase().includes(filtBus))) return false;
+    return true;
+  });
+}
+function dirPipeTarjeta(r){
+  const vend=(window._dirPipeVends||[]).find(v=>v.id===r.usuario_id);
+  const probColor=r.probabilidad>=90?'#27AE60':r.probabilidad>=70?'#00A99D':r.probabilidad>=50?'#F5A623':'#E84040';
+  const estColor=ESTATUS_PIPE_COLOR[r.estatus]||'#F5A623';
+  const folioCrm=r.oportunidades_crm?.crm_folio||null;
+  const badgeCrm=r.oportunidad_crm_id?`<span title="Oportunidad del CRM${folioCrm?' '+folioCrm:''}" style="background:rgba(0,169,157,0.14);color:var(--teal);border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;">📡${folioCrm?' '+folioCrm:''}</span>`:(r.cliente_cartera_id?`<span title="Cuenta de Cartera" style="background:rgba(29,95,168,0.12);color:#1D5FA8;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;">🔗</span>`:'');
+  const badgeTele=r.prospecto_app_id?`<span title="Canalizada desde Telemarketing" style="background:rgba(245,166,35,0.16);color:#B8740A;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;">📞</span>`:'';
+  const hoyStr=todayLocal();
+  const estaCerrada=['Cerrada-Ganada','Cerrada-Perdida'].includes(r.estatus);
+  const fechaPrevVencida=!estaCerrada&&r.fecha_prevista&&r.fecha_prevista<hoyStr;
+  return `<div draggable="true" ondragstart="pipeTableroArrastrar(event,'${r.id}')" ondragend="pipeTableroFin(event)" onclick="editarFilaPipe('${r.id}')"
+      style="background:var(--surface);border:1px solid var(--border);border-left:3px solid ${estColor};border-radius:var(--radsm);padding:8px 10px;margin-bottom:8px;cursor:grab;box-shadow:var(--shadow-sm);">
+    <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;">
+      <div style="font-size:12px;font-weight:700;color:var(--text);line-height:1.25;">${r.cliente||'—'}</div>
+      <span class="pipe-badge" style="color:${probColor};background:${probColor}14;flex-shrink:0;">${r.probabilidad||0}%</span>
+    </div>
+    <div style="font-size:11px;color:var(--text2);margin-top:2px;line-height:1.3;">${r.producto||r.tipo_servicio||'—'}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:6px;">
+      <span style="font-size:10px;font-weight:700;color:var(--teal);">${vend?vend.nombre.split(' ')[0]:'—'}</span>
+      <span style="font-size:12px;font-weight:700;color:var(--navy);">${fmt(r.monto_total||0)}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:5px;">
+      <span style="font-size:9px;color:${estColor};font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:110px;">${r.estatus||'—'}</span>
+      <div style="display:flex;gap:4px;align-items:center;">${badgeTele}${badgeCrm}${r.fecha_prevista?`<span style="font-size:10px;color:${fechaPrevVencida?'var(--red)':'var(--text3)'};font-weight:${fechaPrevVencida?'700':'400'};white-space:nowrap;">${fechaPrevVencida?'⚠️':'📅'}${String(r.fecha_prevista).slice(5)}</span>`:''}</div>
+    </div>
+  </div>`;
+}
+function renderDirPipeTablero(){
+  const cont=document.getElementById('dirPipeTableroCont'); if(!cont) return;
+  const pipe=dirPipeFiltrados();
+  const porGrupo={}; PIPE_TABLERO_COLS.forEach(c=>porGrupo[c.k]=[]);
+  pipe.forEach(r=>{ const g=PIPE_FASE_A_GRUPO[r.estatus]; if(g)(porGrupo[g]=porGrupo[g]||[]).push(r); });
+  Object.values(porGrupo).forEach(arr=>arr.sort((a,b)=>(b.monto_total||0)-(a.monto_total||0)));
+  const columnas=PIPE_TABLERO_COLS.map(col=>{
+    const items=porGrupo[col.k]||[]; const totalCol=items.reduce((s,r)=>s+(r.monto_total||0),0);
+    return `<div class="pipe-col" ondragover="pipeTableroSobre(event)" ondrop="dirPipeTableroSoltar(event,'${col.k}')"
+        style="flex:1;min-width:230px;background:var(--surface-2,#f4f6f8);border-radius:var(--rad);border-top:3px solid ${col.c};display:flex;flex-direction:column;max-height:calc(100vh - 260px);">
+      <div style="padding:10px 12px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface-2,#f4f6f8);border-radius:var(--rad) var(--rad) 0 0;z-index:1;">
+        <div style="font-size:12px;font-weight:800;color:${col.c};">${col.ic} ${col.t} <span style="color:var(--text3);font-weight:600;">· ${items.length}</span></div>
+        <div style="font-size:10px;color:var(--text3);margin-top:1px;">${fmt(totalCol)}</div>
+      </div>
+      <div style="padding:8px;overflow-y:auto;flex:1;min-height:60px;">
+        ${items.map(r=>dirPipeTarjeta(r)).join('')||'<div style="text-align:center;color:var(--text3);font-size:11px;padding:16px 4px;">—</div>'}
+      </div>
+    </div>`;
+  }).join('');
+  cont.innerHTML=`<div style="font-size:11px;color:var(--text3);margin-bottom:6px;">Arrastra una tarjeta para cambiar su etapa (se actualiza también el CRM). Clic en la tarjeta para ver el detalle. Usa los filtros de arriba para ver a un solo vendedor.</div>
+  <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;align-items:flex-start;">${columnas}</div>`;
+}
+async function dirPipeTableroSoltar(ev,grupoK){
+  ev.preventDefault();
+  document.querySelectorAll('.pipe-col').forEach(c=>c.style.outline='');
+  const id=window._pipeDrag; window._pipeDrag=null; if(!id) return;
+  const row=(window._dirPipeRows||[]).find(r=>r.id===id); if(!row) return;
+  const grupoActual=PIPE_FASE_A_GRUPO[row.estatus]||'negociacion';
+  if(grupoActual===grupoK) return;
+  const col=PIPE_TABLERO_COLS.find(c=>c.k===grupoK);
+  let nuevaFase=col.def;
+  if(grupoK==='cerrados'){
+    const esGanada=confirm(`Cerrar "${row.cliente||row.producto||'esta negociación'}":\n\nAceptar = GANADA   ·   Cancelar = PERDIDA\n\n(Esto actualiza la fase en el CRM.)`);
+    nuevaFase=esGanada?'Cerrada-Ganada':'Cerrada-Perdida';
+  }
+  const nuevaProb = nuevaFase==='Cerrada-Ganada'?100 : nuevaFase==='Cerrada-Perdida'?0 : (row.probabilidad||50);
+  const faseAnterior=row.estatus, probAnterior=row.probabilidad;
+  row.estatus=nuevaFase; row.probabilidad=nuevaProb;
+  renderDirPipeTablero();
+  const {error}=await sb.from('pipeline_vendedor').update({estatus:nuevaFase,probabilidad:nuevaProb,updated_at:new Date().toISOString()}).eq('id',id);
+  if(error){ row.estatus=faseAnterior; row.probabilidad=probAnterior; renderDirPipeTablero(); uiToast('No se pudo mover: '+(error.message||error),false); return; }
+  uiToast('Movido a '+col.t);
+  if(row.oportunidad_crm_id){ await crmActualizarOportunidad(row.oportunidad_crm_id,nuevaFase,nuevaProb,row.tipo_servicio||null); }
+}
+function dirPipeToggleVistaHtml(){
+  const b=(v,ic,lbl)=>`<button data-dpv="${v}" onclick="dpSetVista('${v}')" style="background:${window._dpVista===v?'var(--navy)':'none'};color:${window._dpVista===v?'#fff':'var(--text2)'};border:none;padding:7px 11px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${ic} ${lbl}</button>`;
+  return `<div style="display:inline-flex;border:1px solid var(--border);border-radius:var(--radsm);overflow:hidden;">${b('tabla','📋','Tabla')}${b('tablero','🗂️','Tablero')}</div>`;
+}
+function renderDirPipeVista(){
+  const verT=window._dpVista==='tablero';
+  const tarj=document.getElementById('dirPipeTablaCard'); if(tarj) tarj.style.display=verT?'none':'';
+  const tab=document.getElementById('dirPipeTableroCont'); if(tab) tab.style.display=verT?'':'none';
+  document.querySelectorAll('[data-dpv]').forEach(x=>{ const on=x.dataset.dpv===window._dpVista; x.style.background=on?'var(--navy)':'none'; x.style.color=on?'#fff':'var(--text2)'; });
+  if(verT) renderDirPipeTablero(); else if(window.renderDirPipeTabla) renderDirPipeTabla();
+}
+function dpSetVista(v){ window._dpVista=v; renderDirPipeVista(); }
+
 // Tarjeta clicable del dashboard de prioridades (arriba de la tabla de
 // Proyección) — al hacer clic filtra la tabla a esa categoría; un segundo
 // clic la quita. Jp, 2026-10-12.
@@ -25626,6 +25733,8 @@ async function renderDirectorProyeccion(){
           <div class="th-sub">${v.n} neg. · total ${fmt(v.monto)}</div>
         </div>`).join('');
     }
+    // Si el tablero del director está activo, lo refrescamos con los mismos filtros.
+    if(window._dpVista==='tablero'&&document.getElementById('dirPipeTableroCont')) renderDirPipeTablero();
   }
   window.renderDirPipeTabla=renderDirPipeTabla;
 
@@ -25667,18 +25776,22 @@ async function renderDirectorProyeccion(){
     <button onclick="window._dpVerGanadas=!window._dpVerGanadas;renderDirPipeTabla();" style="background:${window._dpVerGanadas?'#27AE60':'none'};color:${window._dpVerGanadas?'#fff':'var(--text2)'};border:1px solid ${window._dpVerGanadas?'#27AE60':'var(--border)'};border-radius:var(--radsm);padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${window._dpVerGanadas?'✅ Ocultar cerradas ganadas':'✅ Mostrar cerradas ganadas'}</button>
     <button onclick="window._dpVerHistorico=!window._dpVerHistorico;renderDirPipeTabla();" style="background:${window._dpVerHistorico?'var(--navy)':'none'};color:${window._dpVerHistorico?'#fff':'var(--text2)'};border:1px solid ${window._dpVerHistorico?'var(--navy)':'var(--border)'};border-radius:var(--radsm);padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">${window._dpVerHistorico?'🗄️ Viendo histórico':'🗄️ Ver histórico'}</button>
     <button onclick="limpiarFiltrosDirProyeccion()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:6px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕ Limpiar</button>
+    <div style="margin-left:auto;">${dirPipeToggleVistaHtml()}</div>
   </div>
-  <div class="card" style="padding:0;overflow-x:auto;">
+  <div class="card" id="dirPipeTablaCard" style="padding:0;overflow-x:auto;">
     <table class="daily" style="font-size:12px;width:100%;">
       <thead><tr id="dirPipeHead" style="background:var(--navy);color:#fff;"></tr></thead>
       <tbody id="dirPipeBody"></tbody>
       <tfoot><tr id="dirPipeSum" style="background:var(--surface-2,#f8f9fa);font-size:12px;border-top:2px solid var(--border);"></tr></tfoot>
     </table>
-  </div>`;
+  </div>
+  <div id="dirPipeTableroCont" style="display:none;"></div>`;
 
+  if(window._dpVista===undefined) window._dpVista='tabla';
   window._dpSort='fecha_prevista';
   window._dpSortAsc=true;
   renderDirPipeTabla();
+  renderDirPipeVista();
 }
 
 // ─── ESTRUCTURA DE PROMOCIONES ────────────────────────────────────────────────
