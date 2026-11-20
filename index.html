@@ -1242,6 +1242,9 @@ async function initApp(user){
   try{ mostrarNovedades(); }catch(e){ console.error('novedades',e); }
   try{ mostrarAvisoTimbres(); }catch(e){ console.error('timbres',e); }
   try{ mostrarAvisoLicencias(); }catch(e){ console.error('licencias',e); }
+  // Jp, 2026-11-20: aviso grande de suscripciones vencidas sin actualizar
+  // (vendedor: las suyas; Dirección: resumen del equipo). No bloquea el día.
+  try{ setTimeout(()=>{ mostrarAvisoSuscPendientes(); },2600); }catch(e){ console.error('aviso susc pend',e); }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -15576,6 +15579,7 @@ async function renderTodasSuscripciones(scope){
   // propio módulo (Dirección y vendedor), siempre sobre #dirCarteraContenidoMain.
   const cont=document.getElementById('dirCarteraContenidoMain');
   if(!cont) return;
+  window._suscScopeActual=scope; // para re-render tras "Actualizar suscripción"
   // Jp, 2026-10-21: solo Dirección/Administración puede descartar una alerta
   // de "posible pérdida" (no cualquier vendedor que entre por "Ver todas", que
   // también llega con scope='director') — se checa el rol real, no el scope.
@@ -15609,6 +15613,13 @@ async function renderTodasSuscripciones(scope){
     // abrirVerificarCatalogoAspel). Es un campo booleano aparte, no un
     // "estado" más, por eso va en su propia rama antes de la genérica.
     suscs=suscs.filter(s=>s.alerta_posible_perdida);
+  } else if(suscListFiltroEstado==='riesgo_retiro'){
+    // Jp, 2026-11-20: "riesgo de retiro" (reporte de fin de mes) — vencidas desde
+    // ANTES de este mes y que siguen sin actualizarse (ni renovada, ni no-renovada
+    // con motivo+evidencia). Son las que, de no resolverse, van a Dirección para
+    // decidir el retiro del cliente al vendedor.
+    suscs=suscs.filter(s=>s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&!suscEstaResuelta(s));
+    suscs=[...suscs].sort((a,b)=>(a.fecha_proxima_renovacion||'').localeCompare(b.fecha_proxima_renovacion||''));
   } else if(suscListFiltroEstado){
     suscs=suscs.filter(s=>s.estado===suscListFiltroEstado);
   }
@@ -15642,6 +15653,7 @@ async function renderTodasSuscripciones(scope){
   const totalVencenMes=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=inicioMes&&s.fecha_proxima_renovacion<=finMes).length;
   const totalVencidasAntes=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada').length;
   const totalAlertaPerdida=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.alerta_posible_perdida).length;
+  const totalRiesgoRetiro=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&!suscEstaResuelta(s)).length;
   const tarjeta=(label,valor,color,key)=>`
     <button onclick="suscListSwEstado('${scope}','${key}')" style="text-align:left;cursor:pointer;background:${suscListFiltroEstado===key?color+'18':'var(--surface-2,#f8f9fa)'};border:1px solid ${color};border-radius:var(--radsm);padding:10px 12px;font-family:'Inter',sans-serif;">
       <div style="font-size:10px;color:var(--text3);">${label}</div>
@@ -15707,6 +15719,7 @@ async function renderTodasSuscripciones(scope){
       ${tarjeta('Reclamadas',suscs.filter(s=>['reclamada','en_revision'].includes(s.estado)).length,'#2980B9','reclamada')}
       ${tarjeta('Renovadas',suscs.filter(s=>s.estado==='renovada').length,'#27AE60','renovada')}
       ${tarjeta('No renovadas',suscs.filter(s=>s.estado==='no_renovada').length,'#E84040','no_renovada')}
+      ${tarjeta('⛔ Riesgo de retiro',totalRiesgoRetiro,'#8B0000','riesgo_retiro')}
       ${tarjeta('🚨 Posible pérdida',totalAlertaPerdida,'#8B0000','alerta_perdida')}
     </div>
     ${scope==='director'&&(totalSinVendedor>0||totalSinCta>0)?`<div style="font-size:11px;color:#B8740A;background:rgba(245,166,35,0.1);border:1px solid rgba(245,166,35,0.3);border-radius:var(--radsm);padding:6px 10px;margin-bottom:10px;">⚠ ${totalSinCta>0?`${totalSinCta} sin cuenta ligada (usa "🔗 Vincular"). `:''}${totalSinVendedor>0?`${totalSinVendedor} de cuentas SIN vendedor asignado — nadie las ve en su cartera hoy.`:''}</div>`:''}
@@ -15749,6 +15762,7 @@ async function renderTodasSuscripciones(scope){
             <div style="font-size:11px;color:var(--text3);margin-top:3px;font-family:'JetBrains Mono',monospace;">RFC ${(cl?cl.rfc:s.rfc_reportado)||'—'} · serie ${s.numserie||'—'}${s.monto?' · '+fmt(s.monto):''}${s.fecha_proxima_renovacion?' · vence '+fmtFecha(s.fecha_proxima_renovacion):''}${scope==='director'&&vend?' · '+vend.nombre:''}${esAlertaPerdida&&s.alerta_posible_perdida_fecha?' · detectada ausente el '+fmtFecha(s.alerta_posible_perdida_fecha):''}</div>
           </div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            ${suscEsPendienteActualizar(s)?`<button onclick="abrirActualizarSuscripcion('${s.id}')" style="background:#E84040;color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">⚠ Actualizar</button>`:''}
             ${esAlertaPerdida&&puedeDescartarAlerta?`<button onclick="descartarAlertaPerdida('${s.id}','${scope}')" style="background:#fff;color:#8B0000;border:1px solid #8B0000;border-radius:var(--radsm);padding:7px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Descartar alerta</button>`:''}
             ${cl?`<button onclick="abrirFichaClienteModal('${cl.id}')" style="background:var(--navy);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">Ver ficha</button>`
               :`<button onclick="abrirVincularSuscripcion('${s.id}','${scope}')" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Vincular</button>`}
@@ -15756,6 +15770,208 @@ async function renderTodasSuscripciones(scope){
         </div>`;
       }).join(''):'<div style="text-align:center;padding:40px 20px;color:var(--text3);font-size:13px;">Sin resultados.</div>'}
     </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SUSCRIPCIONES VENCIDAS SIN ACTUALIZAR — presión diaria + evidencia
+// Jp, 2026-11-20. Política acordada:
+//  • "Al día" = el vendedor marca Renovada, o si NO renovó elige motivo y sube
+//    evidencia. Sin motivo+evidencia, una "no renovada" sigue contando pendiente.
+//  • Aviso GRANDE al iniciar sesión (no bloquea el día) con sus series pendientes.
+//  • Fin de mes: las que sigan sin actualizar se reportan a Dirección ("riesgo de
+//    retiro"); el sistema NO retira al cliente solo — lo decide Dirección.
+// Entran las VENCIDAS (su próxima renovación ya pasó) y no resueltas.
+// ═══════════════════════════════════════════════════════════════════════════
+const SUSC_MOTIVOS_NO_RENOVO=['Cliente se cambió con otro distribuidor','Cliente cerró / dejó de operar','Cliente migró a otro sistema','Precio / presupuesto','Dejó de usar el sistema','No se pudo contactar','Otro'];
+
+// "reclamada/en_revision" = comisión ya reclamada a la marca (renovó). "renovada"
+// = confirmada. "no_renovada" solo cuenta como resuelta si trae motivo+evidencia.
+function suscEstaResuelta(s){
+  if(!s) return true;
+  if(s.estado==='renovada') return true;
+  if(['reclamada','en_revision'].includes(s.estado)) return true;
+  if(s.estado==='no_renovada'&&(s.notas_seguimiento||'').trim()&&(s.evidencia_url||'').trim()) return true;
+  return false;
+}
+function suscEsPendienteActualizar(s){
+  return !!s&&!!s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<todayLocal()&&!suscEstaResuelta(s);
+}
+function suscSumarPeriodo(fechaISO,periodicidad){
+  const d=new Date(fechaISO+'T00:00:00');
+  const p=(periodicidad||'').toLowerCase();
+  if(p==='mensual') d.setMonth(d.getMonth()+1);
+  else if(p==='semestral') d.setMonth(d.getMonth()+6);
+  else d.setFullYear(d.getFullYear()+1); // anual o sin periodicidad
+  return d.toISOString().slice(0,10);
+}
+async function suscSubirEvidencia(suscId,file){
+  const path=`suscripcion_evidencia/${suscId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9_.\-]/g,'_')}`;
+  const {error:upErr}=await sb.storage.from('crm-documentos').upload(path,file,{upsert:false});
+  if(upErr) throw upErr;
+  const {data:signed,error:sErr}=await sb.storage.from('crm-documentos').createSignedUrl(path,60*60*24*365);
+  if(sErr) throw sErr;
+  return signed.signedUrl;
+}
+
+// ── Aviso grande al iniciar sesión ──────────────────────────────────────────
+async function mostrarAvisoSuscPendientes(soloRefrescar){
+  if(!userProfile||!['director','administracion','vendedor'].includes(userProfile.rol)) return;
+  const esDir=['director','administracion'].includes(userProfile.rol);
+  const hoy=todayLocal();
+  let q=sb.from('suscripciones_cartera')
+    .select('id,numserie,producto,estado,periodicidad,fecha_proxima_renovacion,evidencia_url,notas_seguimiento,cliente_id,clientes_cartera!inner(id,razon_social,vendedor_asignado)')
+    .lt('fecha_proxima_renovacion',hoy).in('estado',['sin_reclamar','no_renovada']);
+  if(!esDir) q=q.eq('clientes_cartera.vendedor_asignado',currentUser.id);
+  let data=[];
+  try{ const r=await q; data=r.data||[]; }catch(e){ console.error('aviso susc pendientes',e); return; }
+  const pend=data.filter(s=>!suscEstaResuelta(s))
+    .sort((a,b)=>(a.fecha_proxima_renovacion||'').localeCompare(b.fecha_proxima_renovacion||''));
+  document.getElementById('avisoSuscPend')?.remove();
+  if(!pend.length){ if(soloRefrescar) uiToast('✓ No te quedan suscripciones vencidas sin actualizar'); return; }
+
+  const dias=f=>Math.max(0,Math.floor((Date.now()-new Date(f+'T00:00:00').getTime())/86400000));
+  const nombreVend=id=>{const v=(window._carteraVendedores||[]).find(x=>x.id===id);return v?v.nombre:null;};
+  const politica=`A partir de ahora, toda suscripción vencida debe quedar actualizada: si el cliente <b>renovó</b>, márcala; si <b>no renovó</b>, explica el motivo y sube evidencia. Las que sigan sin actualizar a fin de mes se reportan a Dirección y el cliente puede reasignarse.`;
+
+  let cuerpo;
+  if(esDir){
+    const porVend={}; let sinVend=0;
+    pend.forEach(s=>{const v=s.clientes_cartera?.vendedor_asignado; if(!v){sinVend++;return;} porVend[v]=(porVend[v]||0)+1;});
+    const filas=Object.entries(porVend).sort((a,b)=>b[1]-a[1])
+      .map(([vid,n])=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;"><span>${licEsc(nombreVend(vid)||'(vendedor)')}</span><b style="color:#C0392B;">${n}</b></div>`).join('');
+    cuerpo=`<div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${politica}</div>
+      <div style="max-height:40vh;overflow-y:auto;">${filas}
+      ${sinVend?`<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;color:#B8740A;"><span>⚠ Sin vendedor asignado</span><b>${sinVend}</b></div>`:''}</div>
+      <div style="font-size:11px;color:var(--text3);margin-top:8px;">Revísalas en el módulo de Suscripciones (tarjeta "⛔ Riesgo de retiro").</div>`;
+  } else {
+    const filas=pend.slice(0,40).map(s=>{
+      const d=dias(s.fecha_proxima_renovacion);
+      return `<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);">
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:700;color:var(--navy);">${licEsc(s.clientes_cartera?.razon_social||'Sin cuenta')}</div>
+          <div style="font-size:11px;color:var(--text3);font-family:'JetBrains Mono',monospace;">${licEsc(s.producto||'')} · serie ${licEsc(s.numserie||'—')} · venció ${fmtFecha(s.fecha_proxima_renovacion)} <b style="color:${d>365?'#8B0000':'#E84040'};">(${d>365?'+'+Math.floor(d/365)+' año(s)':d+' días'})</b></div>
+        </div>
+        <button onclick="abrirActualizarSuscripcion('${s.id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">Actualizar</button>
+      </div>`;
+    }).join('');
+    cuerpo=`<div style="font-size:12px;color:var(--text2);margin-bottom:8px;">${politica}</div>
+      <div style="max-height:46vh;overflow-y:auto;">${filas}</div>
+      ${pend.length>40?`<div style="font-size:11px;color:var(--text3);margin-top:6px;">…y ${pend.length-40} más. Continúa en el módulo de Suscripciones.</div>`:''}`;
+  }
+
+  const ov=document.createElement('div'); ov.id='avisoSuscPend';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99990;display:flex;align-items:center;justify-content:center;padding:16px;';
+  ov.innerHTML=`<div style="background:#fff;border-radius:14px;max-width:560px;width:100%;overflow:hidden;box-shadow:0 14px 50px rgba(0,0,0,.4);">
+    <div style="padding:18px 22px;background:linear-gradient(135deg,#C0392B,#E84040);color:#fff;">
+      <div style="font-size:19px;font-weight:800;">🚨 Urge actualizar tus suscripciones</div>
+      <div style="font-size:13px;opacity:.95;margin-top:3px;">Tienes <b>${pend.length}</b> suscripci${pend.length===1?'ón vencida':'ones vencidas'} sin actualizar${esDir?' en el equipo':''}. Esto debe quedar resuelto hoy.</div>
+    </div>
+    <div style="padding:18px 22px;">${cuerpo}</div>
+    <div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:${esDir?'space-between':'flex-end'};gap:8px;align-items:center;">
+      ${esDir?`<button onclick="document.getElementById('avisoSuscPend').remove();irASuscripcionesRiesgo()" style="background:var(--navy);color:#fff;border:none;border-radius:8px;padding:9px 16px;font-size:12px;font-weight:700;cursor:pointer;">Ver en Suscripciones →</button>`:''}
+      <button onclick="document.getElementById('avisoSuscPend').remove()" style="background:${esDir?'#fff':'var(--teal)'};color:${esDir?'var(--text2)':'#fff'};border:1px solid ${esDir?'var(--border)':'var(--teal)'};border-radius:8px;padding:9px 20px;font-size:12px;font-weight:700;cursor:pointer;">Entendido</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+function irASuscripcionesRiesgo(){
+  try{
+    suscListFiltroEstado='riesgo_retiro';
+    renderDirectorSuscripcionesModulo(); // reconstruye el módulo y respeta el filtro pre-fijado
+  }catch(e){ console.error('ir a suscripciones riesgo',e); }
+}
+
+// ── Modal: actualizar una suscripción (renovó / no renovó + motivo + evidencia) ──
+async function abrirActualizarSuscripcion(suscId){
+  let s=(window._cartSuscripciones||[]).find(x=>x.id===suscId);
+  if(!s){ try{ const {data}=await sb.from('suscripciones_cartera').select('*').eq('id',suscId).single(); s=data; }catch(e){} }
+  if(!s){ alert('No se encontró la suscripción.'); return; }
+  const cl=(window._cartClientes||[]).find(c=>c.id===s.cliente_id);
+  const nombre=cl?cl.razon_social:(s.razon_social_reportada||'Sin cuenta');
+  window._suscActData=s; window._suscActSel=null;
+  const modal=document.createElement('div'); modal.id='modalActSusc';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;max-width:470px;width:100%;overflow:hidden;box-shadow:0 10px 40px rgba(0,0,0,.3);">
+    <div style="padding:16px 20px;background:var(--navy);color:#fff;">
+      <div style="font-size:15px;font-weight:700;">Actualizar suscripción</div>
+      <div style="font-size:12px;opacity:.9;margin-top:2px;">${licEsc(nombre)} · ${licEsc(s.producto||'')} · serie ${licEsc(s.numserie||'—')}</div>
+      <div style="font-size:11px;opacity:.7;margin-top:2px;">Venció ${s.fecha_proxima_renovacion?fmtFecha(s.fecha_proxima_renovacion):'—'}</div>
+    </div>
+    <div style="padding:18px 20px;">
+      <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">¿El cliente renovó esta suscripción?</div>
+      <div style="display:flex;gap:10px;margin-bottom:14px;">
+        <button id="asR" onclick="suscActSel('si')" style="flex:1;padding:11px;border:2px solid #27AE60;background:#fff;color:#27AE60;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;">✅ Sí renovó</button>
+        <button id="asN" onclick="suscActSel('no')" style="flex:1;padding:11px;border:2px solid #E84040;background:#fff;color:#E84040;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;">❌ No renovó</button>
+      </div>
+      <div id="asSi" style="display:none;font-size:12px;color:var(--text2);background:rgba(39,174,96,.08);border-radius:8px;padding:10px 12px;margin-bottom:12px;">Se marcará como <b>Renovada</b> con fecha de hoy y se recalculará su próxima renovación (${licEsc(s.periodicidad||'anual')}). Si tienes comprobante, adjúntalo abajo (opcional).</div>
+      <div id="asNo" style="display:none;margin-bottom:12px;">
+        <label style="font-size:11px;color:var(--text3);">Motivo por el que NO renovó *</label>
+        <select id="asMotivo" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin:4px 0 8px;box-sizing:border-box;">
+          <option value="">— Elige un motivo —</option>
+          ${SUSC_MOTIVOS_NO_RENOVO.map(m=>`<option>${m}</option>`).join('')}
+        </select>
+        <label style="font-size:11px;color:var(--text3);">Detalle / lo que dijo el cliente *</label>
+        <textarea id="asDetalle" rows="3" placeholder="Ej: El cliente confirmó por WhatsApp que se cambió con otro distribuidor por precio." style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-top:4px;box-sizing:border-box;resize:vertical;font-family:'Inter',sans-serif;"></textarea>
+      </div>
+      <div id="asEvid" style="display:none;margin-bottom:12px;">
+        <label style="font-size:11px;color:var(--text3);">Evidencia <span id="asEvidReq"></span></label>
+        <input type="file" id="asArchivo" accept="image/*,application/pdf" style="width:100%;font-size:12px;margin-top:4px;">
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;">O pega una liga (correo, captura en Drive, etc.):</div>
+        <input type="text" id="asUrl" placeholder="https://..." value="${(s.evidencia_url||'').replace(/"/g,'&quot;')}" style="width:100%;padding:7px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-top:3px;box-sizing:border-box;">
+      </div>
+      <div id="asMsg" style="font-size:12px;color:var(--red);min-height:16px;margin-bottom:6px;"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <button onclick="document.getElementById('modalActSusc').remove()" style="padding:8px 16px;border:1px solid var(--border);background:#fff;border-radius:6px;font-size:12px;cursor:pointer;">Cancelar</button>
+        <button id="asGuardar" onclick="guardarActualizarSusc('${suscId}')" disabled style="padding:8px 20px;border:none;background:var(--teal);color:#fff;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;opacity:.5;">Guardar</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click',e=>{ if(e.target===modal) modal.remove(); });
+}
+function suscActSel(v){
+  window._suscActSel=v;
+  const si=document.getElementById('asSi'),no=document.getElementById('asNo'),ev=document.getElementById('asEvid'),req=document.getElementById('asEvidReq');
+  const bR=document.getElementById('asR'),bN=document.getElementById('asN'),g=document.getElementById('asGuardar');
+  if(v==='si'){ si.style.display='block';no.style.display='none';ev.style.display='block';req.textContent='(opcional)';
+    bR.style.background='#27AE60';bR.style.color='#fff';bN.style.background='#fff';bN.style.color='#E84040'; }
+  else{ si.style.display='none';no.style.display='block';ev.style.display='block';req.innerHTML='<b style="color:#E84040;">* obligatoria</b>';
+    bN.style.background='#E84040';bN.style.color='#fff';bR.style.background='#fff';bR.style.color='#27AE60'; }
+  g.disabled=false; g.style.opacity='1';
+}
+async function guardarActualizarSusc(suscId){
+  const sel=window._suscActSel; if(!sel) return;
+  const s=window._suscActData||{};
+  const msg=document.getElementById('asMsg'); msg.textContent='';
+  const archivo=document.getElementById('asArchivo')?.files?.[0]||null;
+  const url=(document.getElementById('asUrl')?.value||'').trim();
+  const patch={updated_at:new Date().toISOString()};
+  if(sel==='si'){
+    const hoy=todayLocal();
+    patch.estado='renovada'; patch.fecha_ultima_renovacion=hoy;
+    patch.fecha_proxima_renovacion=suscSumarPeriodo(hoy,s.periodicidad);
+  } else {
+    const motivo=document.getElementById('asMotivo')?.value||'';
+    const detalle=(document.getElementById('asDetalle')?.value||'').trim();
+    if(!motivo){ msg.textContent='Elige el motivo.'; return; }
+    if(!detalle){ msg.textContent='Escribe el detalle de lo que dijo el cliente.'; return; }
+    if(!archivo&&!url){ msg.textContent='Adjunta una evidencia o pega una liga.'; return; }
+    patch.estado='no_renovada';
+    patch.notas_seguimiento=`[${motivo}] ${detalle}`;
+  }
+  const btn=document.getElementById('asGuardar'); btn.disabled=true; btn.textContent='Guardando…';
+  try{
+    let evid=url||null;
+    if(archivo) evid=await suscSubirEvidencia(suscId,archivo);
+    if(evid) patch.evidencia_url=evid;
+    const {error}=await sb.from('suscripciones_cartera').update(patch).eq('id',suscId);
+    if(error) throw error;
+    const mem=(window._cartSuscripciones||[]).find(x=>x.id===suscId); if(mem) Object.assign(mem,patch);
+    document.getElementById('modalActSusc')?.remove();
+    uiToast('✓ Suscripción actualizada');
+    if(document.getElementById('avisoSuscPend')) mostrarAvisoSuscPendientes(true);
+    try{ if(window._suscScopeActual&&document.getElementById('dirCarteraContenidoMain')) renderTodasSuscripciones(window._suscScopeActual); }catch(e){}
+  }catch(e){ msg.textContent='No se pudo guardar: '+(e.message||e); btn.disabled=false; btn.textContent='Guardar'; }
 }
 
 function suscCuentasPermitidasParaVincular(){
