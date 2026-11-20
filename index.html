@@ -11729,12 +11729,21 @@ async function crmLlamar(path, body){
   }
   return { res, j };
 }
+// Crea la Cuenta en Vtiger para una cuenta de Cartera que todavía no tiene
+// equivalente en el CRM (folio ALT-…), reemplazando su folio por el ACC real.
+async function crmAsegurarCuentaEnCrm(cuentaId){
+  if(!cuentaId) return { ok:false, error:'sin cuenta' };
+  try{
+    const { res, j } = await crmLlamar('/api/crm-crear-cuenta',{cliente_cartera_id:cuentaId});
+    return (res.ok&&j.ok) ? { ok:true } : { ok:false, error:(j.error||res.status) };
+  }catch(e){ return { ok:false, error:String(e?.message||e) }; }
+}
 
 async function crmCrearOportunidadDesdeNuevaFila(fila,cuentaId,payload){
   try{
     const clienteNombre=document.getElementById('pCliente')?.value||payload.cliente||'';
     const nombreOportunidad=`${clienteNombre} | ${payload.producto||''}`.trim();
-    const { res, j } = await crmLlamar('/api/crm-crear-oportunidad',{
+    const body={
         cliente_cartera_id:cuentaId,
         nombre_oportunidad:nombreOportunidad,
         cliente_nombre:clienteNombre,producto:payload.producto,
@@ -11745,7 +11754,15 @@ async function crmCrearOportunidadDesdeNuevaFila(fila,cuentaId,payload){
         fecha_prevista:payload.fecha_prevista,
         vendedor_usuario_id:currentUser.id,
         tipo_servicio:payload.tipo_servicio,
-    });
+    };
+    let { res, j } = await crmLlamar('/api/crm-crear-oportunidad',body);
+    // Jp, 2026-11-20: si la cuenta aún no existe en el CRM (alta en la app, folio
+    // ALT-…), primero se crea la Cuenta en Vtiger y se reintenta la Oportunidad.
+    if((!res.ok||!j.ok) && cuentaId && /equivalente en el crm|no tiene equivalente/i.test(j.error||'')){
+      const cc=await crmAsegurarCuentaEnCrm(cuentaId);
+      if(cc.ok){ ({res,j}=await crmLlamar('/api/crm-crear-oportunidad',body)); }
+      else { alert('⚠️ Se guardó en Proyección. Esta cuenta aún no estaba en el CRM y no se pudo crear allá automáticamente.\nDetalle: '+(cc.error||'')+'\nLa negociación queda sin liga al CRM.'); return; }
+    }
     if(!res.ok||!j.ok){
       console.error('CRM create failed',j);
       alert('⚠️ Se guardó en Proyección, pero no se pudo crear la Oportunidad en el CRM.\nDetalle: '+(j.error||res.status)+'\nLa negociación queda como texto libre, sin liga al CRM.');
@@ -11813,15 +11830,23 @@ async function convertirProspectoACuenta(prospectoId){
   if(p.cliente_cartera_id){ alert('Este prospecto ya está convertido a cuenta.'); return; }
   const nombreMostrar=p.empresa||`${p.nombre||''} ${p.apellidos||''}`.trim();
   if(!confirm(`¿Convertir "${nombreMostrar}" en Cuenta?\n\nSe va a dar de alta como Cuenta nueva en el CRM (Vtiger) y en Cartera de cuentas de la App. Esta acción no se puede deshacer desde aquí.`)) return;
+  // Vtiger exige correo para crear la Cuenta. Si el prospecto no lo trae, se pide
+  // aquí; si se deja vacío, se da de alta con un marcador y se completa después.
+  let correo=(p.email||'').trim();
+  if(!correo){
+    const r=prompt('Este prospecto no tiene correo y el CRM lo pide para crear la cuenta.\n\nEscribe un correo (o déjalo vacío para darla de alta sin correo y completarlo después):','');
+    if(r===null) return; // canceló
+    correo=(r||'').trim();
+    if(correo&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)){ alert('El correo no parece válido; la cuenta se dará de alta sin correo (lo completas después).'); correo=''; }
+  }
   const btn=document.getElementById('btnConvertirCuenta');
   if(btn){ btn.disabled=true; btn.textContent='Convirtiendo...'; }
   try{
-    const {data:sess}=await sb.auth.getSession();
-    const token=sess?.session?.access_token;
+    const token=await sbTokenFresco();
     const res=await fetch('/api/crm-crear-cuenta',{
       method:'POST',
       headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},
-      body:JSON.stringify({prospecto_id:prospectoId,vendedor_usuario_id:currentUser.id}),
+      body:JSON.stringify({prospecto_id:prospectoId,vendedor_usuario_id:currentUser.id,email:correo||undefined}),
     });
     const j=await res.json().catch(()=>({}));
     if(!res.ok||!j.ok){
