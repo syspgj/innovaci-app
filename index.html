@@ -10241,7 +10241,24 @@ const ESTATUS_PIPE_COLOR={
 };
 const PROB_OPTS=[10,25,50,70,90,100];
 
+// ─── Tablero (kanban) de Ventas — Jp, 2026-11-20 ────────────────────────────
+// Mismas negociaciones de Proyección (pipeline_vendedor), agrupadas en 5
+// columnas a partir de las 11 fases de venta de Vtiger. Arrastrar una tarjeta
+// a otra columna cambia la fase y la escribe de vuelta al CRM (misma vía que el
+// modal de edición). Dentro de una columna con varias sub-fases, el ✏️ permite
+// afinar la fase exacta.
+const PIPE_TABLERO_COLS=[
+  {k:'prospeccion', t:'Prospección',            ic:'🔍', c:'#64748B', def:'Prospectando',                          fases:['Prospectando','Evaluando Requerimientos']},
+  {k:'cotizacion',  t:'Cotización',             ic:'📝', c:'#1D5FA8', def:'Cotización enviada',                    fases:['Valoración con Soporte','Valoración con Dirección','Preparando Propuesta','Cotización enviada']},
+  {k:'negociacion', t:'Negociación / Seguim.',  ic:'🤝', c:'#F5A623', def:'Negociación o Revisión con Cliente',    fases:['Negociación o Revisión con Cliente','Pausada por Cliente','CAP']},
+  {k:'ganada',      t:'Ganada',                 ic:'✅', c:'#27AE60', def:'Cerrada-Ganada',                        fases:['Cerrada-Ganada']},
+  {k:'perdida',     t:'Perdida',                ic:'❌', c:'#E84040', def:'Cerrada-Perdida',                       fases:['Cerrada-Perdida']},
+];
+const PIPE_FASE_A_GRUPO={};
+PIPE_TABLERO_COLS.forEach(col=>col.fases.forEach(f=>PIPE_FASE_A_GRUPO[f]=col.k));
+
 let pipeSortCol='fecha_prevista', pipeSortDir=1, pipeFiltroEstatus='', pipeFiltroTexto='', pipeFiltroEspecial='', pipeVerHistorico=false, pipeVerGanadas=false;
+let pipeVista='tabla'; // 'tabla' | 'tablero'
 
 function mostrarCanalizadosDetalle(vendedorId, nombreVend){
   const detalle=(window._canalizadosDetalle||{})[vendedorId]||[];
@@ -10373,7 +10390,7 @@ async function renderProyeccion(){
   const pendientes=(abiertas||[]).filter(r=>!yaExisten.has(`${r.cliente||''}|${r.producto||''}`));
 
   window._pipeAbiertasMesAnt=pendientes;
-  renderProyeccionTabla();
+  renderProyeccionVista();
 
   // Mostrar banner si hay pendientes de traspasar
   if(pendientes.length>0){
@@ -10452,8 +10469,16 @@ async function confirmarTraspaso(){
   window._pipeAbiertasMesAnt=[];
   await pipeCargarProximasActividades((rows||[]).map(r=>r.id));
   await pipeCargarResumenSeguimiento((rows||[]).map(r=>r.id));
-  renderProyeccionTabla();
+  renderProyeccionVista();
 }
+
+// Toggle Tabla / Tablero (kanban) — compartido por ambas vistas de Proyección.
+function pipeToggleVistaHtml(){
+  const b=(v,ic,lbl)=>`<button onclick="pipeSetVista('${v}')" style="background:${pipeVista===v?'var(--navy)':'none'};color:${pipeVista===v?'#fff':'var(--text2)'};border:none;padding:8px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${ic} ${lbl}</button>`;
+  return `<div style="display:inline-flex;border:1px solid var(--border);border-radius:var(--radsm);overflow:hidden;">${b('tabla','📋','Tabla')}${b('tablero','🗂️','Tablero')}</div>`;
+}
+function pipeSetVista(v){ pipeVista=v; renderProyeccionVista(); }
+function renderProyeccionVista(){ if(pipeVista==='tablero') renderProyeccionTablero(); else renderProyeccionTabla(); }
 
 function renderProyeccionTabla(){
   const mc=document.getElementById('mainContent');
@@ -10495,7 +10520,8 @@ function renderProyeccionTabla(){
       <div style="font-size:16px;font-weight:700;color:var(--text);">Proyección de Ventas — ${getNombreMes(currentMonth)} ${currentYear}</div>
       <div style="font-size:12px;color:var(--text3);margin-top:2px;">${pipe.length} negociaciones · Total: ${fmt(totalMonto)} · Subtotal: ${fmt(totalSubtotal)} · <span style="color:var(--navy);font-weight:600;">🔓 ${totalAbiertasMes} abiertas en total este mes</span></div>
     </div>
-    <div style="display:flex;gap:8px;">
+    <div style="display:flex;gap:8px;align-items:center;">
+      ${pipeToggleVistaHtml()}
       ${crmSyncBtnHtml('oportunidades')}
       ${(userProfile.rol==='director'||userProfile.rol==='administracion')?`<button onclick="renderPipePendientesVincularModal()" style="background:${window._pipePendientesCount?'#F5A623':'none'};color:${window._pipePendientesCount?'#fff':'var(--text2)'};border:1px solid ${window._pipePendientesCount?'#F5A623':'var(--border)'};border-radius:var(--radsm);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">🔗 Pendientes de vincular${window._pipePendientesCount?` (${window._pipePendientesCount})`:''}</button>`:''}
       <button onclick="agregarFilaPipe()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar</button>
@@ -10559,6 +10585,128 @@ function pipeSort(col){
   if(pipeSortCol===col) pipeSortDir*=-1;
   else{pipeSortCol=col;pipeSortDir=1;}
   renderProyeccionTabla();
+}
+
+// ─── TABLERO (kanban) de Ventas ─────────────────────────────────────────────
+function renderProyeccionTablero(){
+  const mc=document.getElementById('mainContent');
+  if(!mc) return;
+  let pipe=window._pipeRows||[];
+  const resumen=pipeCalcularResumenDashboard();
+  // En el tablero se ven TODAS las columnas (incl. Ganada/Perdida), así que no
+  // aplican los ocultadores de ganadas/histórico de la tabla. Sí aplican la
+  // búsqueda de texto y las tarjetas-filtro del dashboard de prioridades.
+  if(pipeFiltroEspecial){
+    const idsEspecial=new Set((resumen[pipeFiltroEspecial]||[]).map(r=>r.id));
+    pipe=pipe.filter(r=>idsEspecial.has(r.id));
+  }
+  if(pipeFiltroTexto){const q=pipeFiltroTexto.toLowerCase();pipe=pipe.filter(r=>(r.producto||'').toLowerCase().includes(q)||(r.cliente||'').toLowerCase().includes(q)||(r.tipo_servicio||'').toLowerCase().includes(q));}
+  const porGrupo={}; PIPE_TABLERO_COLS.forEach(c=>porGrupo[c.k]=[]);
+  pipe.forEach(r=>{ const g=PIPE_FASE_A_GRUPO[r.estatus]||'negociacion'; (porGrupo[g]=porGrupo[g]||[]).push(r); });
+  // Orden dentro de cada columna: por monto desc (lo más grande arriba).
+  Object.values(porGrupo).forEach(arr=>arr.sort((a,b)=>(b.monto_total||0)-(a.monto_total||0)));
+  const totalAbiertasMes=(window._pipeRows||[]).filter(r=>!['Cerrada-Ganada','Cerrada-Perdida'].includes(r.estatus)).length;
+
+  const columnas=PIPE_TABLERO_COLS.map(col=>{
+    const items=porGrupo[col.k]||[];
+    const totalCol=items.reduce((s,r)=>s+(r.monto_total||0),0);
+    return `<div class="pipe-col" data-grupo="${col.k}" ondragover="pipeTableroSobre(event)" ondrop="pipeTableroSoltar(event,'${col.k}')"
+        style="flex:1;min-width:230px;background:var(--surface-2,#f4f6f8);border-radius:var(--rad);border-top:3px solid ${col.c};display:flex;flex-direction:column;max-height:calc(100vh - 230px);">
+      <div style="padding:10px 12px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface-2,#f4f6f8);border-radius:var(--rad) var(--rad) 0 0;z-index:1;">
+        <div style="font-size:12px;font-weight:800;color:${col.c};">${col.ic} ${col.t} <span style="color:var(--text3);font-weight:600;">· ${items.length}</span></div>
+        <div style="font-size:10px;color:var(--text3);margin-top:1px;">${fmt(totalCol)}</div>
+      </div>
+      <div style="padding:8px;overflow-y:auto;flex:1;min-height:60px;">
+        ${items.map(r=>pipeTarjetaTablero(r)).join('')||'<div style="text-align:center;color:var(--text3);font-size:11px;padding:16px 4px;">—</div>'}
+      </div>
+    </div>`;
+  }).join('');
+
+  mc.innerHTML=`
+  <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+    <div>
+      <div style="font-size:16px;font-weight:700;color:var(--text);">Tablero de Ventas — ${getNombreMes(currentMonth)} ${currentYear}</div>
+      <div style="font-size:12px;color:var(--text3);margin-top:2px;">${pipe.length} negociaciones · <span style="color:var(--navy);font-weight:600;">🔓 ${totalAbiertasMes} abiertas este mes</span> · arrastra una tarjeta para cambiar su etapa</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      ${pipeToggleVistaHtml()}
+      ${crmSyncBtnHtml('oportunidades')}
+      <button onclick="agregarFilaPipe()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:8px 16px;font-size:13px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">+ Agregar</button>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px;">
+    ${pipeTarjetaDashboard('hoyActs','🔔 Hoy',resumen.hoyActs.length,'Seguimientos para hoy o ya vencidos','#E84040')}
+    ${pipeTarjetaDashboard('porCerrar','🎯 Por cerrar',resumen.porCerrar.length,'Cierran en los próximos 15 días','#F5A623')}
+    ${pipeTarjetaDashboard('enfriando','🧊 Enfriando',resumen.enfriando.length,'7+ días sin actividad ni cambios','#1D5FA8')}
+    ${pipeTarjetaDashboard('sinSeguimiento','🙈 Sin seguimiento',resumen.sinSeguimiento.length,'10+ días sin ninguna actividad','#888')}
+    ${pipeTarjetaDashboard('fechaVencida','⚠️ Fecha vencida',resumen.fechaVencida.length,'Fecha prevista de cierre ya pasó','#E84040')}
+  </div>
+  <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
+    <div style="position:relative;flex:1;min-width:160px;max-width:320px;">
+      <input type="text" id="pipeBuscar" placeholder="Buscar por cliente, servicio..." value="${pipeFiltroTexto}" oninput="pipeFiltroTexto=this.value;renderProyeccionTablero()"
+        style="width:100%;padding:7px 30px 7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;box-sizing:border-box;">
+      ${pipeFiltroTexto?`<button onclick="pipeFiltroTexto='';renderProyeccionTablero()" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text3);font-size:15px;">✕</button>`:''}
+    </div>
+    ${pipeFiltroEspecial?`<button onclick="pipeFiltroEspecial='';renderProyeccionTablero()" style="background:none;border:1px solid var(--border);border-radius:var(--radsm);padding:6px 12px;font-size:11px;cursor:pointer;font-family:'Inter',sans-serif;">✕ Quitar filtro</button>`:''}
+  </div>
+  <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;align-items:flex-start;">${columnas}</div>`;
+}
+
+function pipeTarjetaTablero(r){
+  const probColor=r.probabilidad>=90?'#27AE60':r.probabilidad>=70?'#00A99D':r.probabilidad>=50?'#F5A623':'#E84040';
+  const estColor=ESTATUS_PIPE_COLOR[r.estatus]||'#F5A623';
+  const hoyStr=todayLocal();
+  const estaCerrada=['Cerrada-Ganada','Cerrada-Perdida'].includes(r.estatus);
+  const fechaPrevVencida=!estaCerrada&&r.fecha_prevista&&r.fecha_prevista<hoyStr;
+  const sigVencido=r.fecha_siguiente_paso&&r.fecha_siguiente_paso<hoyStr&&!estaCerrada;
+  const folioCrm=r.oportunidades_crm?.crm_folio||null;
+  const badgeCrm=r.oportunidad_crm_id?`<span title="Oportunidad del CRM${folioCrm?' '+folioCrm:''}" style="background:rgba(0,169,157,0.14);color:var(--teal);border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;">📡${folioCrm?' '+folioCrm:''}</span>`:(r.cliente_cartera_id?`<span title="Ligada a una cuenta real de Cartera" style="background:rgba(29,95,168,0.12);color:#1D5FA8;border-radius:4px;padding:1px 5px;font-size:9px;font-weight:700;">🔗</span>`:'');
+  return `<div draggable="true" ondragstart="pipeTableroArrastrar(event,'${r.id}')" ondragend="pipeTableroFin(event)" onclick="editarFilaPipe('${r.id}')"
+      style="background:var(--surface);border:1px solid var(--border);border-left:3px solid ${estColor};border-radius:var(--radsm);padding:8px 10px;margin-bottom:8px;cursor:grab;box-shadow:var(--shadow-sm);">
+    <div style="display:flex;justify-content:space-between;gap:6px;align-items:flex-start;">
+      <div style="font-size:12px;font-weight:700;color:var(--text);line-height:1.25;">${r.cliente||'—'}</div>
+      <span class="pipe-badge" style="color:${probColor};background:${probColor}14;flex-shrink:0;">${r.probabilidad||0}%</span>
+    </div>
+    <div style="font-size:11px;color:var(--text2);margin-top:2px;line-height:1.3;">${r.producto||r.tipo_servicio||'—'}</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:6px;">
+      <span style="font-size:12px;font-weight:700;color:var(--navy);">${fmt(r.monto_total||0)}</span>
+      <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">${badgeCrm}</div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:5px;">
+      <span style="font-size:9px;color:${estColor};font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;">${r.estatus||'—'}</span>
+      ${r.fecha_prevista?`<span style="font-size:10px;color:${fechaPrevVencida?'var(--red)':'var(--text3)'};font-weight:${fechaPrevVencida?'700':'400'};white-space:nowrap;">${fechaPrevVencida?'⚠️ ':'📅 '}${String(r.fecha_prevista).slice(5)}</span>`:''}
+    </div>
+    ${sigVencido?`<div style="font-size:10px;color:var(--red);margin-top:4px;font-weight:600;">⏰ Seguimiento vencido${r.siguiente_paso?': '+solEsc(r.siguiente_paso):''}</div>`:''}
+  </div>`;
+}
+
+function pipeTableroArrastrar(ev,id){ window._pipeDrag=id; try{ev.dataTransfer.effectAllowed='move';ev.dataTransfer.setData('text/plain',id);}catch(e){} }
+function pipeTableroFin(ev){ document.querySelectorAll('.pipe-col').forEach(c=>c.style.outline=''); }
+function pipeTableroSobre(ev){ ev.preventDefault(); try{ev.dataTransfer.dropEffect='move';}catch(e){} const col=ev.currentTarget; if(col) col.style.outline='2px dashed var(--teal)'; }
+
+async function pipeTableroSoltar(ev,grupoK){
+  ev.preventDefault();
+  document.querySelectorAll('.pipe-col').forEach(c=>c.style.outline='');
+  const id=window._pipeDrag; window._pipeDrag=null;
+  if(!id) return;
+  const row=(window._pipeRows||[]).find(r=>r.id===id);
+  if(!row) return;
+  const grupoActual=PIPE_FASE_A_GRUPO[row.estatus]||'negociacion';
+  if(grupoActual===grupoK) return; // soltó en la misma columna: nada que cambiar
+  const col=PIPE_TABLERO_COLS.find(c=>c.k===grupoK);
+  const nuevaFase=col.def;
+  if(grupoK==='ganada'||grupoK==='perdida'){
+    if(!confirm(`¿Marcar "${row.cliente||row.producto||'esta negociación'}" como ${col.t}?\nEsto actualiza la fase en el CRM.`)){ return; }
+  }
+  const nuevaProb = grupoK==='ganada'?100 : grupoK==='perdida'?0 : (row.probabilidad||50);
+  // Optimista: mueve la tarjeta de inmediato, revierte si la base falla.
+  const faseAnterior=row.estatus, probAnterior=row.probabilidad;
+  row.estatus=nuevaFase; row.probabilidad=nuevaProb;
+  renderProyeccionTablero();
+  const {error}=await sb.from('pipeline_vendedor').update({estatus:nuevaFase,probabilidad:nuevaProb,updated_at:new Date().toISOString()}).eq('id',id);
+  if(error){ row.estatus=faseAnterior; row.probabilidad=probAnterior; renderProyeccionTablero(); uiToast('No se pudo mover: '+(error.message||error),false); return; }
+  uiToast('Movido a '+col.t);
+  if(row.oportunidad_crm_id){ await crmActualizarOportunidad(row.oportunidad_crm_id,nuevaFase,nuevaProb,row.tipo_servicio||null); }
 }
 
 // Tarjeta clicable del dashboard de prioridades (arriba de la tabla de
@@ -15150,7 +15298,10 @@ async function renderDirectorCartera(containerId){
     // del dashboard de Cartera de cuentas — ver renderDirCarteraAuditoria.
     sb.from('clientes_polizas').select('cliente_cartera_id,poliza_catalogo_id,polizas_catalogo(nombre,categoria,prioridad_codigo,prioridad_nombre)').eq('estatus','VIGENTE').not('cliente_cartera_id','is',null),
     sb.from('servicios_historicos').select('cliente_cartera_id').is('poliza_numero',null).not('cliente_cartera_id','is',null),
-    sb.from('academia_generaciones').select('cliente_cartera_id,curso:curso_id(tipo)').not('cliente_cartera_id','is',null)
+    sb.from('academia_generaciones').select('cliente_cartera_id,curso:curso_id(tipo)').not('cliente_cartera_id','is',null),
+    // Jp, 2026-11-20: el distintivo de nivel (N1 Black…) sale de proyectos_crm activo
+    // (igual que la vista de Ventas) — antes esta vista no lo cargaba y por eso no pintaba badge.
+    sb.from('proyectos_crm').select('cliente_cartera_id,nombre_proyecto,tipo_proyecto,nivel_prioridad,nivel_label').eq('activo',true).not('cliente_cartera_id','is',null)
   ]);
   window._cartClientes=clientes||[];
   window._cartSuscripciones=suscripciones||[];
@@ -15168,6 +15319,8 @@ async function renderDirectorCartera(containerId){
   (clientes||[]).forEach(cl=>{
     cl._suscripciones=(suscripciones||[]).filter(s=>s.cliente_id===cl.id);
     cl._polizaVigente=(polizasVig||[]).find(p=>p.cliente_cartera_id===cl.id)||null;
+    cl._proyectosActivos=(proyectosActivos||[]).filter(p=>p.cliente_cartera_id===cl.id);
+    cl._mejorProyecto=cl._proyectosActivos.slice().sort((a,b)=>(({N1:1,N2:2,N3:3,N4:4,N5:5}[a.nivel_prioridad]||99)-({N1:1,N2:2,N3:3,N4:4,N5:5}[b.nivel_prioridad]||99)))[0]||null;
     cl._servEventual=servEventualSet.has(cl.id);
     cl._cursos=cursosSet.has(cl.id);
     cl._suscActiva=(cl._suscripciones||[]).some(s=>['reclamada','en_revision','renovada'].includes(s.estado));

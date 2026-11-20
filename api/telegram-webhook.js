@@ -162,6 +162,56 @@ export default async function handler(req, res) {
     const capacitacionChatId = process.env.TELEGRAM_CAPACITACION_CHAT_ID;
     const replyMsg = msg.reply_to_message;
 
+    // ── REPORTE DEL ASESOR (Fase 3, Jp 2026-11-20) ──────────────────────────
+    // Cuando el asesor comenta el aviso que la app publicó en el canal
+    // Coordinacion-Soporte, Telegram manda ese comentario como un `message` del
+    // grupo de discusión, citando el post reenviado del canal. Casamos ese post
+    // con servicios_ejecutados.telegram_aviso_msg_id para replicar el reporte
+    // (texto + fotos) dentro de la app y pasar el servicio a "Reportado".
+    if (skey && body.message) {
+      const cand = [];
+      if (replyMsg) {
+        if (replyMsg.is_automatic_forward && replyMsg.forward_from_message_id) cand.push(replyMsg.forward_from_message_id);
+        if (replyMsg.forward_origin && replyMsg.forward_origin.type === 'channel' && replyMsg.forward_origin.message_id) cand.push(replyMsg.forward_origin.message_id);
+        if (replyMsg.message_id) cand.push(replyMsg.message_id);
+      }
+      const threadId = msg.message_thread_id || null;
+      const candU = [...new Set(cand.filter((x) => x != null))];
+      if (candU.length || threadId) {
+        try {
+          let filtro;
+          if (candU.length && threadId) filtro = `or=(telegram_aviso_msg_id.in.(${candU.join(',')}),telegram_thread_id.eq.${threadId})`;
+          else if (candU.length) filtro = `telegram_aviso_msg_id=in.(${candU.join(',')})`;
+          else filtro = `telegram_thread_id=eq.${threadId}`;
+          const servs = await sb(`servicios_ejecutados?${filtro}&select=id,estatus,telegram_thread_id&limit=1`, 'GET', skey);
+          const serv = (servs || [])[0];
+          if (serv) {
+            if (threadId && !serv.telegram_thread_id) { try { await sb(`servicios_ejecutados?id=eq.${serv.id}`, 'PATCH', skey, { telegram_thread_id: threadId }); } catch (_) {} }
+            const rtexto = msg.text || msg.caption || null;
+            const rfotos = msg.photo || null;
+            const rfotoId = rfotos && rfotos.length ? rfotos[rfotos.length - 1].file_id : null;
+            const autor = msg.from ? ((msg.from.first_name || '') + (msg.from.last_name ? ' ' + msg.from.last_name : '')).trim() : null;
+            const esReporte = !!(rtexto && /(SERVICIO\s+REALIZAD|TIEMPO|REPORTE|SE\s+REALIZ|OBSERVACI)/i.test(rtexto));
+            try {
+              await sb('servicios_reporte_mensajes', 'POST', skey, {
+                servicio_id: serv.id, telegram_message_id: messageId, telegram_chat_id: chatId,
+                autor, texto: rtexto, foto_file_id: rfotoId, es_reporte: esReporte,
+              });
+            } catch (_) { /* duplicado (reintento de Telegram): se ignora */ }
+            const patch = { reporte_leido_at: new Date().toISOString() };
+            if (esReporte && rtexto) {
+              patch.trabajo_realizado = rtexto;
+              patch.reportado_at = new Date().toISOString();
+              if (['ASIGNADO', 'POR_CONTACTAR', 'EN_CURSO', 'EJECUTADO', 'CONCLUIDO'].includes(serv.estatus)) patch.estatus = 'REPORTADO';
+            }
+            try { await sb(`servicios_ejecutados?id=eq.${serv.id}`, 'PATCH', skey, patch); } catch (_) {}
+            res.status(200).json({ ok: true, captured: 'reporte_asesor', servicio: serv.id });
+            return;
+          }
+        } catch (e) { /* best-effort: si no casa, sigue el flujo normal */ }
+      }
+    }
+
     // "Capacitación INN" resultó estar configurado como CANAL con
     // comentarios habilitados, no como grupo normal (confirmado 2026-10-04
     // en la prueba de Lote 28/29: Karen respondió y la vista de Telegram

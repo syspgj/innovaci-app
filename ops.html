@@ -785,6 +785,7 @@ function abrirAsignacion(id){
     ${s.descripcion_solicitud?`<div style="margin-top:12px;"><div style="font-size:11px;font-weight:700;color:var(--text2);">Lo solicitado</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.descripcion_solicitud)}</div></div>`:''}
     ${s.nota?`<div style="margin-top:10px;"><div style="font-size:11px;font-weight:700;color:var(--text2);">Nota para el asesor</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.nota)}</div></div>`:''}
     ${s.trabajo_realizado?`<div style="margin-top:12px;padding:8px 10px;background:#0D948815;border-radius:8px;"><div style="font-size:11px;font-weight:700;color:#0D9488;">📝 Reporte del asesor</div><div style="font-size:13px;white-space:pre-wrap;line-height:1.5;margin-top:3px;">${esc(s.trabajo_realizado)}${s.comentarios_asesor?'\n\nObs: '+esc(s.comentarios_asesor):''}</div></div>`:''}
+    <div id="opsHiloTg" style="margin-top:12px;"></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:16px;align-items:center;">
       ${accDet()}
       <button class="btn ghost" onclick="cerrarModal()">Cerrar</button>
@@ -798,6 +799,35 @@ function abrirAsignacion(id){
     <details style="margin-top:10px;"><summary style="font-size:11px;color:var(--text3);cursor:pointer;">Corregir etapa (solo para pruebas / errores)</summary>
       <div style="display:flex;gap:8px;margin-top:6px;align-items:center;"><select class="inp" id="aeEst" style="max-width:220px;">${opcCorr}</select>
       <button class="btn ghost" style="font-size:11px;" onclick="guardarEstatusAsig('${s.id}')">Aplicar</button></div></details>`:''}`);
+  cargarHiloTelegram(s.id);
+}
+
+// ─── Hilo del reporte que el asesor dejó en Telegram (texto + fotos) ─────────
+// Lee servicios_reporte_mensajes (lo capturó el webhook al casar los comentarios
+// del asesor con el aviso de la asignación) y muestra cada mensaje; las fotos se
+// ven vía /api/operaciones-foto (proxy con la sesión actual de Supabase).
+async function cargarHiloTelegram(servId){
+  const cont=document.getElementById('opsHiloTg'); if(!cont) return;
+  let msgs=[];
+  try{
+    const r=await sb.from('servicios_reporte_mensajes')
+      .select('autor,texto,foto_file_id,es_reporte,created_at')
+      .eq('servicio_id',servId).order('created_at',{ascending:true});
+    msgs=r.data||[];
+  }catch(e){ return; }
+  if(!msgs.length){ cont.innerHTML=''; return; }
+  let tok=''; try{ tok=(await sb.auth.getSession()).data.session.access_token||''; }catch(e){}
+  const fechaHora=f=>{ try{ const d=new Date(f); return d.toLocaleString('es-MX',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }catch(e){ return ''; } };
+  const filas=msgs.map(m=>{
+    const foto=m.foto_file_id
+      ? `<a href="/api/operaciones-foto?file_id=${encodeURIComponent(m.foto_file_id)}&token=${encodeURIComponent(tok)}" target="_blank" rel="noopener" title="Abrir evidencia"><img src="/api/operaciones-foto?file_id=${encodeURIComponent(m.foto_file_id)}&token=${encodeURIComponent(tok)}" loading="lazy" style="max-width:140px;max-height:140px;border-radius:8px;border:1px solid var(--line);margin-top:4px;display:block;object-fit:cover;"></a>`
+      : '';
+    const txt=m.texto?`<div style="font-size:13px;white-space:pre-wrap;line-height:1.45;">${esc(m.texto)}</div>`:'';
+    return `<div style="padding:7px 10px;border-left:3px solid ${m.es_reporte?'#0D9488':'var(--line)'};margin-top:6px;background:var(--surf2);border-radius:0 8px 8px 0;">
+      <div style="font-size:10px;color:var(--text3);">${esc(m.autor||'Asesor')} · ${fechaHora(m.created_at)}${m.es_reporte?' · <b style="color:#0D9488;">reporte</b>':''}</div>
+      ${txt}${foto}</div>`;
+  }).join('');
+  cont.innerHTML=`<div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:2px;">📨 Reporte en Telegram <span style="font-weight:400;color:var(--text3);">(${msgs.length})</span></div>${filas}`;
 }
 async function guardarEstatusAsig(id){
   const est=document.getElementById('aeEst')?.value; if(!est) return;

@@ -11,13 +11,14 @@
 // Variables de entorno en Vercel:
 //   SUPABASE_URL (o la fija de abajo), SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN,
 //   TELEGRAM_COORDINACION_CHAT_ID  → el grupo "Coordinación Soporte" donde están los asesores.
-//     (si no existe, cae a TELEGRAM_ASIGNACIONES_CHAT_ID). El bot debe ser miembro del grupo.
+//     El bot (InnovaciMesaBot) debe ser miembro del grupo. Si falta la variable, la
+//     asignación se guarda igual pero el aviso devuelve "falta configurar".
 // Salida: { ok:true, enviado_at } | { ok:true, yaEnviado:true } | { ok:false, error }
 
 const SURL = process.env.SUPABASE_URL || 'https://ydwouspzneacxfixlmmv.supabase.co';
 const SKEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const BOT = process.env.TELEGRAM_BOT_TOKEN;
-const CHAT = process.env.TELEGRAM_COORDINACION_CHAT_ID || process.env.TELEGRAM_ASIGNACIONES_CHAT_ID;
+const CHAT = process.env.TELEGRAM_COORDINACION_CHAT_ID;
 const UUID = /^[0-9a-f-]{36}$/i;
 
 async function sesionValida(req) {
@@ -100,9 +101,15 @@ export default async function handler(req, res) {
       try { await sbPatch(`servicios_ejecutados?id=eq.${id}`, { aviso_asesor_error: err.slice(0, 300) }); } catch (_) {}
       return res.status(200).json({ ok: false, error: err });
     }
+    // Guardamos el message_id del aviso en el canal para poder CASAR después la
+    // respuesta del asesor (sus comentarios + fotos del hilo) con este servicio.
+    let msgId = null;
+    try { const rb = await r.json(); msgId = rb && rb.result ? rb.result.message_id : null; } catch (_) {}
     const ahora = new Date().toISOString();
-    try { await sbPatch(`servicios_ejecutados?id=eq.${id}`, { aviso_asesor_at: ahora, aviso_asesor_error: null }); } catch (_) {}
-    return res.status(200).json({ ok: true, enviado_at: ahora });
+    const patch = { aviso_asesor_at: ahora, aviso_asesor_error: null };
+    if (msgId) { patch.telegram_aviso_msg_id = msgId; patch.telegram_aviso_chat_id = CHAT; patch.telegram_thread_id = null; }
+    try { await sbPatch(`servicios_ejecutados?id=eq.${id}`, patch); } catch (_) {}
+    return res.status(200).json({ ok: true, enviado_at: ahora, msg_id: msgId });
   } catch (e) {
     if (id) { try { await sbPatch(`servicios_ejecutados?id=eq.${id}`, { aviso_asesor_error: String(e?.message || e).slice(0, 300) }); } catch (_) {} }
     return res.status(200).json({ ok: false, error: String(e?.message || e) });
