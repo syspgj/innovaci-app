@@ -29387,6 +29387,7 @@ async function renderDirectorPromociones(){
     <div style="display:flex;gap:8px;">
       <button onclick="swPromoTab('config')" id="ptabConfig" style="padding:7px 16px;border-radius:var(--radsm);font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentPromoTab==='config'?'var(--navy)':'none'};color:${currentPromoTab==='config'?'#fff':'var(--text2)'};">⚙ Configuración</button>
       <button onclick="swPromoTab('vista')" id="ptabVista" style="padding:7px 16px;border-radius:var(--radsm);font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentPromoTab==='vista'?'var(--navy)':'none'};color:${currentPromoTab==='vista'?'#fff':'var(--text2)'};">👁 Vista previa</button>
+      <button onclick="swPromoTab('historial')" id="ptabHist" style="padding:7px 16px;border-radius:var(--radsm);font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--border);font-family:'Inter',sans-serif;background:${currentPromoTab==='historial'?'var(--navy)':'none'};color:${currentPromoTab==='historial'?'#fff':'var(--text2)'};">🕑 Historial</button>
     </div>
   </div>
   <div id="promoContent"></div>`;
@@ -29398,10 +29399,74 @@ function swPromoTab(tab){
   currentPromoTab=tab;
   const cfg=document.getElementById('ptabConfig');
   const vis=document.getElementById('ptabVista');
+  const his=document.getElementById('ptabHist');
   if(cfg){cfg.style.background=tab==='config'?'var(--navy)':'none';cfg.style.color=tab==='config'?'#fff':'var(--text2)';}
   if(vis){vis.style.background=tab==='vista'?'var(--navy)':'none';vis.style.color=tab==='vista'?'#fff':'var(--text2)';}
+  if(his){his.style.background=tab==='historial'?'var(--navy)':'none';his.style.color=tab==='historial'?'#fff':'var(--text2)';}
   if(tab==='config')renderPromoConfig();
+  else if(tab==='historial')renderPromoHistorial();
   else renderPromoVistaDirInline();
+}
+
+// Jp, 2026-11-20: Historial de promociones. Cada vez que se guarda una promoción
+// (trigger en la base) queda registrado el estado, para ver qué descuentos se
+// dieron durante el mes (una más baja, una más alta) y cuándo cambiaron.
+async function renderPromoHistorial(){
+  const cont=document.getElementById('promoContent');
+  if(!cont)return;
+  cont.innerHTML='<div class="loading"><div class="spinner"></div> Cargando historial…</div>';
+  const meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  let data=[],err=null;
+  try{
+    const r=await sb.from('promociones_historial')
+      .select('seccion,item,descuento,permanente,fecha_inicio,fecha_fin,notas,accion,cambio_at')
+      .eq('anio',currentYear).eq('mes',currentMonth)
+      .order('cambio_at',{ascending:false});
+    data=r.data||[]; err=r.error;
+  }catch(e){ err=e; }
+  if(err){ cont.innerHTML=`<div style="padding:16px;font-size:12px;color:#c0392b;">No se pudo leer el historial: ${(err.message||err)}</div>`; return; }
+  // etiqueta legible por sección desde PROMO_STRUCTURE
+  const lbl={}; try{ PROMO_STRUCTURE.forEach(s=>{lbl[s.seccion]=s.subseccion+' · '+s.label;}); }catch(e){}
+  if(!data.length){
+    cont.innerHTML=`<div style="padding:20px;text-align:center;font-size:12.5px;color:var(--text3);">Aún no hay movimientos de promociones para ${meses[currentMonth]} ${currentYear}. En cuanto guardes o cambies un descuento, aquí queda el registro.</div>`;
+    return;
+  }
+  // agrupar por sección
+  const bySec={};
+  data.forEach(h=>{(bySec[h.seccion]=bySec[h.seccion]||[]).push(h);});
+  const secs=Object.keys(bySec).sort((a,b)=>(lbl[a]||a).localeCompare(lbl[b]||b));
+  const fFecha=d=>d?new Date(d+'T00:00:00').toLocaleDateString('es-MX',{day:'2-digit',month:'short'}):'—';
+  const fCambio=t=>{try{return new Date(t).toLocaleString('es-MX',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});}catch(e){return t;}};
+  cont.innerHTML=`
+    <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">Cada renglón es un cambio guardado. El más reciente arriba. Así ves qué promociones se dieron durante el mes y cómo variaron.</div>
+    <div style="display:grid;gap:14px;">
+    ${secs.map(sec=>{
+      const rows=bySec[sec];
+      const max=Math.max(...rows.map(r=>Number(r.descuento)||0));
+      const min=Math.min(...rows.map(r=>Number(r.descuento)||0));
+      return `<div class="card" style="padding:0;overflow:hidden;">
+        <div style="padding:9px 14px;background:var(--navy);color:#fff;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+          <div style="font-size:12.5px;font-weight:700;">${(lbl[sec]||sec)}</div>
+          <div style="font-size:11px;opacity:.85;">máx ${max}% · mín ${min}% · ${rows.length} cambio${rows.length>1?'s':''}</div>
+        </div>
+        <div style="padding:2px 0;">
+          ${rows.map((h,i)=>{
+            const prev=rows[i+1];
+            const delta=prev?(Number(h.descuento)-Number(prev.descuento)):0;
+            const flecha=delta>0?'<span style="color:#1e9e5a;">▲</span>':(delta<0?'<span style="color:#c0392b;">▼</span>':'');
+            const vig=h.permanente?'Permanente':((h.fecha_inicio||h.fecha_fin)?(fFecha(h.fecha_inicio)+' → '+fFecha(h.fecha_fin)):'—');
+            return `<div style="display:grid;grid-template-columns:90px 1fr auto;gap:10px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--border);">
+              <div style="font-size:16px;font-weight:800;color:var(--navy);font-family:'JetBrains Mono',monospace;">${Number(h.descuento)||0}% ${flecha}</div>
+              <div style="font-size:11.5px;color:var(--text2);">
+                <div>Vigencia: <b>${vig}</b>${h.notas?` · <span style="color:var(--text3);">${(h.notas||'').replace(/</g,'&lt;')}</span>`:''}</div>
+                <div style="color:var(--text3);font-size:10.5px;margin-top:1px;">${h.accion==='baseline'?'Estado inicial':(h.accion==='INSERT'?'Alta':'Cambio')} · ${fCambio(h.cambio_at)}</div>
+              </div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    }).join('')}
+    </div>`;
 }
 
 function renderPromoConfig(){
@@ -36067,9 +36132,12 @@ async function renderSolFacturaVendedor(){
   mc.classList.remove('full-width');
   window._sfCliente=null;window._sfFactA=null;window._sfGrupo=null;window._sfPipe=null;window._sfShop=null;window._solGenSug=null;window._solGenSolo=null;
   mc.innerHTML=`
-  <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:4px;">🧾 Solicitar factura</div>
-  <div style="font-size:12px;color:var(--text3);margin-bottom:14px;">Llena esta solicitud en lugar de escribir en Telegram. Dirección valida el pago y Administración emite la factura; aquí ves en qué va.</div>
-  <div style="background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:18px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px;flex-wrap:wrap;">
+    <div style="font-size:15px;font-weight:600;color:var(--text);">🧾 Solicitar factura</div>
+    <button id="sfToggleBtn" onclick="solToggleForm()" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">➕ Nueva solicitud</button>
+  </div>
+  <div style="font-size:12px;color:var(--text3);margin-bottom:14px;">Llena esta solicitud en lugar de escribir en Telegram. Dirección valida el pago y Administración emite la factura; aquí ves en qué va. <b>Abajo tienes tus solicitudes.</b></div>
+  <div id="sfFormCard" style="display:none;background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px 18px;margin-bottom:18px;">
     ${solFld('Cliente (busca por nombre o número)',`<input id="sfCliente" oninput="solClienteBuscarDeb()" placeholder="Ej. GEL KLEEN o 1511" style="${SOL_INPUT_STYLE}"><div id="sfClienteMatches" style="margin-top:6px;"></div>`)}
     <div id="sfClienteSel" style="font-size:12px;margin-bottom:10px;"></div>
     <div id="sfPipeBox" style="display:none;margin-bottom:10px;"></div>
@@ -36287,6 +36355,15 @@ async function solAcadCargarGens(p){
     if(vig&&window._solGenSolo) return '<span style="color:#b45309;">Hay '+vig+' generación(es) vigente(s), pero este producto de la tienda no está ligado a ninguna, así que no se pueden elegir aquí. Envía sin generación y Dirección la liga desde la tarjeta.</span>';
     return '<span style="color:var(--text3);">No hay generaciones vigentes en Academia. Pídele a Dirección que las cree; mientras, puedes enviar sin generación y se asigna después desde la tarjeta.</span>';
   })();
+  // Jp, 2026-11-20: la generación se deduce del curso/producto (ya ligado al
+  // catálogo), así que se auto-marca sola: las sugeridas del producto, o la única
+  // vigente si solo hay una. El vendedor ya casi no tiene que tocarla; puede
+  // corregir con "ver todas" si fuera necesario.
+  if(sel.size===0){
+    let auto=soloDelProducto?gens.filter(g=>sug.has(g.id)):[];
+    if(!auto.length && gens.length===1) auto=gens;
+    auto.forEach(g=>{const cb=box.querySelector('.'+p+'AcadGen[value="'+CSS.escape(g.id)+'"]');if(cb)cb.checked=true;});
+  }
   // Enlace para quitar/poner el filtro cuando la generación marcada no es la
   // que el cliente quiere (error de captura).
   if(window._solGenSolo){
@@ -36583,6 +36660,7 @@ async function solLeerCotizacion(input){
 // Prefill desde Proyección (negociación Cerrada-Ganada → "mandar a facturación")
 async function solAplicarPrefill(){
   const p=window._solPrefill;window._solPrefill=null;
+  if(p&&(p.shopify_id||p.pipeline_id)) solAbrirForm(false); // abre el formulario si viene prefill
   if(p?.shopify_id){
     await solAplicarPrefillShopify(p.shopify_id);
     try{
@@ -36981,6 +37059,23 @@ async function solEnviar(){
     btn.disabled=false;err('No se pudo enviar: '+(e?.message||e));
   }
 }
+// Jp, 2026-11-20: el formulario de Solicitar factura arranca colapsado para que
+// "Mis solicitudes" quede a la vista sin tanto scroll. Se abre con el botón o al prefilar.
+function solAbrirForm(scroll){
+  const card=document.getElementById('sfFormCard'); const btn=document.getElementById('sfToggleBtn');
+  if(card) card.style.display='block';
+  if(btn) btn.textContent='✕ Cerrar formulario';
+  if(scroll&&card) card.scrollIntoView({behavior:'smooth',block:'start'});
+}
+function solCerrarForm(){
+  const card=document.getElementById('sfFormCard'); const btn=document.getElementById('sfToggleBtn');
+  if(card) card.style.display='none';
+  if(btn) btn.textContent='➕ Nueva solicitud';
+}
+function solToggleForm(){
+  const card=document.getElementById('sfFormCard');
+  if(card&&card.style.display==='none') solAbrirForm(true); else solCerrarForm();
+}
 async function solCargarListaVendedor(){
   const cont=document.getElementById('sfLista');
   const [resSol, cloud]=await Promise.all([
@@ -37020,14 +37115,31 @@ function solPintarListaVendedor(){
 // Las facturas CLOUD se emiten directo en Finanzas (no pasan por solicitud), así que
 // aquí aparecen las de las cuentas del vendedor (o todas, para Dirección) que siguen
 // sin comprobante de pago, para subirlo sin salir de esta pantalla.
+// Jp, 2026-11-20: fact_ingresos.cliente_cartera_id NO es llave foránea, así que el
+// embed de PostgREST (clientes_cartera!inner) fallaba y la sección salía vacía para
+// todos. Se consulta sin embed y se traen las cuentas en una segunda llamada.
 async function solCloudPendientesCargar(){
   const esVend = userProfile?.rol==='vendedor';
-  let q = sb.from('fact_ingresos')
-    .select('id,fecha,serie,folio,cliente,total,cobrado,comprobante_pago_path,cliente_cartera_id,clientes_cartera!inner(razon_social,vendedor_asignado)')
-    .eq('rubro','CLOUD').is('comprobante_pago_path',null).or('cobrado.is.null,cobrado.eq.false')
-    .order('fecha',{ascending:false});
-  if(esVend) q = q.eq('clientes_cartera.vendedor_asignado', userProfile?.id||currentUser.id);
-  try{ const {data}=await q; return data||[]; }catch(e){ console.error('cloud pendientes',e); return []; }
+  try{
+    const {data:facts,error}=await sb.from('fact_ingresos')
+      .select('id,fecha,serie,folio,cliente,total,cobrado,comprobante_pago_path,cliente_cartera_id')
+      .eq('rubro','CLOUD').is('comprobante_pago_path',null).or('cobrado.is.null,cobrado.eq.false')
+      .order('fecha',{ascending:false});
+    if(error) throw error;
+    let rows=facts||[];
+    const ids=[...new Set(rows.map(r=>r.cliente_cartera_id).filter(Boolean))];
+    const ccMap={};
+    if(ids.length){
+      const {data:ccs}=await sb.from('clientes_cartera').select('id,razon_social,vendedor_asignado').in('id',ids);
+      (ccs||[]).forEach(c=>{ccMap[c.id]=c;});
+    }
+    rows=rows.map(r=>({...r, clientes_cartera: r.cliente_cartera_id?(ccMap[r.cliente_cartera_id]||null):null}));
+    if(esVend){
+      const me=userProfile?.id||currentUser.id;
+      rows=rows.filter(r=>r.clientes_cartera && r.clientes_cartera.vendedor_asignado===me);
+    }
+    return rows;
+  }catch(e){ console.error('cloud pendientes',e); return []; }
 }
 function solCloudSeccionHtml(lista){
   if(!lista||!lista.length) return '';
