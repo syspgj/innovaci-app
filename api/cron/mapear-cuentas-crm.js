@@ -88,6 +88,23 @@ async function sbInsert(table, rows) {
   if (!res.ok) throw new Error(`Supabase insert ${table} -> ${res.status}: ${await res.text()}`);
 }
 
+// Jp, 2026-11-20: actualiza una fila por id (PATCH). Se usa para PROMOVER una
+// cuenta ACAD- (creada por el alta de Academia antes de que existiera en el CRM)
+// a su cuenta real del CRM, en vez de insertar un duplicado.
+async function sbUpdateById(table, id, patch) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+    method: 'PATCH',
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(`Supabase patch ${table} -> ${res.status}: ${await res.text()}`);
+}
+
 export default async function handler(req, res) {
   const authHeader = req.headers['authorization'];
   const secretHeader = req.headers['x-sync-secret'];
@@ -102,11 +119,15 @@ export default async function handler(req, res) {
   }
 
   try {
-    const [crm, existentes] = await Promise.all([
+    const [crm, existentes, acadRows] = await Promise.all([
       sbGetAll(
         'stg_cuentas_crm_raw?select=account_no,accountname,phone,email1,website,rating,description,bill_street,bill_city,bill_state,bill_code,createdtime,assigned_user_id,cf_964,cf_1062&order=account_no.asc'
       ),
       sbGetAll('clientes_cartera?select=num_cliente&num_cliente=not.is.null&order=num_cliente.asc'),
+      // Cuentas que creó el alta de Academia (ACAD-...) antes de existir en el CRM.
+      // Si una cuenta del CRM coincide en nombre con una de estas, se PROMUEVE esa
+      // fila a la cuenta real en vez de insertar un duplicado (Jp, 2026-11-20).
+      sbGetAll('clientes_cartera?select=id,num_cliente,razon_social&num_cliente=like.ACAD-*'),
     ]);
     // Dueño de la cuenta: se resuelve con usuarios.crm_user_id (assigned_user_id del CRM) y, si ese usuario
     // no está ligado, con el nombre del campo Vendedor del CRM (cf_964). Validado contra 1,475 cuentas ya
@@ -133,9 +154,18 @@ export default async function handler(req, res) {
       return true;
     });
 
+    // Mapa de cuentas ACAD- (alta de Academia) por nombre normalizado, para
+    // reutilizarlas en vez de duplicar (Jp, 2026-11-20).
+    const acadPorNombre = new Map();
+    (acadRows || []).forEach((a) => {
+      const k = norm(a.razon_social);
+      if (k && !acadPorNombre.has(k)) acadPorNombre.set(k, a.id);
+    });
+    const acadUsadas = new Set();
+
     const hoy = new Date().toISOString().slice(0, 10);
-    const rows = nuevas.map((c) => ({
-      num_cliente: c.account_no,
+    // Campos que se pueden mapear con confianza desde el CRM.
+    const camposDesdeCrm = (c) => ({
       razon_social: c.accountname,
       telefono: c.phone || null,
       correo_principal: c.email1 || null,
@@ -149,11 +179,42 @@ export default async function handler(req, res) {
       vendedor_asignado: porCrm.get(c.assigned_user_id) || buscarPorNombre(c.cf_964) || null,
       vendedor_origen: c.cf_964 || null,
       tipo_cliente_2: c.cf_1062 || null,
-      origen: 'crm_auto',
-      notas: `Dada de alta automáticamente desde CRM (Vtiger) el ${hoy} — completar RFC y demás datos a mano.${c.description ? '\n\nDescripción en CRM: ' + c.description : ''}`,
-    }));
+    });
 
-    // Inserta por lotes de 100 para no mandar un body gigante de una vez.
+    const rows = [];        // altas nuevas
+    const promociones = []; // { id, patch } — ACAD- que se vuelven cuenta real
+    for (const c of nuevas) {
+      const k = norm(c.accountname);
+      const acadId = k ? acadPorNombre.get(k) : null;
+      if (acadId && !acadUsadas.has(acadId)) {
+        // Reutiliza la cuenta que creó Academia: la convierte en la cuenta real.
+        acadUsadas.add(acadId);
+        promociones.push({
+          id: acadId,
+          patch: {
+            num_cliente: c.account_no,
+            ...camposDesdeCrm(c),
+            origen: 'crm_auto',
+            notas: `Cuenta de Academia vinculada a su cuenta del CRM (${c.account_no}) el ${hoy}.${c.description ? '\n\nDescripción en CRM: ' + c.description : ''}`,
+          },
+        });
+      } else {
+        rows.push({
+          num_cliente: c.account_no,
+          ...camposDesdeCrm(c),
+          origen: 'crm_auto',
+          notas: `Dada de alta automáticamente desde CRM (Vtiger) el ${hoy} — completar RFC y demás datos a mano.${c.description ? '\n\nDescripción en CRM: ' + c.description : ''}`,
+        });
+      }
+    }
+
+    // Promueve las ACAD- que coincidieron (una por una, para no pisar otras filas).
+    for (const p of promociones) {
+      try { await sbUpdateById('clientes_cartera', p.id, p.patch); }
+      catch (e) { /* si una choca (p. ej. num_cliente ya tomado), se omite y sigue */ }
+    }
+
+    // Inserta las nuevas por lotes de 100 para no mandar un body gigante de una vez.
     for (let i = 0; i < rows.length; i += 100) {
       await sbInsert('clientes_cartera', rows.slice(i, i + 100));
     }
@@ -170,7 +231,7 @@ export default async function handler(req, res) {
       jerarquia = r.ok ? await r.json() : `error ${r.status}`;
     } catch (e) { jerarquia = 'error ' + String((e && e.message) || e); }
 
-    return res.status(200).json({ ok: true, revisadas: (crm || []).length, creadas: rows.length, jerarquia_ligadas: jerarquia, cuentas: rows.map((r) => r.num_cliente) });
+    return res.status(200).json({ ok: true, revisadas: (crm || []).length, creadas: rows.length, promovidas: promociones.length, jerarquia_ligadas: jerarquia, cuentas: rows.map((r) => r.num_cliente) });
   } catch (err) {
     return res.status(200).json({ ok: false, error: String((err && err.message) || err) });
   }
