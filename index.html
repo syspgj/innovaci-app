@@ -38904,11 +38904,15 @@ function licEditarModal(id){
   const s=_licSols[p.solicitud_id];
   solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:2px;">🔑 ${solEsc(p.clave)}</div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(p.producto||'')} ${licPlanTxt(p)}${s?' · '+solEsc(s.cliente_nombre):''}${p.orden_venta?' · OV.'+solEsc(p.orden_venta):''}</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 12px;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:0 12px;">
+      ${solFld('Producto','<input id="leProd" value="'+solEsc(p.producto||'')+'" placeholder="NOI ASISTENTE" style="'+SOL_INPUT_STYLE+'text-transform:uppercase;">')}
+      ${solFld('Plan desde','<input id="leMin" type="number" min="0" value="'+(p.plan_min||'')+'" placeholder="1" style="'+SOL_INPUT_STYLE+'">')}
+      ${solFld('Plan hasta','<input id="leMax" type="number" min="0" value="'+(p.plan_max||'')+'" placeholder="25" style="'+SOL_INPUT_STYLE+'">')}
       ${solFld('Vigencia',licCampoPeriodo('leP',p.periodicidad||''))}
       ${solFld('Fecha de facturación','<input id="leFfac" type="date" value="'+(p.fecha_facturacion||'')+'" style="'+SOL_INPUT_STYLE+'">')}
       ${solFld('Fecha de activación','<input id="leFact" type="date" value="'+(p.fecha_activacion||'')+'" style="'+SOL_INPUT_STYLE+'">')}
     </div>
+    <div style="font-size:11px;color:#8a5a00;background:#FFF8EC;border:1px solid #F5A623;border-radius:6px;padding:6px 9px;margin-bottom:10px;">La marca a veces manda el plan o el nombre equivocado. Corrígelo aquí para que la clave empate con su venta (ej. 6-25 → 1-25).</div>
     <div style="font-size:11px;color:var(--text3);margin:-4px 0 10px;">El vencimiento se calcula solo: se cuenta desde la activación; si todavía no se activa, desde la factura. Hoy vence: <b>${p.fecha_vencimiento?licFmtFecha(p.fecha_vencimiento):'sin calcular (falta vigencia o fecha)'}</b></div>
     ${solFld('Notas','<input id="leNotas" value="'+solEsc(p.notas||'')+'" placeholder="Ej: el cliente pidió activarla hasta enero" style="'+SOL_INPUT_STYLE+'">')}
     <div style="display:flex;gap:8px;"><button onclick="licEditarGuardar('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar</button><button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`);
@@ -38916,6 +38920,9 @@ function licEditarModal(id){
 async function licEditarGuardar(id){
   const v=i=>document.getElementById(i)?.value||'';
   const {error}=await sb.from('licencias_claves').update({
+    producto:v('leProd').trim().toUpperCase()||null,
+    plan_min:parseInt(v('leMin'),10)||null,
+    plan_max:parseInt(v('leMax'),10)||null,
     periodicidad:v('leP')||null,
     fecha_facturacion:v('leFfac')||null,
     fecha_activacion:v('leFact')||null,
@@ -38932,15 +38939,25 @@ async function licEditarGuardar(id){
 async function licAsignarManualModal(claveId){
   const p=_licRows.find(x=>x.id===claveId); if(!p) return;
   solModal('<div class="loading"><div class="spinner"></div> Cargando ventas pendientes…</div>');
-  const {data:pend}=await sb.from('solicitudes_factura')
-    .select('id,cliente_nombre,vendedor_nombre,concepto,created_at,licencia_estado')
-    .eq('licencia_estado','pendiente').order('created_at',{ascending:false});
-  const cands=pend||[];
+  // Misma lista que usa "Pegar correo": ventas con pago validado que esperan una
+  // licencia — tanto las ya pedidas a la marca (licencia_estado='pendiente') como
+  // las que aún no se piden (licencia_estado NULL y concepto de asistente). Así
+  // aparecen todas, no solo las "pedidas" (Jp, 2026-11-20).
+  const [{data:cs},{data:cs2}]=await Promise.all([
+    sb.from('solicitudes_factura').select('id,cliente_nombre,vendedor_nombre,concepto,created_at').eq('pago_validado',true).neq('estado','cancelada').is('licencia_estado',null).ilike('concepto','%asistente%').order('created_at',{ascending:false}).limit(150),
+    sb.from('solicitudes_factura').select('id,cliente_nombre,vendedor_nombre,concepto,created_at').eq('pago_validado',true).neq('estado','cancelada').eq('licencia_estado','pendiente').order('created_at',{ascending:false}).limit(150),
+  ]);
+  const seen=new Set(); const cands=[];
+  [...(cs2||[]),...(cs||[])].forEach(s=>{ if(s&&!seen.has(s.id)){seen.add(s.id);cands.push(s);} });
+  // Marca con ⭐ las ventas cuyo plan empata con el de la clave.
+  const planTxtVenta=s=>{const pl=licPlanDeConcepto(s.concepto);return pl?`${pl.min}-${pl.max}`:'';};
+  const empata=s=>{const pl=licPlanDeConcepto(s.concepto);return pl&&Number(pl.min)===Number(p.plan_min)&&Number(pl.max)===Number(p.plan_max);};
+  cands.sort((a,b)=>(empata(b)-empata(a)));
   solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:2px;">🔑 Asignar clave a una venta</div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">Clave <b style="font-family:'JetBrains Mono',monospace;">${solEsc(p.clave)}</b> · ${solEsc(p.producto||'')} ${licPlanTxt(p)}${p.fecha_max_activacion?' · activar antes del '+licFmtFecha(p.fecha_max_activacion):''}</div>
     ${cands.length?`
-      ${solFld('Venta a la que se entrega',`<select id="lamSel" style="${SOL_INPUT_STYLE}">${cands.map(s=>`<option value="${s.id}">${solEsc(s.cliente_nombre)} · ${solEsc(s.concepto||'')} · 👤 ${solEsc(s.vendedor_nombre||'')}</option>`).join('')}</select>`)}
-      <div style="font-size:11px;color:#B45309;margin:-4px 0 10px;">⚠️ Verifica que el plan de la clave corresponda a la venta. Aquí puedes asignarla aunque el tamaño del plan no empate exacto.</div>
+      ${solFld('Venta a la que se entrega',`<select id="lamSel" style="${SOL_INPUT_STYLE}">${cands.map(s=>{const pt=planTxtVenta(s);return `<option value="${s.id}">${empata(s)?'⭐ ':''}${solEsc(s.cliente_nombre)} · ${solEsc(s.concepto||'')}${pt?' ('+pt+')':''} · 👤 ${solEsc(s.vendedor_nombre||'')}</option>`;}).join('')}</select>`)}
+      <div style="font-size:11px;color:#B45309;margin:-4px 0 10px;">⚠️ Verifica que el plan de la clave corresponda a la venta (⭐ = el plan empata). Puedes asignarla aunque el tamaño no empate exacto.</div>
       <div style="display:flex;gap:8px;"><button onclick="licAsignarManualOk('${claveId}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Asignar y avisar</button><button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`
     :`<div style="font-size:12px;color:var(--text3);padding:6px 0 12px;">No hay ventas pendientes de clave en este momento. (Solo aparecen las solicitudes con pago validado cuyo concepto es una licencia.)</div>
       <button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cerrar</button>`}`);
