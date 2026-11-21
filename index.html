@@ -38657,7 +38657,7 @@ async function licConfirmarCarga(){
     const p=_licParsed[i]; if(p.ya) continue; n++;
     if(prog) prog.innerHTML=`⏳ Procesando clave ${n} de ${_licParsed.filter(x=>!x.ya).length}…`;
     const solId=document.getElementById('licSel_'+i)?.value||''; const r=solId?_licCands.find(x=>x.id===solId):null;
-    const fila={clave:p.clave,producto:p.prod,plan_min:p.min,plan_max:p.max,vigencia:p.vig||null,orden_venta:p.ov||null,fecha_max_activacion:p.fecha,
+    const fila={clave:p.clave,producto:p.prod,plan_min:p.min,plan_max:p.max,vigencia:p.vig||null,periodicidad:licVigToPeriodo(p.vig),orden_venta:p.ov||null,fecha_max_activacion:p.fecha,
       estatus:r?'asignada':'disponible',solicitud_id:r?r.id:null,asignado_at:r?new Date().toISOString():null,asignado_por:r?(userProfile?.nombre||'Dirección'):null};
     const {error}=await sb.from('licencias_claves').insert(fila);
     if(error){log.push(`❌ ${p.clave}: ${error.message}`);continue;}
@@ -38758,6 +38758,9 @@ async function catPaginar(q){ // q: función (from,to)=>query
 let _licRows=[], _licSols={}, _licFiltro='todas', _licBusca='', _licOrden={c:'fecha_vencimiento',asc:true};
 const LIC_PERIODOS=[['mensual','Mensual'],['semestral','Semestral'],['anual','Anual']];
 function licPeriodoTxt(p){return (LIC_PERIODOS.find(x=>x[0]===p)||[])[1]||'—';}
+// Jp, 2026-11-20: la vigencia que viene en el correo de Aspel (ANUAL/MENSUAL/
+// SEMESTRAL) completa sola la periodicidad, para que no quede "falta".
+function licVigToPeriodo(v){const m={ANUAL:'anual',MENSUAL:'mensual',SEMESTRAL:'semestral'};return m[String(v||'').toUpperCase().trim()]||null;}
 function licDiasPara(iso){
   if(!iso) return null;
   return Math.round((new Date(iso+'T12:00:00').getTime()-new Date(todayLocal()+'T12:00:00').getTime())/86400000);
@@ -38863,7 +38866,7 @@ function licPintarTabla(){
       <td style="padding:7px 12px;color:${colVence};font-weight:${d!=null&&d<=60?'700':'400'};">${p.fecha_vencimiento?licFmtFecha(p.fecha_vencimiento):'—'}${d!=null&&d<=60?`<div style="font-size:10px;">${d<0?'vencida':(d===0?'hoy':'en '+d+' d')}</div>`:''}</td>
       <td style="padding:7px 12px;"><span style="background:${ec[0]};color:${ec[1]};border-radius:5px;padding:2px 8px;font-size:11px;font-weight:700;">${ec[2]}</span></td>
       <td style="padding:7px 12px;">${solEsc(s?s.cliente_nombre:'')}${s&&s.vendedor_nombre?`<div style="font-size:10px;color:var(--text3);">👤 ${solEsc(s.vendedor_nombre)}</div>`:''}</td>
-      <td style="padding:7px 12px;white-space:nowrap;"><button onclick="licEditarModal('${p.id}')" style="border:1px solid var(--border);background:#fff;border-radius:5px;font-size:10px;padding:2px 8px;cursor:pointer;">Editar</button></td>
+      <td style="padding:7px 12px;white-space:nowrap;">${p.estatus==='disponible'?`<button onclick="licAsignarManualModal('${p.id}')" style="border:1px solid var(--teal);background:var(--teal);color:#fff;border-radius:5px;font-size:10px;padding:2px 8px;cursor:pointer;font-weight:700;margin-right:4px;">Asignar a venta</button>`:''}<button onclick="licEditarModal('${p.id}')" style="border:1px solid var(--border);background:#fff;border-radius:5px;font-size:10px;padding:2px 8px;cursor:pointer;">Editar</button></td>
     </tr>`;}).join(''):'<tr><td colspan="10" style="padding:16px;text-align:center;color:var(--text3);font-size:12px;">Sin claves en esta vista.</td></tr>'}</tbody></table>`;
   const cn=document.getElementById('licConteo');if(cn) cn.textContent=`${lista.length} de ${_licRows.length}`;
 }
@@ -38920,6 +38923,43 @@ async function licEditarGuardar(id){
   }).eq('id',id);
   if(error) return alert('No se pudo guardar: '+error.message);
   solCerrarModal();
+  renderFinLicencias();
+}
+// Jp, 2026-11-20: asignación MANUAL de una clave ya cargada (disponible) a una
+// venta. Hace falta cuando la clave se cargó sin asignar, o cuando el plan de la
+// clave no empata exacto con el de la venta (ej. la marca manda 6-25 para una
+// venta registrada como 26-50) y el auto-asignado por plan no la toma.
+async function licAsignarManualModal(claveId){
+  const p=_licRows.find(x=>x.id===claveId); if(!p) return;
+  solModal('<div class="loading"><div class="spinner"></div> Cargando ventas pendientes…</div>');
+  const {data:pend}=await sb.from('solicitudes_factura')
+    .select('id,cliente_nombre,vendedor_nombre,concepto,created_at,licencia_estado')
+    .eq('licencia_estado','pendiente').order('created_at',{ascending:false});
+  const cands=pend||[];
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:2px;">🔑 Asignar clave a una venta</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">Clave <b style="font-family:'JetBrains Mono',monospace;">${solEsc(p.clave)}</b> · ${solEsc(p.producto||'')} ${licPlanTxt(p)}${p.fecha_max_activacion?' · activar antes del '+licFmtFecha(p.fecha_max_activacion):''}</div>
+    ${cands.length?`
+      ${solFld('Venta a la que se entrega',`<select id="lamSel" style="${SOL_INPUT_STYLE}">${cands.map(s=>`<option value="${s.id}">${solEsc(s.cliente_nombre)} · ${solEsc(s.concepto||'')} · 👤 ${solEsc(s.vendedor_nombre||'')}</option>`).join('')}</select>`)}
+      <div style="font-size:11px;color:#B45309;margin:-4px 0 10px;">⚠️ Verifica que el plan de la clave corresponda a la venta. Aquí puedes asignarla aunque el tamaño del plan no empate exacto.</div>
+      <div style="display:flex;gap:8px;"><button onclick="licAsignarManualOk('${claveId}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Asignar y avisar</button><button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`
+    :`<div style="font-size:12px;color:var(--text3);padding:6px 0 12px;">No hay ventas pendientes de clave en este momento. (Solo aparecen las solicitudes con pago validado cuyo concepto es una licencia.)</div>
+      <button onclick="solCerrarModal()" style="background:none;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cerrar</button>`}`);
+}
+async function licAsignarManualOk(claveId){
+  const solId=document.getElementById('lamSel')?.value||''; if(!solId) return;
+  const p=_licRows.find(x=>x.id===claveId); if(!p) return;
+  const btn=document.querySelector(`[onclick="licAsignarManualOk('${claveId}')"]`);
+  if(btn){btn.disabled=true;btn.style.opacity='.6';btn.textContent='Asignando…';}
+  const {data:r}=await sb.from('solicitudes_factura').select('*').eq('id',solId).single();
+  if(!r){ if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Asignar y avisar';} return alert('No encontré la solicitud.'); }
+  const {data:upd,error}=await sb.from('licencias_claves')
+    .update({estatus:'asignada',solicitud_id:solId,asignado_at:new Date().toISOString(),asignado_por:userProfile?.nombre||'Dirección'})
+    .eq('id',claveId).eq('estatus','disponible').select('id,clave');
+  if(error){ if(btn){btn.disabled=false;btn.style.opacity='1';btn.textContent='Asignar y avisar';} return alert('No se pudo asignar: '+error.message); }
+  if(!upd||!upd.length){ solCerrarModal(); alert('Esa clave ya no está disponible (quizá se asignó mientras tanto).'); return renderFinLicencias(); }
+  const co=await licCerrarAsignacion(r,p.clave);
+  solCerrarModal();
+  alert(`🔑 Clave ${p.clave} asignada a ${r.cliente_nombre}.\n`+(co.ok?`Se le avisó a ${r.vendedor_nombre||'el vendedor'} por correo y en la app.`:`(La asignación quedó, pero el correo no se pudo enviar: ${co.error||'—'})`));
   renderFinLicencias();
 }
 // Pega el correo de Aspel y da de alta todas las claves que traiga, con la
