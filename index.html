@@ -1580,7 +1580,7 @@ async function academiaNuevosAsistentesHtml(){
   let rows=[];
   try{
     const {data,error}=await sb.from('academia_inscripciones')
-      .select('id,generacion_id,nivel_acceso,folio,created_at,atencion,vendedor_nombre_original,participante:participante_id(nombre,mail,telefono),generacion:generacion_id(clave,curso:curso_id(nombre,modalidad,tipo))')
+      .select('id,generacion_id,nivel_acceso,folio,created_at,atencion,vendedor_nombre_original,odoo_inscrito_at,odoo_error,participante:participante_id(nombre,mail,telefono),generacion:generacion_id(clave,curso:curso_id(nombre,modalidad,tipo))')
       .eq('origen','facturacion').is('atendido_at',null).order('created_at',{ascending:true});
     if(error) return /origen|atendido/.test(error.message||'')?'<div style="margin-bottom:16px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--text3);">Falta correr <b>sql_academia_nuevos_asistentes.sql</b> en Supabase para ver los nuevos asistentes de facturación.</div>':'';
     rows=data||[];
@@ -1612,7 +1612,7 @@ async function academiaNuevosAsistentesHtml(){
       </div>
       <div>
         <div>${academiaPasosNuevo(r).map(([k,l])=>chipPaso(r,k,l)).join('')}</div>
-        <div style="margin-top:2px;">${academiaChipEstadoNuevo(e)}</div>
+        <div style="margin-top:2px;">${academiaChipEstadoNuevo(e)} ${academiaOdooBadge(r)}</div>
       </div>
       <div style="display:flex;gap:6px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
         ${at.bienvenida_at?`<span title="Bienvenida enviada" style="font-size:11px;color:var(--teal);font-weight:700;">✉ Enviada ${new Date(at.bienvenida_at).toLocaleDateString('es-MX',{day:'2-digit',month:'short'}).replace('.','')}</span>`:`<button onclick="academiaEnviarBienvenida('${r.id}',this)" style="background:#fff;color:var(--navy);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;">✉ Enviar bienvenida</button>`}
@@ -1629,7 +1629,10 @@ async function academiaNuevosAsistentesHtml(){
   return `<div id="acadNuevosBox" style="margin-bottom:22px;">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
       <div style="font-size:14px;font-weight:700;color:var(--navy);">🆕 Nuevos asistentes desde facturación <span style="font-weight:500;color:var(--text3);font-size:12px;">(${totalSinFiltro})</span></div>
-      ${userProfile?.rol==='director'?`<button onclick="academiaProbarOdoo(this)" style="background:none;border:1px dashed var(--border);border-radius:6px;padding:3px 9px;font-size:10px;color:var(--text3);cursor:pointer;">🔌 Probar conexión Odoo</button>`:''}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <button onclick="academiaInscribirOdoo(this)" style="background:#5b3fa0;color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">🎓 Inscribir pendientes en Odoo</button>
+        ${userProfile?.rol==='director'?`<button onclick="academiaProbarOdoo(this)" style="background:none;border:1px dashed var(--border);border-radius:6px;padding:3px 9px;font-size:10px;color:var(--text3);cursor:pointer;">🔌 Probar conexión Odoo</button>`:''}
+      </div>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">
       ${pill('','Todos',cnt.pendiente+cnt.proceso+cnt.completado,'var(--navy)')}
@@ -1674,6 +1677,34 @@ async function academiaProbarOdoo(btn){
     alert('✅ Odoo conectado\nVersión: '+j.version+'\nCursos de eLearning: '+j.cursos_total+'\nPuede inscribir alumnos: '+(j.puede_inscribir_alumnos?'sí':'no')+'\nÚltimos: '+(j.cursos_muestra||[]).map(c=>c.name).join(' | '));
   }catch(e){alert('Odoo: '+(e.message||e));}
   finally{if(btn){btn.disabled=false;btn.textContent=txt;}}
+}
+// Jp, 2026-11-20: estado de inscripción en Odoo por alumno.
+function academiaOdooBadge(r){
+  if(r.odoo_inscrito_at) return `<span title="Inscrito en Odoo el ${new Date(r.odoo_inscrito_at).toLocaleString('es-MX')}" style="display:inline-block;background:#e6f6ee;color:#1e8449;border-radius:10px;padding:2px 9px;font-size:10px;font-weight:700;">✅ En Odoo</span>`;
+  if(r.odoo_error) return `<span title="${String(r.odoo_error).replace(/"/g,'&quot;')}" style="display:inline-block;background:#fde8e6;color:#c0392b;border-radius:10px;padding:2px 9px;font-size:10px;font-weight:700;">⚠ Odoo</span>`;
+  return `<span style="display:inline-block;background:#eef1f4;color:#8ba0b8;border-radius:10px;padding:2px 9px;font-size:10px;font-weight:700;">⏳ pend. Odoo</span>`;
+}
+// Revisa e inscribe en Odoo a los nuevos asistentes que aún no estén inscritos en
+// su curso. Idempotente (no duplica a quien ya está). Manual por ahora; después
+// se puede automatizar al liberar en Facturación.
+async function academiaInscribirOdoo(btn){
+  if(!confirm('¿Revisar e inscribir en Odoo a los alumnos nuevos que aún no estén inscritos en su curso?\n\nEs seguro: a quien ya esté inscrito no lo duplica.')) return;
+  const txt=btn?btn.textContent:''; if(btn){btn.disabled=true;btn.textContent='Inscribiendo…';}
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const r=await fetch('/api/odoo-inscribir',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solo_pendientes:true,limite:80})});
+    const j=await r.json().catch(()=>({}));
+    if(!j.ok) throw new Error(j.error||('Error '+r.status));
+    let msg;
+    if(j.procesadas===0){ msg='No hay alumnos pendientes de inscribir en Odoo.'; }
+    else{
+      msg=`✅ Listo.\nProcesadas: ${j.procesadas}\nInscritas nuevas: ${j.inscritos}\nYa estaban: ${j.ya_estaban}`;
+      if(j.errores&&j.errores.length){ msg+=`\n\n⚠ Con problema (${j.errores.length}):\n`+j.errores.slice(0,12).map(e=>`• ${e.alumno}: ${e.error}`).join('\n'); if(j.errores.length>12) msg+=`\n…y ${j.errores.length-12} más.`; }
+    }
+    alert(msg);
+    academiaRefrescarNuevos();
+  }catch(e){ alert('No se pudo inscribir en Odoo: '+(e.message||e)); }
+  finally{ if(btn){btn.disabled=false;btn.textContent=txt;} }
 }
 async function academiaNuevosFiltrar(v){
   window._acadNuevosFiltro=v||'';

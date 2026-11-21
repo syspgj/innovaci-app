@@ -43,28 +43,55 @@ async function sbGet(path) {
   return r.json();
 }
 
-function construirHtml({ nombre, cliente, concepto, claves }) {
-  const primer = (nombre || '').trim().split(' ')[0] || '';
+// Logo (wordmark) hosteado en el sitio. Fondo claro, por eso el header es blanco.
+const LOGO_URL = 'https://os.innovaci.com.mx/img/propuesta-logo.png';
+
+// Correo listo para que el vendedor lo REENVÍE a su cliente tal cual: maquetado
+// con tablas (Outlook ignora max-width en <div>), centrado, ancho fijo 600px,
+// con logo y el cuerpo redactado hacia el cliente final (Jp, 2026-11-20).
+function construirHtml({ cliente, concepto, claves }) {
   const fmtF = (d) => (d ? String(d).slice(0, 10).split('-').reverse().join('/') : '—');
   const filas = claves
-    .map((p) => `<tr><td style="padding:8px 12px;font-family:'Courier New',monospace;font-size:15px;font-weight:700;color:#0D2240;letter-spacing:.04em;">${esc(p.clave)}</td><td style="padding:8px 12px;font-size:12px;color:#5b6b7a;">Activar antes del <strong>${fmtF(p.fecha_max_activacion)}</strong>${p.orden_venta ? ' · OV.' + esc(p.orden_venta) : ''}</td></tr>`)
+    .map((p) => `
+      <tr><td align="center" style="padding:16px 18px 4px;font-family:'Courier New',Consolas,monospace;font-size:19px;font-weight:700;color:#0D2240;letter-spacing:.06em;word-break:break-all;">${esc(p.clave)}</td></tr>
+      <tr><td align="center" style="padding:0 18px 16px;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#5b6b7a;">Activar antes del <strong style="color:#c0392b;">${fmtF(p.fecha_max_activacion)}</strong>${p.orden_venta ? ' · OV. ' + esc(p.orden_venta) : ''}</td></tr>`)
     .join('');
-  return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;background:#f4f6f8;padding:24px 0;">
-    <div style="background:#0D2240;border-radius:14px 14px 0 0;padding:28px;text-align:center;">
-      <div style="font-size:30px;">🔑</div>
-      <div style="font-size:20px;font-weight:800;color:#fff;margin-top:6px;">Clave de licencia para tu venta</div>
-    </div>
-    <div style="background:#fff;padding:26px 28px;">
-      <div style="font-size:14px;color:#1A2332;line-height:1.6;margin-bottom:16px;">Hola${primer ? ' ' + esc(primer) : ''}, ya llegó la clave de pre-registro de <strong>${esc(cliente)}</strong>.</div>
-      <div style="font-size:12px;color:#8BA0B8;margin-bottom:6px;">${esc(concepto)}</div>
-      <div style="background:#eefaf9;border:1px dashed #00A99D;border-radius:10px;margin-bottom:18px;">
-        <div style="font-size:11px;font-weight:700;color:#00A99D;text-transform:uppercase;letter-spacing:.05em;padding:12px 12px 0;">Clave${claves.length > 1 ? 's' : ''} de licencia</div>
-        <table style="width:100%;border-collapse:collapse;">${filas}</table>
-      </div>
-      <div style="font-size:12.5px;color:#5b6b7a;line-height:1.6;">Entrega la clave al cliente y recuérdale la fecha máxima de activación. También la encuentras en la app, en <strong>Solicitar factura › Mis solicitudes</strong>, con botón para copiarla. La factura la emite Administración.</div>
-    </div>
-    <div style="text-align:center;padding:16px 20px;"><div style="font-size:11px;color:#8BA0B8;">Grupo Innovaci · Distribuidor autorizado Aspel/Siigo (D18944)</div></div>
-  </div>`;
+  return `<!doctype html><html><body style="margin:0;padding:0;background:#eef2f5;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef2f5;padding:24px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:600px;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e3e9ee;">
+        <!-- Logo -->
+        <tr><td align="center" style="padding:26px 24px 10px;background:#ffffff;">
+          <img src="${LOGO_URL}" alt="Innovaci" width="180" style="display:block;width:180px;max-width:70%;height:auto;">
+        </td></tr>
+        <!-- Banda título -->
+        <tr><td align="center" style="background:#0D2240;padding:16px 24px;">
+          <div style="font-family:Arial,Helvetica,sans-serif;font-size:19px;font-weight:800;color:#ffffff;">🔑 Tu clave de licencia</div>
+        </td></tr>
+        <!-- Cuerpo -->
+        <tr><td style="padding:24px 28px 8px;font-family:Arial,Helvetica,sans-serif;">
+          <p style="margin:0 0 14px;font-size:15px;color:#1A2332;line-height:1.6;">Hola <strong>${esc(cliente)}</strong>, ¡tu licencia ya está lista! 🎉</p>
+          ${concepto ? `<p style="margin:0 0 4px;font-size:13px;color:#5b6b7a;line-height:1.5;">${esc(concepto)}</p>` : ''}
+        </td></tr>
+        <!-- Caja de la clave -->
+        <tr><td style="padding:6px 28px 4px;font-family:Arial,Helvetica,sans-serif;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eefaf9;border:1px dashed #00A99D;border-radius:12px;">
+            <tr><td align="center" style="padding:12px 12px 0;font-size:11px;font-weight:700;color:#00A99D;text-transform:uppercase;letter-spacing:.06em;">Clave${claves.length > 1 ? 's' : ''} de licencia</td></tr>
+            ${filas}
+          </table>
+        </td></tr>
+        <!-- Instrucción al cliente -->
+        <tr><td style="padding:16px 28px 4px;font-family:Arial,Helvetica,sans-serif;">
+          <p style="margin:0;font-size:13px;color:#5b6b7a;line-height:1.65;">Usa esta clave al registrar tu sistema Aspel. <strong>Es importante activarla antes de la fecha indicada.</strong> Si necesitas ayuda para activarla, contáctanos y con gusto te apoyamos.</p>
+        </td></tr>
+        <!-- Footer -->
+        <tr><td align="center" style="padding:22px 24px 26px;">
+          <div style="font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:700;color:#0D2240;">Grupo Innovaci</div>
+          <div style="font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#8BA0B8;margin-top:2px;">Distribuidor autorizado Aspel/Siigo · Clave D18944</div>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table></body></html>`;
 }
 
 export default async function handler(req, res) {
@@ -90,7 +117,7 @@ export default async function handler(req, res) {
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${RESEND_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: FROM_EMAIL, to: [vend.email], bcc: BCC_EMAILS, subject: `🔑 Clave de licencia — ${sol.cliente_nombre}`, html }),
+      body: JSON.stringify({ from: FROM_EMAIL, to: [vend.email], bcc: BCC_EMAILS, subject: `🔑 Tu clave de licencia — ${sol.cliente_nombre}`, html }),
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) return res.status(200).json({ ok: false, error: `Resend ${r.status}: ${JSON.stringify(j)}` });
