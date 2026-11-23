@@ -14065,12 +14065,12 @@ async function abrirFichaClienteModal(clienteId){
   const suscripciones=cl._suscripciones||[];
   window._fichaClienteActualId=clienteId;
 
-  const ESTADOS_SUSC=['sin_reclamar','reclamada','renovada','no_renovada'];
-  const ESTADO_COLOR={'sin_reclamar':'var(--text3)','reclamada':'var(--gold)','renovada':'#27AE60','no_renovada':'var(--red)'};
+  const ESTADOS_SUSC=['sin_reclamar','reclamada','renovada','reemplazada','no_renovada'];
+  const ESTADO_COLOR={'sin_reclamar':'var(--text3)','reclamada':'var(--gold)','renovada':'#27AE60','reemplazada':'#2980B9','no_renovada':'var(--red)'};
   const renderSusc=(s,editable=true)=>{
     const vence=s.fecha_proxima_renovacion&&new Date(s.fecha_proxima_renovacion)<=new Date(Date.now()+14*86400000);
     const estadoColor=ESTADO_COLOR[s.estado]||'var(--text3)';
-    return `<div style="border:1px solid ${vence&&s.estado!=='renovada'?'var(--red)':'var(--border)'};border-radius:var(--radsm);padding:10px 14px;background:#fff;margin-bottom:4px;">
+    return `<div style="border:1px solid ${vence&&s.estado!=='renovada'&&s.estado!=='reemplazada'?'var(--red)':'var(--border)'};border-radius:var(--radsm);padding:10px 14px;background:#fff;margin-bottom:4px;">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
         <span style="font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--navy);">${s.numserie||'—'}</span>
         <span style="font-size:11px;color:var(--text3);">${s.producto||''}</span>
@@ -16071,7 +16071,7 @@ async function renderTodasSuscripciones(scope){
     // Jp, 2026-10-13: distinguir "vencen este mes" de "vencidas desde antes" (ya
     // pasó el mes en que debieron renovar y siguen sin renovar) — antes no existía
     // esta distinción, todo caía junto en "vencen este mes" o se perdía de vista.
-    suscs=suscs.filter(s=>s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada');
+    suscs=suscs.filter(s=>s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada'&&s.estado!=='reemplazada');
     // Jp, 2026-10-22, auditoría vendedor: con 50+ vencidas mezcladas, las
     // críticas (vencidas desde hace más de un año) se perdían entre las
     // recientes. Se ordenan explícitamente más antigua primero.
@@ -16120,7 +16120,7 @@ async function renderTodasSuscripciones(scope){
   const totalSinVendedor=scope==='director'?suscs.filter(s=>{const cl=s.cliente_id?clientesPorId[s.cliente_id]:null;return cl&&!cl.vendedor_asignado;}).length:0;
   const propiaSusc=s=>{if(scope!=='director'){const cl=s.cliente_id?clientesPorId[s.cliente_id]:null;if(!cl||cl.vendedor_asignado!==currentUser.id)return false;}return true;};
   const totalVencenMes=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=inicioMes&&s.fecha_proxima_renovacion<=finMes).length;
-  const totalVencidasAntes=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada').length;
+  const totalVencidasAntes=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada'&&s.estado!=='reemplazada').length;
   const totalAlertaPerdida=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.alerta_posible_perdida).length;
   const totalRiesgoRetiro=(window._cartSuscripciones||[]).filter(s=>propiaSusc(s)&&s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&!suscEstaResuelta(s)).length;
   const tarjeta=(label,valor,color,key)=>`
@@ -16187,6 +16187,7 @@ async function renderTodasSuscripciones(scope){
       ${tarjeta('Sin reclamar',suscs.filter(s=>s.estado==='sin_reclamar').length,'var(--text3)','sin_reclamar')}
       ${tarjeta('Reclamadas',suscs.filter(s=>['reclamada','en_revision'].includes(s.estado)).length,'#2980B9','reclamada')}
       ${tarjeta('Renovadas',suscs.filter(s=>s.estado==='renovada').length,'#27AE60','renovada')}
+      ${tarjeta('↪ Reemplazadas',suscs.filter(s=>s.estado==='reemplazada').length,'#8E44AD','reemplazada')}
       ${tarjeta('No renovadas',suscs.filter(s=>s.estado==='no_renovada').length,'#E84040','no_renovada')}
       ${tarjeta('⛔ Riesgo de retiro',totalRiesgoRetiro,'#8B0000','riesgo_retiro')}
       ${tarjeta('🚨 Posible pérdida',totalAlertaPerdida,'#8B0000','alerta_perdida')}
@@ -16198,14 +16199,14 @@ async function renderTodasSuscripciones(scope){
         const info=suscSistemaInfo(s);
         const cl=s.cliente_id?clientesPorId[s.cliente_id]:null;
         const vend=cl&&cl.vendedor_asignado?(window._carteraVendedores||[]).find(v=>v.id===cl.vendedor_asignado):null;
-        const estadoInfo={sin_reclamar:['Sin reclamar','var(--text3)'],reclamada:['Reclamada','#2980B9'],en_revision:['En revisión','#2980B9'],renovada:['Renovada','#27AE60'],no_renovada:['No renovada','#E84040']}[s.estado]||[s.estado||'—','var(--text3)'];
+        const estadoInfo={sin_reclamar:['Sin reclamar','var(--text3)'],reclamada:['Reclamada','#2980B9'],en_revision:['En revisión','#2980B9'],renovada:['Renovada','#27AE60'],reemplazada:['Reemplazada ↪','#8E44AD'],no_renovada:['No renovada','#E84040']}[s.estado]||[s.estado||'—','var(--text3)'];
         const esAlarma=s.estado==='no_renovada'; // Jp, 2026-10-13: "no renovada" debe verse alarmante — "que se vea que no lo pagó".
         // Jp, 2026-10-13: vencida-sin-renovar NO depende de que alguien ya le haya
         // puesto el estado "no_renovada" — por ejemplo "Inmobiliarios Vetko" venció
         // y seguía en "sin_reclamar" sin ningún distintivo. Esto marca cualquier
         // suscripción cuya fecha de renovación ya pasó y que no está renovada,
         // sea cual sea su estado actual.
-        const esVencida=s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada';
+        const esVencida=s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion<inicioMes&&s.estado!=='renovada'&&s.estado!=='reemplazada';
         // Jp, 2026-10-22, auditoría vendedor: días de antigüedad del vencimiento,
         // para distinguir a simple vista una vencida de la semana pasada de una
         // de hace más de un año (antes se veían con el mismo badge rojo).
@@ -16251,13 +16252,19 @@ async function renderTodasSuscripciones(scope){
 //    retiro"); el sistema NO retira al cliente solo — lo decide Dirección.
 // Entran las VENCIDAS (su próxima renovación ya pasó) y no resueltas.
 // ═══════════════════════════════════════════════════════════════════════════
+// Jp, 2026-11-23: 2 motivos que NO son pérdida — la suscripción continúa bajo otra
+// serie (actualización de versión) o bajo otra razón social. Se ligan a la suscripción
+// nueva (ya en la app) y quedan en estado 'reemplazada' (no cuenta como pérdida).
+const SUSC_MOTIVO_ACTUALIZACION='Actualización de versión — nueva serie';
+const SUSC_MOTIVO_OTRA_RS='Renovó con otra razón social';
+const SUSC_MOTIVOS_CONTINUA=[SUSC_MOTIVO_ACTUALIZACION,SUSC_MOTIVO_OTRA_RS];
 const SUSC_MOTIVOS_NO_RENOVO=['Cliente se cambió con otro distribuidor','Cliente cerró / dejó de operar','Cliente migró a otro sistema','Precio / presupuesto','Dejó de usar el sistema','No se pudo contactar','Otro'];
 
 // "reclamada/en_revision" = comisión ya reclamada a la marca (renovó). "renovada"
 // = confirmada. "no_renovada" solo cuenta como resuelta si trae motivo+evidencia.
 function suscEstaResuelta(s){
   if(!s) return true;
-  if(s.estado==='renovada') return true;
+  if(s.estado==='renovada'||s.estado==='reemplazada') return true;
   if(['reclamada','en_revision'].includes(s.estado)) return true;
   if(s.estado==='no_renovada'&&(s.notas_seguimiento||'').trim()&&(s.evidencia_url||'').trim()) return true;
   return false;
@@ -16379,11 +16386,25 @@ async function abrirActualizarSuscripcion(suscId){
       <div id="asSi" style="display:none;font-size:12px;color:var(--text2);background:rgba(39,174,96,.08);border-radius:8px;padding:10px 12px;margin-bottom:12px;">Se marcará como <b>Renovada</b> con fecha de hoy y se recalculará su próxima renovación (${licEsc(s.periodicidad||'anual')}). Si tienes comprobante, adjúntalo abajo (opcional).</div>
       <div id="asNo" style="display:none;margin-bottom:12px;">
         <label style="font-size:11px;color:var(--text3);">Motivo por el que NO renovó *</label>
-        <select id="asMotivo" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin:4px 0 8px;box-sizing:border-box;">
+        <select id="asMotivo" onchange="suscMotivoChange()" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin:4px 0 8px;box-sizing:border-box;">
           <option value="">— Elige un motivo —</option>
-          ${SUSC_MOTIVOS_NO_RENOVO.map(m=>`<option>${m}</option>`).join('')}
+          <optgroup label="Sí continúa (no es pérdida)">
+            <option>${SUSC_MOTIVO_ACTUALIZACION}</option>
+            <option>${SUSC_MOTIVO_OTRA_RS}</option>
+          </optgroup>
+          <optgroup label="No renovó (pérdida)">
+            ${SUSC_MOTIVOS_NO_RENOVO.map(m=>`<option>${m}</option>`).join('')}
+          </optgroup>
         </select>
-        <label style="font-size:11px;color:var(--text3);">Detalle / lo que dijo el cliente *</label>
+        <div id="asReemplazo" style="display:none;background:rgba(41,128,185,.07);border:1px solid rgba(41,128,185,.25);border-radius:8px;padding:10px 12px;margin-bottom:10px;">
+          <div style="font-size:11px;color:#1f6391;font-weight:700;margin-bottom:4px;">↪ ¿Cuál suscripción la reemplaza? *</div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:6px;">La serie nueva (o la de la otra razón social) que ya está registrada en la app. Busca por serie, cliente o RFC.</div>
+          <input id="asReempBuscar" oninput="suscReempBuscar(this.value)" placeholder="Busca por serie, cliente o RFC..." style="width:100%;padding:7px;border:1px solid var(--border);border-radius:6px;font-size:12px;box-sizing:border-box;">
+          <div id="asReempResultados" style="margin-top:4px;"></div>
+          <div id="asReempSel" style="margin-top:6px;"></div>
+          <input type="hidden" id="asReempId" value="">
+        </div>
+        <label style="font-size:11px;color:var(--text3);">Detalle / lo que dijo el cliente <span id="asDetalleReq">*</span></label>
         <textarea id="asDetalle" rows="3" placeholder="Ej: El cliente confirmó por WhatsApp que se cambió con otro distribuidor por precio." style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:12px;margin-top:4px;box-sizing:border-box;resize:vertical;font-family:'Inter',sans-serif;"></textarea>
       </div>
       <div id="asEvid" style="display:none;margin-bottom:12px;">
@@ -16412,6 +16433,56 @@ function suscActSel(v){
     bN.style.background='#E84040';bN.style.color='#fff';bR.style.background='#fff';bR.style.color='#27AE60'; }
   g.disabled=false; g.style.opacity='1';
 }
+// Jp, 2026-11-23: motivos "continúa" (actualización de versión / otra razón social)
+// muestran el buscador para ligar la suscripción nueva que la reemplaza.
+function suscMotivoChange(){
+  const m=document.getElementById('asMotivo')?.value||'';
+  const esCont=SUSC_MOTIVOS_CONTINUA.includes(m);
+  const reemp=document.getElementById('asReemplazo'); if(reemp) reemp.style.display=esCont?'block':'none';
+  const evReq=document.getElementById('asEvidReq'), detReq=document.getElementById('asDetalleReq');
+  if(esCont){ if(evReq) evReq.textContent='(opcional)'; if(detReq) detReq.textContent='(opcional)'; }
+  else { if(evReq) evReq.innerHTML='<b style="color:#E84040;">* obligatoria</b>'; if(detReq) detReq.textContent='*'; }
+}
+let _suscReempTO=null;
+function suscReempBuscar(q){ clearTimeout(_suscReempTO); _suscReempTO=setTimeout(()=>suscReempEjecutar(q),300); }
+async function suscReempEjecutar(q){
+  const box=document.getElementById('asReempResultados'); if(!box) return;
+  const safe=(q||'').replace(/[,%()*]/g,' ').trim();
+  if(safe.length<2){ box.innerHTML=''; return; }
+  const cur=window._suscActData?.id||'';
+  box.innerHTML='<div style="font-size:11px;color:var(--text3);padding:4px;">Buscando…</div>';
+  try{
+    const sel='id,numserie,producto,estado,fecha_proxima_renovacion,razon_social_reportada,cliente:cliente_id(razon_social,rfc,num_cliente)';
+    const [{data:porSerie},{data:cls}]=await Promise.all([
+      sb.from('suscripciones_cartera').select(sel).ilike('numserie','%'+safe+'%').limit(8),
+      sb.from('clientes_cartera').select('id').ilike('razon_social','%'+safe+'%').limit(5)
+    ]);
+    let res=(porSerie||[]).slice();
+    if(cls&&cls.length){
+      const ids=cls.map(c=>c.id);
+      const {data:porCli}=await sb.from('suscripciones_cartera').select(sel).in('cliente_id',ids).limit(8);
+      (porCli||[]).forEach(x=>{ if(!res.find(y=>y.id===x.id)) res.push(x); });
+    }
+    res=res.filter(x=>x.id!==cur).slice(0,10);
+    window._suscReempRes=res;
+    if(!res.length){ box.innerHTML='<div style="font-size:11px;color:var(--text3);padding:4px;">Sin coincidencias.</div>'; return; }
+    box.innerHTML=res.map((x,i)=>{
+      const nom=(x.cliente&&x.cliente.razon_social)||x.razon_social_reportada||'Sin cuenta';
+      return `<div onclick="suscReempSel(${i})" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:4px;cursor:pointer;font-size:11.5px;background:#fff;"><b>${licEsc(nom)}</b> · serie ${licEsc(x.numserie||'—')} · ${licEsc(x.producto||'')} <span style="color:var(--text3);">(${licEsc(x.estado||'')}${x.fecha_proxima_renovacion?' · vence '+fmtFecha(x.fecha_proxima_renovacion):''})</span></div>`;
+    }).join('');
+  }catch(e){ box.innerHTML='<div style="font-size:11px;color:var(--red);padding:4px;">Error al buscar.</div>'; }
+}
+function suscReempSel(i){
+  const x=(window._suscReempRes||[])[i]; if(!x) return;
+  const nom=(x.cliente&&x.cliente.razon_social)||x.razon_social_reportada||'Sin cuenta';
+  document.getElementById('asReempId').value=x.id;
+  window._suscReempSerie=x.numserie||''; window._suscReempNom=nom;
+  document.getElementById('asReempResultados').innerHTML='';
+  const bb=document.getElementById('asReempBuscar'); if(bb) bb.value='';
+  const sel=document.getElementById('asReempSel');
+  if(sel) sel.innerHTML=`<div style="background:#fff;border:1px solid #27AE60;border-radius:6px;padding:7px 10px;font-size:11.5px;display:flex;justify-content:space-between;align-items:center;gap:8px;"><span>✅ Reemplazo: <b>${licEsc(nom)}</b> · serie ${licEsc(x.numserie||'—')}</span><span onclick="suscReempQuitar()" style="color:var(--red);cursor:pointer;font-weight:700;">✕</span></div>`;
+}
+function suscReempQuitar(){ const i=document.getElementById('asReempId'); if(i) i.value=''; const s=document.getElementById('asReempSel'); if(s) s.innerHTML=''; window._suscReempSerie=null; window._suscReempNom=null; }
 async function guardarActualizarSusc(suscId){
   const sel=window._suscActSel; if(!sel) return;
   const s=window._suscActData||{};
@@ -16427,10 +16498,21 @@ async function guardarActualizarSusc(suscId){
     const motivo=document.getElementById('asMotivo')?.value||'';
     const detalle=(document.getElementById('asDetalle')?.value||'').trim();
     if(!motivo){ msg.textContent='Elige el motivo.'; return; }
-    if(!detalle){ msg.textContent='Escribe el detalle de lo que dijo el cliente.'; return; }
-    if(!archivo&&!url){ msg.textContent='Adjunta una evidencia o pega una liga.'; return; }
-    patch.estado='no_renovada';
-    patch.notas_seguimiento=`[${motivo}] ${detalle}`;
+    if(SUSC_MOTIVOS_CONTINUA.includes(motivo)){
+      // No es pérdida: la suscripción continúa bajo otra serie / razón social.
+      const reempId=document.getElementById('asReempId')?.value||'';
+      if(!reempId){ msg.textContent='Elige la suscripción (serie nueva) que la reemplaza.'; return; }
+      patch.estado='reemplazada';
+      patch.reemplazo_suscripcion_id=reempId;
+      patch.alerta_posible_perdida=false; patch.alerta_posible_perdida_fecha=null; patch.alerta_posible_perdida_origen=null;
+      patch.fecha_cierre=todayLocal();
+      patch.notas_seguimiento=`[${motivo}] ${detalle||'(sin detalle)'} · Reemplazada por ${window._suscReempNom||'—'} serie ${window._suscReempSerie||'—'}`;
+    } else {
+      if(!detalle){ msg.textContent='Escribe el detalle de lo que dijo el cliente.'; return; }
+      if(!archivo&&!url){ msg.textContent='Adjunta una evidencia o pega una liga.'; return; }
+      patch.estado='no_renovada';
+      patch.notas_seguimiento=`[${motivo}] ${detalle}`;
+    }
   }
   const btn=document.getElementById('asGuardar'); btn.disabled=true; btn.textContent='Guardando…';
   try{
@@ -18695,7 +18777,7 @@ async function renderDirectorGeneral(){
 
   // ── Suscripciones
   const sinReclamar=susc.filter(s=>s.estado==='sin_reclamar').length;
-  const suscPorVencer=susc.filter(s=>s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=hoy&&s.fecha_proxima_renovacion<=en30&&s.estado!=='renovada'&&s.estado!=='no_renovada').length;
+  const suscPorVencer=susc.filter(s=>s.fecha_proxima_renovacion&&s.fecha_proxima_renovacion>=hoy&&s.fecha_proxima_renovacion<=en30&&s.estado!=='renovada'&&s.estado!=='no_renovada'&&s.estado!=='reemplazada').length;
   const suscPerdida=susc.filter(s=>s.alerta_posible_perdida).length;
   const suscPorValidar=susc.filter(s=>s.por_validar).length;
   const maMes=(metaAspel||[]).find(x=>x.mes===m);
