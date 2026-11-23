@@ -14400,7 +14400,10 @@ const CIRC_SOL_ESTADO={pendiente_direccion:['⏳ Esperando autorización de Dire
 // de Dirección con evidencia en imagen (correo de cambio de distribuidor). La serie SIEMPRE sale de las suscripciones
 // de la cuenta (principal + subcuentas); si no está, primero hay que agregarla o cargarla desde los reportes.
 // Los datos del socio se agregan como contacto de la cuenta principal.
-function suscEsVerificada(s){return s.origen==='carga_excel'&&!!s.mes_reportado;}
+// Jp, 2026-11-23: "verificada" = confirmada en ALGÚN reporte de Aspel (mes_reportado).
+// Antes solo contaba el "Cargar Excel de renovaciones" (origen=carga_excel); ahora
+// también la confirmación por "Verificar catálogo Aspel", que marca mes_reportado.
+function suscEsVerificada(s){return !!s.mes_reportado;}
 async function circSolSeriesCuenta(clienteId,especialidad){
   const {data:c}=await sb.from('clientes_cartera').select('id,cliente_padre_id').eq('id',clienteId).maybeSingle();
   const rootId=c?.cliente_padre_id||clienteId;
@@ -17253,6 +17256,10 @@ async function procesarVerificarCatalogoAspel(){
       }
       return;
     }
+    // Jp, 2026-11-23: aparecer en el catálogo de Aspel ES la verificación — se marca
+    // el mes de confirmación para que deje de salir "Sin verificar con reporte Aspel".
+    const _mesRep=hoy.slice(0,7)+'-01';
+    if((s.mes_reportado||'').slice(0,7)!==_mesRep.slice(0,7)) marcar(s.id,{mes_reportado:_mesRep});
     if(s.alerta_posible_perdida){
       marcar(s.id,{alerta_posible_perdida:false,alerta_posible_perdida_fecha:null,alerta_posible_perdida_origen:null});
       listas.reaparecidas.push(s);
