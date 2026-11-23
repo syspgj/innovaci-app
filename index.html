@@ -1621,6 +1621,7 @@ async function academiaNuevosAsistentesHtml(){
       </div>
       <div style="display:flex;gap:6px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">
         ${at.bienvenida_at?`<span title="Bienvenida enviada" style="font-size:11px;color:var(--teal);font-weight:700;">✉ Enviada ${new Date(at.bienvenida_at).toLocaleDateString('es-MX',{day:'2-digit',month:'short'}).replace('.','')}</span>`:`<button onclick="academiaEnviarBienvenida('${r.id}',this)" style="background:#fff;color:var(--navy);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;">✉ Enviar bienvenida</button>`}
+        ${!r.odoo_inscrito_at?`<button onclick="academiaInscribirOdooUno('${r.id}',this)" title="Inscribir a este alumno en su curso de Odoo" style="background:#5b3fa0;color:#fff;border:none;border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;">🎓 Inscribir en Odoo</button>`:''}
         <button onclick="academiaNuevoAtendido('${r.id}')" style="background:${e.estado==='completado'?'var(--teal)':'#fff'};color:${e.estado==='completado'?'#fff':'var(--text2)'};border:1px solid ${e.estado==='completado'?'var(--teal)':'var(--border)'};border-radius:6px;padding:5px 10px;font-size:11px;font-weight:700;cursor:pointer;">${e.estado==='completado'?'✔ Cerrar':'Cerrar sin completar'}</button>
       </div>
     </div>`;};
@@ -1682,6 +1683,20 @@ async function academiaProbarOdoo(btn){
     alert('✅ Odoo conectado\nVersión: '+j.version+'\nCursos de eLearning: '+j.cursos_total+'\nPuede inscribir alumnos: '+(j.puede_inscribir_alumnos?'sí':'no')+'\nÚltimos: '+(j.cursos_muestra||[]).map(c=>c.name).join(' | '));
   }catch(e){alert('Odoo: '+(e.message||e));}
   finally{if(btn){btn.disabled=false;btn.textContent=txt;}}
+}
+// Jp, 2026-11-23: inscribir en Odoo a UN solo alumno desde su fila.
+async function academiaInscribirOdooUno(id,btn){
+  const txt=btn?btn.textContent:''; if(btn){btn.disabled=true;btn.textContent='Inscribiendo…';}
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const r=await fetch('/api/odoo-inscribir',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({inscripcion_ids:[id]})});
+    const j=await r.json().catch(()=>({}));
+    if(!j.ok) throw new Error(j.error||('Error '+r.status));
+    if(j.errores&&j.errores.length){ alert('No se pudo inscribir: '+j.errores[0].error); }
+    else if(j.inscritos){ try{uiToast('✓ Inscrito en Odoo');}catch(e){} }
+    else if(j.ya_estaban){ try{uiToast('Ya estaba inscrito en Odoo');}catch(e){} }
+    academiaRefrescarNuevos();
+  }catch(e){ alert('No se pudo inscribir en Odoo: '+(e.message||e)); if(btn){btn.disabled=false;btn.textContent=txt;} }
 }
 // Jp, 2026-11-20: estado de inscripción en Odoo por alumno.
 function academiaOdooBadge(r){
@@ -4552,6 +4567,12 @@ async function academiaVerFicha(inscripcionId){
       <div style="text-align:right;">
         <div style="font-size:12px;color:var(--text3);">${insc.generacion?.curso?.sistema?.clave} · ${insc.generacion?.clave}</div>
         <div style="font-size:13px;font-weight:600;">Acceso ${academiaAccesoLabel(insc.nivel_acceso)}</div>
+        <div style="margin-top:8px;">
+          ${insc.odoo_inscrito_at
+            ? `<span style="display:inline-block;background:#e6f6ee;color:#1e8449;border-radius:10px;padding:3px 10px;font-size:11px;font-weight:700;" title="Inscrito en Odoo el ${new Date(insc.odoo_inscrito_at).toLocaleString('es-MX')}">✅ Inscrito en Odoo</span>`
+            : `<button onclick="academiaInscribirOdooDetalle('${inscripcionId}',this)" style="background:#5b3fa0;color:#fff;border:none;border-radius:7px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">🎓 Inscribir en Odoo</button>`}
+          ${insc.odoo_error&&!insc.odoo_inscrito_at?`<div style="font-size:10px;color:#c0392b;margin-top:3px;max-width:220px;">⚠ ${solEsc(insc.odoo_error)}</div>`:''}
+        </div>
       </div>
     </div>
 
@@ -26820,6 +26841,19 @@ async function renderOpsContratos(){
   opsCargarEstadoResguardos().then(()=>opsPintarPolizas()).catch(e=>console.error('estado resguardos',e));
 }
 
+// Jp, 2026-11-22 — botón "Revisar respaldos": corre la misma revisión del cron
+// (Dropbox + Drive) para TODAS las pólizas de resguardo ahora mismo, y refresca.
+async function opsRevisarRespaldosTodos(btn){
+  const txt=btn?btn.textContent:''; if(btn){btn.disabled=true;btn.textContent='⏳ Revisando Dropbox y Drive…';}
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const res=await fetch('/api/admin-resguardo-revisar',{method:'POST',headers:{'Authorization':'Bearer '+(sess?.session?.access_token||'')}});
+    const j=await res.json().catch(()=>({}));
+    if(!res.ok||j.ok===false){ alert('No se pudo completar la revisión de respaldos: '+(j.error||('Error '+res.status))); if(btn){btn.disabled=false;btn.textContent=txt;} return; }
+    try{ uiToast('✓ Revisión de respaldos terminada'); }catch(e){}
+    renderOpsContratos();
+  }catch(e){ alert('No se pudo revisar: '+(e.message||e)); if(btn){btn.disabled=false;btn.textContent=txt;} }
+}
 // Jp, 2026-11-18 — en la lista de pólizas de RESGUARDO las horas no aplican:
 // "lo que me interesa saber: cuándo fue el último resguardo registrado, los
 // días de atraso y el estatus del respaldo, que sea muy visible". Se calcula
