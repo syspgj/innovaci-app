@@ -1698,6 +1698,22 @@ async function academiaInscribirOdooUno(id,btn){
     academiaRefrescarNuevos();
   }catch(e){ alert('No se pudo inscribir en Odoo: '+(e.message||e)); if(btn){btn.disabled=false;btn.textContent=txt;} }
 }
+// Jp, 2026-11-23: inscribir en Odoo desde el expediente del participante y refrescar la ficha.
+async function academiaInscribirOdooDetalle(inscripcionId,btn){
+  const txt=btn?btn.textContent:''; if(btn){btn.disabled=true;btn.textContent='Inscribiendo…';}
+  const reactivar=()=>{ if(btn){btn.disabled=false;btn.textContent=txt;} };
+  try{
+    const {data:sess}=await sb.auth.getSession();
+    const r=await fetch('/api/odoo-inscribir',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({inscripcion_ids:[inscripcionId]})});
+    const j=await r.json().catch(()=>({}));
+    if(!j.ok){ alert('No se pudo inscribir en Odoo: '+(j.error||('Error '+r.status))); return reactivar(); }
+    if(j.errores&&j.errores.length){ alert('No se pudo inscribir en Odoo:\n\n'+j.errores[0].error); return reactivar(); }
+    if(j.inscritos){ alert('✅ Inscrito en Odoo correctamente.'); }
+    else if(j.ya_estaban){ alert('ℹ Este alumno ya estaba inscrito en su curso de Odoo.'); }
+    else { alert('No se procesó la inscripción. Revisa que la generación tenga un curso de Odoo ligado.'); return reactivar(); }
+    academiaVerFicha(inscripcionId);
+  }catch(e){ alert('No se pudo inscribir en Odoo: '+(e.message||e)); reactivar(); }
+}
 // Jp, 2026-11-20: estado de inscripción en Odoo por alumno.
 function academiaOdooBadge(r){
   if(r.odoo_inscrito_at) return `<span title="Inscrito en Odoo el ${new Date(r.odoo_inscrito_at).toLocaleString('es-MX')}" style="display:inline-block;background:#e6f6ee;color:#1e8449;border-radius:10px;padding:2px 9px;font-size:10px;font-weight:700;">✅ En Odoo</span>`;
@@ -3900,6 +3916,7 @@ function academiaPintarParticipantes(){
       <div style="font-size:12px;color:var(--text3);">${totalParticipantesGen} participantes · ${activosParticipantesGen} activos · ${archivadosParticipantesGen} archivados</div>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      ${/^NOI-ASIST/i.test(gen?.clave||'')?`<button class="cartera-subtab" style="background:#6B3FA0;color:#fff;" onclick="acadBeneficioNoiModal('${cache.generacionId}')">🎁 Acceso por beneficio (serie NOI Asistente)</button>`:''}
       ${gen?.curso?.modalidad!=='24_7'?`<button class="cartera-subtab" onclick="academiaAbrirRecordatorios('${cache.generacionId}')">📣 Recordatorios de sesión</button>`:''}
       ${gen?.curso?.tipo==='empresarial'?`<button class="cartera-subtab" onclick="academiaAbrirPortalEmpresa('${cache.generacionId}')">🔗 Portal del cliente</button>`:''}
       ${gen?.curso?.tipo==='empresarial'
@@ -3941,6 +3958,82 @@ function academiaPintarParticipantes(){
     const el=document.getElementById('academiaPartBuscar');
     if(el){ el.focus(); const v=el.value; el.value=''; el.value=v; }
   }
+}
+
+// ── ACCESO POR BENEFICIO — NOI ASISTENTE (Jp, 2026-11-23) ────────────────────
+// Para los talleres de NOI Asistente (clave NOI-ASIST-*): dar acceso a la
+// generación SIN venta, validando una serie de NOI Asistente VIGENTE en los
+// registros de Innovaci (sistemas de cartera o suscripciones). Igual que un
+// socio de Círculo entra a un curso por su membresía.
+function acadBeneficioNoiModal(generacionId){
+  window._benNoiGen=generacionId; window._benNoiVal=null;
+  solModal(`<div style="font-size:16px;font-weight:800;margin-bottom:2px;">🎁 Acceso por beneficio — NOI Asistente</div>
+   <div style="font-size:12px;color:var(--text3);margin-bottom:14px;">Da acceso al taller sin venta, validando que el cliente tenga una serie de NOI Asistente vigente que Innovaci tenga en registros (sistemas de cartera o suscripciones).</div>
+   ${solFld('Número de serie de NOI Asistente',`<div style="display:flex;gap:8px;"><input id="bnSerie" style="${SOL_INPUT_STYLE}" placeholder="Ej. JMLOGISTIC" oninput="window._benNoiVal=null;var b=document.getElementById('bnResult');if(b)b.innerHTML='';"><button onclick="acadBeneficioNoiValidar()" style="background:#0D2240;color:#fff;border:none;border-radius:6px;padding:0 16px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">Validar</button></div>`)}
+   <div id="bnResult" style="margin:-4px 0 10px;"></div>
+   <div style="height:1px;background:var(--border);margin:6px 0 12px;"></div>
+   <div style="font-size:12px;color:var(--text2);font-weight:700;margin-bottom:8px;">Datos del asistente que tomará el taller</div>
+   <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px;">
+     ${solFld('Nombre completo',`<input id="bnNombre" style="${SOL_INPUT_STYLE}">`)}
+     ${solFld('Teléfono',`<input id="bnTel" style="${SOL_INPUT_STYLE}">`)}
+   </div>
+   ${solFld('Correo',`<input id="bnMail" type="email" style="${SOL_INPUT_STYLE}">`)}
+   <div style="display:flex;gap:8px;margin-top:6px;"><button id="bnOk" onclick="acadBeneficioNoiGuardar()" style="background:#6B3FA0;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer;">Dar acceso</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:9px 14px;cursor:pointer;">Cancelar</button></div>`);
+}
+async function acadBeneficioNoiValidar(){
+  const serie=document.getElementById('bnSerie')?.value?.trim();
+  const box=document.getElementById('bnResult');
+  if(!serie){ if(box)box.innerHTML='<span style="color:var(--red);font-size:12px;">Captura la serie.</span>'; return null; }
+  if(box)box.innerHTML='<span style="color:var(--text3);font-size:12px;">Validando…</span>';
+  const {data,error}=await sb.rpc('academia_validar_serie_noi',{p_serie:serie});
+  if(error){ if(box)box.innerHTML='<span style="color:var(--red);font-size:12px;">Error: '+solEsc(error.message)+'</span>'; return null; }
+  window._benNoiVal=data;
+  if(box){
+    if(data.ok){
+      box.innerHTML=`<div style="background:var(--green-bg);border:1px solid rgba(39,174,96,.3);border-radius:8px;padding:9px 12px;font-size:12px;color:#1e7e34;">✅ Serie vigente · <b>${solEsc(data.cliente_nombre)}</b> · ${data.fuente==='cartera'?'Sistema en cartera':'Suscripción'}${data.vence?' · renovación '+new Date(data.vence+'T12:00:00').toLocaleDateString('es-MX'):''}</div>`;
+    } else {
+      box.innerHTML=`<div style="background:#fdecea;border:1px solid rgba(231,76,60,.3);border-radius:8px;padding:9px 12px;font-size:12px;color:#c0392b;">⚠️ ${solEsc(data.error||'No procede el acceso por beneficio.')}</div>`;
+    }
+  }
+  return data;
+}
+async function acadBeneficioNoiGuardar(){
+  const generacionId=window._benNoiGen;
+  const serie=document.getElementById('bnSerie')?.value?.trim();
+  const nombre=document.getElementById('bnNombre')?.value?.trim();
+  const mail=document.getElementById('bnMail')?.value?.trim()||null;
+  const tel=document.getElementById('bnTel')?.value?.trim()||null;
+  const btn=document.getElementById('bnOk');
+  if(!nombre) return alert('Captura el nombre del asistente que tomará el taller.');
+  const val=await acadBeneficioNoiValidar();
+  if(!val||!val.ok) return; // el cuadro ya muestra el motivo
+  if(btn){btn.disabled=true;btn.textContent='Dando acceso…';}
+  const reactivar=()=>{if(btn){btn.disabled=false;btn.textContent='Dar acceso';}};
+  try{
+    const {data:pid,error:ep}=await sb.rpc('academia_find_or_create_participante',{p_nombre:nombre,p_mail:mail,p_telefono:tel,p_cliente_id:val.cliente_cartera_id||null});
+    if(ep||!pid){ alert('No se pudo crear el participante: '+(ep?.message||'sin id')); return reactivar(); }
+    const {data:ya}=await sb.from('academia_inscripciones').select('folio').eq('participante_id',pid).eq('generacion_id',generacionId).maybeSingle();
+    if(ya){ alert('Este asistente ya tiene acceso a esta generación (folio '+ya.folio+').'); return reactivar(); }
+    const {data:gen,error:eg}=await sb.from('academia_generaciones').select('id,clave,curso:curso_id(nombre,sistema:sistema_id(clave,codigo_clave))').eq('id',generacionId).single();
+    if(eg||!gen){ alert('No se pudo leer la generación: '+(eg?.message||'')); return reactivar(); }
+    const sis=(gen.curso?.sistema?.codigo_clave||gen.curso?.sistema?.clave||'').toUpperCase();
+    const auto=!!(gen.clave&&sis&&gen.clave.toUpperCase().startsWith(sis+'-'));
+    const ver=((gen.curso?.nombre||'').match(new RegExp(sis+'\\s*(\\d{1,2})','i'))||[])[1]||'';
+    const {data:folio,error:ef}=await sb.rpc('academia_generar_folio',{p_sistema:auto?'':(sis+ver),p_generacion:gen.clave,p_acceso:academiaAccesoLetra('esencial')});
+    if(ef){ alert('No se pudo generar el folio: '+ef.message); return reactivar(); }
+    const obs='Acceso por beneficio NOI Asistente · serie '+serie.toUpperCase()+' · '+(val.fuente==='cartera'?'sistema en cartera':'suscripción')+' · titular: '+val.cliente_nombre;
+    const fila={participante_id:pid,generacion_id:generacionId,nivel_acceso:'esencial',tipo:'entero',folio,origen:'beneficio_noi',observaciones:obs};
+    let {data:insNueva,error:ei}=await sb.from('academia_inscripciones').insert(fila).select('id').single();
+    if(ei&&/origen/.test(ei.message||'')){ delete fila.origen; ({data:insNueva,error:ei}=await sb.from('academia_inscripciones').insert(fila).select('id').single()); }
+    if(ei){ alert('No se pudo dar el acceso: '+ei.message); return reactivar(); }
+    solCerrarModal();
+    try{uiToast('✅ Acceso dado por beneficio · folio '+folio);}catch(e){}
+    try{
+      const {data:sess}=await sb.auth.getSession();
+      fetch('/api/odoo-inscribir',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({inscripcion_ids:[insNueva.id]})}).catch(()=>{});
+    }catch(e){}
+    academiaVerGeneracion(generacionId);
+  }catch(e){ alert('Error: '+(e.message||e)); reactivar(); }
 }
 
 // ── AGREGAR ASISTENTE ────────────────────────────────────────────────────────
@@ -9256,6 +9349,66 @@ async function enviarPolizaAProyeccion(polizaId){
   }
 }
 
+// ── ESTRATEGIA DE LA SEMANA (Jp, 2026-11-23) ───────────────────────────────
+// Dirección escribe cada lunes el objetivo de la semana; lo ven vendedores y
+// telemarketing en su panel. Tabla: estrategia_semana (area ambos|ventas|telemarketing).
+function lunesDeEstaSemana(){ const d=new Date(); const g=d.getDay(); d.setDate(d.getDate()+(g===0?-6:1-g)); return d.toLocaleDateString('en-CA'); }
+async function estrategiaSemanaCargar(area){
+  try{
+    const {data}=await sb.from('estrategia_semana').select('*').in('area',['ambos',area])
+      .order('fecha_inicio',{ascending:false,nullsFirst:false}).order('updated_at',{ascending:false}).limit(1);
+    return (data&&data[0])||null;
+  }catch(e){ return null; }
+}
+async function estrategiaSemanaRender(area,contId){
+  const cont=document.getElementById(contId); if(!cont) return;
+  const puedeEditar=userProfile?.rol==='director';
+  const e=await estrategiaSemanaCargar(area);
+  const fechaTxt=e&&e.fecha_inicio?new Date(e.fecha_inicio+'T12:00:00').toLocaleDateString('es-MX',{day:'2-digit',month:'long'}):'';
+  const cuerpo=e&&e.contenido?solEsc(e.contenido).replace(/\n/g,'<br>'):'';
+  cont.innerHTML=`<div class="card" style="padding:0;overflow:hidden;border:1px solid #d7c7f0;border-left:4px solid #6B3FA0;">
+    <div style="background:#6B3FA0;color:#fff;padding:9px 15px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+      <div style="font-size:13px;font-weight:800;">🎯 Estrategia de la semana${e&&e.titulo?' — '+solEsc(e.titulo):''}</div>
+      <div style="display:flex;gap:8px;align-items:center;">${fechaTxt?`<span style="font-size:11px;opacity:.85;">Semana del ${fechaTxt}</span>`:''}${puedeEditar?`<button onclick="estrategiaSemanaModal('${area}')" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:6px;padding:4px 11px;font-size:11px;font-weight:700;cursor:pointer;">✎ ${e?'Editar':'Escribir'}</button>`:''}</div>
+    </div>
+    <div style="padding:13px 16px;font-size:13px;color:var(--text);line-height:1.65;">${cuerpo||'<span style="color:var(--text3);">'+(puedeEditar?'Aún no has escrito la estrategia de la semana. Da clic en “Escribir”.':'Esta semana no hay una estrategia publicada todavía.')+'</span>'}</div>
+  </div>`;
+}
+function estrategiaSemanaRefrescarTodo(){
+  if(document.getElementById('estratSemBox')) estrategiaSemanaRender('ventas','estratSemBox');
+  if(document.getElementById('estratSemBoxTele')) estrategiaSemanaRender('telemarketing','estratSemBoxTele');
+  if(document.getElementById('estratSemBoxDir')) estrategiaSemanaRender('ventas','estratSemBoxDir');
+}
+function estrategiaSemanaModal(area){
+  estrategiaSemanaCargar(area).then(e=>{
+    solModal(`<div style="font-size:16px;font-weight:800;margin-bottom:4px;">🎯 Estrategia de la semana</div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">La ven los vendedores y telemarketing en su panel. Escribe los objetivos de la semana.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px;">
+        ${solFld('Para quién',`<select id="esArea" style="${SOL_INPUT_STYLE}"><option value="ambos" ${(!e||e.area==='ambos')?'selected':''}>Ventas y Telemarketing</option><option value="ventas" ${e&&e.area==='ventas'?'selected':''}>Solo Ventas</option><option value="telemarketing" ${e&&e.area==='telemarketing'?'selected':''}>Solo Telemarketing</option></select>`)}
+        ${solFld('Semana (lunes)',`<input id="esFecha" type="date" value="${(e&&e.fecha_inicio)||lunesDeEstaSemana()}" style="${SOL_INPUT_STYLE}">`)}
+      </div>
+      ${solFld('Título (opcional)',`<input id="esTitulo" value="${solEsc((e&&e.titulo)||'')}" placeholder="Ej. Cierre de Black Friday" style="${SOL_INPUT_STYLE}">`)}
+      ${solFld('Objetivos / mensaje de la semana',`<textarea id="esContenido" rows="9" style="${SOL_INPUT_STYLE}" placeholder="Escribe aquí los objetivos de la semana…">${solEsc((e&&e.contenido)||'')}</textarea>`)}
+      <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">💡 Cada enter es un salto de línea. Si guardas con la misma fecha y área, se actualiza la de esa semana.</div>
+      <div style="display:flex;gap:8px;"><button onclick="estrategiaSemanaGuardar()" style="background:#6B3FA0;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer;">Guardar</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:9px 14px;cursor:pointer;">Cancelar</button></div>`);
+  });
+}
+async function estrategiaSemanaGuardar(){
+  const v=id=>document.getElementById(id)?.value;
+  const contenido=(v('esContenido')||'').trim();
+  if(!contenido) return alert('Escribe el contenido de la estrategia.');
+  const fila={area:v('esArea')||'ambos',titulo:(v('esTitulo')||'').trim()||null,contenido,fecha_inicio:v('esFecha')||null,updated_at:new Date().toISOString(),created_by:userProfile?.nombre||''};
+  let error;
+  if(fila.fecha_inicio){
+    const {data:ex}=await sb.from('estrategia_semana').select('id').eq('area',fila.area).eq('fecha_inicio',fila.fecha_inicio).limit(1);
+    if(ex&&ex[0]){ ({error}=await sb.from('estrategia_semana').update(fila).eq('id',ex[0].id)); }
+    else { ({error}=await sb.from('estrategia_semana').insert(fila)); }
+  } else { ({error}=await sb.from('estrategia_semana').insert(fila)); }
+  if(error) return alert('No se pudo guardar: '+error.message);
+  solCerrarModal();
+  try{uiToast('✓ Estrategia guardada');}catch(e){}
+  estrategiaSemanaRefrescarTodo();
+}
 async function renderVendorMiMes(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando datos...</div>';
@@ -9666,6 +9819,7 @@ async function renderVendorMiMes(){
   <div class="kpi-grid" id="mainKpis"></div>
   <div class="shead">KPIs secundarios y extras</div>
   <div class="sec-grid" id="secKpis"></div>
+  <div id="estratSemBox" style="margin-bottom:16px;"></div>
   <!-- MÉTRICAS MES ANTERIOR -->
   <div class="shead">Referencia: ${MESES_N_MIMES[mesAntNum]} ${anioAnt}</div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
@@ -9851,6 +10005,7 @@ async function renderVendorMiMes(){
     const cls=v>=m?'bg':v===0?'br':'bo';
     return `<div class="sc"><div class="sc-icon">${icons[k.kpi_key]||'📌'}</div><div class="sc-val" style="color:${c};">${k.tipo==='$'?fmt(v):v}</div><div class="sc-name">${k.kpi_nombre}</div><div class="sc-sub"><span class="badge ${cls}">${Math.round(Math.min(p,1)*100)}%</span></div></div>`;
   }).join('');
+  try{ estrategiaSemanaRender('ventas','estratSemBox'); }catch(e){}
   // Daily table
   const today=todayLocal();
   document.getElementById('dailyBody').innerHTML=registros.length?registros.map(r=>{
@@ -18859,6 +19014,7 @@ async function dirGenEditarMeta(mes){
 async function renderDirectorResumen(){
   await renderDirectorResumenBase();
   dirPintarValoraciones();
+  try{ estrategiaSemanaRender('ventas','estratSemBoxDir'); }catch(e){}
 }
 async function renderDirectorResumenBase(){
   const mc=document.getElementById('mainContent');
@@ -19067,6 +19223,7 @@ async function renderDirectorResumenBase(){
       return `<div class="gs-row"><span class="gs-rn">${b.n}</span><div class="gs-bo"><div class="gs-bf" style="width:${pp}%;background:${c};"></div></div><span class="gs-rp" style="color:${c};">${pp}%</span></div>`;
     }).join('')}</div>
   </div>
+  <div id="estratSemBoxDir" style="margin:0 0 18px;"></div>
   <div class="th4">${[
     {lbl:'Comisiones totales',val:fmt(totalComm),sub:totalBonos>0?`incluye ${fmt(totalBonos)} en bonos`:'Equipo este mes'},
     {lbl:'Servicios equipo',val:fmt(totalSvc),sub:`${Math.round(totalSvc/metaSvc*100)}% de meta`},
@@ -21565,6 +21722,8 @@ async function renderTele(){
     </div>
   </div>
 
+  <div id="estratSemBoxTele" style="margin-bottom:16px;"></div>
+
   <!-- ACTIVIDAD REAL -->
   <div class="shead">Actividad real — ${meses[currentMonth]}</div>
   <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:10px;">
@@ -21719,6 +21878,7 @@ async function renderTele(){
     </table>
     </div>
   </div>`;
+  try{ estrategiaSemanaRender('telemarketing','estratSemBoxTele'); }catch(e){}
 }
 
 async function renderTeleRegistro(fechaSel){
