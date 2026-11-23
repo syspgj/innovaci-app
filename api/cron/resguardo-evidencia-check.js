@@ -128,12 +128,18 @@ function plantillaAviso({ fechaTxt, prioritarias, faltan, detectadas, alCorrient
       <div style="font-size:12px;color:#555;margin:6px 0 4px;">${intro}</div>
       ${filas.map(render).join('')}
     </div>`;
-  const filaFalta = (f) => `<div style="padding:10px 0;border-bottom:1px solid #eee;">
+  // Línea por tarea de respaldo (cada carpeta): se ve de un vistazo cuál está al día y cuál atrasada.
+  const tareaLinea = (t) => {
+    const m = { ok: ['✅', '#1a7f4b', 'al día'], atrasada: ['⚠️', '#c77700', 'atrasada'], sin_revisar: ['🕗', '#888', 'sin revisar aún'], vacia: ['📭', '#c77700', 'carpeta vacía'], error: ['❌', '#b00000', 'no se pudo revisar'] };
+    const [ic, col, lbl] = m[t.estado] || m.sin_revisar;
+    return `<div style="font-size:12px;color:#444;margin:3px 0;">${ic} <b>${esc(t.nombre)}</b> <span style="color:${col};font-weight:600;">${lbl}</span>${t.fecha ? ` <span style="color:#999;">· último ${t.fecha}</span>` : ''}</div>`;
+  };
+  const filaFalta = (f) => `<div style="padding:12px 0;border-bottom:1px solid #eee;">
       <div style="font-size:13px;font-weight:700;color:#0b1f33;">${liga(f)} <span style="font-weight:400;color:#666;">· ${esc(f.poliza)}</span></div>
-      <div style="font-size:12.5px;margin-top:2px;"><b style="color:${f.prioritaria ? '#b00000' : '#c77700'};">${f.nunca ? 'Nunca se ha registrado evidencia' : (f.atraso > 0 ? f.atraso + ' día' + (f.atraso === 1 ? '' : 's') + ' de atraso' : 'Vence hoy')}</b> · cada ${f.periodicidad} día${f.periodicidad === 1 ? '' : 's'}${f.atraso > 0 ? ' · debió subirse el ' + f.vencimiento : ''}</div>
-      <div style="font-size:12px;color:#444;margin-top:2px;">${f.ultimaTxt}</div>
-      <div style="font-size:12px;color:#444;margin-top:2px;"><b>Qué hacer:</b> ${f.motivo}</div>
-      ${f.ticketTxt ? `<div style="font-size:12px;color:#0b6;margin-top:2px;">🎫 ${f.ticketTxt}</div>` : ''}
+      <div style="font-size:13px;margin-top:3px;"><b style="color:${f.prioritaria ? '#b00000' : '#c77700'};">${f.nunca ? 'Sin ningún respaldo registrado' : (f.atraso > 0 ? '⏱ ' + f.atraso + ' día' + (f.atraso === 1 ? '' : 's') + ' de atraso' : '⏱ Vence hoy')}</b> <span style="color:#888;">· resguardo cada ${f.periodicidad} día${f.periodicidad === 1 ? '' : 's'}</span></div>
+      ${f.tareas && f.tareas.length ? `<div style="margin-top:6px;padding-left:2px;">${f.tareas.map(tareaLinea).join('')}</div>` : ''}
+      ${f.motivo ? `<div style="font-size:12px;color:#555;margin-top:6px;background:#f6f8fa;border-radius:6px;padding:7px 10px;"><b>Qué hacer:</b> ${esc(f.motivo)}</div>` : ''}
+      ${f.ticketTxt ? `<div style="font-size:12px;color:#0b6;margin-top:4px;">🎫 ${esc(f.ticketTxt)}</div>` : ''}
     </div>`;
   const filaDet = (f) => `<div style="padding:8px 0;border-bottom:1px solid #eee;font-size:12.5px;"><b style="color:#0b1f33;">${liga(f)}</b> · ${esc(f.poliza)}<br><span style="color:#444;">${f.detalle}</span></div>`;
   const total = prioritarias.length + faltan.length;
@@ -267,7 +273,7 @@ export default async function handler(req, res) {
 
   try {
     const polizas = await sbGet(
-      `clientes_polizas?estatus=neq.CERRADA&select=id,cliente_nombre,fecha_inicio,resguardo_periodicidad_dias_override,servidor_cloud_id,numero_proyecto_crm,resguardo_dropbox_folder,dropbox_revision_at,dropbox_revision_error,dropbox_ultimo_archivo,dropbox_ultimo_archivo_fecha,polizas_catalogo!inner(nombre,categoria,resguardo_periodicidad_dias)&polizas_catalogo.categoria=eq.RESGUARDO`
+      `clientes_polizas?estatus=neq.CERRADA&select=id,cliente_nombre,fecha_inicio,resguardo_periodicidad_dias_override,resguardo_plazo_cliente_dias,servidor_cloud_id,numero_proyecto_crm,resguardo_dropbox_folder,dropbox_revision_at,dropbox_revision_error,dropbox_ultimo_archivo,dropbox_ultimo_archivo_fecha,polizas_catalogo!inner(nombre,categoria,resguardo_periodicidad_dias)&polizas_catalogo.categoria=eq.RESGUARDO`
     );
     if (!polizas.length) {
       return res.status(200).json({ ok: true, hoy, mensaje: 'Sin pólizas de resguardo activas.' });
@@ -294,6 +300,15 @@ export default async function handler(req, res) {
         ultimaEvidenciaInfo[e.cliente_poliza_id] = e;
       }
     });
+
+    // Jp, 2026-11-22: carpetas de resguardo por póliza = "tareas" de respaldo
+    // (cada carpeta de Drive). La de Dropbox va en la propia póliza. Se usan en
+    // el correo para mostrar qué tarea está al día y cuál atrasada.
+    let origenesPorPoliza = {};
+    try {
+      const origenes = await sbGet(`resguardo_origenes?cliente_poliza_id=in.(${polizaIds.join(',')})&activo=eq.true&select=cliente_poliza_id,etiqueta,proveedor,ultimo_archivo_fecha,revision_at,error`);
+      (origenes || []).forEach((o) => { (origenesPorPoliza[o.cliente_poliza_id] = origenesPorPoliza[o.cliente_poliza_id] || []).push(o); });
+    } catch (e) { origenesPorPoliza = {}; }
 
     const incidenciasAbiertas = await sbGet(
       `servicios_ejecutados?tipo_servicio=eq.INCIDENCIA_RESGUARDO&estatus=in.(PENDIENTE,ASIGNADO,EN_CURSO)&cliente_poliza_id=in.(${polizaIds.join(',')})&select=cliente_poliza_id`
@@ -327,6 +342,11 @@ export default async function handler(req, res) {
       const proximoVencimiento = calcularProximoVencimiento(p.fecha_inicio, periodicidadDias, ultimaEvidencia, hoy);
       const diasParaVencer = Math.floor((new Date(proximoVencimiento + 'T00:00:00') - new Date(hoy + 'T00:00:00')) / 86400000);
       const nombrePoliza = p.polizas_catalogo?.nombre || 'Resguardo';
+      // Jp 2026-11-17: dos plazos. Vigilancia interna = periodicidad; plazo del contrato con el cliente (opcional) = holgura.
+      // Mientras el atraso interno esté dentro del plazo del cliente: aviso suave, sin ticket y sin prioridad.
+      const holguraCliente = p.resguardo_plazo_cliente_dias ? Math.max(0, p.resguardo_plazo_cliente_dias - periodicidadDias) : 0;
+      const dentroPlazoCliente = diasParaVencer < 0 && diasParaVencer + holguraCliente >= 0;
+      const diasRestantesCliente = diasParaVencer + holguraCliente;
       const info = ultimaEvidenciaInfo[p.id];
       const origenTxt = info ? (info.origen === 'dropbox' ? 'detectada en Dropbox' : 'subida a mano') : '';
       const ultimaTxt = ultimaEvidencia
@@ -334,26 +354,28 @@ export default async function handler(req, res) {
         : 'Nunca se ha registrado evidencia de esta póliza.';
 
       if (!cubierto) {
-        // Motivo por el que no hay evidencia, según lo que encontró (o no) la revisión de Dropbox.
-        let motivo;
-        const carpeta = p.resguardo_dropbox_folder;
-        if (!carpeta) {
-          motivo = 'La póliza no tiene carpeta de Dropbox capturada, así que la app no puede buscar el respaldo. Captúrala (⚙ Configuración de resguardo) o sube la evidencia a mano.';
-        } else if (p.dropbox_revision_error) {
-          motivo = /not_found/i.test(p.dropbox_revision_error)
-            ? `La carpeta «${carpeta}» no se encontró en Dropbox (el nombre no coincide). Corrígela con el botón 📂 Buscar carpeta.`
-            : `No se pudo revisar la carpeta «${carpeta}» en Dropbox: ${String(p.dropbox_revision_error).slice(0, 140)}`;
-        } else if (!p.dropbox_revision_at) {
-          motivo = `La carpeta «${carpeta}» todavía no se ha revisado en Dropbox.`;
-        } else if (!p.dropbox_ultimo_archivo) {
-          motivo = `La carpeta «${carpeta}» existe en Dropbox pero está vacía: no hay respaldos.`;
-        } else {
-          const f = p.dropbox_ultimo_archivo_fecha ? String(p.dropbox_ultimo_archivo_fecha).slice(0, 10) : '';
-          motivo = `El último archivo en Dropbox es del ${f} y es anterior al periodo vigente (desde el ${periodoActual}).`;
-        }
+        // Tareas de respaldo de la póliza (Dropbox + cada carpeta de Drive) con su estado
+        // respecto al periodo vigente. Así el correo muestra cuál está al día y cuál atrasada.
+        const tareas = [];
+        if (p.resguardo_dropbox_folder) tareas.push({ nombre: 'Dropbox', fecha: p.dropbox_ultimo_archivo_fecha ? String(p.dropbox_ultimo_archivo_fecha).slice(0, 10) : null, revisado: !!p.dropbox_revision_at, error: p.dropbox_revision_error || null, tieneArchivo: !!p.dropbox_ultimo_archivo });
+        (origenesPorPoliza[p.id] || []).forEach((o) => tareas.push({ nombre: o.etiqueta || 'Drive', fecha: o.ultimo_archivo_fecha ? String(o.ultimo_archivo_fecha).slice(0, 10) : null, revisado: !!o.revision_at, error: o.error || null, tieneArchivo: !!o.ultimo_archivo_fecha }));
+        tareas.forEach((t) => {
+          if (t.error) t.estado = 'error';
+          else if (!t.revisado) t.estado = 'sin_revisar';
+          else if (!t.tieneArchivo) t.estado = 'vacia';
+          else if (t.fecha && t.fecha >= periodoActual) t.estado = 'ok';
+          else t.estado = 'atrasada';
+        });
+        // "Qué hacer" solo cuando hay algo que configurar/arreglar; si es puro atraso, las
+        // líneas por tarea ya lo dicen (no se repite el texto largo de antes).
+        let motivo = '';
+        if (!tareas.length) motivo = 'No tiene carpeta de Dropbox ni de Drive configurada. Captúrala en ⚙ Configuración de resguardo, o sube la evidencia a mano.';
+        else if (tareas.some((t) => t.estado === 'error')) { const e = tareas.find((t) => t.estado === 'error'); motivo = `La carpeta «${e.nombre}» no se pudo revisar: ${String(e.error).slice(0, 120)}`; }
+        else if (tareas.every((t) => t.estado === 'sin_revisar')) motivo = 'Las carpetas aún no se han revisado. Usa “🔍 Revisar respaldos” en Operaciones.';
+        else if (tareas.some((t) => t.estado === 'vacia')) motivo = 'Hay una carpeta sin archivos del periodo. Sube el respaldo, o súbelo a mano.';
 
         let ticketTxt = '';
-        if (diasParaVencer < 0 && !yaTieneIncidenciaAbierta.has(p.id)) {
+        if (diasParaVencer < 0 && !dentroPlazoCliente && !yaTieneIncidenciaAbierta.has(p.id)) {
           // Vencida y sin incidencia abierta todavía: crear el ticket.
           folioContador++;
           const folio = `TCK-${anio}-${String(folioContador).padStart(5, '0')}`;
@@ -374,6 +396,8 @@ export default async function handler(req, res) {
             const ok = await comentarEnProyectoCrm(p.numero_proyecto_crm, `⚠ ${descripcion} (ticket ${folio})`);
             if (ok) comentariosCrm++;
           }
+        } else if (dentroPlazoCliente) {
+          ticketTxt = `Atraso interno: aún estamos dentro del plazo del contrato con el cliente (${p.resguardo_plazo_cliente_dias} días; quedan ${diasRestantesCliente}). No se generó ticket todavía.`;
         } else if (diasParaVencer < 0) {
           ticketTxt = 'Ya tiene un ticket abierto en Soporte.';
         }
@@ -391,10 +415,10 @@ export default async function handler(req, res) {
           nunca,
           periodicidad: periodicidadDias,
           vencimiento: proximoVencimiento,
-          ultimaTxt,
+          tareas,
           motivo,
           ticketTxt,
-          prioritaria: atraso >= DIAS_PRIORITARIA || (nunca && atraso > 0),
+          prioritaria: !dentroPlazoCliente && (atraso >= DIAS_PRIORITARIA || (nunca && atraso > 0)),
         });
       } else if (diasParaVencer >= 0 && diasParaVencer <= 3) {
         filasAlCorriente.push({
