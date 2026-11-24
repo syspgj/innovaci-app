@@ -4152,7 +4152,7 @@ async function academiaAbrirNuevoAsistente(generacionId){
   }
   const [disponibles,{data:vendedoresActivos},clienteCarteraGenRes]=await Promise.all([
     academiaEmpresasDisponiblesSistema(sistemaId),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre'),
+    sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').eq('activo',true).order('nombre'),
     gen?.cliente_cartera_id
       ? sb.from('clientes_cartera').select('id,razon_social,num_cliente').eq('id',gen.cliente_cartera_id).single()
       : Promise.resolve({data:null}),
@@ -9174,7 +9174,7 @@ async function guardarFilaPipeTele(){
 }
 
 async function teleAbrirCanalizar(id){
-  const {data:vendedores}=await sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre');
+  const {data:vendedores}=await sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').eq('activo',true).order('nombre');
   const modal=document.createElement('div');
   modal.id='modalTeleCanalizar';
   modal.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:1100;display:flex;align-items:center;justify-content:center;padding:16px;';
@@ -13149,7 +13149,7 @@ async function renderCarteraVendedor(){
   const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas},{data:sistemasCartera},{data:proyectosActivos},{data:pipeActivo}]=await Promise.all([
     carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)'), // Jp, 2026-10-05: paginado — ver carteraFetchTodosClientes arriba.
     sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'), // Jp, 2026-10-05: el filtro "Todos los vendedores" traía TODOS los usuarios (Capacitación, Administración, asesores, mesa de control...) — ahora solo rol='vendedor'.
+    sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').order('nombre'), // Jp, 2026-10-05: el filtro "Todos los vendedores" traía TODOS los usuarios (Capacitación, Administración, asesores, mesa de control...) — ahora solo rol='vendedor'.
     sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden'),
     sb.from('clientes_cartera_sistemas').select('*'), // Jp, 2026-10-06: licencias Aspel/Siigo por cliente (SAE/COI/NOI/FACTURE/BANCO/CAJA/PROD/ADM/SIIGO_FISCAL/SIIGO_NUBE), llegan del sync con el CRM — ver ficha completa.
     // Jp, 2026-10-14: "qué póliza tiene" y el distintivo N1 Black/etc. ahora
@@ -13488,7 +13488,7 @@ async function renderProyectosModulo(scope){
     // consulta, por lo que se perdían proyectos activos. Ahora se cargan completos
     // los activos (≈810). Los "Históricos" (Concluidos) ya no viven en este módulo.
     sb.from('proyectos_crm').select('*,cliente_cartera:cliente_cartera_id(id,razon_social,num_cliente,vendedor_asignado)').eq('activo',true).order('fecha_actualizacion_crm',{ascending:false}),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'),
+    sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').order('nombre'),
   ]);
   window._proyectosCRM=proyectos||[];
   window._proyectosVendedores=vendedores||[];
@@ -14874,6 +14874,23 @@ async function abrirSolicitudTaller(clienteId){
     ${solFld('Correo',`<input id="tsMail" type="email" style="${SOL_INPUT_STYLE}">`)}
     ${solFld('Nota (opcional)',`<textarea id="tsNotas" rows="2" style="${SOL_INPUT_STYLE}"></textarea>`)}
     <div style="display:flex;gap:8px;margin-top:6px;"><button id="tsOk" onclick="enviarSolicitudTaller()" style="background:#6B3FA0;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer;">Enviar solicitud</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:9px 14px;cursor:pointer;">Cancelar</button></div>`);
+  // Jp, 2026-11-24: si la cuenta ya tiene serie de NOI Asistente, precárgala y valídala.
+  const _pre=await _serieClienteProducto(clienteId,'asist');
+  if(_pre){ const el=document.getElementById('tsSerie'); if(el){ el.value=_pre; tallerSolValidar(); } }
+}
+// Busca la serie que la cuenta ya tiene para un producto (NOI Asistente / Siigo
+// Fiscal), en suscripciones ligadas o en sus sistemas de cartera.
+async function _serieClienteProducto(clienteId,like){
+  try{
+    const {data:su}=await sb.from('suscripciones_cartera').select('numserie,fecha_proxima_renovacion')
+      .eq('cliente_id',clienteId).ilike('producto','%'+like+'%')
+      .order('fecha_proxima_renovacion',{ascending:false,nullsFirst:false}).limit(1);
+    if(su&&su[0]&&su[0].numserie) return su[0].numserie;
+    const {data:si}=await sb.from('clientes_cartera_sistemas').select('numserie,sistema')
+      .eq('cliente_cartera_id',clienteId).ilike('sistema','%'+like+'%').limit(8);
+    const hit=(si||[]).find(x=>x.numserie); if(hit) return hit.numserie;
+  }catch(e){}
+  return null;
 }
 async function tallerSolValidar(){
   const serie=document.getElementById('tsSerie')?.value?.trim();
@@ -14944,6 +14961,9 @@ async function abrirSolicitudTallerFiscal(clienteId){
     ${solFld('Correo',`<input id="tfMail" type="email" style="${SOL_INPUT_STYLE}">`)}
     ${solFld('Nota (opcional)',`<textarea id="tfNotas" rows="2" style="${SOL_INPUT_STYLE}"></textarea>`)}
     <div style="display:flex;gap:8px;margin-top:6px;"><button id="tfOk" onclick="enviarSolicitudTallerFiscal()" style="background:#1F7A4D;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer;">Enviar solicitud</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:9px 14px;cursor:pointer;">Cancelar</button></div>`);
+  // Jp, 2026-11-24: si la cuenta ya tiene serie de Siigo Fiscal, precárgala y valídala.
+  const _pre=await _serieClienteProducto(clienteId,'fiscal');
+  if(_pre){ const el=document.getElementById('tfSerie'); if(el){ el.value=_pre; tallerFiscalValidar(); } }
 }
 async function tallerFiscalValidar(){
   const serie=document.getElementById('tfSerie')?.value?.trim();
@@ -16145,7 +16165,7 @@ async function renderDirectorCartera(containerId){
   const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas},{data:polizasVig},{data:servHist},{data:generaciones},{data:proyectosActivos}]=await Promise.all([
     carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)'), // Jp, 2026-10-05: paginado con .range() — ver carteraFetchTodosClientes (el .limit(5000) del Lote 31 no bastó porque Supabase topa cada request de PostgREST a su "Max Rows" del proyecto, sin importar el .limit() del cliente).
     sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'), // Jp, 2026-10-05: el filtro "Todos los vendedores" traía TODOS los usuarios (Capacitación, Administración, asesores, mesa de control...) — ahora solo rol='vendedor'.
+    sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').order('nombre'), // Jp, 2026-10-05: el filtro "Todos los vendedores" traía TODOS los usuarios (Capacitación, Administración, asesores, mesa de control...) — ahora solo rol='vendedor'.
     sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden'),
     // Jp, 2026-10-07: datos para los filtros "Clientes de póliza / servicios eventuales / cursos / inactivos"
     // del dashboard de Cartera de cuentas — ver renderDirCarteraAuditoria.
@@ -16231,7 +16251,7 @@ async function renderDirectorSuscripcionesModulo(){
   const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas},{data:revisionManual}]=await Promise.all([
     carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)'),
     sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'),
+    sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').order('nombre'),
     sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden'),
     // Jp, 2026-10-21: cola persistente de "Verificar catálogo Aspel"/"Cargar
     // comisiones pagadas" — solo Dirección/Administración la necesita.
@@ -16261,6 +16281,7 @@ async function renderDirectorSuscripcionesModulo(){
       <button onclick="swSuscModulo('suscripciones')" id="suscModuloTab_suscripciones" class="cartera-subtab active">📋 Suscripciones</button>
       <button onclick="swSuscModulo('pendientes')" id="suscModuloTab_pendientes" class="cartera-subtab">🔗 Pendientes de vincular${totalPendientesVincular?` (${totalPendientesVincular})`:''}</button>
       ${puedeCargarExcel?`<button onclick="swSuscModulo('validventas')" id="suscModuloTab_validventas" class="cartera-subtab">🕓 Pendientes de validar (Ventas)${totalValidVentas?` <span style="background:#C0392B;color:#fff;border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;">${totalValidVentas}</span>`:''}</button>`:''}
+      ${puedeCargarExcel?`<button onclick="swSuscModulo('duplicados')" id="suscModuloTab_duplicados" class="cartera-subtab">🔁 Posibles duplicados${totalDups?` <span style="background:#C0392B;color:#fff;border-radius:10px;padding:0 6px;font-size:10px;font-weight:700;">${totalDups}</span>`:''}</button>`:''}
       ${puedeCargarExcel?`<button onclick="swSuscModulo('revision')" id="suscModuloTab_revision" class="cartera-subtab">📝 Revisión manual${totalRevisionManual?` (${totalRevisionManual})`:''}</button>`:''}
       ${puedeCargarExcel?`<button onclick="swSuscModulo('comision')" id="suscModuloTab_comision" class="cartera-subtab">💰 Comisión Aspel</button>`:''}
       ${puedeCargarExcel?`<button onclick="abrirCargaExcelSuscripciones()" style="background:var(--teal);color:#fff;border:none;border-radius:var(--radsm);padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">📎 Cargar Excel de renovaciones</button>`:''}
@@ -16364,7 +16385,7 @@ async function renderVendedorSuscripcionesModulo(){
   const [clientes,{data:suscripciones},{data:vendedores},{data:sistemas}]=await Promise.all([
     carteraFetchTodosClientes('*,cliente_padre:cliente_padre_id(id,razon_social,num_cliente)'),
     sb.from('suscripciones_cartera').select('*').order('fecha_proxima_renovacion'),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'),
+    sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').order('nombre'),
     sb.from('suscripciones_sistemas').select('*').eq('activo',true).order('orden')
   ]);
   window._cartClientes=clientes||[];
@@ -18847,7 +18868,7 @@ async function gestionarCampanaCartera(campanaId){
     // Jp, 2026-10-16: "activarle una campaña a Carolina para que llame a los
     // clientes que no tienen vendedor asignado" — hacía falta ver/filtrar por
     // vendedor asignado aquí (antes la lista no traía ese dato en absoluto).
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').order('nombre'),
+    sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').order('nombre'),
     sb.from('campana_cartera_preguntas').select('*').eq('campana_id',campanaId).order('orden',{ascending:true})
   ]);
   if(!camp){mc.innerHTML='<div style="padding:20px;color:var(--red);">Campaña no encontrada</div>';return;}
@@ -21078,7 +21099,7 @@ async function renderDirectorKpis(){
 async function renderDirectorAnual(){
   const mc=document.getElementById('mainContent');
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando año completo...</div>';
-  const {data:users}=await sb.from('usuarios').select('*').eq('activo',true).eq('rol','vendedor').order('nombre');
+  const {data:users}=await sb.from('usuarios').select('*').eq('activo',true).or('rol.eq.vendedor,tambien_vendedor.eq.true').order('nombre');
   const vendedores=users||[];
   if(!vendedores.length){mc.innerHTML='<div class="loading">No hay vendedores activos.</div>';return;}
 
@@ -22650,7 +22671,7 @@ async function renderTeleRegistro(fechaSel){
     sb.from('campanas').select('id,nombre').order('nombre'),
     sb.from('campanas_cartera').select('id,nombre').order('nombre'),
     sb.from('llamadas_crm_directas').select('*').eq('usuario_id',currentUser.id).eq('fecha',fecha).maybeSingle(),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor')
+    sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true')
   ]);
   const crm=crmExist||{};
   const opcionesCamp=[
@@ -23481,7 +23502,7 @@ async function renderProspectosVendedor(){
   const [prospectos,clientes,{data:vendedores}]=await Promise.all([
     prospFetchTodos('*','created_at',false),
     (window._cartClientes&&window._cartClientes.length)?Promise.resolve(window._cartClientes):carteraFetchTodosClientes('id,razon_social,telefono,telefono2,telefono_whatsapp,correo_principal,otro_correo,email'),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor')
+    sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true')
   ]);
   window._cartClientes=window._cartClientes&&window._cartClientes.length?window._cartClientes:clientes;
   window._vendedoresMap=Object.fromEntries((vendedores||[]).map(v=>[v.id,v.nombre]));
@@ -23724,7 +23745,7 @@ function llDupQuitar(){
 async function llamadaModal(prospectoId){
   window._llDup=null;window._llDupIgnorar=false;window._llDupRes=null;
   document.getElementById('modalLlamada')?.remove();
-  const {data:vends}=await sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre');
+  const {data:vends}=await sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').eq('activo',true).order('nombre');
   let p=null;
   if(prospectoId){ p=(window._prospectos||[]).find(x=>x.id===prospectoId); if(!p){const r=await sb.from('prospectos').select('*').eq('id',prospectoId).maybeSingle();p=r.data;} }
   const inp='width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:13px;font-family:\'Inter\',sans-serif;box-sizing:border-box;';
@@ -23872,7 +23893,7 @@ async function actualizarEstatus(id, estatus){
     if(p){p.estatus=estatus;p.fecha_contacto=hoy;}
     // If canalizado, ask for vendedor and offer VTiger
     if(estatus==='Canalizado a ventas'){
-      const {data:vendedores}=await sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre');
+      const {data:vendedores}=await sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').eq('activo',true).order('nombre');
       const lista=(vendedores||[]).map((v,i)=>`${i+1}. ${v.nombre}`).join('\n');
       const seleccion=prompt(`¡Prospecto canalizado! 🎯\n\n¿Qué vendedor lo toma? Escribe el número:\n${lista}`);
       const idx=parseInt(seleccion)-1;
@@ -24011,7 +24032,7 @@ async function abrirDetalle(id){
   const [evRes, llRes, vendRes, campRelRes, allUsersRes, sisRes]=await Promise.all([
     sb.from('prospecto_eventos').select('*').eq('prospecto_id',id).order('fecha_registro',{ascending:true}),
     sb.from('prospecto_llamadas').select('*').eq('prospecto_id',id).order('created_at',{ascending:false}),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre'),
+    sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').eq('activo',true).order('nombre'),
     sb.from('campana_prospectos').select('campana_id,fecha_agregado').eq('prospecto_id',id).order('fecha_agregado',{ascending:false}),
     sb.from('usuarios').select('id,nombre'),
     sb.from('prospecto_sistemas').select('*').eq('prospecto_id',id)
@@ -24892,7 +24913,7 @@ async function guardarProspecto(id){
   if(p){Object.assign(p,upd);}
   if(estatus) sincronizarProspectoCrm({prospecto_id:id,estatus});
   if(estatus==='Canalizado a ventas'){
-    const {data:vendedores}=await sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre');
+    const {data:vendedores}=await sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').eq('activo',true).order('nombre');
     const lista=(vendedores||[]).map((v,i)=>`${i+1}. ${v.nombre}`).join('\n');
     const seleccion=prompt(`¡Prospecto canalizado! 🎯\n\n¿Qué vendedor lo toma? Escribe el número:\n${lista}`);
     const idx=parseInt(seleccion)-1;
@@ -24928,7 +24949,7 @@ async function renderDirectorCRM(){
   const [prospectosRaw,{data:todosUsuarios},{data:vendedoresB2B},eventosRaw]=await Promise.all([
     prospFetchTodos('*','created_at',false),
     sb.from('usuarios').select('id,nombre'),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre'),
+    sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').eq('activo',true).order('nombre'),
     prospEventosFetchTodos() // Jp, 2026-10-16: para resolver "Último evento"/"Sistema de interés" (ver abajo).
   ]);
   // Jp, 2026-10-16: "Último evento" y "Sistema de interés" en esta tabla deben
@@ -26691,7 +26712,7 @@ async function renderDirectorProyeccion(){
   const mc=document.getElementById('mainContent');
   mc.classList.add('full-width'); // Jp, 2026-10-30 — la tabla del director se cortaba a 1100px (columnas Objeción/Siguiente paso fuera de pantalla).
   mc.innerHTML='<div class="loading"><div class="spinner"></div> Cargando proyección...</div>';
-  const {data:vendedores}=await sb.from('usuarios').select('id,nombre,email').eq('rol','vendedor').eq('activo',true).order('nombre');
+  const {data:vendedores}=await sb.from('usuarios').select('id,nombre,email').or('rol.eq.vendedor,tambien_vendedor.eq.true').eq('activo',true).order('nombre');
   const vends=vendedores||[];
   const {data:rows}=await sb.from('pipeline_vendedor')
     .select('*, oportunidades_crm(crm_folio,crm_potentialid,fecha_creacion_crm)')
@@ -28473,7 +28494,7 @@ async function abrirDetallePoliza(id){
     sb.from('clientes_polizas').select('*, polizas_catalogo(nombre,categoria,modalidad,horas_incluidas,prioridad_codigo,prioridad_nombre,resp_horas_min,resp_horas_max,horario_atencion,resguardos_incluidos,beneficios,resguardo_periodicidad_dias), clientes_cartera(id,razon_social,vendedor_asignado,telefono,num_cliente,correo_principal,telefono_whatsapp)').eq('id',id).single(),
     sb.from('servicios_ejecutados').select('id,folio_ticket,fecha_asignada,asesor_nombre,estatus,duracion_facturada_min,descripcion_solicitud,created_at').eq('cliente_poliza_id',id).order('created_at',{ascending:false}).limit(50),
     sb.from('servicios_ejecutados').select('duracion_facturada_min').eq('cliente_poliza_id',id),
-    sb.from('usuarios').select('id,nombre').eq('rol','vendedor').eq('activo',true).order('nombre')
+    sb.from('usuarios').select('id,nombre').or('rol.eq.vendedor,tambien_vendedor.eq.true').eq('activo',true).order('nombre')
   ]);
   if(error||!c){alert('No se pudo cargar el detalle: '+(error?.message||'póliza no encontrada'));return;}
   const est=opsEstadoPoliza(c);
@@ -41410,7 +41431,7 @@ function toggleAjusteValorLabel(){
 async function cargarAjustesUI(){
   const vendedoresSel=document.getElementById('ajVendedor');
   if(!vendedoresSel) return;
-  const {data:users}=await sb.from('usuarios').select('*').eq('activo',true).eq('rol','vendedor').order('nombre');
+  const {data:users}=await sb.from('usuarios').select('*').eq('activo',true).or('rol.eq.vendedor,tambien_vendedor.eq.true').order('nombre');
   vendedoresSel.innerHTML=(users||[]).map(u=>`<option value="${u.id}">${u.nombre}</option>`).join('');
   const {data:ajustes}=await sb.from('ajustes_comision').select('*')
     .eq('anio',currentYear).eq('mes',currentMonth);
