@@ -2019,11 +2019,13 @@ async function renderAcademiaDashboard(){
   }
 
   const nuevosAsistHtml=await academiaNuevosAsistentesHtml();
+  const tallerSolHtml=await acadTallerSolBannerHtml();
   mc.innerHTML=`
   <div style="margin-bottom:16px;">
     <div style="font-size:18px;font-weight:600;color:var(--text);">Resumen de Academia</div>
     <div style="font-size:12px;color:var(--text3);">Cursos activos y próximos vencimientos de prácticas.</div>
   </div>
+  ${tallerSolHtml}
   ${nuevosAsistHtml}
   <div style="margin-bottom:20px;">
     <div style="font-size:13px;font-weight:700;color:var(--navy);margin-bottom:8px;">📋 Actividad operativa pendiente (${actividadFilas.length})</div>
@@ -4014,6 +4016,34 @@ async function acadBeneficioNoiValidar(){
   }
   return data;
 }
+// Núcleo reutilizable de la inscripción por beneficio NOI (lo usan el botón de
+// Academia y la resolución de solicitudes de taller de ventas). Devuelve
+// {ok, inscripcionId, folio, yaExistia, error}. Dispara Odoo si hay canal ligado.
+async function acadBeneficioNoiInscribir({generacionId,nombre,mail,tel,serie,clienteCarteraId,serieFuente,serieCliente}){
+  try{
+    const {data:pid,error:ep}=await sb.rpc('academia_find_or_create_participante',{p_nombre:nombre,p_mail:mail||null,p_telefono:tel||null,p_cliente_id:clienteCarteraId||null});
+    if(ep||!pid) return {ok:false,error:'No se pudo crear el participante: '+(ep?.message||'sin id')};
+    const {data:ya}=await sb.from('academia_inscripciones').select('id,folio').eq('participante_id',pid).eq('generacion_id',generacionId).maybeSingle();
+    if(ya) return {ok:true,inscripcionId:ya.id,folio:ya.folio,yaExistia:true};
+    const {data:gen,error:eg}=await sb.from('academia_generaciones').select('id,clave,curso:curso_id(nombre,sistema:sistema_id(clave,codigo_clave))').eq('id',generacionId).single();
+    if(eg||!gen) return {ok:false,error:'No se pudo leer la generación: '+(eg?.message||'')};
+    const sis=(gen.curso?.sistema?.codigo_clave||gen.curso?.sistema?.clave||'').toUpperCase();
+    const auto=!!(gen.clave&&sis&&gen.clave.toUpperCase().startsWith(sis+'-'));
+    const ver=((gen.curso?.nombre||'').match(new RegExp(sis+'\\s*(\\d{1,2})','i'))||[])[1]||'';
+    const {data:folio,error:ef}=await sb.rpc('academia_generar_folio',{p_sistema:auto?'':(sis+ver),p_generacion:gen.clave,p_acceso:academiaAccesoLetra('esencial')});
+    if(ef) return {ok:false,error:'No se pudo generar el folio: '+ef.message};
+    const obs='Acceso por beneficio NOI Asistente · serie '+String(serie||'').toUpperCase()+(serieFuente?' · '+(serieFuente==='cartera'?'sistema en cartera':'suscripción'):'')+(serieCliente?' · titular: '+serieCliente:'');
+    const fila={participante_id:pid,generacion_id:generacionId,nivel_acceso:'esencial',tipo:'entero',folio,origen:'beneficio_noi',observaciones:obs};
+    let {data:insNueva,error:ei}=await sb.from('academia_inscripciones').insert(fila).select('id').single();
+    if(ei&&/origen/.test(ei.message||'')){ delete fila.origen; ({data:insNueva,error:ei}=await sb.from('academia_inscripciones').insert(fila).select('id').single()); }
+    if(ei) return {ok:false,error:'No se pudo dar el acceso: '+ei.message};
+    try{
+      const {data:sess}=await sb.auth.getSession();
+      fetch('/api/odoo-inscribir',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({inscripcion_ids:[insNueva.id]})}).catch(()=>{});
+    }catch(e){}
+    return {ok:true,inscripcionId:insNueva.id,folio,yaExistia:false};
+  }catch(e){ return {ok:false,error:(e.message||String(e))}; }
+}
 async function acadBeneficioNoiGuardar(){
   const generacionId=window._benNoiGen;
   const serie=document.getElementById('bnSerie')?.value?.trim();
@@ -4026,31 +4056,11 @@ async function acadBeneficioNoiGuardar(){
   if(!val||!val.ok) return; // el cuadro ya muestra el motivo
   if(btn){btn.disabled=true;btn.textContent='Dando acceso…';}
   const reactivar=()=>{if(btn){btn.disabled=false;btn.textContent='Dar acceso';}};
-  try{
-    const {data:pid,error:ep}=await sb.rpc('academia_find_or_create_participante',{p_nombre:nombre,p_mail:mail,p_telefono:tel,p_cliente_id:val.cliente_cartera_id||null});
-    if(ep||!pid){ alert('No se pudo crear el participante: '+(ep?.message||'sin id')); return reactivar(); }
-    const {data:ya}=await sb.from('academia_inscripciones').select('folio').eq('participante_id',pid).eq('generacion_id',generacionId).maybeSingle();
-    if(ya){ alert('Este asistente ya tiene acceso a esta generación (folio '+ya.folio+').'); return reactivar(); }
-    const {data:gen,error:eg}=await sb.from('academia_generaciones').select('id,clave,curso:curso_id(nombre,sistema:sistema_id(clave,codigo_clave))').eq('id',generacionId).single();
-    if(eg||!gen){ alert('No se pudo leer la generación: '+(eg?.message||'')); return reactivar(); }
-    const sis=(gen.curso?.sistema?.codigo_clave||gen.curso?.sistema?.clave||'').toUpperCase();
-    const auto=!!(gen.clave&&sis&&gen.clave.toUpperCase().startsWith(sis+'-'));
-    const ver=((gen.curso?.nombre||'').match(new RegExp(sis+'\\s*(\\d{1,2})','i'))||[])[1]||'';
-    const {data:folio,error:ef}=await sb.rpc('academia_generar_folio',{p_sistema:auto?'':(sis+ver),p_generacion:gen.clave,p_acceso:academiaAccesoLetra('esencial')});
-    if(ef){ alert('No se pudo generar el folio: '+ef.message); return reactivar(); }
-    const obs='Acceso por beneficio NOI Asistente · serie '+serie.toUpperCase()+' · '+(val.fuente==='cartera'?'sistema en cartera':'suscripción')+' · titular: '+val.cliente_nombre;
-    const fila={participante_id:pid,generacion_id:generacionId,nivel_acceso:'esencial',tipo:'entero',folio,origen:'beneficio_noi',observaciones:obs};
-    let {data:insNueva,error:ei}=await sb.from('academia_inscripciones').insert(fila).select('id').single();
-    if(ei&&/origen/.test(ei.message||'')){ delete fila.origen; ({data:insNueva,error:ei}=await sb.from('academia_inscripciones').insert(fila).select('id').single()); }
-    if(ei){ alert('No se pudo dar el acceso: '+ei.message); return reactivar(); }
-    solCerrarModal();
-    try{uiToast('✅ Acceso dado por beneficio · folio '+folio);}catch(e){}
-    try{
-      const {data:sess}=await sb.auth.getSession();
-      fetch('/api/odoo-inscribir',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({inscripcion_ids:[insNueva.id]})}).catch(()=>{});
-    }catch(e){}
-    academiaVerGeneracion(generacionId);
-  }catch(e){ alert('Error: '+(e.message||e)); reactivar(); }
+  const r=await acadBeneficioNoiInscribir({generacionId,nombre,mail,tel,serie,clienteCarteraId:val.cliente_cartera_id,serieFuente:val.fuente,serieCliente:val.cliente_nombre});
+  if(!r.ok){ alert(r.error||'No se pudo dar el acceso.'); return reactivar(); }
+  solCerrarModal();
+  try{uiToast(r.yaExistia?('ℹ Ya tenía acceso · folio '+r.folio):('✅ Acceso dado por beneficio · folio '+r.folio));}catch(e){}
+  academiaVerGeneracion(generacionId);
 }
 
 // ── AGREGAR ASISTENTE ────────────────────────────────────────────────────────
@@ -14368,6 +14378,13 @@ async function abrirFichaClienteModal(clienteId){
         `<div id="fcCirculoBox" style="font-size:12px;color:var(--text3);">Cargando socios de Círculo Innovaci...</div>`,
         'fcSeccionCirculo'
       )}
+      ${seccion('🎓 Taller NOI Asistente',
+        // Jp, 2026-11-24: desde aquí el vendedor solicita registrar a un asistente
+        // al Taller de NOI Asistente (acceso por beneficio). Se valida la serie y
+        // la solicitud le llega a Capacitación para que confirme y dé el acceso.
+        `<div id="fcTallerBox" style="font-size:12px;color:var(--text3);">Cargando…</div>`,
+        'fcSeccionTallerNoi'
+      )}
       ${seccion('Actividades de seguimiento',
         // Jp, 2026-10-13: "cómo en cartera de cuentas, cuando los vendedores
         // le dan seguimiento a su cartera de cuentas, cómo registran
@@ -14399,6 +14416,7 @@ async function abrirFichaClienteModal(clienteId){
   fcCargarActividades(clienteId,cl.num_cliente);
   fcCargarEventosMasterclass(clienteId);
   fcCargarCirculoInnovaci(clienteId);
+  fcCargarTallerNoi(clienteId);
 }
 
 // Jp, 2026-10-30 — visibilidad de Círculo Innovaci desde la ficha de la
@@ -14665,6 +14683,119 @@ async function fcCargarCirculoInnovaci(clienteId){
       </div>
       <span style="font-size:10px;font-weight:700;color:${CIRCULO_ESTADO_COLOR[s.estado]||'var(--text3)'};text-transform:uppercase;">${s.estado||'—'}</span>
     </div>`).join('')}</div>`;
+}
+
+// ── TALLER NOI ASISTENTE — solicitud del vendedor desde la ficha (Jp, 2026-11-24) ──
+const TALLER_SOL_ESTADO={pendiente_capacitacion:['📨 Con Capacitación','#1A7FA0'],dada_de_alta:['✅ Con acceso','#27AE60'],rechazada:['❌ Rechazada','#C0392B']};
+async function fcCargarTallerNoi(clienteId){
+  const box=document.getElementById('fcTallerBox'); if(!box) return;
+  const {data:sols}=await sb.from('taller_solicitudes').select('*').eq('cliente_cartera_id',clienteId).order('created_at',{ascending:false}).limit(10);
+  const enc=`<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
+    <span style="font-size:11px;color:var(--text3);">Acceso al taller por beneficio (cliente con NOI Asistente vigente).</span>
+    <button onclick="abrirSolicitudTaller('${clienteId}')" style="padding:6px 14px;background:#6B3FA0;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">🎓 Solicitar registro al taller</button></div>`;
+  const lista=(sols||[]).map(x=>{const e=TALLER_SOL_ESTADO[x.estado]||[x.estado,'#666'];return `<div style="padding:7px 10px;margin-bottom:5px;border:1px dashed ${e[1]};border-radius:8px;font-size:11.5px;"><b>${solEsc(x.nombre)}</b> · ${solEsc(x.taller_nombre||'')}${x.numserie?' · serie '+solEsc(x.numserie):''}<br><span style="color:${e[1]};font-weight:700;">${e[0]}</span>${x.estado==='rechazada'&&x.motivo_rechazo?' — '+solEsc(x.motivo_rechazo):''}</div>`;}).join('')||'<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin solicitudes de taller todavía.</div>';
+  box.innerHTML=enc+lista;
+}
+async function abrirSolicitudTaller(clienteId){
+  window._tallerSolCliente=clienteId; window._tallerSolVal=null;
+  const {data:gens}=await sb.from('academia_generaciones').select('id,clave,fecha_inicio,curso:curso_id(nombre)').ilike('clave','NOI-ASIST%').order('fecha_inicio');
+  const cl=(window._cartClientes||[]).find(c=>c.id===clienteId);
+  const opciones=(gens||[]).map(g=>`<option value="${g.id}" data-nombre="${solEsc((g.curso?.nombre||g.clave))}">${solEsc(g.curso?.nombre||g.clave)}${g.fecha_inicio?' · '+fmtFecha(g.fecha_inicio):''}</option>`).join('');
+  solModal(`<div style="font-size:16px;font-weight:800;margin-bottom:2px;">🎓 Solicitar registro al Taller NOI Asistente</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">${solEsc(cl?cl.razon_social:'Cliente')}. Captura al asistente y la serie de NOI Asistente; se valida y la solicitud le llega a Capacitación para darle el acceso.</div>
+    ${!opciones?'<div style="color:var(--red);font-size:12px;margin-bottom:10px;">No hay generaciones de taller NOI Asistente configuradas todavía.</div>':''}
+    ${solFld('Taller',`<select id="tsGen" style="${SOL_INPUT_STYLE}">${opciones}</select>`)}
+    ${solFld('Número de serie de NOI Asistente',`<div style="display:flex;gap:8px;"><input id="tsSerie" style="${SOL_INPUT_STYLE}" placeholder="Ej. JMLOGISTIC" oninput="window._tallerSolVal=null;var b=document.getElementById('tsResult');if(b)b.innerHTML='';"><button onclick="tallerSolValidar()" style="background:#0D2240;color:#fff;border:none;border-radius:6px;padding:0 16px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">Validar</button></div>`)}
+    <div id="tsResult" style="margin:-4px 0 10px;"></div>
+    <div style="height:1px;background:var(--border);margin:6px 0 12px;"></div>
+    <div style="font-size:12px;color:var(--text2);font-weight:700;margin-bottom:8px;">Datos del asistente</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px;">
+      ${solFld('Nombre completo',`<input id="tsNombre" style="${SOL_INPUT_STYLE}">`)}
+      ${solFld('Teléfono',`<input id="tsTel" style="${SOL_INPUT_STYLE}">`)}
+    </div>
+    ${solFld('Correo',`<input id="tsMail" type="email" style="${SOL_INPUT_STYLE}">`)}
+    ${solFld('Nota (opcional)',`<textarea id="tsNotas" rows="2" style="${SOL_INPUT_STYLE}"></textarea>`)}
+    <div style="display:flex;gap:8px;margin-top:6px;"><button id="tsOk" onclick="enviarSolicitudTaller()" style="background:#6B3FA0;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer;">Enviar solicitud</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:9px 14px;cursor:pointer;">Cancelar</button></div>`);
+}
+async function tallerSolValidar(){
+  const serie=document.getElementById('tsSerie')?.value?.trim();
+  const box=document.getElementById('tsResult');
+  if(!serie){ if(box)box.innerHTML='<span style="color:var(--red);font-size:12px;">Captura la serie.</span>'; return null; }
+  if(box)box.innerHTML='<span style="color:var(--text3);font-size:12px;">Validando…</span>';
+  const {data,error}=await sb.rpc('academia_validar_serie_noi',{p_serie:serie});
+  if(error){ if(box)box.innerHTML='<span style="color:var(--red);font-size:12px;">Error: '+solEsc(error.message)+'</span>'; return null; }
+  window._tallerSolVal=data;
+  if(box){
+    if(data.ok) box.innerHTML=`<div style="background:var(--green-bg);border:1px solid rgba(39,174,96,.3);border-radius:8px;padding:9px 12px;font-size:12px;color:#1e7e34;">✅ Serie vigente · <b>${solEsc(data.cliente_nombre)}</b> · ${data.fuente==='cartera'?'Sistema en cartera':'Suscripción'}</div>`;
+    else box.innerHTML=`<div style="background:#fdecea;border:1px solid rgba(231,76,60,.3);border-radius:8px;padding:9px 12px;font-size:12px;color:#c0392b;">⚠️ ${solEsc(data.error||'No procede el acceso por beneficio.')}</div>`;
+  }
+  return data;
+}
+async function enviarSolicitudTaller(){
+  const clienteId=window._tallerSolCliente;
+  const gsel=document.getElementById('tsGen');
+  const generacionId=gsel?.value;
+  const tallerNombre=gsel&&gsel.options[gsel.selectedIndex]?gsel.options[gsel.selectedIndex].getAttribute('data-nombre'):'';
+  const serie=document.getElementById('tsSerie')?.value?.trim();
+  const nombre=document.getElementById('tsNombre')?.value?.trim();
+  const mail=document.getElementById('tsMail')?.value?.trim()||null;
+  const tel=document.getElementById('tsTel')?.value?.trim()||null;
+  const notas=document.getElementById('tsNotas')?.value?.trim()||null;
+  const btn=document.getElementById('tsOk');
+  if(!generacionId) return alert('Elige el taller.');
+  if(!nombre) return alert('Captura el nombre del asistente.');
+  const val=await tallerSolValidar();
+  if(!val||!val.ok) return;
+  if(btn){btn.disabled=true;btn.textContent='Enviando…';}
+  const fila={cliente_cartera_id:clienteId,generacion_id:generacionId,taller_nombre:tallerNombre,nombre,email:mail,telefono:tel,numserie:(serie||'').toUpperCase(),serie_fuente:val.fuente,serie_cliente_nombre:val.cliente_nombre,notas,estado:'pendiente_capacitacion',solicitado_por:currentUser?.id||null,solicitado_por_nombre:userProfile?.nombre||null};
+  const {error}=await sb.from('taller_solicitudes').insert(fila);
+  if(error){ if(btn){btn.disabled=false;btn.textContent='Enviar solicitud';} return alert('No se pudo enviar: '+error.message); }
+  solCerrarModal();
+  try{uiToast('✅ Solicitud enviada a Capacitación');}catch(e){}
+  try{ fcCargarTallerNoi(clienteId); }catch(e){}
+}
+// Capacitación: bandeja de solicitudes de taller por atender (Jp, 2026-11-24).
+async function acadTallerSolBannerHtml(){
+  try{
+    const {data}=await sb.from('taller_solicitudes').select('id').eq('estado','pendiente_capacitacion').limit(50);
+    const n=(data||[]).length; if(!n) return '';
+    return `<div onclick="abrirSolicitudesTaller()" style="cursor:pointer;background:rgba(107,63,160,.08);border:1px solid rgba(107,63,160,.35);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
+      <div style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;">🎓</span><div><div style="font-size:13px;font-weight:700;color:#4b2b78;">${n} solicitud${n===1?'':'es'} de Taller NOI Asistente por atender</div><div style="font-size:11px;color:var(--text2);">Ventas pidió registrar asistentes por beneficio — valida y dales acceso.</div></div></div>
+      <span style="font-size:18px;color:#6B3FA0;">→</span></div>`;
+  }catch(e){ return ''; }
+}
+async function abrirSolicitudesTaller(){
+  const {data}=await sb.from('taller_solicitudes').select('*').eq('estado','pendiente_capacitacion').order('created_at');
+  const l=data||[];
+  const html=`<div style="font-size:12px;color:var(--text3);margin-bottom:10px;">Solicitudes de ventas para registrar asistentes al Taller NOI Asistente (acceso por beneficio). Al dar acceso, se vuelve a validar la serie y se inscribe al alumno en su taller.</div>
+  <div style="max-height:60vh;overflow-y:auto;">${l.length?l.map(s=>`<div id="tsFila_${s.id}" style="padding:10px 0;border-bottom:1px solid var(--border);">
+    <div style="font-size:12.5px;font-weight:700;color:var(--navy);">${solEsc(s.nombre)} <span style="font-weight:400;color:var(--text3);">${solEsc(s.email||'')} ${solEsc(s.telefono||'')}</span></div>
+    <div style="font-size:11.5px;margin:3px 0;">${solEsc(s.taller_nombre||'')} · serie <b>${solEsc(s.numserie||'')}</b> · titular: ${solEsc(s.serie_cliente_nombre||'')}</div>
+    <div style="font-size:11px;color:var(--text3);">Solicitó: ${solEsc(s.solicitado_por_nombre||'—')} · ${fmtFecha((s.created_at||'').slice(0,10))}${s.notas?'<br>Nota: '+solEsc(s.notas):''}</div>
+    <div style="margin-top:6px;display:flex;gap:8px;"><button onclick="tallerSolResolver('${s.id}',true)" style="padding:6px 14px;background:var(--teal);color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">✓ Validar y dar acceso</button>
+    <button onclick="tallerSolResolver('${s.id}',false)" style="padding:6px 14px;background:#fff;color:var(--red);border:1px solid var(--red);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">Rechazar</button></div>
+    <div id="tsMsg_${s.id}" style="font-size:11px;margin-top:4px;"></div></div>`).join(''):'<div style="padding:20px;text-align:center;color:var(--text3);">Nada por atender.</div>'}</div>`;
+  mkModal('modalTallerSol','🎓 Solicitudes de Taller NOI Asistente',html,null,'Cerrar',true);
+}
+async function tallerSolResolver(id,ok){
+  const m=document.getElementById('tsMsg_'+id), fila=document.getElementById('tsFila_'+id);
+  const {data:s}=await sb.from('taller_solicitudes').select('*').eq('id',id).maybeSingle();
+  if(!s){ if(m)m.innerHTML='<span style="color:var(--red);">No se encontró la solicitud.</span>'; return; }
+  if(!ok){
+    const motivo=prompt('Motivo del rechazo (se le muestra al vendedor):'); if(motivo===null) return;
+    const {error}=await sb.from('taller_solicitudes').update({estado:'rechazada',motivo_rechazo:motivo||'Sin motivo',resuelto_por_nombre:userProfile?.nombre||null,updated_at:new Date().toISOString()}).eq('id',id).eq('estado','pendiente_capacitacion');
+    if(error){ if(m)m.innerHTML='<span style="color:var(--red);">'+solEsc(error.message)+'</span>'; return; }
+    if(fila) fila.remove(); return;
+  }
+  fila?.querySelectorAll('button').forEach(b=>b.disabled=true);
+  if(m)m.innerHTML='<span style="color:var(--text3);">Validando serie y dando acceso…</span>';
+  const {data:val}=await sb.rpc('academia_validar_serie_noi',{p_serie:s.numserie||''});
+  if(!val||!val.ok){ if(m)m.innerHTML='<span style="color:var(--red);">La serie ya no está vigente: '+solEsc(val?.error||'no válida')+'. Puedes rechazarla.</span>'; fila?.querySelectorAll('button').forEach(b=>b.disabled=false); return; }
+  const r=await acadBeneficioNoiInscribir({generacionId:s.generacion_id,nombre:s.nombre,mail:s.email,tel:s.telefono,serie:s.numserie,clienteCarteraId:val.cliente_cartera_id||s.cliente_cartera_id,serieFuente:val.fuente,serieCliente:val.cliente_nombre});
+  if(!r.ok){ if(m)m.innerHTML='<span style="color:var(--red);">'+solEsc(r.error||'No se pudo dar el acceso')+'</span>'; fila?.querySelectorAll('button').forEach(b=>b.disabled=false); return; }
+  await sb.from('taller_solicitudes').update({estado:'dada_de_alta',inscripcion_id:r.inscripcionId,resuelto_por_nombre:userProfile?.nombre||null,updated_at:new Date().toISOString()}).eq('id',id);
+  if(m)m.innerHTML='<span style="color:#27AE60;font-weight:700;">✅ '+(r.yaExistia?'Ya tenía acceso':'Acceso dado')+' · folio '+solEsc(r.folio||'')+'</span>';
+  setTimeout(()=>{ fila?.remove(); },1400);
 }
 
 // Jp, 2026-10-21: "debería... que en cuenta se registre que asistió a la
@@ -38551,6 +38682,16 @@ async function solFacturarGuardar(id){
 // se recuerda por usuario y navegador (localStorage, solo conveniencia).
 // ════════════════════════════════════════════════════════════════════════════
 const NOVEDADES=[
+  {
+    id:'acceso-alumno-odoo-2026-11-23',
+    titulo:'Nuevo: enviar acceso al alumno (crear su contraseña) sin que se registre solo',
+    roles:['academia','director'],
+    texto:{
+      academia:'Si un alumno dice que "nunca creó su cuenta" o no puede entrar a su curso: en su expediente ahora hay un botón 🔑 Enviar acceso, que le manda por nuestro correo una liga para que cree su contraseña y entre (sin registrarse solo, sin duplicados). La guía con imágenes y la solución a los problemas comunes está en el glosario.',
+      director:'Capacitación ya puede mandar el acceso del alumno a Odoo con el botón 🔑 Enviar acceso (genera la liga de contraseña ligada a su contacto y la envía por Resend, no por el correo de Odoo). La guía para el equipo, con imágenes y troubleshooting, ya está en el glosario.',
+    },
+    doc:'04455482-5dbe-45b0-8c2e-ce2a7717584a',
+  },
   {
     id:'tableros-kanban-2026-11-20',
     titulo:'Nuevo: Tablero para mover tus ventas y prospectos por etapas',
