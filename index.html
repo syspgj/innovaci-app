@@ -14386,6 +14386,12 @@ async function abrirFichaClienteModal(clienteId){
         `<div id="fcTallerBox" style="font-size:12px;color:var(--text3);">Cargando…</div>`,
         'fcSeccionTallerNoi'
       )}
+      ${seccion('🧾 Taller Siigo Fiscal',
+        // Jp, 2026-11-24: igual que el de NOI Asistente pero para clientes con
+        // Siigo Fiscal vigente. Generación SFISCAL-0247-2026 (edición 24/7).
+        `<div id="fcTallerFiscalBox" style="font-size:12px;color:var(--text3);">Cargando…</div>`,
+        'fcSeccionTallerFiscal'
+      )}
       ${seccion('🔑 Validación de serie (Aspel/Siigo)',
         // Jp, 2026-11-24: Ventas captura la serie nueva y pide validación a
         // Dirección desde aquí (reemplaza el aviso por Telegram). Dirección la
@@ -14431,6 +14437,7 @@ async function abrirFichaClienteModal(clienteId){
   fcCargarEventosMasterclass(clienteId);
   fcCargarCirculoInnovaci(clienteId);
   fcCargarTallerNoi(clienteId);
+  fcCargarTallerFiscal(clienteId);
   fcCargarValidSerie(clienteId);
 }
 
@@ -14763,7 +14770,8 @@ async function fcCargarCirculoInnovaci(clienteId){
 const TALLER_SOL_ESTADO={pendiente_capacitacion:['📨 Con Capacitación','#1A7FA0'],dada_de_alta:['✅ Con acceso','#27AE60'],rechazada:['❌ Rechazada','#C0392B']};
 async function fcCargarTallerNoi(clienteId){
   const box=document.getElementById('fcTallerBox'); if(!box) return;
-  const {data:sols}=await sb.from('taller_solicitudes').select('*').eq('cliente_cartera_id',clienteId).order('created_at',{ascending:false}).limit(10);
+  const {data:solsAll}=await sb.from('taller_solicitudes').select('*').eq('cliente_cartera_id',clienteId).order('created_at',{ascending:false}).limit(20);
+  const sols=(solsAll||[]).filter(x=>!/fiscal/i.test(x.taller_nombre||'')).slice(0,10);
   const enc=`<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
     <span style="font-size:11px;color:var(--text3);">Acceso al taller por beneficio (cliente con NOI Asistente vigente).</span>
     <button onclick="abrirSolicitudTaller('${clienteId}')" style="padding:6px 14px;background:#6B3FA0;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">🎓 Solicitar registro al taller</button></div>`;
@@ -14871,6 +14879,76 @@ async function enviarSolicitudTaller(){
   try{uiToast('✅ Solicitud enviada a Capacitación');}catch(e){}
   try{ fcCargarTallerNoi(clienteId); }catch(e){}
 }
+
+// ── Jp, 2026-11-24: Taller Siigo Fiscal (igual que NOI Asistente) ────────────
+async function fcCargarTallerFiscal(clienteId){
+  const box=document.getElementById('fcTallerFiscalBox'); if(!box) return;
+  const {data:solsAll}=await sb.from('taller_solicitudes').select('*').eq('cliente_cartera_id',clienteId).order('created_at',{ascending:false}).limit(20);
+  const sols=(solsAll||[]).filter(x=>/fiscal/i.test(x.taller_nombre||'')).slice(0,10);
+  const enc=`<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
+    <span style="font-size:11px;color:var(--text3);">Acceso al taller de Siigo Fiscal (cliente con Siigo Fiscal vigente).</span>
+    <button onclick="abrirSolicitudTallerFiscal('${clienteId}')" style="padding:6px 14px;background:#1F7A4D;color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">🧾 Solicitar registro al taller</button></div>`;
+  const lista=(sols||[]).map(x=>{const e=TALLER_SOL_ESTADO[x.estado]||[x.estado,'#666'];return `<div style="padding:7px 10px;margin-bottom:5px;border:1px dashed ${e[1]};border-radius:8px;font-size:11.5px;"><b>${solEsc(x.nombre)}</b> · ${solEsc(x.taller_nombre||'')}${x.numserie?' · serie '+solEsc(x.numserie):''}<br><span style="color:${e[1]};font-weight:700;">${e[0]}</span>${x.estado==='rechazada'&&x.motivo_rechazo?' — '+solEsc(x.motivo_rechazo):''}</div>`;}).join('')||'<div style="font-size:12px;color:var(--text3);font-style:italic;">Sin solicitudes de taller Fiscal todavía.</div>';
+  box.innerHTML=enc+lista;
+}
+async function abrirSolicitudTallerFiscal(clienteId){
+  window._tallerFiscalCliente=clienteId; window._tallerFiscalVal=null;
+  const {data:gens}=await sb.from('academia_generaciones').select('id,clave,fecha_inicio,curso:curso_id(nombre)').ilike('clave','SFISCAL%').order('fecha_inicio',{ascending:false});
+  const cl=(window._cartClientes||[]).find(c=>c.id===clienteId);
+  const opciones=(gens||[]).map(g=>`<option value="${g.id}" data-nombre="${solEsc((g.curso?.nombre||g.clave))}">${solEsc(g.curso?.nombre||g.clave)}${g.fecha_inicio?' · '+fmtFecha(g.fecha_inicio):''}</option>`).join('');
+  solModal(`<div style="font-size:16px;font-weight:800;margin-bottom:2px;">🧾 Solicitar registro al Taller Siigo Fiscal</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">${solEsc(cl?cl.razon_social:'Cliente')}. Captura al asistente y la serie de Siigo Fiscal; se valida y la solicitud le llega a Capacitación para darle el acceso.</div>
+    ${!opciones?'<div style="color:var(--red);font-size:12px;margin-bottom:10px;">No hay generaciones de taller Siigo Fiscal configuradas.</div>':''}
+    ${solFld('Taller',`<select id="tfGen" style="${SOL_INPUT_STYLE}">${opciones}</select>`)}
+    ${solFld('Número de serie de Siigo Fiscal',`<div style="display:flex;gap:8px;"><input id="tfSerie" style="${SOL_INPUT_STYLE}" placeholder="Ej. SAA20160" oninput="window._tallerFiscalVal=null;var b=document.getElementById('tfResult');if(b)b.innerHTML='';"><button onclick="tallerFiscalValidar()" style="background:#0D2240;color:#fff;border:none;border-radius:6px;padding:0 16px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">Validar</button></div>`)}
+    <div id="tfResult" style="margin:-4px 0 10px;"></div>
+    <div style="height:1px;background:var(--border);margin:6px 0 12px;"></div>
+    <div style="font-size:12px;color:var(--text2);font-weight:700;margin-bottom:8px;">Datos del asistente</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px;">
+      ${solFld('Nombre completo',`<input id="tfNombre" style="${SOL_INPUT_STYLE}">`)}
+      ${solFld('Teléfono',`<input id="tfTel" style="${SOL_INPUT_STYLE}">`)}
+    </div>
+    ${solFld('Correo',`<input id="tfMail" type="email" style="${SOL_INPUT_STYLE}">`)}
+    ${solFld('Nota (opcional)',`<textarea id="tfNotas" rows="2" style="${SOL_INPUT_STYLE}"></textarea>`)}
+    <div style="display:flex;gap:8px;margin-top:6px;"><button id="tfOk" onclick="enviarSolicitudTallerFiscal()" style="background:#1F7A4D;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer;">Enviar solicitud</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:9px 14px;cursor:pointer;">Cancelar</button></div>`);
+}
+async function tallerFiscalValidar(){
+  const serie=document.getElementById('tfSerie')?.value?.trim();
+  const box=document.getElementById('tfResult');
+  if(!serie){ if(box)box.innerHTML='<span style="color:var(--red);font-size:12px;">Captura la serie.</span>'; return null; }
+  if(box)box.innerHTML='<span style="color:var(--text3);font-size:12px;">Validando…</span>';
+  const {data,error}=await sb.rpc('academia_validar_serie_fiscal',{p_serie:serie});
+  if(error){ if(box)box.innerHTML='<span style="color:var(--red);font-size:12px;">Error: '+solEsc(error.message)+'</span>'; return null; }
+  window._tallerFiscalVal=data;
+  if(box){
+    if(data.ok) box.innerHTML=`<div style="background:var(--green-bg);border:1px solid rgba(39,174,96,.3);border-radius:8px;padding:9px 12px;font-size:12px;color:#1e7e34;">✅ Serie vigente · <b>${solEsc(data.cliente_nombre)}</b> · ${data.fuente==='cartera'?'Sistema en cartera':'Suscripción'}</div>`;
+    else box.innerHTML=`<div style="background:#fdecea;border:1px solid rgba(231,76,60,.3);border-radius:8px;padding:9px 12px;font-size:12px;color:#c0392b;">⚠️ ${solEsc(data.error||'No procede el acceso por beneficio.')}</div>`;
+  }
+  return data;
+}
+async function enviarSolicitudTallerFiscal(){
+  const clienteId=window._tallerFiscalCliente;
+  const gsel=document.getElementById('tfGen');
+  const generacionId=gsel?.value;
+  const tallerNombre=gsel&&gsel.options[gsel.selectedIndex]?gsel.options[gsel.selectedIndex].getAttribute('data-nombre'):'';
+  const serie=document.getElementById('tfSerie')?.value?.trim();
+  const nombre=document.getElementById('tfNombre')?.value?.trim();
+  const mail=document.getElementById('tfMail')?.value?.trim()||null;
+  const tel=document.getElementById('tfTel')?.value?.trim()||null;
+  const notas=document.getElementById('tfNotas')?.value?.trim()||null;
+  const btn=document.getElementById('tfOk');
+  if(!generacionId) return alert('Elige el taller.');
+  if(!nombre) return alert('Captura el nombre del asistente.');
+  const val=await tallerFiscalValidar();
+  if(!val||!val.ok) return;
+  if(btn){btn.disabled=true;btn.textContent='Enviando…';}
+  const fila={cliente_cartera_id:clienteId,generacion_id:generacionId,taller_nombre:tallerNombre,nombre,email:mail,telefono:tel,numserie:(serie||'').toUpperCase(),serie_fuente:val.fuente,serie_cliente_nombre:val.cliente_nombre,notas,estado:'pendiente_capacitacion',solicitado_por:currentUser?.id||null,solicitado_por_nombre:userProfile?.nombre||null};
+  const {error}=await sb.from('taller_solicitudes').insert(fila);
+  if(error){ if(btn){btn.disabled=false;btn.textContent='Enviar solicitud';} return alert('No se pudo enviar: '+error.message); }
+  solCerrarModal();
+  try{uiToast('✅ Solicitud enviada a Capacitación');}catch(e){}
+  try{ fcCargarTallerFiscal(clienteId); }catch(e){}
+}
 // Capacitación: bandeja de solicitudes de taller por atender (Jp, 2026-11-24).
 async function acadTallerSolBannerHtml(){
   try{
@@ -14906,7 +14984,8 @@ async function tallerSolResolver(id,ok){
   }
   fila?.querySelectorAll('button').forEach(b=>b.disabled=true);
   if(m)m.innerHTML='<span style="color:var(--text3);">Validando serie y dando acceso…</span>';
-  const {data:val}=await sb.rpc('academia_validar_serie_noi',{p_serie:s.numserie||''});
+  const esFiscal=/fiscal/i.test(s.taller_nombre||'');
+  const {data:val}=await sb.rpc(esFiscal?'academia_validar_serie_fiscal':'academia_validar_serie_noi',{p_serie:s.numserie||''});
   if(!val||!val.ok){ if(m)m.innerHTML='<span style="color:var(--red);">La serie ya no está vigente: '+solEsc(val?.error||'no válida')+'. Puedes rechazarla.</span>'; fila?.querySelectorAll('button').forEach(b=>b.disabled=false); return; }
   const r=await acadBeneficioNoiInscribir({generacionId:s.generacion_id,nombre:s.nombre,mail:s.email,tel:s.telefono,serie:s.numserie,clienteCarteraId:val.cliente_cartera_id||s.cliente_cartera_id,serieFuente:val.fuente,serieCliente:val.cliente_nombre});
   if(!r.ok){ if(m)m.innerHTML='<span style="color:var(--red);">'+solEsc(r.error||'No se pudo dar el acceso')+'</span>'; fila?.querySelectorAll('button').forEach(b=>b.disabled=false); return; }
