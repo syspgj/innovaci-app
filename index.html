@@ -22565,7 +22565,7 @@ function toggleTeleHistDetalle(idx){
 
 const ESTATUS_COLORS = {
   'Nuevo':'#8BA0B8','Contactado':'#0D2240','No contestó':'#F5A623',
-  'En WhatsApp':'#00A99D','Interesado':'#27AE60',
+  'En WhatsApp':'#00A99D','Interesado':'#27AE60','Registrado al taller':'#6B3FA0',
   'Canalizado a ventas':'#1a7a4a','Cliente 24/7':'#00A99D','No interesado':'#E84040','Perdido':'#999'
 };
 
@@ -22574,7 +22574,7 @@ const PROS_TABLERO_COLS=[
   {k:'porllamar',  t:'Por llamar',          ic:'📇', c:'#8BA0B8', def:'Nuevo',               fases:['Nuevo']},
   {k:'nocontesto', t:'No contestó',         ic:'📵', c:'#F5A623', def:'No contestó',         fases:['No contestó']},
   {k:'contactado', t:'Contactado',          ic:'💬', c:'#0D2240', def:'Contactado',          fases:['Contactado','En WhatsApp']},
-  {k:'interesado', t:'Interesado',          ic:'🌟', c:'#27AE60', def:'Interesado',          fases:['Interesado']},
+  {k:'interesado', t:'Interesado',          ic:'🌟', c:'#27AE60', def:'Interesado',          fases:['Interesado','Registrado al taller']},
   {k:'canalizado', t:'Canalizado a Ventas', ic:'📈', c:'#1a7a4a', def:'Canalizado a ventas', fases:['Canalizado a ventas']},
   {k:'descartado', t:'Descartados',         ic:'🗑️', c:'#9AA3AB', def:'No interesado',       fases:['No interesado']},
 ];
@@ -22644,7 +22644,7 @@ const PROSPECTO_ORIGENES=['Cartera de ventas','Telemarketing','Facebook','Google
 // para "sistema relacionado" al subir prospectos y para los badges de
 // Cartera (clientes_cartera.sistemas_aspel), reutilizado aquí para el campo
 // editable de sistemas en la ficha del prospecto (prospectos.sistemas_aspel).
-const SISTEMAS_ASPEL_LIST=[{v:'SAE',l:'SAE'},{v:'COI',l:'COI'},{v:'NOI',l:'NOI'},{v:'FACTURE',l:'FACTURe'},{v:'BANCO',l:'Banco'},{v:'CAJA',l:'Caja'},{v:'PROD',l:'Producción'},{v:'ADM',l:'Administración'},{v:'SIIGO_FISCAL',l:'Siigo Fiscal'},{v:'SIIGO_NUBE',l:'Siigo Nube'}];
+const SISTEMAS_ASPEL_LIST=[{v:'SAE',l:'SAE'},{v:'COI',l:'COI'},{v:'NOI',l:'NOI'},{v:'NOI_ASIST',l:'NOI Asistente'},{v:'FACTURE',l:'FACTURe'},{v:'BANCO',l:'Banco'},{v:'CAJA',l:'Caja'},{v:'PROD',l:'Producción'},{v:'ADM',l:'Administración'},{v:'SIIGO_FISCAL',l:'Siigo Fiscal'},{v:'SIIGO_NUBE',l:'Siigo Nube'}];
 const PROSPECTO_INTERESES=['Cursos gratuitos','Curso empresarial','Diplomado NOI','Diplomado COI','Diplomado Excel','Taller SAE','Soporte Aspel','Sistema Aspel','Siigo Fiscal'];
 
 // ===== Contexto para llamar a una cuenta (Jp, 2026-11-18) ==================
@@ -23847,6 +23847,12 @@ async function abrirDetalle(id){
           <input type="date" id="fechaSeguimientoProspecto" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;">
           <div style="font-size:10px;color:var(--text3);margin-top:3px;">Te va a aparecer en "Pendientes de hoy" ese día.</div>
         </div>
+        <div id="campoTallerReg" style="display:none;margin-bottom:8px;background:#F3EEF9;border:1px solid #6B3FA0;border-radius:var(--radsm);padding:10px;">
+          <label style="font-size:11px;color:#6B3FA0;font-weight:700;display:block;margin-bottom:5px;">🎓 ¿A qué taller lo registras?</label>
+          <select id="tallerRegGen" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;margin-bottom:7px;"><option value="">Cargando talleres…</option></select>
+          <div style="font-size:10.5px;color:var(--text2);line-height:1.5;">✅ Antes de guardar valida sus datos en "Datos" (arriba): <b>nombre, apellidos, empresa, teléfono y correo</b>. Son obligatorios para meterlo al grupo de WhatsApp y mandarle la liga del taller.</div>
+          <div id="tallerRegDatosMsg" style="font-size:10.5px;margin-top:4px;"></div>
+        </div>
         ${renderPreguntasLlamadaHtml(preguntasLlamadaProspecto)}
         <textarea id="notasLlamada" placeholder="Notas de la llamada (opcional)..." rows="2"
           style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;font-family:'Inter',sans-serif;resize:vertical;box-sizing:border-box;"></textarea>
@@ -24004,6 +24010,43 @@ function onResultadoLlamadaChange(){
   if(campoVend) campoVend.style.display=valor==='Canalizado a ventas'?'block':'none';
   if(campoMonto) campoMonto.style.display=valor==='Compró el taller 24/7'?'block':'none';
   if(campoFecha) campoFecha.style.display=valor==='Volver a llamar'?'block':'none';
+  const campoTaller=document.getElementById('campoTallerReg');
+  if(campoTaller){
+    const on=valor==='Registrado al taller';
+    campoTaller.style.display=on?'block':'none';
+    if(on) tallerRegCargarOpciones();
+  }
+}
+
+// Jp, 2026-11-24 — Flujo "a la inversa": mandamos WhatsApp masivo invitando al
+// taller gratuito de NOI Asistente; cuando el lead muestra interés, ventas o
+// telemarketing lo marcan "Registrado al taller" aquí, eligen el taller (corte)
+// y validan sus datos. Queda un EVENTO en su ficha para después armar la
+// campaña de seguimiento ("¿qué te pareció?") y pasarlo al grupo de WhatsApp.
+let _tallerRegGens=null;
+async function tallerRegCargarOpciones(){
+  const sel=document.getElementById('tallerRegGen'); if(!sel) return;
+  if(_tallerRegGens===null){
+    try{
+      const {data}=await sb.from('academia_generaciones')
+        .select('id,clave,fecha_inicio,archivado_manual,curso:curso_id(nombre)')
+        .ilike('clave','NOI-ASIST%').order('fecha_inicio');
+      _tallerRegGens=(data||[]).filter(g=>!g.archivado_manual);
+    }catch(e){ _tallerRegGens=[]; }
+  }
+  if(sel.dataset.cargado==='1') return;
+  sel.dataset.cargado='1';
+  if(!_tallerRegGens.length){
+    sel.innerHTML='<option value="">— No hay talleres NOI Asistente configurados —</option>';
+    return;
+  }
+  // Pre-selecciona el próximo por venir (el corte más cercano a futuro).
+  const hoy=todayLocal();
+  let def=_tallerRegGens.find(g=>g.fecha_inicio&&g.fecha_inicio>=hoy)||_tallerRegGens[_tallerRegGens.length-1];
+  sel.innerHTML='<option value="">Selecciona el taller…</option>'+_tallerRegGens.map(g=>{
+    const nom=g.curso?.nombre||g.clave;
+    return `<option value="${g.id}" data-nombre="${solEsc(nom)}" data-fecha="${g.fecha_inicio||''}" ${g.id===def.id?'selected':''}>${solEsc(nom)}${g.fecha_inicio?' · '+fmtFecha(g.fecha_inicio):''}</option>`;
+  }).join('');
 }
 
 function renderLlamadasHtml(llamadas,respuestasPorLlamada){
@@ -24012,7 +24055,7 @@ function renderLlamadasHtml(llamadas,respuestasPorLlamada){
   respuestasPorLlamada=respuestasPorLlamada||{};
   return llamadas.map(l=>{
     const res=l.resultado||'';
-    const col=res==='Interesado'?'#27AE60':res==='No le interesa'?'#E74C3C':res==='Buzón'?'#E74C3C':res==='Volver a llamar'?'#F5A623':res==='Canalizado a ventas'?'var(--teal)':res==='Compró el taller 24/7'?'var(--teal)':'#888';
+    const col=res==='Interesado'?'#27AE60':res==='No le interesa'?'#E74C3C':res==='Buzón'?'#E74C3C':res==='Volver a llamar'?'#F5A623':res==='Canalizado a ventas'?'var(--teal)':res==='Compró el taller 24/7'?'var(--teal)':res==='Registrado al taller'?'#6B3FA0':'#888';
     // Mostrar fecha y hora si está disponible
     let fechaHora='—';
     if(l.created_at){
@@ -24063,6 +24106,44 @@ async function registrarLlamada(prospecto_id){
     fechaSeguimiento=document.getElementById('fechaSeguimientoProspecto')?.value;
     if(!fechaSeguimiento){alert('Indica para cuándo quieres programar la siguiente llamada');return;}
   }
+  // Jp, 2026-11-24 — "Registrado al taller": exige elegir el taller y validar
+  // los datos del lead (nombre, apellidos, empresa, teléfono, correo) antes de
+  // guardar, para poder meterlo al grupo de WhatsApp y mandarle la liga.
+  let tallerReg=null;
+  if(resultado==='Registrado al taller'){
+    const selT=document.getElementById('tallerRegGen');
+    const genId=selT?.value;
+    if(!genId){alert('Elige a qué taller lo estás registrando.');selT?.focus();return;}
+    const opt=selT.options[selT.selectedIndex];
+    const datos={
+      nombre:document.getElementById('editNombre')?.value.trim()||'',
+      apellidos:document.getElementById('editApellidos')?.value.trim()||'',
+      empresa:document.getElementById('editEmpresa')?.value.trim()||'',
+      telefono:document.getElementById('editTelefono')?.value.trim()||'',
+      email:document.getElementById('editEmail')?.value.trim()||'',
+    };
+    const faltan=[];
+    if(!datos.nombre) faltan.push('nombre');
+    if(!datos.apellidos) faltan.push('apellidos');
+    if(!datos.empresa) faltan.push('empresa');
+    if(!datos.telefono) faltan.push('teléfono');
+    if(!datos.email) faltan.push('correo');
+    else if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(datos.email)) faltan.push('correo válido');
+    const msgD=document.getElementById('tallerRegDatosMsg');
+    if(faltan.length){
+      if(msgD){msgD.style.color='var(--red)';msgD.innerHTML='⚠️ Completa en "Datos" (arriba) y dale 💾 Guardar datos: <b>'+faltan.join(', ')+'</b>.';}
+      alert('Para registrarlo al taller faltan datos: '+faltan.join(', ')+'.\n\nComplétalos arriba en "Datos", dale "Guardar datos" y vuelve a intentar.');
+      return;
+    }
+    if(msgD){msgD.textContent='';}
+    tallerReg={
+      genId,
+      nombre:opt?.getAttribute('data-nombre')||'Taller NOI Asistente',
+      fecha:opt?.getAttribute('data-fecha')||null,
+      clave:(_tallerRegGens||[]).find(g=>g.id===genId)?.clave||null,
+      datos,
+    };
+  }
   const ahora=new Date();
   const hoy=ahora.toISOString().split('T')[0];
   // Jp, 2026-10-21: preguntas configurables por campaña (ver
@@ -24110,9 +24191,41 @@ async function registrarLlamada(prospecto_id){
   if(resultado==='Compró el taller 24/7'){
     updProspecto.estatus='Cliente 24/7';
   }
-  await sb.from('prospectos').update(updProspecto).eq('id',prospecto_id);
+  if(tallerReg){
+    updProspecto.estatus='Registrado al taller';
+    // Persiste los datos validados y marca NOI Asistente como interés.
+    updProspecto.nombre=tallerReg.datos.nombre;
+    updProspecto.apellidos=tallerReg.datos.apellidos;
+    updProspecto.empresa=tallerReg.datos.empresa;
+    updProspecto.telefono=tallerReg.datos.telefono;
+    updProspecto.email=tallerReg.datos.email;
+    const pPrev=window._prospectos?.find(x=>x.id===prospecto_id);
+    const interesPrev=Array.isArray(pPrev?.interes_aspel)?pPrev.interes_aspel.slice():[];
+    if(!interesPrev.includes('NOI_ASIST')) interesPrev.push('NOI_ASIST');
+    updProspecto.interes_aspel=interesPrev;
+  }
+  let {error:eUpdPros}=await sb.from('prospectos').update(updProspecto).eq('id',prospecto_id);
+  if(eUpdPros&&/interes_aspel/.test(eUpdPros.message||'')){ const u2={...updProspecto}; delete u2.interes_aspel; await sb.from('prospectos').update(u2).eq('id',prospecto_id); }
   const p=window._prospectos?.find(p=>p.id===prospecto_id);
   if(p) Object.assign(p,updProspecto);
+  // Jp, 2026-11-24 — Registra el EVENTO de taller (igual que un registro de
+  // evento normal, pero capturado por el agente). Es el ancla para la campaña
+  // de seguimiento: luego filtras por este evento para volverles a marcar.
+  if(tallerReg){
+    try{
+      await sb.from('prospecto_eventos').insert({
+        prospecto_id,
+        evento:tallerReg.nombre,
+        tipo_evento:'taller',
+        sistema_relacionado:'NOI Asistente',
+        fecha_registro:hoy,
+        fecha_evento:tallerReg.fecha||null,
+        origen:'Registro telemarketing/ventas',
+        respuestas:{ 'Taller':tallerReg.nombre, 'Registrado por':currentUser?.email||'' },
+      });
+    }catch(e){ console.warn('evento taller',e); }
+    uiToast('🎓 Registrado al taller — queda en su ficha para el seguimiento');
+  }
   // Jp, 2026-10-16 (auditoría de cierre): que la tabla de atrás refleje el
   // resultado apenas se guarda la llamada, sin esperar a cerrar la ficha.
   if(!window._resultadoProspectos) window._resultadoProspectos={};
