@@ -45,17 +45,27 @@ function aIso(v) {
   return null;
 }
 
-const PROMPT = `Esta es una o varias capturas del PORTAL DE CLIENTES de Siigo/Aspel: una tabla de suscripciones. Puede traer DISTINTOS productos (Siigo NOI Asistente, Siigo-NOI, Aspel-COI, Aspel-SAE, Aspel-BANCO, Caja, Producción, Facturé, Siigo Nube, Siigo Fiscal, etc.). Léelos TODOS, no solo NOI Asistente.
+const PROMPT = `Estás leyendo capturas de pantalla del sistema de Siigo/Aspel para extraer SUSCRIPCIONES. La captura puede venir en DOS formas y debes manejar AMBAS:
 
-La tabla tiene estas columnas: Sistema (ícono), Servicio, RFC, Contacto, Tipo Servicio, Información del servicio, Contrato, Vigencia.
+FORMA A — TABLA de suscripciones (columnas: Sistema, Servicio, RFC, Contacto, Tipo Servicio, Información del servicio, Contrato, Vigencia). Trae DISTINTOS productos (Siigo NOI Asistente, Siigo-NOI, Aspel-COI, Aspel-SAE, Aspel-BANCO, Caja, Producción, Facturé, Siigo Nube, Siigo Fiscal, etc.) — léelos TODOS.
+- La columna "Información del servicio" trae varias líneas: la PRIMERA es el NÚMERO DE SERIE (ej. FUENTE2027, NNSNZR141037, CNSNWR188404). El número de serie NO es el RFC (aunque a veces coincidan).
 
-La columna "Información del servicio" trae VARIAS líneas en cada renglón: la PRIMERA línea es el NÚMERO DE SERIE (por ejemplo FUENTE2027, NNSNZR141037, CNSNWR188404); las demás líneas son "Versión X", "N Empleados/Usuarios" y "Plan: Anual/Mensual/Semestral". El número de serie NO es el RFC (aunque en algunos casos coincidan).
+FORMA B — DETALLE de un pedido/movimiento (típico de Siigo Fiscal). NO tiene columnas; es una ficha con "Detalle del movimiento/pedido", "Forma de pago", "Fecha", "Banco", "Monto" y una tabla pequeña con "SERVICIO" y "MONTO". El renglón de SERVICIO dice algo como "1 Siigo Fiscal Empresarial Plan Anual, 1 Usr, Identificador: SAA20160".
+- En la FORMA B el NÚMERO DE SERIE es el valor que sigue a "Identificador:" (ej. SAA20160). SIEMPRE que veas un "Identificador:", devuelve un objeto con esa serie — no respondas vacío.
+- "servicio" = el nombre del producto (ej. "Siigo Fiscal Empresarial"); "plan" = Anual/Mensual/Semestral del mismo texto; "inicio" = la "Fecha" del pedido; "fin" = null; "rfc"/"contacto" = los del pedido si aparecen.
 
-Extrae CADA renglón visible y responde SOLO con un arreglo JSON (sin texto adicional, sin markdown), con objetos:
+Extrae CADA renglón/servicio visible (de la forma que sea) y responde SOLO con un arreglo JSON (sin texto adicional, sin markdown), con objetos:
 {"serie":"la PRIMERA línea de Información del servicio","rfc":"el RFC de la columna RFC","contacto":"el nombre de la columna Contacto","servicio":"el texto EXACTO de la columna Servicio (p. ej. Siigo NOI Asistente, Siigo-NOI, Aspel-COI)","inicio":"fecha de la columna Contrato en formato DD/MM/YYYY","fin":"fecha de la columna Vigencia en formato DD/MM/YYYY","plan":"Anual, Mensual o Semestral según la línea Plan, o null"}
 
+CASO ESPECIAL — Siigo Fiscal: a veces la captura NO es la tabla, sino el DETALLE de un pedido/movimiento. Ahí el renglón "SERVICIO" dice algo como "1 Siigo Fiscal Empresarial Plan Anual, 1 Usr, Identificador: SAA20160". En ese caso:
+- "serie" = el valor que sigue a "Identificador:" (ej. SAA20160).
+- "servicio" = el nombre del producto, ej. "Siigo Fiscal Empresarial".
+- "plan" = Anual/Mensual/Semestral según ese mismo texto.
+- "inicio" = la "Fecha" del movimiento/pedido; "fin" = null (el sistema calcula el vencimiento con el plan).
+- "rfc"/"contacto" = los del pedido si aparecen; si no, null.
+
 Reglas:
-- "serie" = primera línea de "Información del servicio", en MAYÚSCULAS y sin espacios.
+- "serie" = primera línea de "Información del servicio" (o el Identificador en Siigo Fiscal), en MAYÚSCULAS y sin espacios.
 - "servicio" = el texto de la columna "Servicio" tal cual, para CADA renglón (puede cambiar de un renglón a otro).
 - "inicio" = columna "Contrato"; "fin" = columna "Vigencia". Respeta día/mes/año tal como se ven.
 - No inventes datos: si un campo no se ve, usa null.
