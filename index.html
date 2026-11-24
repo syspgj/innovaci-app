@@ -14796,7 +14796,8 @@ async function abrirSolicitudValidSerie(clienteId){
   solModal(`<div style="font-size:16px;font-weight:800;margin-bottom:2px;">🔑 Solicitar validación de serie</div>
     <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">${solEsc(cl?cl.razon_social:'Cliente')}. Captura la serie y Dirección la valida contra el portal.</div>
     ${solFld('Sistema / producto',`<select id="vsSis" style="${SOL_INPUT_STYLE}">${VALID_SERIE_SISTEMAS.map(x=>`<option>${x}</option>`).join('')}</select>`)}
-    ${solFld('Número de serie',`<input id="vsSerie" style="${SOL_INPUT_STYLE}" placeholder="Ej. NNSNZR141037 o SAA20160">`)}
+    ${solFld('Número de serie',`<div style="display:flex;gap:8px;"><input id="vsSerie" style="${SOL_INPUT_STYLE}" placeholder="Ej. NNSNZR141037 o SAA20160" oninput="var b=document.getElementById('vsResult');if(b)b.innerHTML='';"><button type="button" onclick="validSerieVerificar('${clienteId}')" style="background:#0D2240;color:#fff;border:none;border-radius:6px;padding:0 16px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">🔎 Verificar</button></div>`)}
+    <div id="vsResult" style="margin:-4px 0 10px;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px;">
       ${solFld('Plan',`<select id="vsPlan" style="${SOL_INPUT_STYLE}"><option value="anual">Anual</option><option value="mensual">Mensual</option><option value="semestral">Semestral</option></select>`)}
       ${solFld('Vigencia (vence)',`<input id="vsVence" type="date" style="${SOL_INPUT_STYLE}">`)}
@@ -14812,6 +14813,16 @@ async function enviarSolicitudValidSerie(clienteId){
   const vence=document.getElementById('vsVence')?.value||null;
   const nota=(document.getElementById('vsNota')?.value||'').trim()||null;
   if(!serie){ alert('Captura el número de serie.'); return; }
+  // Jp, 2026-11-24: antes de mandar a validar, revisa si la serie YA está en el
+  // sistema. Si ya existe, no se crea solicitud duplicada: se avisa para vincular.
+  const sNorm=serie.toUpperCase().replace(/\s/g,'');
+  const {data:ya}=await sb.from('suscripciones_cartera').select('id,producto,cliente_id,fecha_proxima_renovacion').ilike('numserie',sNorm).limit(1);
+  const ex=(ya||[])[0];
+  if(ex){
+    if(ex.cliente_id===clienteId){ alert('Esta serie ya está en el sistema y ligada a esta cuenta. No necesitas mandarla a validar.'); return; }
+    if(!ex.cliente_id){ validSerieVerificar(clienteId); alert('Esta serie YA está en el sistema (solo le falta cuenta). Usa "🔗 Vincular a esta cuenta" en vez de mandarla a validar.'); return; }
+    if(!confirm('Esta serie ya existe en el sistema y está ligada a OTRA cuenta. ¿Aun así quieres mandar una solicitud de validación?')) return;
+  }
   const btn=document.getElementById('vsOk'); if(btn){btn.disabled=true;btn.textContent='Enviando…';}
   const {error}=await sb.from('solicitudes_validacion_serie').insert({
     cliente_cartera_id:clienteId, cliente_nombre:cl?.razon_social||null, rfc:cl?.rfc||null,
@@ -14820,6 +14831,28 @@ async function enviarSolicitudValidSerie(clienteId){
   if(error){ alert('No se pudo enviar: '+error.message); if(btn){btn.disabled=false;btn.textContent='Enviar solicitud';} return; }
   solCerrarModal(); uiToast('🔑 Solicitud enviada a Dirección para validar');
   fcCargarValidSerie(clienteId);
+}
+// Verifica si la serie ya está en el sistema y ofrece vincularla (Jp, 2026-11-24).
+async function validSerieVerificar(clienteId){
+  const serie=(document.getElementById('vsSerie')?.value||'').trim().toUpperCase().replace(/\s/g,'');
+  const box=document.getElementById('vsResult'); if(!box) return;
+  if(!serie){ box.innerHTML='<span style="color:var(--red);font-size:12px;">Captura la serie.</span>'; return; }
+  box.innerHTML='<span style="color:var(--text3);font-size:12px;">Buscando en el sistema…</span>';
+  const {data}=await sb.from('suscripciones_cartera').select('id,producto,fecha_proxima_renovacion,cliente_id').ilike('numserie',serie).limit(1);
+  const s=(data||[])[0];
+  if(!s){ box.innerHTML='<div style="background:#eef7ff;border:1px solid #bcdcff;border-radius:8px;padding:8px 10px;font-size:12px;color:#1c5a9c;">🆕 No está en el sistema todavía. Mándala a validar y Dirección la da de alta.</div>'; return; }
+  const hoy=todayLocal();
+  const vig=!s.fecha_proxima_renovacion||s.fecha_proxima_renovacion>=hoy;
+  const vtxt=vig?('vigente'+(s.fecha_proxima_renovacion?' hasta '+fmtFecha(s.fecha_proxima_renovacion):'')):'VENCIDA';
+  if(s.cliente_id===clienteId){ box.innerHTML=`<div style="background:var(--green-bg);border:1px solid rgba(39,174,96,.3);border-radius:8px;padding:8px 10px;font-size:12px;color:#1e7e34;">✅ Ya está en el sistema y ligada a esta cuenta (${solEsc(s.producto||'')}, ${vtxt}). No necesitas validación.</div>`; return; }
+  if(s.cliente_id){ box.innerHTML=`<div style="background:#fff6e5;border:1px solid #f0d090;border-radius:8px;padding:8px 10px;font-size:12px;color:#8a5a00;">⚠️ Esta serie ya existe y está ligada a OTRA cuenta (${solEsc(s.producto||'')}, ${vtxt}). Revísala en Suscripciones antes de reasignarla.</div>`; return; }
+  box.innerHTML=`<div style="background:var(--green-bg);border:1px solid rgba(39,174,96,.3);border-radius:8px;padding:8px 10px;font-size:12px;color:#1e7e34;">✅ Esta serie YA está en el sistema (${solEsc(s.producto||'')}, ${vtxt}). No necesitas mandarla a validar — solo <b>vincúlala a esta cuenta</b>.<div style="margin-top:6px;"><button type="button" onclick="validSerieVincular('${s.id}','${clienteId}')" style="background:#1F7A4D;color:#fff;border:none;border-radius:6px;padding:6px 14px;font-size:12px;font-weight:700;cursor:pointer;">🔗 Vincular a esta cuenta</button></div></div>`;
+}
+async function validSerieVincular(suscId,clienteId){
+  const {error}=await sb.from('suscripciones_cartera').update({cliente_id:clienteId,updated_at:new Date().toISOString()}).eq('id',suscId);
+  if(error){ alert('No se pudo vincular: '+error.message); return; }
+  try{solCerrarModal();}catch(e){} uiToast('🔗 Serie vinculada a la cuenta');
+  try{ fcCargarValidSerie(clienteId); }catch(e){}
 }
 async function abrirSolicitudTaller(clienteId){
   window._tallerSolCliente=clienteId; window._tallerSolVal=null;
@@ -14955,7 +14988,7 @@ async function acadTallerSolBannerHtml(){
     const {data}=await sb.from('taller_solicitudes').select('id').eq('estado','pendiente_capacitacion').limit(50);
     const n=(data||[]).length; if(!n) return '';
     return `<div onclick="abrirSolicitudesTaller()" style="cursor:pointer;background:rgba(107,63,160,.08);border:1px solid rgba(107,63,160,.35);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:10px;">
-      <div style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;">🎓</span><div><div style="font-size:13px;font-weight:700;color:#4b2b78;">${n} solicitud${n===1?'':'es'} de Taller NOI Asistente por atender</div><div style="font-size:11px;color:var(--text2);">Ventas pidió registrar asistentes por beneficio — valida y dales acceso.</div></div></div>
+      <div style="display:flex;align-items:center;gap:10px;"><span style="font-size:20px;">🎓</span><div><div style="font-size:13px;font-weight:700;color:#4b2b78;">${n} solicitud${n===1?'':'es'} de taller por atender <span style="font-weight:400;color:var(--text3);">(NOI Asistente / Siigo Fiscal)</span></div><div style="font-size:11px;color:var(--text2);">Ventas pidió registrar asistentes por beneficio — valida y dales acceso.</div></div></div>
       <span style="font-size:18px;color:#6B3FA0;">→</span></div>`;
   }catch(e){ return ''; }
 }
@@ -14970,7 +15003,7 @@ async function abrirSolicitudesTaller(){
     <div style="margin-top:6px;display:flex;gap:8px;"><button onclick="tallerSolResolver('${s.id}',true)" style="padding:6px 14px;background:var(--teal);color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">✓ Validar y dar acceso</button>
     <button onclick="tallerSolResolver('${s.id}',false)" style="padding:6px 14px;background:#fff;color:var(--red);border:1px solid var(--red);border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">Rechazar</button></div>
     <div id="tsMsg_${s.id}" style="font-size:11px;margin-top:4px;"></div></div>`).join(''):'<div style="padding:20px;text-align:center;color:var(--text3);">Nada por atender.</div>'}</div>`;
-  mkModal('modalTallerSol','🎓 Solicitudes de Taller NOI Asistente',html,null,'Cerrar',true);
+  mkModal('modalTallerSol','🎓 Solicitudes de Taller (NOI Asistente / Siigo Fiscal)',html,null,'Cerrar',true);
 }
 async function tallerSolResolver(id,ok){
   const m=document.getElementById('tsMsg_'+id), fila=document.getElementById('tsFila_'+id);
