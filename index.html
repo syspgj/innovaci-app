@@ -14653,6 +14653,35 @@ function circSolNotificar(lista,resumen,todos){
   try{if('Notification' in window&&Notification.permission==='granted') new Notification('🌐 Círculo Innovaci',{body:txt});}catch(e){}
 }
 if(!window._circSolTimer){window._circSolTimer=setInterval(circSolTick,30000);setTimeout(circSolTick,8000);}
+// Toast para Capacitación/Dirección cuando llega una solicitud de Taller NOI (Jp, 2026-11-24).
+let _tallerSolVistos=null;
+async function tallerSolTick(){
+  try{
+    if(typeof currentUser==='undefined'||!currentUser||!userProfile) return;
+    if(!['academia','director'].includes(userProfile.rol)) return;
+    const {data,error}=await sb.from('taller_solicitudes').select('id,nombre,taller_nombre').eq('estado','pendiente_capacitacion').limit(100);
+    if(error||!data) return;
+    const ids=new Set(data.map(x=>x.id));
+    const nuevos=_tallerSolVistos===null?data:data.filter(x=>!_tallerSolVistos.has(x.id));
+    if(nuevos.length) tallerSolNotificar(nuevos,_tallerSolVistos===null,data);
+    _tallerSolVistos=ids;
+  }catch(e){}
+}
+function tallerSolNotificar(lista,resumen,todos){
+  const n=(todos||lista).length;
+  const txt=`Taller NOI Asistente: ${resumen?'hay ':'nueva solicitud — '}${n} por atender`;
+  try{
+    document.getElementById('tallerSolToast')?.remove();
+    const t=document.createElement('div');t.id='tallerSolToast';
+    t.style.cssText='position:fixed;top:150px;right:18px;z-index:100002;background:#4b2b78;color:#fff;border-radius:12px;padding:12px 16px;box-shadow:0 8px 24px rgba(0,0,0,.28);max-width:340px;font-size:13px;cursor:pointer;border-left:5px solid #6B3FA0;';
+    t.innerHTML=`<div style="font-weight:700;margin-bottom:3px;">🎓 ${solEsc(txt)}</div><div style="font-size:11px;opacity:.85;">Clic para validar y dar acceso</div>`;
+    t.onclick=()=>{t.remove();abrirSolicitudesTaller();};
+    document.body.appendChild(t);setTimeout(()=>t.remove(),20000);
+  }catch(e){}
+  try{const C=window.AudioContext||window.webkitAudioContext;if(C){const c=new C(),o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.type='sine';o.frequency.value=680;g.gain.setValueAtTime(.15,c.currentTime);g.gain.exponentialRampToValueAtTime(.001,c.currentTime+.5);o.start();o.stop(c.currentTime+.5);}}catch(e){}
+  try{if('Notification' in window&&Notification.permission==='granted') new Notification('🎓 Taller NOI Asistente',{body:txt});}catch(e){}
+}
+if(!window._tallerSolTimer){window._tallerSolTimer=setInterval(tallerSolTick,30000);setTimeout(tallerSolTick,9000);}
 
 async function fcCargarCirculoInnovaci(clienteId){
   const box=document.getElementById('fcCirculoBox');
@@ -37405,6 +37434,25 @@ function solElegirNegociacion(id){
   if(!n){window._sfPipe=null;return;}
   solAplicarNegociacion(n);
 }
+// Jp, 2026-11-24: candado de coincidencia pedido↔solicitud. Compara lo que se va
+// a mandar a facturación contra el pedido real de la tienda (monto y producto/gens).
+async function solPedidoMatchInfo(sfShop,total,generaciones){
+  const pedidoTotal=Number(sfShop.total||0);
+  let mapa={};
+  try{ const {data:mp}=await sb.from('shopify_producto_map').select('clave,concepto,titulo,generacion_ids'); (mp||[]).forEach(m=>mapa[m.clave]=m); }catch(e){}
+  const lineas=sfShop.lineas||[];
+  const pedidoConcepto=lineas.map(l=>{const m=mapa[shpClave(l)]; return (m&&m.concepto)||l.titulo;}).join(' + ');
+  const esperadas=new Set();
+  lineas.forEach(l=>{ const m=mapa[shpClave(l)]; ((m&&m.generacion_ids)||[]).forEach(g=>esperadas.add(g)); });
+  const enviadas=new Set((generaciones||[]).map(g=>g.id).filter(Boolean));
+  let genMismatch=false;
+  if(esperadas.size){ if(enviadas.size!==esperadas.size || [...enviadas].some(g=>!esperadas.has(g))) genMismatch=true; }
+  const montoMismatch=Math.abs(Number(total||0)-pedidoTotal)>0.5;
+  const motivos=[];
+  if(montoMismatch) motivos.push(`El monto no coincide: el pedido es ${fmt(pedidoTotal)} y estás pasando ${fmt(total)}.`);
+  if(genMismatch) motivos.push(`El producto/las generaciones no coinciden con el pedido (${pedidoConcepto}).`);
+  return {coincide:!motivos.length, pedidoTotal, pedidoConcepto, montoMismatch, genMismatch, motivos};
+}
 async function solEnviar(){
   const msg=document.getElementById('sfMsg');
   const v=id=>document.getElementById(id)?.value?.trim()||'';
@@ -37463,6 +37511,19 @@ async function solEnviar(){
         precioCampos={precio_alerta:'requiere_autorizacion',precio_detalle:cp};
       }
     } else if(cp.nivel==='alto'&&!confirm('⚠️ '+cp.resumen+'\n\n¿Enviar de todos modos?')) return;
+  } else {
+    // Candado de coincidencia con el pedido de la tienda (Jp, 2026-11-24): bloqueo duro.
+    const mi=await solPedidoMatchInfo(window._sfShop,total,acad.generaciones);
+    if(!mi.coincide){
+      const resumen=`No coincide con el pedido ${window._sfShop.numero||''} de la tienda:\n\n• `+mi.motivos.join('\n• ')+`\n\nEl cliente pagó ${fmt(mi.pedidoTotal)} por: ${mi.pedidoConcepto}.`;
+      if(userProfile?.rol==='director'){
+        if(!confirm('⛔ '+resumen+'\n\nEres Dirección: ¿autorizas este cambio? (si subió el monto, el cliente debe completar el pago en facturación).')) return;
+        precioCampos={...precioCampos,pedido_alerta:'autorizado',pedido_detalle:{pedido_total:mi.pedidoTotal,pedido_concepto:mi.pedidoConcepto,enviado_total:total,motivos:mi.motivos,autorizado_por:userProfile?.nombre||'',autorizado_at:new Date().toISOString()}};
+      } else {
+        if(!confirm('⛔ NO PUEDE PASAR A FACTURACIÓN ASÍ.\n\n'+resumen+'\n\nAceptar = enviarla a Dirección para que autorice (no se podrá facturar hasta que autorice y el pago cubra el total).\nCancelar = regresar a corregir para que cuadre con el pedido.')) return;
+        precioCampos={...precioCampos,pedido_alerta:'requiere_autorizacion',pedido_detalle:{pedido_total:mi.pedidoTotal,pedido_concepto:mi.pedidoConcepto,enviado_total:total,motivos:mi.motivos}};
+      }
+    }
   }
   const btn=document.getElementById('sfEnviar');btn.disabled=true;msg.style.color='var(--teal)';msg.textContent='Enviando...';
   try{
@@ -37493,6 +37554,7 @@ async function solEnviar(){
     for(let k=0;k<6&&error;k++){
       const m=error.message||'';
       if(/precio_/.test(m)&&('precio_alerta' in row)){['precio_alerta','precio_detalle','precio_autorizado_por','precio_autorizado_at','precio_autorizado_motivo'].forEach(c=>delete row[c]);}
+      else if(/pedido_alerta|pedido_detalle/.test(m)){delete row.pedido_alerta;delete row.pedido_detalle;}
       else if(/academia/.test(m)&&'academia' in row) delete row.academia;
       else if(/shopify_pedido_id/.test(m)&&'shopify_pedido_id' in row) delete row.shopify_pedido_id;
       else if(/shopify_pedido/.test(m)&&'shopify_pedido' in row) delete row.shopify_pedido;
@@ -37750,8 +37812,9 @@ function solTarjeta(r,modo){
   const puedeDevolver=(esDir||esAdm)&&!devuelta&&(r.estado==='solicitada'||r.estado==='pendiente_pago'||r.estado==='pago_validado')&&!r.factura_folio;
   const puedeCorregir=esVend&&devuelta&&r.vendedor_id===(userProfile?.id||currentUser.id);
   const bloqPrecio=r.precio_alerta==='requiere_autorizacion';
-  const puedeFacturar=(esDir||esAdm)&&!devuelta&&!bloqPrecio&&(r.estado==='pago_validado'||r.estado==='pendiente_pago');
-  const puedeValidar=esDir&&!devuelta&&!bloqPrecio&&!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada');
+  const bloqPedido=r.pedido_alerta==='requiere_autorizacion';
+  const puedeFacturar=(esDir||esAdm)&&!devuelta&&!bloqPrecio&&!bloqPedido&&(r.estado==='pago_validado'||r.estado==='pendiente_pago');
+  const puedeValidar=esDir&&!devuelta&&!bloqPrecio&&!bloqPedido&&!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada');
   const puedeCancelar=(esDir||(esVend&&r.vendedor_id===(userProfile?.id||currentUser.id)))&&(r.estado==='solicitada'||r.estado==='pendiente_pago');
   const faltaComprobante=esVend&&r.estado==='facturada'&&!r.pago_validado;
   const btn=(txt,fn,color)=>`<button onclick="${fn}" style="background:${color||'#fff'};color:${color?'#fff':'var(--text2)'};border:1px solid ${color||'var(--border)'};border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${txt}</button>`;
@@ -37773,7 +37836,7 @@ function solTarjeta(r,modo){
     ${r.shopify_pedido?`<div style="font-size:11px;color:#5b3fa0;margin-top:3px;">🛍 Pedido de Shopify: <b>${solEsc(r.shopify_pedido)}</b></div>`:''}
     ${String(r.notas||'').startsWith(SOL_PG_MARCA)?`<div style="font-size:11px;font-weight:700;color:#8a6d00;background:#fffbea;border:1px solid #f3dc8a;border-radius:6px;padding:3px 8px;margin-top:5px;display:inline-block;">🧾 FACTURAR A VIOLETA — el cliente no requiere factura · C.P. ${SOL_VIOLETA.cp}</div>`:''}
     ${pago}${avisoCheque}${solAvisoPagoVencido(r,esVend)}${fact}
-    ${solPrecioBannerHtml(r,esDir)}${solCancelBannerHtml(r,esDir,esAdm)}
+    ${solPrecioBannerHtml(r,esDir)}${solPedidoBannerHtml(r,esDir)}${solCancelBannerHtml(r,esDir,esAdm)}
     ${cancel?'':timTarjetaHtml(r,esDir,esVend)}
     ${cancel?'':licTarjetaHtml(r,esDir,esVend)}
     ${r.pago_nota?`<div style="font-size:11px;color:var(--text3);margin-top:3px;">Nota de validación: ${solEsc(r.pago_nota)}</div>`:''}
@@ -37790,6 +37853,7 @@ function solTarjeta(r,modo){
       ${!cancel&&(esDir||esAdm)?btn('📋 Copiar datos',`solCopiarDatos('${r.id}')`):''}
       ${!cancel&&(esDir||esAdm)&&r.factura_folio&&!r.fact_ingreso_id?btn('📊 Registrar en ingresos',`solCargarFinanzasBtn('${r.id}')`,'#1B4D6E'):''}
       ${!cancel&&(esDir||esAdm)&&r.fact_ingreso_id?'<span style="font-size:11px;color:#2E7D32;font-weight:700;align-self:center;">📊 En Finanzas ✓</span>':''}
+      ${!cancel&&(esDir||esAdm)&&r.tipo==='con_pago'?btn('💵 Pagos',`solPagosModal('${r.id}')`,'#0f8b8d'):''}
       ${puedeValidar?btn('✅ Validar pago',`solValidarModal('${r.id}')`,'var(--teal)'):''}
       ${puedeFacturar?btn('🧾 Registrar factura',`solFacturarModal('${r.id}')`,'#1B4D6E'):''}
       ${faltaComprobante?btn('📎 Adjuntar comprobante de pago',`solComprobanteModal('${r.id}')`,'#7C3AED'):''}
@@ -37800,6 +37864,97 @@ function solTarjeta(r,modo){
     </div>
   </div>`;
 }
+// Candado de pedido: banner + autorización de Dirección (Jp, 2026-11-24).
+function solPedidoBannerHtml(r,esDir){
+  if(!r.pedido_alerta||r.pedido_alerta==='null') return '';
+  const d=r.pedido_detalle||{};
+  const motivos=Array.isArray(d.motivos)?d.motivos:[];
+  if(r.pedido_alerta==='autorizado'){
+    return `<div style="font-size:11px;color:#1f6391;background:#eaf3fb;border:1px solid #bcd9f0;border-radius:8px;padding:6px 10px;margin-top:6px;">✅ Cambio vs el pedido <b>autorizado</b>${d.autorizado_por?' por '+solEsc(d.autorizado_por):''}. Pedido original: ${d.pedido_concepto?solEsc(d.pedido_concepto)+' · ':''}${d.pedido_total!=null?fmt(d.pedido_total):''}.</div>`;
+  }
+  return `<div style="font-size:12px;color:#9a3412;background:#fff1e6;border:1px solid #f5a35a;border-left:5px solid #ea580c;border-radius:8px;padding:7px 11px;margin-top:6px;">
+    ⛔ <b>No coincide con el pedido de la tienda</b> — requiere autorización de Dirección.<br>
+    <span style="font-weight:500;">${motivos.map(solEsc).join('<br>')||'El producto o el monto no coinciden.'}</span>
+    <div style="font-size:11px;color:var(--text3);margin-top:3px;">Pedido original: ${d.pedido_concepto?solEsc(d.pedido_concepto)+' · ':''}${d.pedido_total!=null?fmt(d.pedido_total):''} · se está pasando ${d.enviado_total!=null?fmt(d.enviado_total):fmt(r.monto_total)}.</div>
+    ${esDir?`<button onclick="solAutorizarPedido('${r.id}')" style="margin-top:6px;background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">✓ Autorizar el cambio</button> <span style="font-size:10.5px;color:var(--text3);">(revisa que el pago cubra el total en 💵 Pagos)</span>`:'<div style="font-size:10.5px;color:var(--text3);margin-top:3px;">Corrige para que cuadre con el pedido, o espera la autorización de Dirección.</div>'}
+  </div>`;
+}
+async function solAutorizarPedido(id){
+  if(!confirm('¿Autorizas que esta solicitud pase a facturación aunque no coincida con el pedido de la tienda?\n\nAsegúrate de que el pago cubra el total (revísalo en "💵 Pagos").')) return;
+  const r=(_solRows||[]).find(z=>z.id===id)||{};
+  const det={...(r.pedido_detalle||{}),autorizado_por:userProfile?.nombre||'Dirección',autorizado_at:new Date().toISOString()};
+  const {error}=await sb.from('solicitudes_factura').update({pedido_alerta:'autorizado',pedido_detalle:det}).eq('id',id);
+  if(error) return alert('No se pudo autorizar: '+error.message);
+  if(r&&r.id){r.pedido_alerta='autorizado';r.pedido_detalle=det;}
+  try{uiToast('✓ Cambio autorizado');}catch(e){}
+  try{ solRefrescar(); }catch(e){}
+}
+// Pagos múltiples: el pago principal vive en la solicitud; los adicionales en
+// solicitud_pagos. Facturación valida que la SUMA de los validados cubra el total.
+async function solPagosModal(id){
+  let r=(_solRows||[]).find(z=>z.id===id);
+  if(!r){ const {data}=await sb.from('solicitudes_factura').select('*').eq('id',id).single(); r=data; }
+  if(!r) return alert('No se encontró la solicitud.');
+  const {data:extra}=await sb.from('solicitud_pagos').select('*').eq('solicitud_id',id).order('created_at');
+  const primario={monto:Number(r.pago_monto||0),fecha:r.pago_fecha,hora:r.pago_hora,comprobante:r.comprobante_path,validado:!!r.pago_validado,por:r.pago_validado_por,principal:true};
+  const todos=[primario,...((extra||[]).map(p=>({id:p.id,monto:Number(p.monto||0),fecha:p.fecha_pago,hora:p.hora_pago,comprobante:p.comprobante_path,validado:!!p.validado,por:p.validado_por,nota:p.nota})))];
+  const totalPagado=todos.reduce((a,p)=>a+(p.monto||0),0);
+  const totalValid=todos.filter(p=>p.validado).reduce((a,p)=>a+(p.monto||0),0);
+  const falta=Number(r.monto_total||0)-totalValid;
+  const esDA=['director','administracion'].includes(userProfile?.rol);
+  const fila=p=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border);font-size:12px;">
+    <div><b>${fmt(p.monto)}</b> · ${p.fecha?solFecha(p.fecha):'—'}${p.hora?' '+solEsc(p.hora):''}${p.principal?' <span style="color:var(--text3);">(principal)</span>':''}${p.nota?'<br><span style="font-size:10.5px;color:var(--text3);">'+solEsc(p.nota)+'</span>':''}${p.comprobante?` · <a href="#" onclick="solVerArchivo('${solEsc(p.comprobante)}');return false;" style="color:#0f8b8d;">comprobante</a>`:' · <span style="color:#c0392b;">sin comprobante</span>'}</div>
+    <div style="text-align:right;">${p.validado?`<span style="color:#1e8449;font-weight:700;">✅ validado</span>`:(esDA&&!p.principal?`<button onclick="solPagoValidar('${p.id}','${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:10.5px;font-weight:700;cursor:pointer;">Validar</button>`:(p.principal?'<span style="font-size:10.5px;color:var(--text3);">valida con "✅ Validar pago"</span>':'<span style="color:#b45309;font-size:10.5px;">pendiente</span>'))}</div>
+  </div>`;
+  const html=`<div style="font-size:12px;color:var(--text3);margin-bottom:8px;">${solEsc(r.cliente_nombre)} · a facturar <b>${fmt(r.monto_total)}</b>. Para facturar, la suma de pagos <b>validados</b> debe cubrir el total.</div>
+    ${todos.map(fila).join('')}
+    <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:12.5px;"><span>Pagado (validado):</span><b style="color:${totalValid>=Number(r.monto_total||0)-0.5?'#1e8449':'#b45309'};">${fmt(totalValid)}${totalPagado>totalValid?' <span style="font-weight:400;color:var(--text3);">(+'+fmt(totalPagado-totalValid)+' sin validar)</span>':''}</b></div>
+    ${falta>0.5?`<div style="font-size:12px;color:#b45309;margin-top:2px;">Falta por cubrir (validado): <b>${fmt(falta)}</b></div>`:'<div style="font-size:12px;color:#1e8449;margin-top:2px;">✅ El pago cubre el total.</div>'}
+    ${esDA?`<div style="margin-top:12px;"><button onclick="solPagoAgregarModal('${id}')" style="background:#6B3FA0;color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;">➕ Agregar pago</button></div>`:''}`;
+  mkModal('modalPagos','💵 Pagos de la solicitud',html,null,'Cerrar',true);
+}
+function solPagoAgregarModal(id){
+  solModal(`<div style="font-size:15px;font-weight:800;margin-bottom:10px;">➕ Agregar pago</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px;">
+      ${solFld('Monto',`<input id="spMonto" type="number" step="0.01" style="${SOL_INPUT_STYLE}">`)}
+      ${solFld('Fecha del pago',`<input id="spFecha" type="date" style="${SOL_INPUT_STYLE}">`)}
+    </div>
+    ${solFld('Hora (opcional)',`<input id="spHora" style="${SOL_INPUT_STYLE}" placeholder="Ej. 14:30">`)}
+    ${solFld('Comprobante',`<input id="spFile" type="file" accept="image/*,application/pdf" style="font-size:12px;">`)}
+    ${solFld('Nota (opcional)',`<input id="spNota" style="${SOL_INPUT_STYLE}">`)}
+    <div style="display:flex;gap:8px;margin-top:6px;"><button id="spOk" onclick="solPagoAgregarGuardar('${id}')" style="background:#6B3FA0;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer;">Guardar pago</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:9px 14px;cursor:pointer;">Cancelar</button></div>`);
+}
+async function solPagoAgregarGuardar(id){
+  const monto=parseFloat(document.getElementById('spMonto')?.value);
+  const fecha=document.getElementById('spFecha')?.value||null;
+  const hora=document.getElementById('spHora')?.value?.trim()||null;
+  const nota=document.getElementById('spNota')?.value?.trim()||null;
+  const file=document.getElementById('spFile')?.files?.[0]||null;
+  if(!(monto>0)) return alert('Captura el monto del pago.');
+  if(!fecha) return alert('Captura la fecha del pago.');
+  const btn=document.getElementById('spOk'); if(btn){btn.disabled=true;btn.textContent='Guardando…';}
+  let comp=null;
+  try{ if(file) comp=await solSubirArchivo(file,id+'_p'+Date.now(),'comprobante'); }catch(e){}
+  const {error}=await sb.from('solicitud_pagos').insert({solicitud_id:id,monto,fecha_pago:fecha,hora_pago:hora,comprobante_path:comp,nota,created_by:currentUser?.id||null,created_por_nombre:userProfile?.nombre||null});
+  if(error){ if(btn){btn.disabled=false;btn.textContent='Guardar pago';} return alert('No se pudo guardar: '+error.message); }
+  solCerrarModal();
+  try{uiToast('✓ Pago agregado');}catch(e){}
+  solPagosModal(id);
+}
+async function solPagoValidar(pagoId,solId){
+  if(!confirm('¿Validar este pago? Confirma que el dinero realmente entró (comprobante cruzado con el banco).')) return;
+  const {error}=await sb.from('solicitud_pagos').update({validado:true,validado_por:userProfile?.nombre||'Dirección',validado_at:new Date().toISOString()}).eq('id',pagoId);
+  if(error) return alert('No se pudo validar: '+error.message);
+  try{uiToast('✓ Pago validado');}catch(e){}
+  solPagosModal(solId);
+}
+async function solTotalPagado(r){
+  const {data:extra}=await sb.from('solicitud_pagos').select('monto,validado').eq('solicitud_id',r.id);
+  const extraVal=(extra||[]).filter(p=>p.validado).reduce((a,p)=>a+Number(p.monto||0),0);
+  const princVal=r.pago_validado?Number(r.pago_monto||0):0;
+  return princVal+extraVal;
+}
+
 // ─── DEVOLVER CON MOTIVO / CORREGIR Y REENVIAR (Jp, 2026-11-14) ──────────────
 // Dirección o Administración devuelven la solicitud al vendedor con un motivo; el vendedor la edita y la reenvía
 // sobre la MISMA solicitud (no se crea otra). Mientras está devuelta no se puede validar pago ni facturar.
@@ -38635,6 +38790,15 @@ async function solFacturarGuardar(id){
   const r=_solRows.find(z=>z.id===id);if(!r) return;
   const serie=document.getElementById('sfxSerie').value.trim(),folio=document.getElementById('sfxFolio').value.trim();
   if(!folio) return alert('Falta el folio de la factura.');
+  // Jp, 2026-11-24: la suma de pagos validados debe cubrir el total a facturar.
+  if(r.tipo==='con_pago'){
+    const pagado=await solTotalPagado(r);
+    if(pagado+0.5<Number(r.monto_total||0)){
+      const falta=Number(r.monto_total||0)-pagado;
+      if(!shpEsDir()) return alert('No se puede facturar: el pago validado ('+fmt(pagado)+') no cubre el total ('+fmt(r.monto_total)+'). Falta '+fmt(falta)+'. Agrega o valida el pago en "💵 Pagos".');
+      if(!confirm('⛔ El pago validado ('+fmt(pagado)+') no cubre el total ('+fmt(r.monto_total)+') — falta '+fmt(falta)+'.\n\n¿Forzar la facturación como Director?')) return;
+    }
+  }
   { const bl=await solFactValidar(id);
     if(bl.length){
       if(!shpEsDir()) return alert('No se puede guardar la factura:\n\n• '+bl.join('\n• ')+'\n\nCorrige el archivo o devuélvela con motivo.');
