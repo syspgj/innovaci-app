@@ -16240,6 +16240,8 @@ async function renderDirectorSuscripcionesModulo(){
   // Jp, 2026-11-24: solicitudes de validación de serie que mandó Ventas (reemplaza Telegram).
   let totalValidVentas=0;
   try{ const {count}=await sb.from('solicitudes_validacion_serie').select('id',{count:'exact',head:true}).eq('estado','pendiente'); totalValidVentas=count||0; }catch(e){}
+  let totalDups=0;
+  try{ totalDups=suscGruposDuplicados(suscripciones||[]).length; }catch(e){}
   window._cartClientes=clientes||[];
   window._cartSuscripciones=suscripciones||[];
   window._carteraVendedores=vendedores||[];
@@ -16391,12 +16393,13 @@ async function renderVendedorSuscripcionesModulo(){
 let _suscModuloScope='director';
 function swSuscModulo(sub){
   _suscModuloSub=sub;
-  ['suscripciones','todas','pendientes','validventas','comision','revision'].forEach(s=>{
+  ['suscripciones','todas','pendientes','validventas','duplicados','comision','revision'].forEach(s=>{
     const btn=document.getElementById('suscModuloTab_'+s);
     if(btn) btn.classList.toggle('active',s===sub);
   });
   if(sub==='pendientes') renderPendientesVincular(_suscModuloScope);
   else if(sub==='validventas') renderPendientesValidarVentas();
+  else if(sub==='duplicados') renderSuscDuplicados();
   else if(sub==='todas') renderTodasSuscripciones('director'); // "Ver todas" reutiliza el scope sin filtro de vendedor
   else if(sub==='comision') renderComisionAspel();
   else if(sub==='revision') renderRevisionManual();
@@ -16480,6 +16483,92 @@ async function autoValidarPendientesVentas(){
     let ok=0; for(const p of aVal){ const {data:r}=await sb.rpc('validar_solicitud_serie',{p_id:p.id,p_usuario:currentUser.id}); if(r&&r.ok) ok++; }
     return ok;
   }catch(e){ return 0; }
+}
+
+// ── Jp, 2026-11-24: "🔁 Posibles duplicados" de series ──────────────────────
+// Detecta series casi idénticas (misma serie escrita distinto por errata/OCR:
+// VIZ vs VIZI, un dígito de más/menos) y deja fusionarlas en un clic.
+function _levDist(a,b){
+  const m=a.length,n=b.length; if(!m)return n; if(!n)return m;
+  let prev=Array.from({length:n+1},(_,j)=>j), cur=new Array(n+1);
+  for(let i=1;i<=m;i++){ cur[0]=i;
+    for(let j=1;j<=n;j++){ const c=a[i-1]===b[j-1]?0:1; cur[j]=Math.min(prev[j]+1,cur[j-1]+1,prev[j-1]+c); }
+    [prev,cur]=[cur,prev];
+  }
+  return prev[n];
+}
+function _prefLen(a,b){ let i=0; while(i<a.length&&i<b.length&&a[i]===b[i]) i++; return i; }
+const _OCR_CONF=[['O','0'],['I','1'],['I','L'],['L','1'],['S','5'],['B','8'],['Z','2'],['G','6'],['Q','0']];
+function _ocrUnSolo(a,b){ // misma longitud, difieren en 1 char que es confusión típica
+  if(a.length!==b.length) return false;
+  let diff=-1;
+  for(let i=0;i<a.length;i++){ if(a[i]!==b[i]){ if(diff>=0) return false; diff=i; } }
+  if(diff<0) return false;
+  const x=a[diff],y=b[diff];
+  return _OCR_CONF.some(p=>(p[0]===x&&p[1]===y)||(p[1]===x&&p[0]===y));
+}
+function suscGruposDuplicados(rows){
+  const norm=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  const items=(rows||[]).filter(r=>norm(r.numserie).length>=4).map(r=>({r,n:norm(r.numserie)}));
+  const used=new Set(), grupos=[];
+  for(let i=0;i<items.length;i++){
+    if(used.has(i)) continue;
+    const g=[i];
+    for(let j=i+1;j<items.length;j++){
+      if(used.has(j)) continue;
+      const a=items[i].n,b=items[j].n;
+      const indel=Math.abs(a.length-b.length)>=1&&Math.abs(a.length-b.length)<=2&&_levDist(a,b)<=2&&_prefLen(a,b)>=3;
+      if(a===b || indel || _ocrUnSolo(a,b)) g.push(j);
+    }
+    if(g.length>1){ g.forEach(k=>used.add(k)); grupos.push(g.map(k=>items[k].r)); }
+  }
+  return grupos;
+}
+async function renderSuscDuplicados(){
+  const cont=document.getElementById('dirCarteraContenidoMain'); if(!cont) return;
+  cont.innerHTML='<div class="loading"><div class="spinner"></div> Buscando posibles duplicados…</div>';
+  const {data:subs}=await sb.from('suscripciones_cartera').select('*').limit(5000);
+  const grupos=suscGruposDuplicados(subs||[]);
+  window._suscDupGrupos=grupos;
+  const cuentas={};
+  const cids=[...new Set((subs||[]).map(s=>s.cliente_id).filter(Boolean))];
+  if(cids.length){ const {data:cc}=await sb.from('clientes_cartera').select('id,razon_social').in('id',cids); (cc||[]).forEach(c=>cuentas[c.id]=c.razon_social); }
+  if(!grupos.length){ cont.innerHTML='<div style="padding:28px;text-align:center;color:var(--text3);background:#fff;border:1px dashed var(--border);border-radius:10px;">✅ No encontré series duplicadas.</div>'; return; }
+  const hoy=todayLocal();
+  cont.innerHTML=`<div style="font-size:12px;color:var(--text2);margin-bottom:12px;">Series casi idénticas (la misma licencia escrita distinto por errata u OCR). Elige cuál conservar y fusiona: se queda esa y se borran las demás, pasándole la cuenta y la verificación. <b>Revisa que de verdad sean la misma licencia antes de fusionar.</b></div>`+
+    grupos.map((g,idx)=>{
+      const def=g.find(s=>s.cliente_id)||g.find(s=>s.mes_reportado)||g.slice().sort((a,b)=>String(b.numserie||'').length-String(a.numserie||'').length)[0];
+      return `<div style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:12px;background:#fff;">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Grupo ${idx+1} · ${g.length} registros</div>
+        ${g.map(s=>{const vig=!s.fecha_proxima_renovacion||s.fecha_proxima_renovacion>=hoy;return `<label style="display:flex;align-items:flex-start;gap:8px;padding:7px 8px;border-radius:8px;cursor:pointer;border:1px solid var(--border);margin-bottom:6px;">
+          <input type="radio" name="dupKeep_${idx}" value="${s.id}" ${s.id===def.id?'checked':''} style="margin-top:3px;accent-color:#1F7A4D;">
+          <div style="font-size:12px;min-width:0;">
+            <div><b style="font-family:'JetBrains Mono',monospace;">${solEsc(s.numserie||'')}</b> ${s.producto?'· '+solEsc(s.producto):''} ${s.periodicidad?'· '+solEsc(s.periodicidad):''}</div>
+            <div style="font-size:11px;color:var(--text3);">${s.cliente_id?'🔗 '+solEsc(cuentas[s.cliente_id]||'cuenta'):'Sin cuenta'} · ${s.mes_reportado?'✔ verificada':'sin verificar'} · ${vig?'vigente':'VENCIDA'} · ${solEsc(s.origen||'')}</div>
+          </div></label>`;}).join('')}
+        <button onclick="fusionarSuscGrupo(${idx})" style="margin-top:4px;background:#1F7A4D;color:#fff;border:none;border-radius:7px;padding:7px 16px;font-size:12px;font-weight:700;cursor:pointer;">🔁 Fusionar (conservar la marcada)</button>
+      </div>`;
+    }).join('');
+}
+async function fusionarSuscGrupo(idx){
+  const g=(window._suscDupGrupos||[])[idx]; if(!g) return;
+  const keeperId=document.querySelector(`input[name="dupKeep_${idx}"]:checked`)?.value;
+  if(!keeperId){ alert('Elige cuál conservar.'); return; }
+  const keeper=g.find(s=>s.id===keeperId), otros=g.filter(s=>s.id!==keeperId);
+  if(!otros.length) return;
+  if(!confirm(`Se conservará ${keeper.numserie} y se borrarán ${otros.length} registro(s) duplicado(s). ¿Continuar?`)) return;
+  const upd={por_validar:false,updated_at:new Date().toISOString()};
+  if(!keeper.cliente_id){ const c=otros.find(s=>s.cliente_id); if(c) upd.cliente_id=c.cliente_id; }
+  if(!keeper.mes_reportado){ const m=otros.find(s=>s.mes_reportado); if(m) upd.mes_reportado=m.mes_reportado; }
+  if(!keeper.producto){ const p=otros.find(s=>s.producto); if(p) upd.producto=p.producto; }
+  if(!keeper.sistema_id){ const si=otros.find(s=>s.sistema_id); if(si) upd.sistema_id=si.sistema_id; }
+  if(!keeper.fecha_proxima_renovacion){ const f=otros.find(s=>s.fecha_proxima_renovacion); if(f) upd.fecha_proxima_renovacion=f.fecha_proxima_renovacion; }
+  const {error:eU}=await sb.from('suscripciones_cartera').update(upd).eq('id',keeperId);
+  if(eU){ alert('No se pudo actualizar la que se conserva: '+eU.message); return; }
+  const {error:eD}=await sb.from('suscripciones_cartera').delete().in('id',otros.map(s=>s.id));
+  if(eD){ alert('Se conservó la correcta, pero no pude borrar las duplicadas: '+eD.message); }
+  else uiToast('🔁 Duplicados fusionados');
+  renderDirectorSuscripcionesModulo();
 }
 
 // ── SUSCRIPCIONES — catálogo, cola de vinculación y carga de Excel ─────────
