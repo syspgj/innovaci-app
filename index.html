@@ -10319,7 +10319,7 @@ async function consumirCreditoEdicion(){
 // Homologado 2026-10-12 con el catálogo real del campo personalizado "Tipo
 // de Servicio" que Jp dio de alta en Vtiger (Potentials) — mismas 9 opciones
 // en ambos lados, para poder enviarlo al CRM sin tabla de equivalencias.
-const TIPOS_CRM=['Póliza','Curso Empresarial','IT','Servicio por Evento','Suscripción Aspel','Licenciamiento Aspel','Servidor Cloud','24/7','Curso o Diplomado en Vivo'];
+const TIPOS_CRM=['Póliza','Curso Empresarial','IT','Servicio por Evento','Suscripción Aspel','Licenciamiento Aspel','Timbres','Servidor Cloud','24/7','Curso o Diplomado en Vivo'];
 const TIPOS_SERVICIO=[...TIPOS_CRM,'Membresías','Servicio de soporte Aspel']; // Membresías y Servicio de soporte Aspel no existen en el picklist del CRM: no se envían
 // Catálogo de Servicio/Póliza por tipo (tabla catalogo_proyeccion). Si falla la carga, queda texto libre.
 let CAT_PROY=null;
@@ -10412,6 +10412,18 @@ async function catProyCargar(){
       CAT_PROY.push({tipo_servicio:'Servicio de soporte Aspel',nombre:s.nombre,orden:0,solo_para:null,grupo:s.categoria||'Servicios Aspel'});
     });
   }catch(e){console.error('catProy ops',e);}
+  // Jp, 2026-11-25: licencias de compra Aspel (catalogo_items familia "Sistemas
+  // Aspel") y timbres (familia "Timbres") entran como opciones de sus tipos, para
+  // que al elegir "Licenciamiento Aspel" o "Timbres" se despliegue el catálogo.
+  try{
+    if(!Array.isArray(CAT_PROY)) CAT_PROY=[];
+    const {data:lic}=await sb.from('catalogo_items').select('nombre,familia,atributos').eq('activo',true).in('familia',['Sistemas Aspel','Timbres']).order('nombre');
+    CAT_PROY=CAT_PROY.filter(c=>c.tipo_servicio!=='Licenciamiento Aspel'&&c.tipo_servicio!=='Timbres');
+    (lic||[]).forEach(x=>{
+      const tipo=x.familia==='Timbres'?'Timbres':'Licenciamiento Aspel';
+      CAT_PROY.push({tipo_servicio:tipo,nombre:x.nombre,orden:0,solo_para:null,grupo:(x.atributos&&x.atributos.sistema)||x.familia});
+    });
+  }catch(e){console.error('catProy licencias/timbres',e);}
   return CAT_PROY;
 }
 // Ficha de ventas de un servicio Aspel (se muestra sola al elegirlo en el cotizador).
@@ -10452,7 +10464,7 @@ function catProyItems(tipo){
 }
 // Jp, 2026-11-17: en estos tipos NO se puede escribir a mano: solo se elige del catálogo
 // (cursos en vivo con generación vigente en Academia, cursos 24/7 y membresías) para no crear productos de más.
-const TIPOS_SOLO_CATALOGO=['Curso o Diplomado en Vivo','24/7','Membresías','Servicio de soporte Aspel'];
+const TIPOS_SOLO_CATALOGO=['Curso o Diplomado en Vivo','24/7','Membresías','Servicio de soporte Aspel','Licenciamiento Aspel','Timbres'];
 function catProyLlenar(tipo,sel,inp,actual){
   if(!sel||!inp) return;
   const soloCat=TIPOS_SOLO_CATALOGO.includes(tipo);
@@ -33883,6 +33895,7 @@ const RUBRO_POR_TIPO_SERVICIO={
   'Servicio por Evento':'SERVICIO POR EVENTO',
   'Suscripción Aspel':'RENTA ASPEL',
   'Licenciamiento Aspel':'SISTEMA ASPEL',
+  'Timbres':'TIMBRES',
   'Membresías':'CIRCULO INNOVACI',
 };
 function rubroDesdeTipoServicio(tipo,concepto){
@@ -37267,7 +37280,7 @@ async function renderSolFacturaVendedor(){
       ${solFld('Total a facturar (con IVA)',`<input id="sfTotal" type="number" step="0.01" placeholder="0.00" style="${SOL_INPUT_STYLE}">`)}
     </div>
     ${solFld('Tipo de servicio',`<select id="sfTipoServ" onchange="solTipoServCambio()" style="${SOL_INPUT_STYLE}"><option value="">— Elige el tipo —</option>${TIPOS_SERVICIO.map(t=>`<option value="${solEsc(t)}">${solEsc(t)}</option>`).join('')}</select>`,'Elige primero el tipo, igual que en Proyección. Si es Curso o Diplomado en Vivo o 24/7, te pediré los datos del alumno y no podrás enviar sin ellos.')}
-    ${solFld('Concepto / curso o servicio',`<input id="sfConcepto" list="sfConceptoLista" placeholder="Elige del catálogo o escribe" style="${SOL_INPUT_STYLE}" onfocus="solCargarCatalogoConcepto()"><datalist id="sfConceptoLista"></datalist>`,'Empieza a escribir para ver el catálogo del tipo elegido (en vivo: solo los que tienen generación vigente); también puedes escribirlo libre.')}
+    ${solFld('Concepto / curso o servicio',`<input id="sfConcepto" list="sfConceptoLista" placeholder="Elige del catálogo o escribe" style="${SOL_INPUT_STYLE}" onfocus="solCargarCatalogoConcepto()"><datalist id="sfConceptoLista"></datalist><select id="sfConceptoSel" onchange="solConceptoSelCambio()" style="${SOL_INPUT_STYLE}display:none;"></select>`,'Empieza a escribir para ver el catálogo del tipo elegido (en vivo: solo los que tienen generación vigente). En Licenciamiento Aspel y Timbres solo se elige del catálogo.')}
     <div style="margin:-6px 0 10px;"><button type="button" onclick="solLicenciaPicker()" style="background:#0D2240;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:11px;font-weight:700;cursor:pointer;">🧩 Armar licencia Aspel</button> <span style="font-size:10.5px;color:var(--text3);">SAE · COI · Banco · PROD — precio 2026 y tope de descuento vigente</span></div>
     ${solFld('Liga de la oportunidad en el CRM',`<input id="sfCrm" placeholder="http://crminn.dynns.com/..." style="${SOL_INPUT_STYLE}">`)}
     <label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;margin-bottom:10px;padding:9px 12px;background:#fffbea;border:1px solid #f3dc8a;border-radius:8px;cursor:pointer;"><input type="checkbox" id="sfPublicoGral" onchange="solPublicoGralCambio()" style="margin-top:2px;"><span><b>El cliente no requiere factura → facturar a Violeta</b><br><span style="color:var(--text3);">Se usan los datos fiscales de Violeta (Tania Violeta Olague Sánchez). El comprador real sigue siendo el cliente que elegiste. Administración lo ve marcado.</span></span></label>
@@ -37339,16 +37352,29 @@ function solAcadFilaHtml(p,a){
 // ── Comprobante de pago: elegir directo de la galería / cámara, pegar (Ctrl+V) o arrastrar ──
 // Jp, 2026-11-14: el catálogo de conceptos depende del TIPO elegido (como en Proyección). En vivo = solo lo vigente en Academia.
 async function solCargarCatalogoConcepto(){
-  const dl=document.getElementById('sfConceptoLista');if(!dl) return;
+  const dl=document.getElementById('sfConceptoLista');
+  const inp=document.getElementById('sfConcepto');
+  const sel=document.getElementById('sfConceptoSel');
   const t=document.getElementById('sfTipoServ')?.value||'';
   try{
     await catProyCargar();
     const items=t?catProyItems(t):[];
+    // Jp, 2026-11-25: en Licenciamiento Aspel y Timbres NO se escribe libre: se
+    // elige del catálogo con un select (las licencias con cantidad se arman con el picker).
+    if(TIPOS_SOLO_CATALOGO.includes(t)&&sel){
+      sel.innerHTML='<option value="">— Elige del catálogo —</option>'+items.map(x=>`<option value="${solEsc(x.nombre)}">${solEsc(x.nombre)}${x.etiqueta?' '+solEsc((x.etiqueta||'').replace(/^ — /,'· ')):''}</option>`).join('');
+      if(inp&&inp.value&&items.some(x=>x.nombre===inp.value)) sel.value=inp.value; else if(inp) inp.value=sel.value;
+      sel.style.display=''; if(inp) inp.style.display='none'; if(dl) dl.innerHTML='';
+      return;
+    }
+    if(sel) sel.style.display='none'; if(inp) inp.style.display='';
+    if(!dl) return;
     if(items.length){dl.innerHTML=items.map(x=>`<option value="${solEsc(x.nombre)}">${solEsc((x.etiqueta||'').replace(/^ — /,''))}</option>`).join('');return;}
     if(!window._solCatGen){const {data}=await sb.from('catalogo_items').select('nombre').eq('activo',true).order('nombre').limit(500);window._solCatGen=(data||[]).map(x=>x.nombre);}
     dl.innerHTML=window._solCatGen.map(n=>`<option value="${solEsc(n)}"></option>`).join('');
   }catch(e){console.error('catálogo concepto',e);}
 }
+function solConceptoSelCambio(){ const s=document.getElementById('sfConceptoSel'),i=document.getElementById('sfConcepto'); if(s&&i) i.value=s.value; }
 // Al elegir el tipo: se acota el catálogo y, si es curso/diplomado (en vivo o 24/7), se despliega el bloque del alumno
 // sin opción de "no lleva alumnos". Para otros tipos (póliza, IT, etc.) el bloque se oculta.
 async function solTipoServCambio(){
@@ -38846,6 +38872,9 @@ function solLicenciaUsar(){
   const d=solLicenciaDatos(); if(!d){ alert('Elige sistema y categoría.'); return; }
   const frag=`Aspel ${d.sis} ${d.ver} — ${LIC_CAT_LBL[d.cat]} × ${d.qty}`;
   const cEl=document.getElementById('sfConcepto'); if(cEl){ cEl.value=cEl.value&&cEl.value.trim()?cEl.value.trim()+' + '+frag:frag; }
+  // Si el concepto está en modo "solo catálogo" (select visible), refleja ahí el armado del picker.
+  const sEl=document.getElementById('sfConceptoSel');
+  if(sEl&&sEl.style.display!=='none'&&cEl){ const o=document.createElement('option'); o.value=cEl.value; o.textContent=cEl.value; o.selected=true; sEl.appendChild(o); }
   const tEl=document.getElementById('sfTotal'); if(tEl){ const cur=parseFloat(tEl.value)||0; tEl.value=Math.round((cur+d.subtotal)*100)/100; }
   solCerrarModal();
   uiToast('🧩 Licencia agregada al concepto y total');
