@@ -5,18 +5,23 @@
 // cuenta de acceso; por eso el alumno "nunca creó la cuenta" y no puede entrar,
 // y si se registra solo genera duplicados. Este endpoint:
 //   1. Toma al alumno (participante) y su contacto de Odoo (lo crea si falta).
-//   2. Genera una liga de "define tu contraseña" ligada a ESE contacto
-//      (signup_prepare) — al completarla, Odoo le crea su usuario de portal
-//      ligado al contacto existente, así que NO dispara el bloqueo de correo
-//      duplicado.
-//   3. Le manda esa liga por NUESTRO correo (Resend), no por el de Odoo (que
-//      no está entregando).
+//   2. Se asegura de que tenga USUARIO DE PORTAL (externo, gratis). En Odoo 19
+//      ya NO se puede generar la liga de signup por RPC (signup_token/url ya no
+//      son campos legibles y signup_get_auth_param es método privado), así que
+//      como admin le PONE una contraseña temporal al usuario de portal, o lo
+//      crea si todavía no existe.
+//   3. Le manda sus datos de acceso (correo + contraseña temporal + liga de
+//      inicio de sesión) por NUESTRO correo (Resend), no por el de Odoo.
+//   Si el alumno YA se conectó antes, no le pisa su contraseña: avisa que ya
+//   tiene cuenta activa, salvo que se mande { forzar:true } para regenerarla.
 //
-// Entrada (POST JSON): { inscripcion_id }  — requiere sesión (Bearer token).
+// Entrada (POST JSON): { inscripcion_id, forzar? }  — requiere sesión (Bearer).
 // Variables: ODOO_URL, ODOO_DB, ODOO_LOGIN, ODOO_API_KEY, SUPABASE_URL,
 //            SUPABASE_SERVICE_ROLE_KEY, RESEND_API_KEY, ACADEMIA_BIENVENIDA_FROM,
 //            CAPACITACION_EMAIL, ACADEMIA_PUBLICA_URL.
 // NUNCA devuelve ni imprime la clave de Odoo.
+
+import crypto from 'node:crypto';
 
 export const config = { maxDuration: 60 };
 
@@ -57,20 +62,36 @@ async function rpc(url, service, method, args) {
   return j.result;
 }
 
-function armarAccesoHtml({ nombre, curso, link }) {
+// Contraseña temporal fuerte (>=8), con al menos 1 mayúscula, 1 minúscula y 1
+// número, sin caracteres ambiguos (0/O/1/l/I) para que se lea bien en el correo.
+function nuevaClave() {
+  const MAY = 'ABCDEFGHJKMNPQRSTUVWXYZ', MIN = 'abcdefghijkmnpqrstuvwxyz', NUM = '23456789';
+  const ALL = MAY + MIN + NUM;
+  const b = crypto.randomBytes(12);
+  let s = MAY[b[0] % MAY.length] + MIN[b[1] % MIN.length] + NUM[b[2] % NUM.length];
+  for (let i = 3; i < 12; i++) s += ALL[b[i] % ALL.length];
+  return s;
+}
+
+function armarAccesoHtml({ nombre, curso, email, pass, loginUrl }) {
   const primero = esc((nombre || '').trim().split(/\s+/)[0] || '');
   return `<div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;color:#111827;">
     <div style="background:#0d2b45;color:#fff;padding:20px 24px;border-radius:10px 10px 0 0;">
       <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;opacity:.8;">Academia Innovaci</div>
-      <div style="font-size:21px;font-weight:700;margin-top:4px;">🔑 Activa tu acceso</div>
+      <div style="font-size:21px;font-weight:700;margin-top:4px;">🔑 Tus datos de acceso</div>
     </div>
     <div style="border:1px solid #e5e7eb;border-top:none;padding:22px 24px;border-radius:0 0 10px 10px;">
       <p style="font-size:14px;line-height:1.55;margin:0 0 12px;">Hola${primero ? ' ' + primero : ''}, tu lugar en nuestra Academia en línea ya está listo${curso ? ' — <b>' + esc(curso) + '</b>' : ''}.</p>
-      <p style="font-size:14px;line-height:1.55;margin:0 0 16px;">Para entrar solo tienes que <b>crear tu contraseña</b>. No necesitas registrarte: tu cuenta ya existe, solo defínela con el botón de abajo y usa <b>este mismo correo</b> para iniciar sesión.</p>
-      <div style="text-align:center;margin:4px 0 20px;"><a href="${esc(link)}" style="display:inline-block;background:#0f8b8d;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;">Crear mi contraseña y entrar</a></div>
-      <p style="font-size:12px;color:#6b7280;margin:0 0 4px;">Si el botón no abre, copia y pega esta liga en tu navegador:</p>
-      <p style="font-size:12px;color:#0f8b8d;word-break:break-all;margin:0 0 14px;">${esc(link)}</p>
-      <p style="font-size:13px;color:#374151;margin:8px 0 0;">¿Alguna duda? Responde a este correo y con gusto te ayudamos.</p>
+      <p style="font-size:14px;line-height:1.55;margin:0 0 14px;">Entra con estos datos:</p>
+      <table style="width:100%;border-collapse:collapse;margin:0 0 16px;font-size:14px;">
+        <tr><td style="padding:8px 10px;background:#f3f4f6;border:1px solid #e5e7eb;width:160px;">Usuario (correo)</td><td style="padding:8px 10px;border:1px solid #e5e7eb;"><b>${esc(email)}</b></td></tr>
+        <tr><td style="padding:8px 10px;background:#f3f4f6;border:1px solid #e5e7eb;">Contraseña temporal</td><td style="padding:8px 10px;border:1px solid #e5e7eb;"><b style="font-family:Consolas,monospace;font-size:15px;letter-spacing:.5px;">${esc(pass)}</b></td></tr>
+      </table>
+      <div style="text-align:center;margin:4px 0 18px;"><a href="${esc(loginUrl)}" style="display:inline-block;background:#0f8b8d;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px;">Iniciar sesión</a></div>
+      <p style="font-size:12px;color:#6b7280;margin:0 0 4px;">Si el botón no abre, entra aquí:</p>
+      <p style="font-size:12px;color:#0f8b8d;word-break:break-all;margin:0 0 14px;">${esc(loginUrl)}</p>
+      <p style="font-size:13px;color:#374151;margin:8px 0 0;">Por tu seguridad, cambia la contraseña al entrar: ícono de tu perfil (arriba a la derecha) → <b>Mi cuenta / Preferencias</b> → pestaña <b>Seguridad</b>.</p>
+      <p style="font-size:13px;color:#374151;margin:14px 0 0;">¿Alguna duda? Responde a este correo y con gusto te ayudamos.</p>
       <p style="font-size:13px;color:#374151;margin:14px 0 0;">Un abrazo,<br><b>Academia Innovaci</b></p>
     </div></div>`;
 }
@@ -114,58 +135,75 @@ export default async function handler(req, res) {
       if (!pid) pid = await call('res.partner', 'create', [{ name: nombre || email, email, ...(tel ? { phone: tel } : {}) }]);
     }
 
-    // 2) ¿Ya tiene usuario de acceso? (solo informativo para el mensaje)
-    let yaTeniaUsuario = false;
+    // 2) Grupo de portal (usuario EXTERNO, gratis) de ESTE Odoo.
+    let portalGid = null;
     try {
-      const us = await call('res.users', 'search_read', [[['login', '=ilike', email]]], { fields: ['id'], limit: 1 });
-      yaTeniaUsuario = !!(us && us.length);
+      const g = await call('ir.model.data', 'search_read', [[['module', '=', 'base'], ['name', '=', 'group_portal']]], { fields: ['res_id'], limit: 1 });
+      portalGid = g && g.length ? g[0].res_id : null;
     } catch (e) {}
 
-    // 3) Liga para definir contraseña, ligada a ESE contacto (no crea contacto nuevo).
-    try { await call('res.partner', 'signup_prepare', [[pid]]); }
-    catch (e) { return res.status(200).json({ ok: false, error: 'No se pudo preparar el acceso en Odoo: ' + (e.message || e) }); }
-    // Odoo 19 no deja LEER 'signup_token'/'signup_url' como campo por RPC ("Invalid field").
-    // La forma correcta es el método signup_get_auth_param (auth_signup): internamente
-    // hace signup_prepare y devuelve { <partner_id>: { auth_signup_token, auth_login } }.
-    let link = null;
+    // 3) Usuario de portal ligado a ese contacto (por login o por el partner).
+    //    active_test:false para encontrarlo aunque esté archivado.
+    let usr = null;
     try {
-      const ap = await call('res.partner', 'signup_get_auth_param', [[pid]]);
-      const info = (ap && (ap[pid] || ap[String(pid)])) || {};
-      const tok = info.auth_signup_token || info.signup_token || info.token;
-      if (tok) link = `${ACADEMIA_URL}/web/signup?token=${encodeURIComponent(tok)}`;
-    } catch (e) { /* abajo se intenta leer el campo por si la versión sí lo expone */ }
-    if (!link) {
-      for (const fields of [['signup_url'], ['signup_token']]) {
-        try {
-          const row = (await call('res.partner', 'read', [[pid], fields]))[0] || {};
-          if (row.signup_url) { link = row.signup_url; break; }
-          if (row.signup_token) { link = `${ACADEMIA_URL}/web/signup?token=${encodeURIComponent(row.signup_token)}`; break; }
-        } catch (e) { /* siguiente */ }
-      }
-    }
-    if (!link) return res.status(200).json({ ok: false, error: 'Odoo no generó la liga de acceso. En Academia (Odoo): Ajustes → Usuarios, "Registro de cuenta/Signup" debe permitir invitación.' });
+      const usrs = await call('res.users', 'search_read',
+        [['|', ['login', '=ilike', email], ['partner_id', '=', pid]]],
+        { fields: ['id', 'login', 'active', 'login_date'], context: { active_test: false } });
+      usr = usrs && usrs.length ? usrs[0] : null;
+    } catch (e) {}
+    const yaTeniaUsuario = !!usr;
+    const yaSeConecto = !!(usr && usr.login_date);
+    const forzar = body.forzar === true || body.forzar === 'true';
 
-    // 4) Correo por Resend (no por Odoo). Copia SIEMPRE a Capacitación y a quien
+    // Si YA se conectó y no se fuerza, no le pisamos su contraseña: avisamos.
+    if (usr && yaSeConecto && !forzar) {
+      return res.status(200).json({
+        ok: false, ya_activo: true, enviado_a: email, partner_id: pid,
+        error: 'Este alumno ya tiene cuenta activa en la Academia (ya inició sesión antes), así que no le cambié su contraseña. Si la perdió, puedo regenerársela y reenviarla.',
+      });
+    }
+
+    // 4) Contraseña temporal + alta/asignación del usuario de portal (como admin).
+    const pass = nuevaClave();
+    try {
+      if (!usr) {
+        const vals = { name: nombre || email, login: email, email, partner_id: pid, password: pass };
+        if (portalGid) vals.groups_id = [[6, 0, [portalGid]]];
+        const nid = await call('res.users', 'create', [vals],
+          { context: { no_reset_password: true, tracking_disable: true, mail_create_nosubscribe: true } });
+        usr = { id: nid };
+      } else {
+        const w = { password: pass };
+        if (usr.active === false) w.active = true;
+        await call('res.users', 'write', [[usr.id], w]);
+      }
+    } catch (e) {
+      console.error('ODOO-ACCESO error al asignar acceso:', String(e.message || e));
+      return res.status(200).json({ ok: false, error: 'No se pudo asignar el acceso en Odoo: ' + (e.message || e) });
+    }
+
+    // 5) Correo por Resend (no por Odoo). Copia SIEMPRE a Capacitación y a quien
     // lo envía (sin duplicar al alumno), para que quede constancia del acceso.
+    const loginUrl = `${ACADEMIA_URL}/web/login`;
     const lower = (s) => String(s || '').trim().toLowerCase();
     const cc = [...new Set([CAPA, u.email].map(lower).filter((x) => x && x !== lower(email)))];
-    const html = armarAccesoHtml({ nombre, curso, link });
+    const html = armarAccesoHtml({ nombre, curso, email, pass, loginUrl });
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${RESEND}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: FROM, to: [email], cc, reply_to: CAPA, subject: '🔑 Activa tu acceso a Academia Innovaci', html }),
+      body: JSON.stringify({ from: FROM, to: [email], cc, reply_to: CAPA, subject: '🔑 Tus datos de acceso a Academia Innovaci', html }),
     });
     const rb = await r.json().catch(() => ({}));
     if (!r.ok) return res.status(200).json({ ok: false, error: 'Resend: ' + (rb.message || r.status) });
 
-    // 5) Marca la inscripción
+    // 6) Marca la inscripción
     const ahora = new Date().toISOString();
     await sbPatch(`academia_inscripciones?id=eq.${id}`, {
       odoo_partner_id: pid,
       atencion: { ...(insc.atencion || {}), acceso_enviado_at: ahora, acceso_enviado_por: String(u.email || '') },
     });
 
-    return res.status(200).json({ ok: true, enviado_a: email, copia_a: cc, ya_tenia_usuario: yaTeniaUsuario, partner_id: pid });
+    return res.status(200).json({ ok: true, enviado_a: email, copia_a: cc, ya_tenia_usuario: yaTeniaUsuario, regenerada: yaSeConecto, partner_id: pid, user_id: usr.id });
   } catch (e) {
     return res.status(200).json({ ok: false, error: String((e && e.message) || e) });
   }
