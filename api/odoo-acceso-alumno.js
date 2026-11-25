@@ -124,15 +124,26 @@ export default async function handler(req, res) {
     // 3) Liga para definir contraseña, ligada a ESE contacto (no crea contacto nuevo).
     try { await call('res.partner', 'signup_prepare', [[pid]]); }
     catch (e) { return res.status(200).json({ ok: false, error: 'No se pudo preparar el acceso en Odoo: ' + (e.message || e) }); }
-    // Odoo 19 ya no deja LEER 'signup_token' por RPC ("Invalid field 'signup_token' on res.partner").
-    // Se intenta primero con 'signup_url' (la liga completa, que ya trae el token); si ese campo
-    // tampoco está, se cae a 'signup_token'; y si nada, solo el nombre — sin tronar el endpoint.
-    let info = {};
-    for (const fields of [['signup_url', 'name'], ['signup_token', 'name'], ['name']]) {
-      try { info = (await call('res.partner', 'read', [[pid], fields]))[0] || {}; break; } catch (e) { /* prueba el siguiente set de campos */ }
+    // Odoo 19 no deja LEER 'signup_token'/'signup_url' como campo por RPC ("Invalid field").
+    // La forma correcta es el método signup_get_auth_param (auth_signup): internamente
+    // hace signup_prepare y devuelve { <partner_id>: { auth_signup_token, auth_login } }.
+    let link = null;
+    try {
+      const ap = await call('res.partner', 'signup_get_auth_param', [[pid]]);
+      const info = (ap && (ap[pid] || ap[String(pid)])) || {};
+      const tok = info.auth_signup_token || info.signup_token || info.token;
+      if (tok) link = `${ACADEMIA_URL}/web/signup?token=${encodeURIComponent(tok)}`;
+    } catch (e) { /* abajo se intenta leer el campo por si la versión sí lo expone */ }
+    if (!link) {
+      for (const fields of [['signup_url'], ['signup_token']]) {
+        try {
+          const row = (await call('res.partner', 'read', [[pid], fields]))[0] || {};
+          if (row.signup_url) { link = row.signup_url; break; }
+          if (row.signup_token) { link = `${ACADEMIA_URL}/web/signup?token=${encodeURIComponent(row.signup_token)}`; break; }
+        } catch (e) { /* siguiente */ }
+      }
     }
-    let link = info.signup_url || (info.signup_token ? `${ACADEMIA_URL}/web/signup?token=${encodeURIComponent(info.signup_token)}` : null);
-    if (!link) return res.status(200).json({ ok: false, error: 'Odoo no generó la liga de acceso (revisa que el registro por invitación esté habilitado en la Academia).' });
+    if (!link) return res.status(200).json({ ok: false, error: 'Odoo no generó la liga de acceso. En Academia (Odoo): Ajustes → Usuarios, "Registro de cuenta/Signup" debe permitir invitación.' });
 
     // 4) Correo por Resend (no por Odoo). Copia SIEMPRE a Capacitación y a quien
     // lo envía (sin duplicar al alumno), para que quede constancia del acceso.
