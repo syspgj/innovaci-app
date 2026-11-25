@@ -1716,20 +1716,36 @@ async function academiaInscribirOdooDetalle(inscripcionId,btn){
     academiaVerFicha(inscripcionId);
   }catch(e){ alert('No se pudo inscribir en Odoo: '+(e.message||e)); reactivar(); }
 }
-// Jp, 2026-11-23: crea el acceso de portal del alumno y le manda la liga para
-// definir su contraseña por NUESTRO correo (no por el de Odoo). No lo obliga a
-// registrarse solo (la liga va ligada a su contacto existente).
-async function academiaEnviarAccesoOdoo(inscripcionId,btn){
+// Jp, 2026-11-25: da acceso de portal al alumno. En Odoo 19 ya no se puede
+// generar liga de signup por RPC, así que el endpoint le pone una contraseña
+// temporal (o crea su usuario de portal) y se la manda por NUESTRO correo. Si el
+// alumno ya se conectó antes, el endpoint responde ya_activo y aquí preguntamos
+// si regenerar su contraseña (reenvío con forzar:true).
+async function academiaEnviarAccesoOdoo(inscripcionId,btn,forzar){
   const txt=btn?btn.textContent:''; if(btn){btn.disabled=true;btn.textContent='Enviando…';}
   const reactivar=()=>{ if(btn){btn.disabled=false;btn.textContent=txt;} };
   try{
     const {data:sess}=await sb.auth.getSession();
-    const r=await fetch('/api/odoo-acceso-alumno',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({inscripcion_id:inscripcionId})});
+    const r=await fetch('/api/odoo-acceso-alumno',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({inscripcion_id:inscripcionId,forzar:!!forzar})});
     const j=await r.json().catch(()=>({}));
+    if(j&&j.ya_activo&&!forzar){
+      reactivar();
+      if(confirm('Este alumno YA tiene cuenta activa en la Academia (ya inició sesión antes).\n\n¿Regenerar su contraseña y reenviársela? Esto reemplaza su contraseña actual.')){
+        return academiaEnviarAccesoOdoo(inscripcionId,btn,true);
+      }
+      return;
+    }
     if(!j.ok){ alert('No se pudo enviar el acceso: '+(j.error||('Error '+r.status))); return reactivar(); }
-    alert('✅ Acceso enviado a '+(j.enviado_a||'')+'.\n\n'+(j.ya_tenia_usuario?'Ya tenía usuario; se le mandó la liga para restablecer su contraseña.':'Le llegará una liga para crear su contraseña y entrar (por nuestro correo).'));
+    alert('✅ Datos de acceso enviados a '+(j.enviado_a||'')+'.\n\n'+(j.regenerada?'Se le regeneró la contraseña y se le mandó la nueva (por nuestro correo).':'Le llegan su usuario y una contraseña temporal para entrar (por nuestro correo). Al entrar puede cambiarla.'));
     academiaVerFicha(inscripcionId);
   }catch(e){ alert('No se pudo enviar el acceso: '+(e.message||e)); reactivar(); }
+}
+// Jp, 2026-11-25: botón directo "Resetear contraseña" — regenera la contraseña
+// del usuario de portal y se la reenvía por correo (fuerza, sin importar si ya
+// se conectó antes). Es lo que ofrece el aviso de "cuenta activa".
+async function academiaResetPassOdoo(inscripcionId,btn){
+  if(!confirm('¿Regenerar la contraseña de este alumno y reenviarle sus datos de acceso por correo?\n\nEsto reemplaza su contraseña actual en la Academia.')) return;
+  return academiaEnviarAccesoOdoo(inscripcionId,btn,true);
 }
 // Jp, 2026-11-20: estado de inscripción en Odoo por alumno.
 function academiaOdooBadge(r){
