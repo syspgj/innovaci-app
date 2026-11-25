@@ -37268,6 +37268,7 @@ async function renderSolFacturaVendedor(){
     </div>
     ${solFld('Tipo de servicio',`<select id="sfTipoServ" onchange="solTipoServCambio()" style="${SOL_INPUT_STYLE}"><option value="">— Elige el tipo —</option>${TIPOS_SERVICIO.map(t=>`<option value="${solEsc(t)}">${solEsc(t)}</option>`).join('')}</select>`,'Elige primero el tipo, igual que en Proyección. Si es Curso o Diplomado en Vivo o 24/7, te pediré los datos del alumno y no podrás enviar sin ellos.')}
     ${solFld('Concepto / curso o servicio',`<input id="sfConcepto" list="sfConceptoLista" placeholder="Elige del catálogo o escribe" style="${SOL_INPUT_STYLE}" onfocus="solCargarCatalogoConcepto()"><datalist id="sfConceptoLista"></datalist>`,'Empieza a escribir para ver el catálogo del tipo elegido (en vivo: solo los que tienen generación vigente); también puedes escribirlo libre.')}
+    <div style="margin:-6px 0 10px;"><button type="button" onclick="solLicenciaPicker()" style="background:#0D2240;color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:11px;font-weight:700;cursor:pointer;">🧩 Armar licencia Aspel</button> <span style="font-size:10.5px;color:var(--text3);">SAE · COI · Banco · PROD — precio 2026 y tope de descuento vigente</span></div>
     ${solFld('Liga de la oportunidad en el CRM',`<input id="sfCrm" placeholder="http://crminn.dynns.com/..." style="${SOL_INPUT_STYLE}">`)}
     <label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;margin-bottom:10px;padding:9px 12px;background:#fffbea;border:1px solid #f3dc8a;border-radius:8px;cursor:pointer;"><input type="checkbox" id="sfPublicoGral" onchange="solPublicoGralCambio()" style="margin-top:2px;"><span><b>El cliente no requiere factura → facturar a Violeta</b><br><span style="color:var(--text3);">Se usan los datos fiscales de Violeta (Tania Violeta Olague Sánchez). El comprador real sigue siendo el cliente que elegiste. Administración lo ve marcado.</span></span></label>
     <div id="sfBloquePago" style="background:#f8fafb;border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;">
@@ -38781,11 +38782,79 @@ function solMatchServidor(concepto){
   // Es precio MENSUAL: el cliente puede pagar varios meses (con descuento por periodo de hasta 10%), así que solo se vigila el piso.
   return {fuente:'Catálogo de servidores',items:[{nombre:r.nombre+' (precio mensual)',lista:Number(r.precio_mensual),listaMax:null}],secs:[],extraDesc:10,porUnidad:false};
 }
+// Jp, 2026-11-25 — Licencias de compra Aspel (SAE/COI/BANCO/PROD). Tope de
+// descuento según Promociones: usuario/licencia nueva → 'aspel_timbres' (15%);
+// actualización de versión y usuario adicional en actualización → 'aspel_actualizacion' (10%).
+function solMatchLicencia(concepto){
+  const c=solNrmTxt(concepto);
+  const sisM=/\b(sae|coi|banco|prod)\b/.exec(c);
+  if(!sisM) return null;
+  // Debe sonar a licencia/actualización de sistema, no a póliza/curso/renta/etc.
+  if(!/licen|actualiz|usuario|usu\b|usr|version/.test(c)) return null;
+  if(/poliza|curso|taller|diplomado|timbre|renta|asistente|cloud|servidor|suscrip/.test(c)) return null;
+  const sis=sisM[1].toUpperCase();
+  const esAct=/actualiz/.test(c), esAdic=/adicional/.test(c);
+  const categoria=esAct?(esAdic?'usuario_adicional_version':'actualizacion_version'):'usuario_nuevo';
+  const items=(_solPrecios.licencias||[]).filter(x=>x.sistema===sis&&x.categoria===categoria);
+  if(!items.length) return null;
+  const qtyM=/[x×]\s*(\d{1,3})(?!\d)/.exec(c);
+  const qty=qtyM?Math.max(1,parseInt(qtyM[1],10)):1;
+  const lista=Math.min(...items.map(x=>x.precio))*qty;
+  const sec=categoria==='usuario_nuevo'?'aspel_timbres':'aspel_actualizacion';
+  return {fuente:'Catálogo de licencias Aspel',items:[{nombre:items[0].nombre+(qty>1?' × '+qty:''),lista,listaMax:lista}],secs:[sec],extraDesc:0,porUnidad:false};
+}
+// Jp, 2026-11-25 — Picker de licencia: el vendedor elige sistema + categoría +
+// cantidad; arma un concepto canónico y pone el total en el precio oficial 2026
+// (con IVA), mostrando el tope de descuento vigente. La validación lo lee de ahí.
+const LIC_CAT_LBL={usuario_nuevo:'Usuario nuevo',actualizacion_version:'Actualización de versión',usuario_adicional_version:'Usuario adicional en actualización'};
+async function solLicenciaPicker(){
+  await solPreciosCargar();
+  const lic=_solPrecios.licencias||[];
+  if(!lic.length){ alert('No hay licencias en el catálogo todavía.'); return; }
+  const sistemas=[...new Set(lic.map(x=>x.sistema))].sort();
+  solModal(`<div style="font-size:16px;font-weight:800;margin-bottom:8px;">🧩 Armar licencia Aspel</div>
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:0 12px;">
+      ${solFld('Sistema',`<select id="lpSis" onchange="solLicenciaCalc()" style="${SOL_INPUT_STYLE}">${sistemas.map(s=>`<option>${s}</option>`).join('')}</select>`)}
+      ${solFld('Cantidad',`<input id="lpQty" type="number" min="1" value="1" oninput="solLicenciaCalc()" style="${SOL_INPUT_STYLE}">`)}
+    </div>
+    ${solFld('Categoría',`<select id="lpCat" onchange="solLicenciaCalc()" style="${SOL_INPUT_STYLE}">${Object.entries(LIC_CAT_LBL).map(([k,l])=>`<option value="${k}">${l}</option>`).join('')}</select>`)}
+    <div id="lpInfo" style="font-size:12px;background:var(--surface-2,#f6f7f9);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin:2px 0 10px;"></div>
+    <div style="display:flex;gap:8px;"><button onclick="solLicenciaUsar()" style="background:#1F7A4D;color:#fff;border:none;border-radius:8px;padding:9px 18px;font-size:13px;font-weight:700;cursor:pointer;">Agregar a la solicitud</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:9px 14px;cursor:pointer;">Cancelar</button></div>`,460);
+  solLicenciaCalc();
+}
+function solLicenciaDatos(){
+  const sis=document.getElementById('lpSis')?.value, cat=document.getElementById('lpCat')?.value;
+  const qty=Math.max(1,parseInt(document.getElementById('lpQty')?.value,10)||1);
+  const it=(_solPrecios.licencias||[]).find(x=>x.sistema===sis&&x.categoria===cat);
+  if(!it) return null;
+  const sec=cat==='usuario_nuevo'?'aspel_timbres':'aspel_actualizacion';
+  const tope=solDescMax([sec],todayLocal());
+  const subtotal=Math.round(it.precio*qty*100)/100;
+  const minimo=Math.round(subtotal*(1-tope/100)*100)/100;
+  const ver=/\b(\d+)/.exec(it.nombre.split('—')[0])?.[1]||'';
+  return {sis,cat,qty,it,sec,tope,unit:it.precio,subtotal,minimo,ver};
+}
+function solLicenciaCalc(){
+  const d=solLicenciaDatos(); const box=document.getElementById('lpInfo'); if(!box) return;
+  if(!d){ box.innerHTML='Sin precio para esa combinación.'; return; }
+  box.innerHTML=`<div><b>${solEsc(d.it.nombre)}</b></div>
+    <div style="margin-top:4px;">Oficial 2026 (con IVA): <b>${fmt(d.unit)}</b> × ${d.qty} = <b>${fmt(d.subtotal)}</b></div>
+    <div style="margin-top:2px;">Tope de descuento vigente: <b>${d.tope}%</b> → mínimo permitido: <b style="color:#1a7a4a;">${fmt(d.minimo)}</b></div>
+    <div style="font-size:10.5px;color:var(--text3);margin-top:3px;">Se agrega al concepto y el total sube al precio oficial. Si das descuento, edita el total; si baja del mínimo, pedirá autorización de Dirección.</div>`;
+}
+function solLicenciaUsar(){
+  const d=solLicenciaDatos(); if(!d){ alert('Elige sistema y categoría.'); return; }
+  const frag=`Aspel ${d.sis} ${d.ver} — ${LIC_CAT_LBL[d.cat]} × ${d.qty}`;
+  const cEl=document.getElementById('sfConcepto'); if(cEl){ cEl.value=cEl.value&&cEl.value.trim()?cEl.value.trim()+' + '+frag:frag; }
+  const tEl=document.getElementById('sfTotal'); if(tEl){ const cur=parseFloat(tEl.value)||0; tEl.value=Math.round((cur+d.subtotal)*100)/100; }
+  solCerrarModal();
+  uiToast('🧩 Licencia agregada al concepto y total');
+}
 async function solControlPrecio(o){
   try{
     await solPreciosCargar();
     const concepto=o.concepto||'';
-    const m=solMatchTienda(concepto,o.tipoServ,o.nivel)||solMatchPoliza(concepto)||solMatchServidor(concepto);
+    const m=solMatchTienda(concepto,o.tipoServ,o.nivel)||solMatchPoliza(concepto)||solMatchServidor(concepto)||solMatchLicencia(concepto);
     if(!m) return {nivel:'sin_precio'};
     const lq=/^\s*(\d{1,2})\s+[A-Za-zÁ-ú]/.exec(concepto);
     const k=m.porUnidad?Math.max(1,lq?parseInt(lq[1],10):((o.asistentes||[]).length||1)):1;
