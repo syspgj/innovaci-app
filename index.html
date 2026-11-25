@@ -38631,6 +38631,19 @@ async function solCorregirGuardar(id){
       }
     } else if(cp.nivel!=='bloqueo'&&r.precio_alerta==='requiere_autorizacion') Object.assign(upd,{precio_alerta:null,precio_detalle:null});
   }
+  // Jp, 2026-11-25: permitir corregir también la cotización y el comprobante al reenviar.
+  try{
+    const cf=document.getElementById('srCotizFile')?.files?.[0];
+    if(cf){ upd.cotizacion_pdf_path=await solSubirArchivo(cf,id,'cotizacion'); }
+    const pf=document.getElementById('srCompFile')?.files?.[0];
+    if(pf){
+      upd.comprobante_path=await solSubirArchivo(pf,id,'comprobante');
+      const cm=parseFloat(document.getElementById('srCompMonto')?.value);
+      const cfch=document.getElementById('srCompFecha')?.value;
+      if(cm>0) upd.pago_monto=cm;
+      if(cfch) upd.pago_fecha=cfch;
+    }
+  }catch(e){ return alert('No se pudo subir el archivo: '+(e?.message||e)); }
   const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
   if(error) return alert('No se pudo reenviar: '+error.message);
   try{const {data:sess}=await sb.auth.getSession();fetch('/api/facturacion-avisar-telegram',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solicitud_id:id})}).catch(()=>{});}catch(e){}
@@ -38687,12 +38700,16 @@ async function solCancelar(id){
 let _solPrecios=null,_solPromos=null,_solPreciosTs=0;
 async function solPreciosCargar(){
   if(_solPrecios&&_solPromos&&Date.now()-_solPreciosTs<300000) return;
-  const [a,b,c,d]=await Promise.all([
+  const [a,b,c,d,e]=await Promise.all([
     sb.from('shopify_producto_map').select('clave,titulo,variante,nivel,precio'),
     sb.from('polizas_catalogo').select('categoria,nombre,modalidad,precio,activo').eq('activo',true),
     sb.from('productos_servidores').select('categoria,nombre,rdp_usuarios,precio_mensual,activo').eq('activo',true),
-    sb.from('promociones_config').select('seccion,descuento,permanente,fecha_inicio,fecha_fin,anio,mes,updated_at').eq('activo',true)]);
-  _solPrecios={tienda:a.data||[],polizas:b.data||[],servidores:c.data||[]};
+    sb.from('promociones_config').select('seccion,descuento,permanente,fecha_inicio,fecha_fin,anio,mes,updated_at').eq('activo',true),
+    sb.from('catalogo_items').select('nombre,precio_lista,atributos').eq('familia','Sistemas Aspel').eq('activo',true)]);
+  // Licencias de compra Aspel (catalogo_items): precio_lista es SIN IVA → se guarda con IVA (×1.16) para comparar contra el total de la solicitud, que sí lo incluye.
+  const lic=(e.data||[]).filter(x=>x.atributos&&x.atributos.sistema&&x.atributos.categoria&&Number(x.precio_lista)>0)
+    .map(x=>({nombre:x.nombre,precio:Math.round(Number(x.precio_lista)*1.16*100)/100,sistema:String(x.atributos.sistema).toUpperCase(),categoria:x.atributos.categoria}));
+  _solPrecios={tienda:a.data||[],polizas:b.data||[],servidores:c.data||[],licencias:lic};
   _solPromos=d.data||[];_solPreciosTs=Date.now();
 }
 function solDescMax(secciones,fecha){
