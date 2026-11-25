@@ -124,16 +124,25 @@ export default async function handler(req, res) {
     // 3) Liga para definir contraseña, ligada a ESE contacto (no crea contacto nuevo).
     try { await call('res.partner', 'signup_prepare', [[pid]]); }
     catch (e) { return res.status(200).json({ ok: false, error: 'No se pudo preparar el acceso en Odoo: ' + (e.message || e) }); }
-    const info = (await call('res.partner', 'read', [[pid], ['signup_token', 'signup_url', 'name']]))[0] || {};
-    let link = info.signup_token ? `${ACADEMIA_URL}/web/signup?token=${encodeURIComponent(info.signup_token)}` : (info.signup_url || null);
-    if (!link) return res.status(200).json({ ok: false, error: 'Odoo no generó la liga de acceso (revisa que el registro por invitación esté habilitado).' });
+    // Odoo 19 ya no deja LEER 'signup_token' por RPC ("Invalid field 'signup_token' on res.partner").
+    // Se intenta primero con 'signup_url' (la liga completa, que ya trae el token); si ese campo
+    // tampoco está, se cae a 'signup_token'; y si nada, solo el nombre — sin tronar el endpoint.
+    let info = {};
+    for (const fields of [['signup_url', 'name'], ['signup_token', 'name'], ['name']]) {
+      try { info = (await call('res.partner', 'read', [[pid], fields]))[0] || {}; break; } catch (e) { /* prueba el siguiente set de campos */ }
+    }
+    let link = info.signup_url || (info.signup_token ? `${ACADEMIA_URL}/web/signup?token=${encodeURIComponent(info.signup_token)}` : null);
+    if (!link) return res.status(200).json({ ok: false, error: 'Odoo no generó la liga de acceso (revisa que el registro por invitación esté habilitado en la Academia).' });
 
-    // 4) Correo por Resend (no por Odoo)
+    // 4) Correo por Resend (no por Odoo). Copia SIEMPRE a Capacitación y a quien
+    // lo envía (sin duplicar al alumno), para que quede constancia del acceso.
+    const lower = (s) => String(s || '').trim().toLowerCase();
+    const cc = [...new Set([CAPA, u.email].map(lower).filter((x) => x && x !== lower(email)))];
     const html = armarAccesoHtml({ nombre, curso, link });
     const r = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { Authorization: `Bearer ${RESEND}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from: FROM, to: [email], cc: [CAPA], reply_to: CAPA, subject: '🔑 Activa tu acceso a Academia Innovaci', html }),
+      body: JSON.stringify({ from: FROM, to: [email], cc, reply_to: CAPA, subject: '🔑 Activa tu acceso a Academia Innovaci', html }),
     });
     const rb = await r.json().catch(() => ({}));
     if (!r.ok) return res.status(200).json({ ok: false, error: 'Resend: ' + (rb.message || r.status) });
@@ -145,7 +154,7 @@ export default async function handler(req, res) {
       atencion: { ...(insc.atencion || {}), acceso_enviado_at: ahora, acceso_enviado_por: String(u.email || '') },
     });
 
-    return res.status(200).json({ ok: true, enviado_a: email, ya_tenia_usuario: yaTeniaUsuario, partner_id: pid });
+    return res.status(200).json({ ok: true, enviado_a: email, copia_a: cc, ya_tenia_usuario: yaTeniaUsuario, partner_id: pid });
   } catch (e) {
     return res.status(200).json({ ok: false, error: String((e && e.message) || e) });
   }
