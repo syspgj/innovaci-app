@@ -22545,9 +22545,23 @@ async function renderTele(){
   // Load dept status for telemarketing view too
   const {data:kc2}=await sb.from('kpi_config').select('*').eq('anio',currentYear).eq('mes',currentMonth).eq('kpi_key','meta_depto');
   if(kc2&&kc2[0]) metaDepto=kc2[0].meta_dulce;
-  const {data:deptoRegs}=await sb.from('registros_diarios').select('svc,usuario_id')
-    .gte('fecha',desde).lte('fecha',hasta);
-  const totalDeptoSvc2=(deptoRegs||[]).reduce((s,r)=>s+(r.svc||0),0);
+  // Meta del departamento con el dato REAL de Finanzas (igual que Vista Director y
+  // "Mi Mes" del vendedor) — antes usaba el autorreporte y subestimaba el avance.
+  // Jp, 2026-11-26. El departamento son los de rol "vendedor" (Dulce + Manuel).
+  let totalDeptoSvc2;
+  if(usaFinanzasRealDesde(currentYear,currentMonth)){
+    const {data:vendsDepto2}=await sb.from('usuarios').select('id,email,rol').eq('rol','vendedor');
+    const svcs2=await Promise.all((vendsDepto2||[]).map(async u=>{
+      const filtro=vendedorFactIngresosFiltro(u);
+      if(filtro){ try{ const r=await calcVentasRealesFinanzas(filtro,currentYear,currentMonth); return r.svc||0; }catch(e){ return 0; } }
+      const {data:rg}=await sb.from('registros_diarios').select('svc').eq('usuario_id',u.id).gte('fecha',desde).lte('fecha',hasta);
+      return (rg||[]).reduce((s,r)=>s+(r.svc||0),0);
+    }));
+    totalDeptoSvc2=svcs2.reduce((s,n)=>s+n,0);
+  } else {
+    const {data:deptoRegs}=await sb.from('registros_diarios').select('svc').gte('fecha',desde).lte('fecha',hasta);
+    totalDeptoSvc2=(deptoRegs||[]).reduce((s,r)=>s+(r.svc||0),0);
+  }
   deptoAlcanzado=totalDeptoSvc2>=metaDepto;
   const deptoPct2=Math.min(totalDeptoSvc2/metaDepto,1);
   const deptoCol2=deptoAlcanzado?'#27AE60':deptoPct2>=0.8?'#F5A623':'#E84040';
