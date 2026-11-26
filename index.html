@@ -548,6 +548,17 @@ function calcBonoSiigoFiscal(cantidadSf, anio, mes, deptoPct){
   return {monto:0, aplica:false, motivo:`Depto <80% (${Math.round(deptoPct*100)}%) — bono SF retenido`};
 }
 
+// 1b) Bono NOI Asistente (Jp, 2026-11-26): $200 por cada NOI Asistente AGREGADO
+//     por el vendedor (suscripción o prepago). Mismo candado que Fiscal: solo si
+//     el depto va ≥80% de su meta general.
+const BONO_NOI_ASIST_UNITARIO=200;
+function calcBonoNoiAsistente(cantidadNoi, deptoPct){
+  const cant=cantidadNoi||0;
+  if(cant<=0) return {monto:0, aplica:false, motivo:'Sin NOI Asistente agregados'};
+  if(deptoPct>=0.8) return {monto:cant*BONO_NOI_ASIST_UNITARIO, aplica:true, motivo:`${cant} × $${BONO_NOI_ASIST_UNITARIO} (depto ≥80%)`};
+  return {monto:0, aplica:false, motivo:`Depto <80% (${Math.round(deptoPct*100)}%) — bono NOI Asistente retenido`};
+}
+
 // 2) Comisión de la mediocridad: 2% sobre servicios.
 //    Aplica cuando el DEPTO no llegó al 100% PERO el vendedor SÍ cumplió su meta individual.
 const TASA_MEDIOCRIDAD=0.02;
@@ -728,6 +739,47 @@ async function calcSiigoFiscalAutoDia(usuarioId, fecha){
     .gte('created_at',fecha+'T00:00:00').lte('created_at',fecha+'T23:59:59');
   const rows=data||[];
   return {count:rows.length, detalle:rows.map(r=>({cliente:r.clientes_cartera?.razon_social||'',serie:r.numserie||'',producto:r.producto||''}))};
+}
+// NOI Asistente AGREGADOS por el vendedor en el mes (Jp, 2026-11-26) — base del
+// bono de $200 c/u. Dos fuentes: (a) suscripción = alta manual del vendedor en
+// Cartera (suscripciones_cartera, origen alta_manual_vendedor), por created_at;
+// (b) prepago = claves asignadas en licencias_claves, por fecha_facturacion, con
+// el vendedor tomado de la solicitud de factura que las generó.
+async function calcNoiAsistenteMes(usuarioId, anio, mes){
+  const ini=`${anio}-${String(mes).padStart(2,'0')}-01`;
+  const ld=new Date(anio,mes,0).getDate();
+  const fin=`${anio}-${String(mes).padStart(2,'0')}-${String(ld).padStart(2,'0')}`;
+  let susc=0;
+  const {data:sis}=await sb.from('suscripciones_sistemas').select('id').eq('clave','NOI_ASISTENTE');
+  const sisId=sis&&sis[0]?.id;
+  if(sisId){
+    const {data}=await sb.from('suscripciones_cartera')
+      .select('id,clientes_cartera!inner(vendedor_asignado)')
+      .eq('sistema_id',sisId).eq('origen','alta_manual_vendedor')
+      .eq('clientes_cartera.vendedor_asignado',usuarioId)
+      .gte('created_at',ini+'T00:00:00').lte('created_at',fin+'T23:59:59');
+    susc=(data||[]).length;
+  }
+  const prepago=await calcPrepagoClavesMes(usuarioId, anio, mes, /NOI/i);
+  return {count:susc+prepago, susc, prepago};
+}
+// Cuenta claves de prepago (licencias_claves) de un producto para un vendedor en
+// el mes, por fecha_facturacion; el vendedor sale de la solicitud de factura que
+// generó la clave (solicitudes_factura.vendedor_id). productoRe filtra NOI o FISCAL.
+async function calcPrepagoClavesMes(usuarioId, anio, mes, productoRe){
+  const ini=`${anio}-${String(mes).padStart(2,'0')}-01`;
+  const ld=new Date(anio,mes,0).getDate();
+  const fin=`${anio}-${String(mes).padStart(2,'0')}-${String(ld).padStart(2,'0')}`;
+  const {data:cl}=await sb.from('licencias_claves')
+    .select('id,producto,solicitud_id,fecha_facturacion,estatus')
+    .not('fecha_facturacion','is',null)
+    .gte('fecha_facturacion',ini).lte('fecha_facturacion',fin);
+  const claves=(cl||[]).filter(r=>productoRe.test(r.producto||'') && r.solicitud_id && r.estatus!=='cancelada');
+  if(!claves.length) return 0;
+  const solIds=[...new Set(claves.map(r=>r.solicitud_id))];
+  const {data:sols}=await sb.from('solicitudes_factura').select('id,vendedor_id').in('id',solIds);
+  const vendBySol={}; (sols||[]).forEach(s=>{vendBySol[s.id]=s.vendedor_id;});
+  return claves.filter(r=>vendBySol[r.solicitud_id]===usuarioId).length;
 }
 // Corte de octubre 2026 (Jp, 2026-10-23): a partir de este mes, la comisión
 // principal de Manuel y Dulce usa el dato real de Finanzas en vez del
@@ -9606,8 +9658,12 @@ async function renderVendorMiMes(){
 
   // ── BONOS ADICIONALES ──────────────────────────────────────────────────────
   const deptoPctReal=metaDepto>0?totalDeptoSvc/metaDepto:0;
-  // 1) Bono Siigo Fiscal
-  const bonoSF=calcBonoSiigoFiscal(tot.sf, currentYear, currentMonth, deptoPctReal);
+  // 1) Bono Siigo Fiscal (suscripción tot.sf + prepago por fecha de facturación)
+  const sfPrepagoCant=await calcPrepagoClavesMes(currentUser.id, currentYear, currentMonth, /FISCAL/i);
+  const bonoSF=calcBonoSiigoFiscal((tot.sf||0)+sfPrepagoCant, currentYear, currentMonth, deptoPctReal);
+  // 1b) Bono NOI Asistente — $200 por cada uno agregado (suscripción + prepago)
+  const noiMes=await calcNoiAsistenteMes(currentUser.id, currentYear, currentMonth);
+  const bonoNoi=calcBonoNoiAsistente(noiMes.count, deptoPctReal);
   // 2) Comisión de mediocridad (solo si depto NO cumplió pero vendedor sí)
   const bonoMediocridad=calcComisionMediocridad(tot.svc, svcMeta, deptoAlcanzado);
   // 3) Bono trimestral — requiere cargar los 3 meses del trimestre
@@ -9640,7 +9696,7 @@ async function renderVendorMiMes(){
   const bonoAspelCruzada=calcBonoAspelCruzada(montoAspelCruzada, deptoAlcanzado, vendedorCumplioMetaSvc);
   const bonoCursos247=calcBonoCursos247(monto247, deptoAlcanzado, vendedorCumplioMetaSvc);
   const bonoCirculo=calcBonoCirculoInnovaci(montoCirculo, deptoAlcanzado, vendedorCumplioMetaSvc);
-  const totalBonos=bonoSF.monto+bonoMediocridad.monto+bonoTrim.monto+bonoAspelCruzada.monto+bonoCursos247.monto+bonoCirculo.monto;
+  const totalBonos=bonoSF.monto+bonoNoi.monto+bonoMediocridad.monto+bonoTrim.monto+bonoAspelCruzada.monto+bonoCursos247.monto+bonoCirculo.monto;
   // Métricas del mes anterior para mostrar en Mi mes
   // Mes anterior al mes SELECCIONADO
   const mesAntNum=currentMonth===1?12:currentMonth-1;
@@ -9860,6 +9916,11 @@ async function renderVendorMiMes(){
       <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">🧾 Bono Siigo Fiscal</div>
       <div style="font-size:22px;font-weight:800;color:${bonoSF.aplica?'#27AE60':'var(--text3)'};">${fmt(bonoSF.monto)}</div>
       <div style="font-size:11px;color:${bonoSF.aplica?'var(--text2)':'#E84040'};margin-top:4px;">${bonoSF.motivo}</div>
+    </div>
+    <div class="card" style="padding:16px;${bonoNoi.aplica?'border:1px solid rgba(39,174,96,0.3);':''}">
+      <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">👤 Bono NOI Asistente</div>
+      <div style="font-size:22px;font-weight:800;color:${bonoNoi.aplica?'#27AE60':'var(--text3)'};">${fmt(bonoNoi.monto)}</div>
+      <div style="font-size:11px;color:${bonoNoi.aplica?'var(--text2)':'#E84040'};margin-top:4px;">${bonoNoi.motivo}${noiMes&&noiMes.count>0?` · ${noiMes.susc} suscrip + ${noiMes.prepago} prepago`:''}</div>
     </div>
     <div class="card" style="padding:16px;${bonoMediocridad.aplica?'border:1px solid rgba(245,166,35,0.4);':''}">
       <div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">⭐ Comisión especial (2%)</div>
@@ -10695,9 +10756,13 @@ async function renderReglasComision(){
       <br><br>Es un reconocimiento a tu esfuerzo individual aunque el equipo no haya alcanzado la meta colectiva. No se suma a nada más — es en lugar de la comisión base bloqueada.`,'#F5A623')}
 
     ${card('🧾','Bono Siigo Fiscal — $450 por unidad',`
-      Ganas <strong>$450 por cada Siigo Fiscal</strong> que cierres.
+      Ganas <strong>$450 por cada Siigo Fiscal</strong> que cierres (sea <strong>suscripción o prepago</strong>).
       <br>• En <strong>junio 2026</strong>: se entrega directo, sin importar si el departamento llegó a meta.
       <br>• De <strong>julio 2026 en adelante</strong>: se entrega solo si el departamento alcanza al menos el <strong>80%</strong> de su meta general.`,'#27AE60')}
+
+    ${card('👤','Bono NOI Asistente — $200 por unidad',`
+      Ganas <strong>$200 por cada NOI Asistente</strong> que agregues, ya sea en <strong>suscripción</strong> (alta en Cartera) o en <strong>prepago</strong> (clave facturada).
+      <br>• Mismo candado que Siigo Fiscal: se entrega solo si el departamento alcanza al menos el <strong>80%</strong> de su meta general.`,'#27AE60')}
 
     ${card('📊','Bono trimestral — 0.5%',`
       Si cumples el <strong>100% de tu meta individual durante los 3 meses</strong> de un trimestre, ganas un <strong>0.5% sobre la suma de tus servicios de esos 3 meses</strong>.
