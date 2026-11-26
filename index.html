@@ -37375,6 +37375,16 @@ async function renderSolFacturaVendedor(){
       </div>
       ${solFld('Comprobante de pago (imagen o PDF)',solComprobanteHtml())}
     </div>
+    <div id="sfBtnPago2Wrap" style="margin:-4px 0 10px;"><button type="button" id="sfBtnPago2" onclick="solMostrarPago2()" style="background:#fff;color:var(--teal);border:1px dashed var(--teal);border-radius:8px;padding:8px 14px;font-size:12px;font-weight:700;cursor:pointer;">＋ Agregar otro comprobante de pago</button></div>
+    <div id="sfBloquePago2" style="display:none;background:#f8fafb;border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><div style="font-size:12px;font-weight:700;color:var(--navy);">💵 Segundo pago (otro comprobante)</div><button type="button" onclick="solQuitarPago2()" style="background:none;border:none;color:#E84040;font-size:11px;font-weight:700;cursor:pointer;">Quitar</button></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 12px;">
+        ${solFld('Monto depositado',`<input id="sfPagoMonto2" type="number" step="0.01" style="${SOL_INPUT_STYLE}">`)}
+        ${solFld('Fecha del pago',`<input id="sfPagoFecha2" type="date" style="${SOL_INPUT_STYLE}">`)}
+        ${solFld('Hora (si aparece)',`<input id="sfPagoHora2" type="time" style="${SOL_INPUT_STYLE}">`)}
+      </div>
+      ${solFld('Comprobante de pago (imagen o PDF)',solComprobante2Html())}
+    </div>
     <div id="sfBloqueEsperado" style="display:none;background:#faf5ff;border:1px solid #e9d5ff;border-radius:8px;padding:12px 14px;margin-bottom:10px;">
       ${solFld('Fecha en que pagará el cliente',`<input id="sfEsperada" type="date" style="${SOL_INPUT_STYLE}">`,'Cuando pague, adjunta el comprobante desde tu lista de solicitudes.')}
     </div>
@@ -37521,6 +37531,62 @@ document.addEventListener('paste',e=>{
   const it=[...(e.clipboardData?.items||[])].find(x=>x.kind==='file'&&/^image\//.test(x.type));
   if(it){e.preventDefault();solComprobanteSet(it.getAsFile());}
 });
+// ── Segundo comprobante de pago (Jp, 2026-11-26) — cuando el cliente pagó en 2
+// transferencias. Se guarda como pago extra en solicitud_pagos. ──
+function solMostrarPago2(){
+  const b2=document.getElementById('sfBloquePago2'),btn=document.getElementById('sfBtnPago2');
+  if(b2) b2.style.display='block';
+  if(btn) btn.style.display='none';
+}
+function solQuitarPago2(){
+  const b2=document.getElementById('sfBloquePago2'),btn=document.getElementById('sfBtnPago2');
+  if(b2) b2.style.display='none';
+  if(btn) btn.style.display='';
+  ['sfPagoMonto2','sfPagoFecha2','sfPagoHora2','sfComprobante2'].forEach(i=>{const e=document.getElementById(i);if(e)e.value='';});
+  const prev=document.getElementById('sfCompPrev2'),est=document.getElementById('sfCompEstado2');
+  if(prev) prev.innerHTML=''; if(est) est.textContent='';
+}
+function solComprobante2Html(){
+  return `<input id="sfComprobante2" type="file" accept="image/*,.pdf" style="display:none;" onchange="solComprobante2Cambio(this)">
+  <div ondragover="event.preventDefault();this.style.background='#e6f6f5'" ondragleave="this.style.background='#fff'" ondrop="event.preventDefault();this.style.background='#fff';solComprobante2Set(event.dataTransfer.files[0])" style="border:2px dashed var(--teal);border-radius:10px;padding:12px;text-align:center;background:#fff;">
+    <button type="button" onclick="document.getElementById('sfComprobante2').click()" style="background:var(--teal);color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">📷 Elegir captura / tomar foto</button>
+    <div style="font-size:11px;color:var(--text3);margin-top:6px;">El segundo comprobante del mismo cliente (otra transferencia del mismo pago).</div>
+    <div id="sfCompPrev2" style="margin-top:8px;"></div>
+    <div id="sfCompEstado2" style="font-size:11px;margin-top:4px;"></div>
+  </div>`;
+}
+function solComprobante2Set(file){
+  const inp=document.getElementById('sfComprobante2');if(!inp||!file) return;
+  if(!/^image\/|pdf$/i.test(file.type||'')){alert('El comprobante debe ser imagen o PDF.');return;}
+  try{const dt=new DataTransfer();dt.items.add(file);inp.files=dt.files;}catch(e){alert('Tu navegador no permitió pegar el archivo; usa el botón.');return;}
+  solComprobante2Cambio(inp);
+}
+async function solComprobante2Cambio(inp){
+  const f=inp.files?.[0];
+  const prev=document.getElementById('sfCompPrev2'),est=document.getElementById('sfCompEstado2');
+  if(!prev) return;
+  if(!f){prev.innerHTML='';if(est)est.textContent='';return;}
+  if(f.type.startsWith('image/')){
+    const url=URL.createObjectURL(f);
+    prev.innerHTML=`<img src="${url}" style="max-height:140px;max-width:100%;border-radius:6px;border:1px solid var(--border);"><div style="font-size:11px;color:var(--text3);margin-top:3px;">${solEsc(f.name||'captura')}</div>`;
+  }else prev.innerHTML=`<div style="font-size:12px;">📄 ${solEsc(f.name)}</div>`;
+  if(!f.type.startsWith('image/')) return;
+  const vacio=['sfPagoMonto2','sfPagoFecha2'].every(i=>!document.getElementById(i)?.value);
+  if(!vacio) return;
+  if(est){est.textContent='Leyendo el comprobante…';est.style.color='var(--teal)';}
+  try{
+    const b64=await new Promise((ok,ko)=>{const rd=new FileReader();rd.onload=()=>ok(String(rd.result).split(',')[1]||'');rd.onerror=ko;rd.readAsDataURL(f);});
+    const {data:sess}=await sb.auth.getSession();
+    const resp=await fetch('/api/solicitud-leer-captura',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({imagenBase64:b64,mediaType:f.type||'image/png'})});
+    let data={};try{data=await resp.json();}catch(e){}
+    const movs=(resp.ok&&data.ok)?(data.movimientos||[]):[];
+    if(movs.length!==1){if(est){est.textContent='Captura cargada. Captura monto y fecha a mano.';est.style.color='var(--text3)';}return;}
+    const m=movs[0];
+    const set=(i,val)=>{const e=document.getElementById(i);if(e&&!e.value&&val) e.value=val;};
+    set('sfPagoMonto2',m.monto);set('sfPagoFecha2',m.fecha);set('sfPagoHora2',m.hora);
+    if(est){est.textContent='Llené monto/fecha/hora desde el comprobante — revísalos.';est.style.color='#27AE60';}
+  }catch(e){if(est){est.textContent='Captura cargada. Captura monto y fecha a mano.';est.style.color='var(--text3)';}}
+}
 // Jp, 2026-11-17: una venta puede traer 2 o más cursos (p. ej. combo de talleres + curso 24/7). Se exige una generación por curso.
 function solNrmCurso(t){return String(t||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/\b20\d\d\b/g,' ').replace(/[^a-z0-9]+/g,' ').trim();}
 function solCursos247EnConcepto(concepto){
@@ -37998,6 +38064,10 @@ function solTipoCambio(){
   const t=document.getElementById('sfTipo').value;
   document.getElementById('sfBloquePago').style.display=t==='con_pago'?'block':'none';
   document.getElementById('sfBloqueEsperado').style.display=t==='liberar_pago'?'block':'none';
+  // El segundo comprobante solo aplica cuando ya pagó; si cambia de tipo se oculta y se limpia.
+  const w2=document.getElementById('sfBtnPago2Wrap'),b2=document.getElementById('sfBloquePago2');
+  if(w2) w2.style.display=t==='con_pago'?'block':'none';
+  if(b2&&t!=='con_pago'){ solQuitarPago2(); }
 }
 let _solBuscarTimer=null;
 function solClienteBuscarDeb(){clearTimeout(_solBuscarTimer);_solBuscarTimer=setTimeout(solClienteBuscar,350);}
@@ -38164,13 +38234,20 @@ async function solEnviar(){
   if(!v('sfRfc')) return err('Falta el RFC del cliente.');
   const shopPedido=solNormPedido(v('sfShopPedido'));
 
-  let pagoMonto=null,pagoFecha=null,file=null;
+  let pagoMonto=null,pagoFecha=null,file=null,pagoSuma=null,pagoMonto2=NaN,file2=null,usar2=false;
   if(tipo==='con_pago'){
     pagoMonto=parseFloat(v('sfPagoMonto'));pagoFecha=v('sfPagoFecha');
     file=document.getElementById('sfComprobante').files[0];
+    const b2v=document.getElementById('sfBloquePago2');
+    usar2=!!(b2v&&b2v.style.display!=='none');
+    pagoMonto2=usar2?parseFloat(v('sfPagoMonto2')):NaN;
+    file2=usar2?(document.getElementById('sfComprobante2')?.files?.[0]||null):null;
     if(!(pagoMonto>0)||!pagoFecha) return err('Captura el monto y la fecha del pago.');
     if(!file&&!(window._sfShop&&shpPagoInfo(window._sfShop).auto&&shpPagoInfo(window._sfShop).pagado)) return err('Adjunta el comprobante de pago.');
-    if(Math.abs(pagoMonto-total)>0.5&&!confirm(`El monto depositado (${fmt(pagoMonto)}) es distinto al total a facturar (${fmt(total)}). ¿Enviar de todos modos?`)) return;
+    if(usar2&&(pagoMonto2>0)&&!file2) return err('Adjunta el comprobante del segundo pago (o quítalo con "Quitar").');
+    if(usar2&&file2&&!(pagoMonto2>0)) return err('Captura el monto del segundo pago (o quítalo con "Quitar").');
+    pagoSuma=pagoMonto+((pagoMonto2>0)?pagoMonto2:0);
+    if(Math.abs(pagoSuma-total)>0.5&&!confirm(`El pago capturado (${fmt(pagoSuma)}${(pagoMonto2>0)?' en 2 comprobantes':''}) es distinto al total a facturar (${fmt(total)}). ¿Enviar de todos modos?`)) return;
   } else if(!v('sfEsperada')){
     return err('Indica la fecha en que pagará el cliente.');
   }
@@ -38195,7 +38272,7 @@ async function solEnviar(){
   // Jp, 2026-11-17: control de precio contra el catálogo y el descuento máximo vigente (Promociones)
   let precioCampos={};
   if(!window._sfShop){
-    const cp=await solControlPrecio({concepto:v('sfConcepto'),tipoServ,total,pagoMonto:tipo==='con_pago'?pagoMonto:null,pagoFecha,nivel:acad.nivel,asistentes:acad.asistentes});
+    const cp=await solControlPrecio({concepto:v('sfConcepto'),tipoServ,total,pagoMonto:tipo==='con_pago'?(pagoSuma||pagoMonto):null,pagoFecha,nivel:acad.nivel,asistentes:acad.asistentes});
     if(cp.nivel==='bloqueo'){
       const esDirP=userProfile?.rol==='director';
       if(esDirP){
@@ -38257,6 +38334,14 @@ async function solEnviar(){
       ({error}=await sb.from('solicitudes_factura').insert(row));
     }
     if(error) throw error;
+    // Jp, 2026-11-26: segundo comprobante/pago (opcional) → va a solicitud_pagos
+    // como pago extra (best-effort: no bloquea el envío de la solicitud).
+    if(solId&&usar2&&(pagoMonto2>0)&&file2){
+      try{
+        const cp2=await solSubirArchivo(file2,fid,'comprobante');
+        await sb.from('solicitud_pagos').insert({solicitud_id:solId,monto:pagoMonto2,fecha_pago:v('sfPagoFecha2')||null,hora_pago:v('sfPagoHora2')||null,comprobante_path:cp2,validado:false,created_by:userProfile?.id||currentUser.id,created_por_nombre:userProfile?.nombre||''});
+      }catch(e){console.error('segundo pago/comprobante',e);}
+    }
     // Aviso al canal de Telegram de Facturación (best-effort: no bloquea el envío)
     if(solId){(async()=>{try{const {data:sess}=await sb.auth.getSession();await fetch('/api/facturacion-avisar-telegram',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solicitud_id:solId})});}catch(e){console.error('aviso telegram facturación',e);}})();}
     // Datos fiscales nuevos → se guardan en la cuenta (solo si ahí estaban vacíos)
