@@ -9534,8 +9534,24 @@ async function renderVendorMiMes(){
   const desde2=`${currentYear}-${String(currentMonth).padStart(2,'0')}-01`;
   const lastDay2=new Date(currentYear,currentMonth,0).getDate();
   const hasta2=`${currentYear}-${String(currentMonth).padStart(2,'0')}-${String(lastDay2).padStart(2,'0')}`;
-  const {data:allRegs}=await sb.from('registros_diarios').select('svc').gte('fecha',desde2).lte('fecha',hasta2);
-  const totalDeptoSvc=(allRegs||[]).reduce((s,r)=>s+(r.svc||0),0);
+  // Meta del departamento: usar el dato REAL de Finanzas (igual que Vista Director
+  // desde 2026-10-28), no el autorreporte de "Registrar día" — que tenía huecos y
+  // subestimaba el avance del equipo (p. ej. mostraba $43,597 en vez de ~$118,234).
+  // Jp, 2026-11-26. El departamento son los de rol "vendedor" (Dulce + Manuel).
+  let totalDeptoSvc;
+  if(usaFinanzasRealDesde(currentYear,currentMonth)){
+    const {data:vendsDepto}=await sb.from('usuarios').select('id,email,rol').eq('rol','vendedor');
+    const svcs=await Promise.all((vendsDepto||[]).map(async u=>{
+      const filtro=vendedorFactIngresosFiltro(u);
+      if(filtro){ try{ const r=await calcVentasRealesFinanzas(filtro,currentYear,currentMonth); return r.svc||0; }catch(e){ return 0; } }
+      const {data:rg}=await sb.from('registros_diarios').select('svc').eq('usuario_id',u.id).gte('fecha',desde2).lte('fecha',hasta2);
+      return (rg||[]).reduce((s,r)=>s+(r.svc||0),0);
+    }));
+    totalDeptoSvc=svcs.reduce((s,n)=>s+n,0);
+  } else {
+    const {data:allRegs}=await sb.from('registros_diarios').select('svc').gte('fecha',desde2).lte('fecha',hasta2);
+    totalDeptoSvc=(allRegs||[]).reduce((s,r)=>s+(r.svc||0),0);
+  }
   deptoAlcanzado=totalDeptoSvc>=metaDepto;
   // Cargar registros del mes
   const desde=`${currentYear}-${String(currentMonth).padStart(2,'0')}-01`;
