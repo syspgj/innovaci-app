@@ -68,6 +68,7 @@ const TIPOS_SERVICIO_PERMITIDOS = [
   'Servicio por Evento',
   'Suscripción Aspel',
   'Licenciamiento Aspel',
+  'Timbres',
   'Servidor Cloud',
   '24/7',
   'Curso o Diplomado en Vivo',
