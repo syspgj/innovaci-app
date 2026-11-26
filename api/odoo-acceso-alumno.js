@@ -167,10 +167,23 @@ export default async function handler(req, res) {
     const pass = nuevaClave();
     try {
       if (!usr) {
-        const vals = { name: nombre || email, login: email, email, partner_id: pid, password: pass };
-        if (portalGid) vals.groups_id = [[6, 0, [portalGid]]];
-        const nid = await call('res.users', 'create', [vals],
-          { context: { no_reset_password: true, tracking_disable: true, mail_create_nosubscribe: true } });
+        // Crea el usuario de PORTAL (externo, gratis). Odoo 19 renombró el campo de
+        // grupos: se intenta 'group_ids' (nuevo), luego 'groups_id' (viejo). Si el
+        // portal no se puede fijar por grupo, NO creamos un usuario interno (cobra y
+        // da acceso de más): se avisa para alta manual.
+        const base = { name: nombre || email, login: email, email, partner_id: pid, password: pass };
+        const ctx = { context: { no_reset_password: true, tracking_disable: true, mail_create_nosubscribe: true } };
+        const intentos = portalGid
+          ? [{ ...base, group_ids: [[6, 0, [portalGid]]] }, { ...base, groups_id: [[6, 0, [portalGid]]] }]
+          : [base];
+        let nid = null, errCreate = null;
+        for (const v of intentos) {
+          try { nid = await call('res.users', 'create', [v], ctx); break; }
+          catch (e) { errCreate = e; }
+        }
+        if (!nid) {
+          return res.status(200).json({ ok: false, error: 'No se pudo crear el usuario de portal en Odoo (campo de grupos no aceptado: ' + ((errCreate && (errCreate.message || errCreate)) || '') + '). Créalo a mano en Odoo o avísame.' });
+        }
         usr = { id: nid };
       } else {
         const w = { password: pass };
