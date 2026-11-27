@@ -180,7 +180,8 @@ function mensajeMotivacional(pctAvance) {
 // ─── Plantilla del correo ───────────────────────────────────────────────────
 function construirHtml({ nombre, mesNombre, anio, hoyTexto, ventaActual, svcMeta, faltante, pctAvance, diasRest, ritmoNecesario,
   alcanceBono, pctExtra, montoAspel, bonoAspel, monto247, bono247, deptoAlcanzado, vendedorCumplioMeta, suscripciones,
-  negociacionesAbiertas, montoAbiertoTotal, actividadesHoy, alertasPerdida }) {
+  negociacionesAbiertas, montoAbiertoTotal, actividadesHoy, alertasPerdida,
+  noiVendidos = 0, sfVendidos = 0, pagoNoi = 200, pagoSf = 450 }) {
   const color = pctAvance >= 1 ? '#27AE60' : pctAvance >= 0.8 ? '#F5A623' : '#E84040';
   const barra = (pct, col) => `<div style="background:#eee;border-radius:6px;height:10px;overflow:hidden;margin:6px 0;"><div style="background:${col};height:100%;width:${Math.min(pct * 100, 100)}%;"></div></div>`;
   const motivo = mensajeMotivacional(pctAvance);
@@ -269,6 +270,14 @@ function construirHtml({ nombre, mesNombre, anio, hoyTexto, ventaActual, svcMeta
       ${filaBono('🖥 Bono Aspel — venta cruzada (3%)', montoAspel, META_ASPEL_CRUZADA, bonoAspel.aplica, TASA_ASPEL_CRUZADA)}
       ${filaBono('🎓 Bono Cursos 24/7 (5%)', monto247, META_CURSOS247, bono247.aplica, TASA_CURSOS247)}
 
+      ${(noiVendidos > 0 || sfVendidos > 0) ? `
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid #eee;">
+        <div style="font-size:13px;font-weight:600;color:#1A2332;">🎟 Siigo Fiscal y NOI Asistente vendidos (suscripción + prepago)</div>
+        ${sfVendidos > 0 ? `<div style="font-size:12px;color:#333;margin-top:6px;">Siigo Fiscal: <strong>${sfVendidos}</strong> × $${pagoSf} = <strong style="color:#1A2332;">${fmt(sfVendidos * pagoSf)}</strong></div>` : ''}
+        ${noiVendidos > 0 ? `<div style="font-size:12px;color:#333;margin-top:4px;">NOI Asistente: <strong>${noiVendidos}</strong> × $${pagoNoi} = <strong style="color:#1A2332;">${fmt(noiVendidos * pagoNoi)}</strong></div>` : ''}
+        <div style="font-size:11px;color:${deptoAlcanzado ? '#27AE60' : '#999999'};margin-top:5px;">${deptoAlcanzado ? '✓ Se pagan — el departamento alcanzó el 80% de su meta.' : 'Retenido — se libera cuando el departamento llegue al 80% de su meta de Servicios.'}</div>
+      </div>` : ''}
+
       <div style="margin-top:16px;padding-top:14px;border-top:1px solid #eee;">
         <div style="font-size:13px;font-weight:600;color:#1A2332;">📅 Agendado para hoy</div>
         <div style="margin-top:6px;">${actHtml}</div>
@@ -332,14 +341,62 @@ export default async function handler(req, res) {
     const kpiConfig = await sb(`kpi_config?anio=eq.${anio}&mes=eq.${mes}&activo=eq.true&order=orden`, SKEY);
     const metaDeptoRow = kpiConfig.find(k => k.kpi_key === 'meta_depto');
     const metaDepto = metaDeptoRow ? metaDeptoRow.meta_dulce : 160000;
+    // Jp, 2026-11-27: la meta principal (Servicios) y el candado del depto se calculan
+    // con el dato REAL de Finanzas (igual que la app desde oct-2026), no con el
+    // autorreporte de "Registrar día" — que subestimaba y descuadraba el correo.
+    const USA_FIN = anio > 2026 || (anio === 2026 && mes >= 10);
+    const SVC_RUBROS = new Set(['POLIZA ASPEL','POLIZA RESGUARDO','RESGUARDO','POLIZA TOTAL O ALIADO','POLIZA','SERVICIO POR EVENTO','ASESORIA','SERVICIO DE ACTUALIZACIÓN','CURSO EMPRESARIAL','DESARROLLO CON TERCERO']);
     const allRegs = await sb(`registros_diarios?select=svc&fecha=gte.${desde}&fecha=lte.${hasta}`, SKEY);
-    const totalDeptoSvc = allRegs.reduce((s, r) => s + (r.svc || 0), 0);
-    const deptoAlcanzado = totalDeptoSvc >= metaDepto;
+    let totalDeptoSvc = allRegs.reduce((s, r) => s + (r.svc || 0), 0); // autorreporte (fallback)
+    let deptoAlcanzado = totalDeptoSvc >= metaDepto;
 
     // 2) Vendedores objetivo
     const usuarios = await sb(`usuarios?rol=eq.vendedor&activo=eq.true`, SKEY);
     let vendedores = usuarios.filter(u => esVendedorObjetivo(u.email));
     if (soloEmail) vendedores = vendedores.filter(u => (u.email || '').toLowerCase() === soloEmail);
+
+    // Finanzas real por vendedor (Servicios) + NOI Asistente y Siigo Fiscal PREPAGO
+    // (suscripción de SF viene de tot.sf; la suscripción de NOI, de alta manual en
+    // Cartera). Pre-cálculo para fijar también el total real del depto. Jp, 2026-11-27.
+    const finVend = {}; // u.id -> { svc, noiSus, noiPrep, sfPrep }
+    vendedores.forEach(u => { finVend[u.id] = { svc: 0, noiSus: 0, noiPrep: 0, sfPrep: 0 }; });
+    if (USA_FIN) {
+      const sisNoi = await sb(`suscripciones_sistemas?select=id&clave=eq.NOI_ASISTENTE`, SKEY);
+      const noiSisId = sisNoi[0] && sisNoi[0].id;
+      for (const u of vendedores) {
+        const ff = filtroFactIngresos(u.email);
+        if (ff) {
+          const fact = await sb(`fact_ingresos?select=rubro,subtotal_original,descuento,costo_licencias&anio=eq.${anio}&mes=eq.${mes}&cobrado=eq.true&vendedor=ilike.*${ff}*`, SKEY);
+          for (const r of fact) {
+            if (SVC_RUBROS.has((r.rubro || '').toUpperCase())) finVend[u.id].svc += Math.max(0, (r.subtotal_original || 0) - (r.descuento || 0) - (r.costo_licencias || 0));
+          }
+        }
+        if (noiSisId) {
+          try {
+            const noiSus = await sb(`suscripciones_cartera?select=id,clientes_cartera!inner(vendedor_asignado)&sistema_id=eq.${noiSisId}&origen=eq.alta_manual_vendedor&clientes_cartera.vendedor_asignado=eq.${u.id}&created_at=gte.${desde}T00:00:00&created_at=lte.${hasta}T23:59:59`, SKEY);
+            finVend[u.id].noiSus = (noiSus || []).length;
+          } catch (e) { /* no rompe la meta */ }
+        }
+      }
+      // Prepago (licencias_claves) por fecha_facturacion, atribuido por la solicitud
+      try {
+        const prep = await sb(`licencias_claves?select=producto,solicitud_id,fecha_facturacion,estatus&fecha_facturacion=gte.${desde}&fecha_facturacion=lte.${hasta}`, SKEY);
+        const prepRel = (prep || []).filter(r => r.solicitud_id && (r.estatus || '') !== 'cancelada');
+        if (prepRel.length) {
+          const solIds = [...new Set(prepRel.map(r => r.solicitud_id))];
+          const sols = await sb(`solicitudes_factura?select=id,vendedor_id&id=in.(${solIds.join(',')})`, SKEY);
+          const vendBySol = {}; sols.forEach(s => { vendBySol[s.id] = s.vendedor_id; });
+          for (const r of prepRel) {
+            const vid = vendBySol[r.solicitud_id];
+            if (!vid || !finVend[vid]) continue;
+            if (/NOI/i.test(r.producto || '')) finVend[vid].noiPrep += 1;
+            else if (/FISCAL/i.test(r.producto || '')) finVend[vid].sfPrep += 1;
+          }
+        }
+      } catch (e) { /* no rompe la meta */ }
+      totalDeptoSvc = vendedores.reduce((s, u) => s + finVend[u.id].svc, 0);
+      deptoAlcanzado = totalDeptoSvc >= metaDepto;
+    }
 
     const enviados = [];
     for (const u of vendedores) {
@@ -355,7 +412,11 @@ export default async function handler(req, res) {
       }
       const svcMetaRow = kpiConfig.find(k => k.kpi_key === 'svc');
       const svcMeta = (svcMetaRow ? svcMetaRow[metaKey] : 0) || 80000;
-      const ventaActual = tot.svc;
+      const ventaActual = USA_FIN ? finVend[u.id].svc : tot.svc;
+      // NOI Asistente y Siigo Fiscal vendidos este mes (suscripción + prepago) y su pago.
+      const noiVendidos = finVend[u.id].noiSus + finVend[u.id].noiPrep;
+      const sfVendidos = tot.sf + finVend[u.id].sfPrep;
+      const PAGO_NOI = 200, PAGO_SF = 450;
       const faltante = Math.max(svcMeta - ventaActual, 0);
       const pctAvance = svcMeta > 0 ? ventaActual / svcMeta : 0;
       const ritmoNecesario = diasRest > 0 ? faltante / diasRest : 0;
@@ -457,6 +518,7 @@ export default async function handler(req, res) {
         alcanceBono, pctExtra, montoAspel, bonoAspel, monto247, bono247,
         deptoAlcanzado, vendedorCumplioMeta, suscripciones,
         negociacionesAbiertas, montoAbiertoTotal, actividadesHoy, alertasPerdida,
+        noiVendidos, sfVendidos, pagoNoi: PAGO_NOI, pagoSf: PAGO_SF,
       });
       const subject = `${alertasPerdida.length ? '🚨 ' : ''}📊 Tu resumen diario — ${hoyTexto} (${Math.round(pctAvance * 100)}% de tu meta)`;
 
