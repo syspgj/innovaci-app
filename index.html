@@ -20344,6 +20344,15 @@ async function renderDirectorVendedores(){
       ventasRealesPorVendedorV[u.id]=await calcVentasRealesFinanzas(filtro,currentYear,currentMonth);
     }));
   }
+  // NOI Asistente vendidos (suscripción + prepago) y Siigo Fiscal prepago por
+  // vendedor, para mostrar en la tarjeta cuánto se le paga (Jp, 2026-11-27).
+  const noiPorVendedorV={}, sfPrepagoPorVendedorV={};
+  if(usaFinanzasRealMesV){
+    await Promise.all(vendedores.map(async u=>{
+      try{ noiPorVendedorV[u.id]=(await calcNoiAsistenteMes(u.id,currentYear,currentMonth)).count; }catch(e){ noiPorVendedorV[u.id]=0; }
+      try{ sfPrepagoPorVendedorV[u.id]=await calcPrepagoClavesMes(u.id,currentYear,currentMonth,/FISCAL/i); }catch(e){ sfPrepagoPorVendedorV[u.id]=0; }
+    }));
+  }
   const totalSvcPreliminarV=vendedores.reduce((s,u)=>{
     const vr=ventasRealesPorVendedorV[u.id];
     return s+(vr?vr.svc:getTotals(allRegistros,u.id).svc);
@@ -20407,6 +20416,13 @@ async function renderDirectorVendedores(){
         <div style="text-align:right;"><div style="font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace;color:#fff;">${fmt(c)}</div><div style="font-size:11px;color:rgba(255,255,255,0.55);">tasa ${(r*100).toFixed(1)}%</div></div>
       </div>
       <div style="padding:12px 18px 0;">${allK}</div>
+      ${(()=>{ const sfN=(tot.sf||0)+(sfPrepagoPorVendedorV[u.id]||0), noiN=(noiPorVendedorV[u.id]||0); if(!sfN&&!noiN) return '';
+        return `<div style="padding:8px 18px 0;"><div style="border-top:1px dashed var(--border);padding-top:8px;font-size:11px;color:var(--text2);">
+          <div style="font-weight:700;color:var(--text);margin-bottom:3px;">🎟 Siigo Fiscal / NOI Asistente vendidos</div>
+          ${sfN?`<div style="display:flex;justify-content:space-between;"><span>Siigo Fiscal: <b>${sfN}</b> × $450</span><b style="color:var(--text);font-family:'JetBrains Mono',monospace;">${fmt(sfN*450)}</b></div>`:''}
+          ${noiN?`<div style="display:flex;justify-content:space-between;"><span>NOI Asistente: <b>${noiN}</b> × $200</span><b style="color:var(--text);font-family:'JetBrains Mono',monospace;">${fmt(noiN*200)}</b></div>`:''}
+          <div style="font-size:10px;color:${deptoAlcanzado?'#27AE60':'var(--text3)'};margin-top:3px;">${deptoAlcanzado?'✓ Se pagan — depto ≥80% de su meta.':'Retenido — se libera cuando el depto llegue al 80%.'}</div>
+        </div></div>`; })()}
       <div style="padding:12px 18px;background:var(--surf2);display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px;">
         <div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:3px;">Proyección cierre</div>
           <div style="font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--text);">${fmt(projFin)}</div>
@@ -38951,9 +38967,21 @@ function solNrmTxt(t){return String(t||'').toLowerCase().normalize('NFD').replac
 function solTok(t){return solNrmTxt(t).replace(/24\s*\/\s*7/g,' ').replace(/[^a-z0-9]+/g,' ').split(' ').filter(w=>w&&!SOL_STOP.has(w)&&!/^20\d\d$/.test(w));}
 function solMatchTienda(concepto,tipoServ,nivelPref){
   const ct=new Set(solTok(concepto)),es247=/24\s*\/\s*7/.test(concepto)||tipoServ==='24/7';
-  const grupos={};(_solPrecios.tienda||[]).forEach(r=>{if(/^c[ií]rculo/i.test(r.titulo)||!(Number(r.precio)>0)) return;(grupos[r.titulo]=grupos[r.titulo]||[]).push(r);});
+  // Agrupa por tokens NORMALIZADOS, no por el título crudo: así las variantes del
+  // mismo curso que solo difieren en la marca ("Siigo"/"Aspel", que el tokenizador
+  // ya ignora) quedan en UN grupo y se cobra el precio del nivel elegido. Antes,
+  // "Siigo COI 11" y "COI 11" caían en grupos distintos y se SUMABAN (Esencial $399
+  // + Plus $999 = $1,398), marcando un descuento falso. Se conserva la distinción
+  // 24/7 vs en vivo en la llave. Jp, 2026-11-26.
+  const grupos={};(_solPrecios.tienda||[]).forEach(r=>{
+    if(/^c[ií]rculo/i.test(r.titulo)||!(Number(r.precio)>0)) return;
+    const t247=/24\s*\/\s*7/.test(r.titulo); const base=solTok(r.titulo).join(' '); if(!base) return;
+    const key=base+(t247?'|247':'');
+    if(!grupos[key]) grupos[key]={tit:r.titulo,tk:base.split(' ').filter(Boolean),t247,rows:[]};
+    grupos[key].rows.push(r);
+  });
   let hits=[];
-  for(const [tit,rows] of Object.entries(grupos)){const tk=solTok(tit);if(tk.length&&tk.every(w=>ct.has(w))) hits.push({tit,tk,rows,t247:/24\s*\/\s*7/.test(tit)});}
+  for(const key in grupos){const g=grupos[key];if(g.tk.length&&g.tk.every(w=>ct.has(w))) hits.push({tit:g.tit,tk:g.tk,rows:g.rows,t247:g.t247});}
   hits=hits.filter(h=>!hits.some(o=>o!==h&&o.tk.length>h.tk.length&&h.tk.every(w=>o.tk.includes(w))));
   const usar=hits.length>=2?hits:hits.filter(h=>!h.t247||es247);
   if(!usar.length) return null;
