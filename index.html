@@ -38568,9 +38568,12 @@ function solPintarListaVendedor(){
 async function solCloudPendientesCargar(){
   const esVend = userProfile?.rol==='vendedor';
   try{
+    // Jp, 2026-11-27: "pendiente" depende de cobrado=false, NO de si ya tiene
+    // comprobante. Un servidor con comprobante pero sin validar se queda visible
+    // (falta validar), no se "libera" solo por subir el comprobante.
     const {data:facts,error}=await sb.from('fact_ingresos')
-      .select('id,fecha,serie,folio,cliente,total,cobrado,comprobante_pago_path,cliente_cartera_id')
-      .eq('rubro','CLOUD').is('comprobante_pago_path',null).or('cobrado.is.null,cobrado.eq.false')
+      .select('id,fecha,serie,folio,cliente,total,cobrado,comprobante_pago_path,pago_grupo_id,cliente_cartera_id')
+      .eq('rubro','CLOUD').neq('estatus','CANCELADA').or('cobrado.is.null,cobrado.eq.false')
       .order('fecha',{ascending:false});
     if(error) throw error;
     let rows=facts||[];
@@ -38592,38 +38595,59 @@ function solCloudSeccionHtml(lista){
   if(!lista||!lista.length) return '';
   const tarjeta=f=>{
     const nom=f.clientes_cartera?.razon_social||f.cliente||'—';
-    return `<div id="cloudPend_${f.id}" style="background:#fff;border:1px solid #d7c7f0;border-left:4px solid #7C3AED;border-radius:10px;padding:11px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+    const tieneComp=!!f.comprobante_pago_path;
+    const estado=tieneComp?'<b style="color:#107A57;">📎 comprobante recibido · falta validar</b>':'<b style="color:#b4791f;">pendiente de pago</b>';
+    return `<div id="cloudPend_${f.id}" style="background:#fff;border:1px solid #d7c7f0;border-left:4px solid ${tieneComp?'#107A57':'#7C3AED'};border-radius:10px;padding:11px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
       <div>
         <div style="font-size:13px;font-weight:700;color:var(--navy);">🖥️ ${solEsc(nom)}</div>
-        <div style="font-size:11px;color:var(--text3);margin-top:2px;">Factura ${solEsc((f.serie||'')+(f.folio||'')||'—')} · ${fmt(f.total)} · ${solFecha(f.fecha)} · <b style="color:#b4791f;">pendiente de pago</b></div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px;">Factura ${solEsc((f.serie||'')+(f.folio||'')||'—')} · ${fmt(f.total)} · ${solFecha(f.fecha)} · ${estado}</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;">
-        <input id="cloudFile_${f.id}" type="file" accept="image/*,.pdf" style="display:none;" onchange="solSubirComprobanteCloud('${f.id}')">
-        <button onclick="document.getElementById('cloudFile_${f.id}').click()" style="background:#7C3AED;color:#fff;border:none;border-radius:7px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">📎 Subir comprobante</button>
+        ${tieneComp?`<button onclick="solVerArchivo('${solEsc(f.comprobante_pago_path)}')" style="background:#fff;border:1px solid #107A57;color:#107A57;border-radius:7px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">👁 Ver</button>`:''}
+        <button onclick="solCloudComprobanteModal('${f.id}')" style="background:${tieneComp?'#fff':'#7C3AED'};color:${tieneComp?'#7C3AED':'#fff'};border:1px solid #7C3AED;border-radius:7px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;">📎 ${tieneComp?'Reemplazar / agrupar':'Subir comprobante'}</button>
       </div>
     </div>`;
   };
   return `<div style="margin-bottom:16px;">
-    <div style="font-size:13px;font-weight:700;color:#7C3AED;margin-bottom:4px;">🖥️ Servidores en la nube — comprobante de pago pendiente (${lista.length})</div>
-    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Estas facturas se emiten directo. Cuando el cliente pague, sube aquí su comprobante.</div>
+    <div style="font-size:13px;font-weight:700;color:#7C3AED;margin-bottom:4px;">🖥️ Servidores en la nube — pago pendiente (${lista.length})</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Estas facturas se emiten directo. Cuando el cliente pague, sube aquí su comprobante. Siguen aquí hasta que Dirección valide el pago.</div>
     ${lista.map(tarjeta).join('')}
   </div>`;
 }
-async function solSubirComprobanteCloud(factId){
-  const inp=document.getElementById('cloudFile_'+factId); const file=inp?.files?.[0];
-  if(!file) return;
-  const card=document.getElementById('cloudPend_'+factId);
+async function solCloudComprobanteModal(factId){
+  const f=(window._solCloudPend||[]).find(x=>x.id===factId);
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">📎 Comprobante de pago</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${f?solEsc((f.clientes_cartera?.razon_social||f.cliente||'')):''} · Factura ${f?solEsc((f.serie||'')+(f.folio||'')):''} · <b>${f?fmt(f.total):''}</b></div>
+    ${solFld('Comprobante','<input id="ccFile" type="file" accept="image/*,.pdf" style="font-size:12px;">')}
+    <div id="pgSelWrap"></div>
+    <div style="display:flex;gap:8px;margin-top:6px;"><button onclick="solCloudComprobanteGuardar('${factId}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:12px;cursor:pointer;">Cerrar</button></div>`,460);
+  if(f&&f.cliente_cartera_id){
+    try{
+      const pend=await pgFacturasPendientesCliente(f.cliente_cartera_id);
+      const folios=pgAgrupaPorFolio(pend).filter(g=>((g.serie||'')+(g.folio||''))!==((f.serie||'')+(f.folio||'')));
+      const w=document.getElementById('pgSelWrap'); if(w) w.innerHTML=pgSelectorHtml(folios, Number(f.total||0));
+    }catch(e){}
+  }
+}
+async function solCloudComprobanteGuardar(factId){
+  const file=document.getElementById('ccFile')?.files?.[0];
+  if(!file) return alert('Adjunta el comprobante.');
   try{
-    if(card) card.style.opacity='0.5';
     const path=`comprobante_cloud/${factId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9_.\-]/g,'_')}`;
     const {error:upErr}=await sb.storage.from('crm-documentos').upload(path,file,{upsert:false});
     if(upErr) throw upErr;
     const {error}=await sb.from('fact_ingresos').update({comprobante_pago_path:path,comprobante_pago_subido_por:currentUser.id,comprobante_pago_at:new Date().toISOString()}).eq('id',factId);
     if(error) throw error;
-    uiToast('✓ Comprobante subido');
-    window._solCloudPend=(window._solCloudPend||[]).filter(x=>x.id!==factId);
-    if(card) card.remove();
-  }catch(e){ if(card) card.style.opacity='1'; alert('No se pudo subir el comprobante: '+(e.message||e)); }
+    const extra=pgSeleccion();
+    if(extra.length){
+      const g=await pgAmarrarGrupo([factId,...extra], path, currentUser.id);
+      if(g) uiToast('🔗 '+( [...new Set([factId,...extra])].length )+' facturas en un grupo de pago');
+    }else{
+      uiToast('✓ Comprobante subido');
+    }
+    solCerrarModal();
+    await solCargarListaVendedor();
+  }catch(e){ alert('No se pudo subir el comprobante: '+(e.message||e)); }
 }
 
 // ─── PAGO ESPERADO VENCIDO (Jp, 2026-11-09) ──────────────────────────────────
@@ -39316,15 +39340,202 @@ function solComprobanteModal(id){
     ${solFld('Comprobante','<input id="scFile" type="file" accept="image/*,.pdf" style="font-size:12px;">')}
     <div style="display:flex;gap:8px;margin-top:6px;"><button onclick="solComprobanteGuardar('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:12px;cursor:pointer;">Cerrar</button></div>`,420);
 }
+async function solComprobanteModal(id){
+  const r=_solRows.find(z=>z.id===id);
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:10px;">📎 Comprobante de pago</div>
+    ${solFld('Monto depositado','<input id="scMonto" type="number" step="0.01" oninput="pgRecalcSuma()" value="'+((r&&(r.pago_monto||r.monto_total))||'')+'" style="'+SOL_INPUT_STYLE+'">')}
+    ${solFld('Fecha del pago','<input id="scFecha" type="date" style="'+SOL_INPUT_STYLE+'">')}
+    ${solFld('Hora (si aparece)','<input id="scHora" type="time" style="'+SOL_INPUT_STYLE+'">')}
+    ${solFld('Comprobante','<input id="scFile" type="file" accept="image/*,.pdf" style="font-size:12px;">')}
+    <div id="pgSelWrap"></div>
+    <div style="display:flex;gap:8px;margin-top:6px;"><button onclick="solComprobanteGuardar('${id}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:12px;cursor:pointer;">Cerrar</button></div>`,460);
+  // Selector de "este pago cubre otras facturas": excluye el folio de esta factura.
+  if(r&&r.cliente_cartera_id){
+    try{
+      const pend=await pgFacturasPendientesCliente(r.cliente_cartera_id);
+      const folios=pgAgrupaPorFolio(pend).filter(g=>((g.serie||'')+(g.folio||''))!==((r.factura_serie||'')+(r.factura_folio||'')));
+      const w=document.getElementById('pgSelWrap'); if(w) w.innerHTML=pgSelectorHtml(folios, (r.pago_monto||r.monto_total||0));
+    }catch(e){}
+  }
+}
 async function solComprobanteGuardar(id){
+  const r=_solRows.find(z=>z.id===id);
   const monto=parseFloat(document.getElementById('scMonto').value),fecha=document.getElementById('scFecha').value,f=document.getElementById('scFile').files[0];
   if(!(monto>0)||!fecha||!f) return alert('Captura monto, fecha y adjunta el comprobante.');
   try{
     const path=await solSubirArchivo(f,id,'comprobante');
     const {error}=await sb.from('solicitudes_factura').update({pago_monto:monto,pago_fecha:fecha,pago_hora:document.getElementById('scHora').value||null,comprobante_path:path}).eq('id',id);
     if(error) throw error;
+    // Grupo de pago: si marcó otras facturas, amarra todo (esta factura + las marcadas).
+    const extra=pgSeleccion();
+    if(extra.length && r && r.fact_ingreso_id){
+      let principalIds=[r.fact_ingreso_id];
+      try{
+        const {data:prin}=await sb.from('fact_ingresos').select('folio').eq('id',r.fact_ingreso_id).maybeSingle();
+        if(prin&&prin.folio){ const {data:rows}=await sb.from('fact_ingresos').select('id').eq('folio',prin.folio); principalIds=(rows||[]).map(x=>x.id); }
+      }catch(e){}
+      const g=await pgAmarrarGrupo([...principalIds,...extra], path, currentUser.id);
+      if(g) uiToast('🔗 '+( [...new Set([...principalIds,...extra])].length )+' facturas quedaron en un grupo de pago');
+    }
     solCerrarModal();solRefrescar();
   }catch(e){alert('No se pudo guardar: '+(e?.message||e));}
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// GRUPO DE PAGO — un comprobante cubre varias facturas (Jp, 2026-11-27)
+// Cuando el cliente paga 2+ facturas en un solo depósito, el vendedor marca al
+// subir el comprobante cuáles facturas cubre. Quedan amarradas con un mismo
+// pago_grupo_id en fact_ingresos, todas "comprobante recibido · falta validar"
+// (cobrado=false). Dirección valida el grupo completo contra ese único movimiento.
+// ════════════════════════════════════════════════════════════════════════════
+async function pgFacturasPendientesCliente(clienteCarteraId){
+  if(!clienteCarteraId) return [];
+  const {data,error}=await sb.from('fact_ingresos')
+    .select('id,folio,serie,concepto,rubro,total,fecha,cobrado,estatus,pago_grupo_id,comprobante_pago_path,cliente')
+    .eq('cliente_cartera_id',clienteCarteraId)
+    .or('cobrado.is.null,cobrado.eq.false')
+    .neq('estatus','CANCELADA')
+    .order('fecha',{ascending:false});
+  if(error) return [];
+  return data||[];
+}
+// Junta las filas de una misma factura (mismo folio puede traer varias partidas).
+function pgAgrupaPorFolio(rows){
+  const m={};
+  (rows||[]).forEach(r=>{
+    const k=((r.serie||'')+(r.folio||''))||r.id;
+    if(!m[k]) m[k]={folio:r.folio,serie:r.serie,ids:[],total:0,concepto:r.concepto,fecha:r.fecha,grupo:r.pago_grupo_id};
+    m[k].ids.push(r.id); m[k].total+=Number(r.total||0);
+  });
+  return Object.values(m);
+}
+function pgSelectorHtml(folios, refMonto){
+  if(!folios||!folios.length) return '';
+  const rows=folios.map(g=>`<label style="display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--border);border-radius:7px;margin-bottom:5px;cursor:pointer;font-size:12px;${g.grupo?'opacity:.55;':''}">
+      <input type="checkbox" class="pgChk" data-ids="${g.ids.join(',')}" data-total="${Number(g.total||0)}" onchange="pgRecalcSuma()" ${g.grupo?'disabled title="Ya está en un grupo de pago"':''} style="width:16px;height:16px;">
+      <span style="flex:1;"><b>${solEsc(((g.serie||'')+(g.folio||''))||'—')}</b> · ${solEsc(String(g.concepto||'').slice(0,42))} <span style="color:var(--text3);">${solFecha(g.fecha)}</span>${g.grupo?' <span style="color:#7C3AED;font-weight:700;">· ya agrupada</span>':''}</span>
+      <span style="font-weight:700;white-space:nowrap;">${fmt(g.total)}</span>
+    </label>`).join('');
+  return `<div style="margin-top:10px;background:rgba(124,58,237,.05);border:1px dashed #7C3AED;border-radius:8px;padding:10px 12px;">
+    <div style="font-size:12px;font-weight:700;color:#7C3AED;margin-bottom:3px;">🔗 ¿Este pago cubre otras facturas del cliente?</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">Si el cliente pagó varias facturas en un solo depósito, márcalas. Se validarán juntas contra este comprobante.</div>
+    ${rows}
+    <div id="pgSuma" data-ref="${Number(refMonto||0)}" style="font-size:12px;font-weight:700;margin-top:6px;color:var(--text2);"></div>
+  </div>`;
+}
+function pgRecalcSuma(){
+  const chks=[...document.querySelectorAll('.pgChk:checked')];
+  const el=document.getElementById('pgSuma'); if(!el) return;
+  const suma=chks.reduce((a,c)=>a+Number(c.dataset.total||0),0);
+  const refEl=document.getElementById('scMonto');
+  const ref=refEl?Number(refEl.value||0):Number(el.dataset.ref||0);
+  if(!chks.length){ el.innerHTML=ref?`Solo esta factura: ${fmt(ref)}`:''; return; }
+  const total=suma+ref;
+  el.innerHTML=`Marcadas ${chks.length} (${fmt(suma)})${ref?` + factura actual ${fmt(ref)} = <b>${fmt(total)}</b>`:''}`;
+}
+function pgSeleccion(){ return [...document.querySelectorAll('.pgChk:checked')].flatMap(c=>String(c.dataset.ids||'').split(',').filter(Boolean)); }
+async function pgAmarrarGrupo(allFactIds, comprobantePath, subidoPor){
+  const ids=[...new Set((allFactIds||[]).filter(Boolean))];
+  if(ids.length<2) return null;
+  let grupoId=null;
+  try{ const {data:prev}=await sb.from('fact_ingresos').select('pago_grupo_id').in('id',ids).not('pago_grupo_id','is',null).limit(1); grupoId=prev&&prev[0]&&prev[0].pago_grupo_id; }catch(e){}
+  grupoId=grupoId||solUuid();
+  await sb.from('fact_ingresos').update({pago_grupo_id:grupoId}).in('id',ids);
+  if(comprobantePath){
+    try{
+      const {data:sin}=await sb.from('fact_ingresos').select('id').in('id',ids).is('comprobante_pago_path',null);
+      const idsSin=(sin||[]).map(x=>x.id);
+      if(idsSin.length) await sb.from('fact_ingresos').update({comprobante_pago_path:comprobantePath,comprobante_pago_subido_por:subidoPor||currentUser.id,comprobante_pago_at:new Date().toISOString()}).in('id',idsSin);
+    }catch(e){}
+  }
+  return grupoId;
+}
+// Dirección: valida (cobra) todas las facturas de un grupo contra un solo movimiento.
+async function pgValidarGrupo(grupoId, mov, nota, quien){
+  const {data:facts,error}=await sb.from('fact_ingresos').select('id,folio,serie,total,cobrado,fecha').eq('pago_grupo_id',grupoId);
+  if(error||!facts||!facts.length) return {ok:false,error:error?.message||'grupo vacío'};
+  const fecha=(mov&&mov.fecha)||todayLocal();
+  const anio=Number(String(fecha).slice(0,4))||currentYear, mes=Number(String(fecha).slice(5,7))||currentMonth;
+  const dia=String(parseInt(String(fecha).slice(8,10),10)||'');
+  const {error:e2}=await sb.from('fact_ingresos').update({cobrado:true,conciliado:true,estatus:'PAGADA',fecha_pago:fecha}).eq('pago_grupo_id',grupoId);
+  if(e2) return {ok:false,error:e2.message};
+  // Trazabilidad para el banco: una fila por factura (día + monto) para que el
+  // próximo estado de cuenta no vuelva a cargar este depósito como faltante.
+  try{
+    const filas=facts.map(f=>({factura_id:f.id,anio,mes,dia_banco:dia,monto:Number(f.total||0),concepto_banco:String((mov&&mov.descripcion)||nota||'Grupo de pago').slice(0,120)}));
+    await sb.from('conciliacion_ingresos_agrupada').insert(filas);
+  }catch(e){}
+  // Solicitudes ligadas → pago validado / cerrada.
+  const factIds=facts.map(f=>f.id);
+  let solIds=[];
+  try{
+    const {data:sols}=await sb.from('solicitudes_factura').select('id').in('fact_ingreso_id',factIds).or('pago_validado.is.null,pago_validado.eq.false');
+    solIds=(sols||[]).map(s=>s.id);
+    for(const sid of solIds){
+      await sb.from('solicitudes_factura').update({pago_validado:true,pago_validado_at:new Date().toISOString(),pago_validado_por:quien||userProfile?.nombre||'Dirección',pago_nota:nota||('Grupo de pago · '+facts.length+' facturas'),pago_movimiento:mov||null,estado:'cerrada'}).eq('id',sid);
+    }
+  }catch(e){}
+  return {ok:true,n:facts.length,solIds};
+}
+// Carga los grupos de pago que todavía tienen alguna factura sin cobrar (para Dirección).
+async function pgGruposPorValidarCargar(){
+  try{
+    const {data}=await sb.from('fact_ingresos').select('id,folio,serie,concepto,total,cobrado,estatus,cliente,pago_grupo_id,comprobante_pago_path,fecha').not('pago_grupo_id','is',null).neq('estatus','CANCELADA').order('fecha',{ascending:false});
+    const m={};
+    (data||[]).forEach(r=>{ if(!m[r.pago_grupo_id]) m[r.pago_grupo_id]={grupo:r.pago_grupo_id,facturas:[],cliente:r.cliente,comprobante:null,total:0,pendientes:0}; const g=m[r.pago_grupo_id]; g.facturas.push(r); g.total+=Number(r.total||0); if(!r.cobrado) g.pendientes++; if(r.comprobante_pago_path&&!g.comprobante) g.comprobante=r.comprobante_pago_path; if(r.cliente&&!g.cliente) g.cliente=r.cliente; });
+    return Object.values(m).filter(g=>g.pendientes>0);
+  }catch(e){ return []; }
+}
+function pgGruposSeccionHtml(grupos){
+  if(!grupos||!grupos.length) return '';
+  const card=g=>{
+    const folios=pgAgrupaPorFolio(g.facturas);
+    return `<div style="background:#fff;border:1px solid #d7c7f0;border-left:4px solid #7C3AED;border-radius:10px;padding:11px 14px;margin-bottom:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+        <div style="font-size:13px;font-weight:700;color:var(--navy);">🔗 ${solEsc(g.cliente||'—')} · ${folios.length} facturas · <span style="color:#107A57;">${fmt(g.total)}</span></div>
+        <div style="display:flex;gap:6px;">
+          ${g.comprobante?`<button onclick="solVerArchivo('${solEsc(g.comprobante)}')" style="background:#fff;border:1px solid #107A57;color:#107A57;border-radius:6px;padding:5px 11px;font-size:11px;font-weight:700;cursor:pointer;">👁 Comprobante</button>`:''}
+          <button onclick="pgValidarGrupoModal('${g.grupo}')" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-size:11px;font-weight:700;cursor:pointer;">✅ Validar las ${folios.length} facturas</button>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-top:6px;">${folios.map(f=>`${solEsc(((f.serie||'')+(f.folio||''))||'—')} (${fmt(f.total)})`).join(' · ')}</div>
+    </div>`;
+  };
+  return `<div style="margin-bottom:16px;">
+    <div style="font-size:13px;font-weight:700;color:#7C3AED;margin-bottom:4px;">🔗 Pagos que cubren varias facturas — por validar (${grupos.length})</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">El cliente pagó varias facturas en un solo depósito. Revisa el comprobante y valídalas juntas.</div>
+    ${grupos.map(card).join('')}
+  </div>`;
+}
+function pgValidarGrupoModal(grupoId){
+  const g=(window._pgGrupos||[]).find(x=>x.grupo===grupoId);
+  const folios=g?pgAgrupaPorFolio(g.facturas):[];
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:6px;">✅ Validar grupo de pago</div>
+    <div style="font-size:12px;color:var(--text2);margin-bottom:8px;">${g?solEsc(g.cliente||''):''} · ${folios.length} facturas · <b>${g?fmt(g.total):''}</b></div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">${folios.map(f=>solEsc(((f.serie||'')+(f.folio||''))||'—')+' ('+fmt(f.total)+')').join(' · ')}</div>
+    ${solFld('Fecha del depósito','<input id="pgvFecha" type="date" value="'+todayLocal()+'" style="'+SOL_INPUT_STYLE+'">')}
+    ${solFld('Nota (cómo lo verificaste)','<input id="pgvNota" placeholder="Ej. SPEI único en estado de cuenta" style="'+SOL_INPUT_STYLE+'">')}
+    <div style="display:flex;gap:8px;"><button onclick="pgValidarGrupoBtn('${grupoId}')" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Validar las ${folios.length} facturas</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:12px;cursor:pointer;">Cerrar</button></div>`,460);
+}
+async function pgValidarGrupoBtn(grupoId){
+  const fecha=document.getElementById('pgvFecha')?.value||todayLocal();
+  const nota=document.getElementById('pgvNota')?.value||'';
+  const mov={fecha,descripcion:nota||'Grupo de pago (validación manual)',fuente:'manual'};
+  const res=await pgValidarGrupo(grupoId,mov,nota,userProfile?.nombre||'Dirección');
+  if(!res.ok) return alert('No se pudo validar el grupo: '+(res.error||''));
+  // Efectos de cada solicitud del grupo (timbres / licencias / academia), si aplica.
+  let msgs=[];
+  for(const sid of (res.solIds||[])){
+    const r=_solRows.find(z=>z.id===sid); if(!r) continue;
+    r.pago_validado=true; r.estado='cerrada';
+    try{ if(!r.timbres_estado&&timCantidadDeConcepto(r.concepto)) msgs.push(timMensajeResultado(r,await timAsignar(r))); }catch(e){}
+    try{ if(!r.licencia_estado&&licPlanDeConcepto(r.concepto)){ const m=await licAsignarAutomatica(r); if(m) msgs.push(m);} }catch(e){}
+    try{ const m=await solInscribirAcademia(r); if(m) msgs.push(m); }catch(e){}
+  }
+  solCerrarModal();
+  uiToast(`✅ ${res.n} facturas validadas`);
+  if(_solContenedor) renderSolFacturaGestion(_solContenedor);
+  const _m=msgs.filter(Boolean).join('\n\n'); if(_m) setTimeout(()=>alert(_m),250);
 }
 
 // ─── VISTA DIRECCIÓN / ADMINISTRACIÓN ────────────────────────────────────────
@@ -39342,8 +39553,10 @@ async function renderSolFacturaGestion(el,skipLoad){
     await timCargarDeSolicitudes(_solRows.filter(r=>r.timbres_estado==='asignados').map(r=>r.id));
     await licCargarDeSolicitudes(_solRows.filter(r=>r.licencia_estado==='asignadas').map(r=>r.id));
     window._solCloudPendCache=await solCloudPendientesCargar();
+    window._pgGrupos=await pgGruposPorValidarCargar();
   }
   const _cloudPend=window._solCloudPendCache||[]; // Servidores cloud sin comprobante
+  const _pgGrupos=window._pgGrupos||[]; // Grupos de pago por validar
   const por={validar:_solRows.filter(r=>!r.devuelta_motivo&&!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada')),
     facturar:_solRows.filter(r=>!r.devuelta_motivo&&(r.estado==='pago_validado'||r.estado==='pendiente_pago')),
     devueltas:_solRows.filter(r=>r.devuelta_motivo&&!['cancelada','cerrada'].includes(r.estado)),
@@ -39375,6 +39588,7 @@ async function renderSolFacturaGestion(el,skipLoad){
     </div>`:''}
   </div>
   ${por.sin_gen.length&&_solFiltro!=='sin_gen'?`<div onclick="_solFiltro='sin_gen';renderSolFacturaGestion(_solContenedor)" style="cursor:pointer;background:#fff1dc;border:1px solid #F5A623;border-left:5px solid #F5A623;border-radius:10px;padding:9px 14px;margin-bottom:12px;font-size:12.5px;color:#8a4b00;"><b>🎓 ${por.sin_gen.length} solicitud${por.sin_gen.length>1?'es':''} facturada${por.sin_gen.length>1?'s':''} sin asignar en Academia/generación.</b> Clic para verlas.</div>`:''}
+  ${pgGruposSeccionHtml(_pgGrupos)}
   ${solCloudSeccionHtml(_cloudPend)}
   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
     ${filtros.map(([k,l])=>`<button onclick="_solFiltro='${k}';renderSolFacturaGestion(_solContenedor)" style="padding:6px 13px;border-radius:16px;border:1px solid ${_solFiltro===k?'var(--teal)':'var(--border)'};background:${_solFiltro===k?'var(--teal)':'#fff'};color:${_solFiltro===k?'#fff':'var(--text2)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${l} (${(por[k]||[]).length})</button>`).join('')}
@@ -39675,8 +39889,19 @@ function solMostrarCasadoTrasValidar(){
   solMostrarCasado();
   if(_solContenedor) renderSolFacturaGestion(_solContenedor).then(()=>{});
 }
-function solValidarModal(id){
+async function solValidarModal(id){
   const r=_solRows.find(z=>z.id===id);if(!r) return;
+  // Jp, 2026-11-27: si la factura de esta solicitud es parte de un grupo de pago
+  // (un depósito que cubre varias facturas), se valida el grupo completo, no solo esta.
+  if(r.fact_ingreso_id){
+    try{
+      const {data:fi}=await sb.from('fact_ingresos').select('pago_grupo_id').eq('id',r.fact_ingreso_id).maybeSingle();
+      if(fi&&fi.pago_grupo_id){
+        if(!(window._pgGrupos||[]).some(g=>g.grupo===fi.pago_grupo_id)) window._pgGrupos=await pgGruposPorValidarCargar();
+        return pgValidarGrupoModal(fi.pago_grupo_id);
+      }
+    }catch(e){}
+  }
   solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:6px;">✅ Validar pago manualmente</div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(r.cliente_nombre)} · ${fmt(r.pago_monto||r.monto_total)}</div>
     ${solFld('Nota (cómo lo verificaste)','<input id="svNota" placeholder="Ej. visto en estado de cuenta, SPEI 15/10 o en PayPal" style="'+SOL_INPUT_STYLE+'">')}
