@@ -24850,6 +24850,30 @@ async function registrarLlamada(prospecto_id){
   // todavía no tiene folio de CRM.
   sincronizarLlamadaProspectoCrm(prospecto_id,resultado,notas);
   if(updProspecto.estatus) sincronizarProspectoCrm({prospecto_id,estatus:updProspecto.estatus});
+  // Jp, 2026-11-27: al "Canalizar a ventas" también se crea el SEGUIMIENTO asignado
+  // y se AVISA al vendedor por correo (igual que el botón "A vendedor") — antes solo
+  // cambiaba estatus/vendedor_asignado y el vendedor no se enteraba, por eso
+  // telemarketing tenía que avisar a mano. El conteo de comisión deduplica por
+  // prospecto_id (Set), así que esto no paga doble.
+  if(resultado==='Canalizado a ventas' && vendedorId){
+    try{
+      const horaAhora=ahora.toTimeString().slice(0,5);
+      const {data:llAsig,error:eAsig}=await sb.from('prospecto_llamadas_asignadas').insert({
+        prospecto_id, vendedor_id:vendedorId, asignado_por:currentUser.id,
+        asignado_por_nombre:userProfile?.nombre||null, fecha:hoy, hora:horaAhora,
+        motivo:notas||'Canalizado a ventas'
+      }).select().single();
+      if(!eAsig && llAsig){
+        uiToast('✓ Canalizado — avisando al vendedor…');
+        try{
+          const {data:sess}=await sb.auth.getSession();
+          fetch('/api/prospecto-llamada-avisar',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({llamada_id:llAsig.id})})
+            .then(r=>r.json()).then(j=>{ uiToast(j&&j.ok?'✉ Se avisó al vendedor por correo':'Canalizado, pero el correo al vendedor no salió — avísale directo'); })
+            .catch(()=>uiToast('Canalizado, pero el correo al vendedor no salió — avísale directo'));
+        }catch(e){}
+      } else if(eAsig){ console.error('asignar canalizado',eAsig); }
+    }catch(e){ console.error('canalizado avisar',e); }
+  }
   // Si compró, sumar el monto a la venta de cursos del día
   if(resultado==='Compró el taller 24/7'){
     const {data:regHoy}=await sb.from('registros_diarios').select('venta_cursos_tele').eq('usuario_id',currentUser.id).eq('fecha',hoy).maybeSingle();
@@ -33828,6 +33852,41 @@ async function editarIngreso(id){
   await fiAsegurarCacheClientes();
   await fiAsegurarCacheGeneracionesAlumno();
   const clienteCarteraPrevio=r.cliente_cartera_id?(window._cartClientes||[]).find(c=>c.id===r.cliente_cartera_id):null;
+  // Jp, 2026-11-27 — comprobante(s) de pago en el detalle de la factura (Finanzas).
+  // Junta el comprobante subido directo a la factura y, si la factura salió de una
+  // solicitud (mismo cliente de cartera y monto parecido), los comprobantes de esa
+  // solicitud y de sus pagos extra. Así se ve el soporte del cobro sin ir a Facturación.
+  let _eiiComps=[];
+  try{
+    if(r.comprobante_pago_path) _eiiComps.push({path:r.comprobante_pago_path,etq:'Comprobante en la factura',fecha:r.fecha_pago||'',monto:r.total||0});
+    const totR=Number(r.total||0);
+    let sfs=[];
+    if(r.cliente_cartera_id){
+      const {data}=await sb.from('solicitudes_factura').select('id,cliente_nombre,rfc,pago_monto,pago_fecha,comprobante_path,monto_total,cotizacion_sae').eq('cliente_cartera_id',r.cliente_cartera_id);
+      sfs=data||[];
+    }
+    const sfMatch=sfs.filter(s=>{const m=Number(s.monto_total||s.pago_monto||0);return !totR||!m||Math.abs(m-totR)<=Math.max(50,totR*0.05);});
+    for(const s of sfMatch){ if(s.comprobante_path) _eiiComps.push({path:s.comprobante_path,etq:'Solicitud'+(s.cotizacion_sae?' '+s.cotizacion_sae:''),fecha:s.pago_fecha||'',monto:s.pago_monto||0}); }
+    const ids=sfMatch.map(s=>s.id);
+    if(ids.length){
+      const {data:pgs}=await sb.from('solicitud_pagos').select('comprobante_path,monto,fecha_pago').in('solicitud_id',ids);
+      (pgs||[]).forEach(p=>{if(p.comprobante_path)_eiiComps.push({path:p.comprobante_path,etq:'Pago extra',fecha:p.fecha_pago||'',monto:p.monto||0});});
+    }
+    const vistos=new Set();_eiiComps=_eiiComps.filter(c=>{if(vistos.has(c.path))return false;vistos.add(c.path);return true;});
+  }catch(e){ _eiiComps=[]; }
+  const compsHtml = _eiiComps.length ? `
+    <div style="background:rgba(16,122,87,0.06);border:1px dashed #107A57;border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+      <div style="font-size:12px;font-weight:700;color:#107A57;margin-bottom:6px;">💵 Comprobantes de pago (${_eiiComps.length})</div>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        ${_eiiComps.map(c=>`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;">
+          <button type="button" onclick="solVerArchivo('${solEsc(c.path)}')" style="background:#107A57;border:none;color:#fff;border-radius:6px;padding:4px 10px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">👁 Ver</button>
+          <span style="color:var(--text2);font-weight:600;">${solEsc(c.etq)}</span>
+          ${c.monto?`<span style="color:var(--text3);">$${Number(c.monto).toLocaleString('es-MX',{minimumFractionDigits:2})}</span>`:''}
+          ${c.fecha?`<span style="color:var(--text3);">· ${solFecha(c.fecha)}</span>`:''}
+        </div>`).join('')}
+      </div>
+    </div>` : `
+    <div style="background:rgba(0,0,0,0.03);border:1px dashed var(--border);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:var(--text3);">💵 Sin comprobante de pago ligado a esta factura todavía.</div>`;
   const html=`
     <div style="background:rgba(0,169,157,0.06);border:1px dashed var(--teal);border-radius:8px;padding:10px 12px;margin-bottom:12px;display:flex;align-items:center;gap:10px;">
       <span style="font-size:12px;font-weight:600;color:var(--teal);">📎 ${r.xml_path?'Reemplazar XML SAT':'Cargar XML SAT'}</span>
@@ -33842,8 +33901,9 @@ async function editarIngreso(id){
     <div style="background:rgba(29,95,168,0.06);border:1px dashed #1D5FA8;border-radius:8px;padding:10px 12px;margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <span style="font-size:12px;font-weight:600;color:#1D5FA8;">📕 ${r.pdf_path?'Reemplazar PDF de la factura':'Cargar PDF de la factura'}</span>
       <input type="file" id="eiiPdfFile" accept="application/pdf" style="font-size:11px;flex:1;min-width:160px;">
-      ${r.pdf_path?`<span style="font-size:10px;color:#1D5FA8;font-weight:600;">🔗 ya tiene PDF</span><button type="button" onclick="verPdfFacturaGuardado('${r.pdf_path}')" style="background:#fff;border:1px solid #1D5FA8;color:#1D5FA8;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">👁 Ver PDF</button>`:'<span style="font-size:10px;color:var(--text3);">Opcional. Sin él, el botón 🖨️ sigue armando el PDF desde el XML.</span>'}
+      ${r.pdf_path?`<span style="font-size:10px;color:#1D5FA8;font-weight:600;">🔗 ya tiene PDF</span><button type="button" onclick="verPdfFacturaGuardado('${r.pdf_path}')" style="background:#fff;border:1px solid #1D5FA8;color:#1D5FA8;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">👁 Ver PDF</button>`:(r.xml_path?`<span style="font-size:10px;color:var(--text3);">Sin PDF subido.</span><button type="button" onclick="generarPDFDesdeStorage('${solEsc(r.xml_path)}')" style="background:#1D5FA8;border:none;color:#fff;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap;">🖨 Armar PDF desde XML</button>`:'<span style="font-size:10px;color:var(--text3);">Opcional. Sin él, el botón 🖨️ sigue armando el PDF desde el XML.</span>')}
     </div>
+    ${compsHtml}
     <div id="eiiValidacionXml" style="margin-bottom:12px;"></div>
     ${(r.folio&&!r.origen_banco&&r.estatus!=='CANCELADA')?`<div style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
       <button type="button" onclick="dividirIngresoAbrir('${id}')" style="background:#fff;border:1px solid var(--navy);color:var(--navy);border-radius:6px;padding:5px 12px;font-size:11px;font-weight:600;cursor:pointer;">✂ Dividir por rubro</button>
@@ -36526,6 +36586,7 @@ const SOL_ESTADOS={
   cancelada:{l:'Cancelada',c:'#888',bg:'rgba(0,0,0,.07)'},
 };
 let _solFiltro='pendientes';
+let _solBusca='';
 let _solRows=[];
 let _solMovs=[];
 let _solContenedor=null;
@@ -39267,17 +39328,22 @@ async function solComprobanteGuardar(id){
 }
 
 // ─── VISTA DIRECCIÓN / ADMINISTRACIÓN ────────────────────────────────────────
-async function renderSolFacturaGestion(el){
+async function renderSolFacturaGestion(el,skipLoad){
   _solContenedor=el||document.getElementById('mainContent');
   const cont=_solContenedor;
   const esDir=userProfile?.rol==='director';
-  cont.innerHTML='<div class="loading"><div class="spinner"></div> Cargando solicitudes...</div>';
-  const {data,error}=await sb.from('solicitudes_factura').select('*').order('created_at',{ascending:false}).limit(250);
-  if(error){cont.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(error.message)}</div>`;return;}
-  _solRows=data||[];
-  await timCargarDeSolicitudes(_solRows.filter(r=>r.timbres_estado==='asignados').map(r=>r.id));
-  await licCargarDeSolicitudes(_solRows.filter(r=>r.licencia_estado==='asignadas').map(r=>r.id));
-  const _cloudPend=await solCloudPendientesCargar(); // Servidores cloud sin comprobante (Jp, 2026-11-20)
+  // Jp, 2026-11-27: skipLoad reutiliza _solRows en memoria (buscador en vivo, sin
+  // re-consultar la base ni perder el foco del input).
+  if(!(skipLoad && Array.isArray(_solRows) && _solRows.length)){
+    cont.innerHTML='<div class="loading"><div class="spinner"></div> Cargando solicitudes...</div>';
+    const {data,error}=await sb.from('solicitudes_factura').select('*').order('created_at',{ascending:false}).limit(250);
+    if(error){cont.innerHTML=`<div style="color:#c0392b;font-size:12px;">${solEsc(error.message)}</div>`;return;}
+    _solRows=data||[];
+    await timCargarDeSolicitudes(_solRows.filter(r=>r.timbres_estado==='asignados').map(r=>r.id));
+    await licCargarDeSolicitudes(_solRows.filter(r=>r.licencia_estado==='asignadas').map(r=>r.id));
+    window._solCloudPendCache=await solCloudPendientesCargar();
+  }
+  const _cloudPend=window._solCloudPendCache||[]; // Servidores cloud sin comprobante
   const por={validar:_solRows.filter(r=>!r.devuelta_motivo&&!r.pago_validado&&(r.estado==='solicitada'||r.estado==='facturada')),
     facturar:_solRows.filter(r=>!r.devuelta_motivo&&(r.estado==='pago_validado'||r.estado==='pendiente_pago')),
     devueltas:_solRows.filter(r=>r.devuelta_motivo&&!['cancelada','cerrada'].includes(r.estado)),
@@ -39289,7 +39355,12 @@ async function renderSolFacturaGestion(el){
     ?[['pendientes','Todas las abiertas'],['validar','Por validar pago'],['facturar','Por facturar'],['devueltas','↩ Devueltas al vendedor'],['vencidos','🚨 Pago prometido vencido'],['sin_gen','🎓 Sin asignar en Academia'],['todas','Historial']]
     :[['facturar','Por facturar'],['pendientes','Todas las abiertas'],['devueltas','↩ Devueltas al vendedor'],['vencidos','🚨 Pago prometido vencido'],['sin_gen','🎓 Sin asignar en Academia'],['todas','Historial']];
   if(!filtros.some(f=>f[0]===_solFiltro)) _solFiltro=filtros[0][0];
-  const lista=por[_solFiltro]||[];
+  let lista=por[_solFiltro]||[];
+  // Jp, 2026-11-27: buscador por cliente / RFC / folio / concepto.
+  if(_solBusca && _solBusca.trim()){
+    const q=_solBusca.trim().toLowerCase();
+    lista=lista.filter(r=>`${r.cliente_nombre||''} ${r.rfc||''} ${r.cotizacion_sae||''} ${r.concepto||''} ${r.factura_folio||''}`.toLowerCase().includes(q));
+  }
   cont.innerHTML=`
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
     <div style="font-size:15px;font-weight:600;color:var(--text);">🧾 Facturación — solicitudes</div>
@@ -39308,7 +39379,11 @@ async function renderSolFacturaGestion(el){
   <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
     ${filtros.map(([k,l])=>`<button onclick="_solFiltro='${k}';renderSolFacturaGestion(_solContenedor)" style="padding:6px 13px;border-radius:16px;border:1px solid ${_solFiltro===k?'var(--teal)':'var(--border)'};background:${_solFiltro===k?'var(--teal)':'#fff'};color:${_solFiltro===k?'#fff':'var(--text2)'};font-size:12px;font-weight:600;cursor:pointer;font-family:'Inter',sans-serif;">${l} (${(por[k]||[]).length})</button>`).join('')}
   </div>
-  <div>${lista.length?lista.map(r=>solTarjeta(r,esDir?'director':'admin')).join(''):'<div style="font-size:12px;color:var(--text3);padding:20px;text-align:center;">No hay solicitudes en esta vista.</div>'}</div>`;
+  <div style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+    <input id="solGestBusca" value="${solEsc(_solBusca||'')}" oninput="_solBusca=this.value;renderSolFacturaGestion(_solContenedor,true).then(()=>{const b=document.getElementById('solGestBusca');if(b){b.focus();try{b.setSelectionRange(b.value.length,b.value.length);}catch(e){}}})" placeholder="🔎 Buscar por cliente, RFC, folio o concepto…" style="flex:1;min-width:240px;max-width:460px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;font-family:'Inter',sans-serif;">
+    ${_solBusca&&_solBusca.trim()?`<span style="font-size:11px;color:var(--text3);">${lista.length} resultado(s)</span><button onclick="_solBusca='';renderSolFacturaGestion(_solContenedor,true)" style="background:none;border:none;color:var(--teal);font-size:11px;font-weight:700;cursor:pointer;">✕ limpiar</button>`:''}
+  </div>
+  <div>${lista.length?lista.map(r=>solTarjeta(r,esDir?'director':'admin')).join(''):`<div style="font-size:12px;color:var(--text3);padding:20px;text-align:center;">${_solBusca&&_solBusca.trim()?'Ningún resultado para “'+solEsc(_solBusca)+'”.':'No hay solicitudes en esta vista.'}</div>`}</div>`;
 }
 
 // ─── LECTURA DE LA CAPTURA DEL BANCO Y CASADO ────────────────────────────────
