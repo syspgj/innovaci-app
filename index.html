@@ -9046,7 +9046,7 @@ function modalPipeTeleHTML(r,hoy){
         <img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="display:none" onload="catProyCargar().then(()=>{catProyPintar();pipeRepintarPartidas();})">
         <div id="pPartidasLista">${(Array.isArray(v.partidas)?v.partidas:[]).map(pipePartidaHtml).join('')}</div>
         <button type="button" onclick="pipeAgregarPartida()" style="margin-top:8px;background:#fff;border:1px dashed var(--teal);color:var(--teal);border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;">➕ Agregar otra partida (otro producto o servicio en la misma venta)</button>
-        <div style="font-size:10px;color:var(--text3);margin-top:3px;">Si en una misma cotización vendes 2 o más cosas, agrega una partida por cada una. Los cursos en vivo, 24/7 y membresías solo se eligen del catálogo. <button type="button" onclick="catProyRecargar()" style="background:none;border:none;color:var(--teal);font-size:10px;font-weight:700;cursor:pointer;padding:0;text-decoration:underline;">¿No aparece uno? Actualizar catálogo</button> <span id="catProyMsg"></span></div>
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;">Si en una misma cotización vendes 2 o más cosas, agrega una partida por cada una. Cada producto se elige del catálogo; al elegirlo se llena solo su subtotal (si tiene precio cargado). <button type="button" onclick="catProyRecargar()" style="background:none;border:none;color:var(--teal);font-size:10px;font-weight:700;cursor:pointer;padding:0;text-decoration:underline;">¿No aparece uno? Actualizar catálogo</button> <span id="catProyMsg"></span>${userProfile?.rol==='director'?` · <button type="button" onclick="catProyPreciosModal()" style="background:none;border:none;color:var(--teal);font-size:10px;font-weight:700;cursor:pointer;padding:0;text-decoration:underline;">💲 Editar precios del catálogo</button>`:''}</div>
       </div>
       <div class="form-field" style="grid-column:1/-1;">
         <label>Cliente / prospecto</label>
@@ -10428,7 +10428,10 @@ async function catProyCargar(){
   if(CAT_PROY&&(Date.now()-CAT_PROY_AT)<CAT_PROY_TTL) return CAT_PROY;
   CAT_PROY_AT=Date.now();
   try{
-    const {data,error}=await sb.from('catalogo_proyeccion').select('tipo_servicio,nombre,orden,solo_para,grupo').eq('activo',true).order('orden');
+    // Jp, 2026-11-28: se agrega 'precio' para autollenar el subtotal. Con fallback por
+    // si la columna aún no existe (no rompe el catálogo antes de correr la migración).
+    let {data,error}=await sb.from('catalogo_proyeccion').select('tipo_servicio,nombre,orden,solo_para,grupo,precio').eq('activo',true).order('orden');
+    if(error){ ({data,error}=await sb.from('catalogo_proyeccion').select('tipo_servicio,nombre,orden,solo_para,grupo').eq('activo',true).order('orden')); }
     CAT_PROY=error?[]:(data||[]);
     // Jp, 2026-11-11: los cursos/talleres/diplomados se eligen del catálogo único (el mismo que Shopify),
     // para que la solicitud de facturación llegue ya ligada a su generación de Academia.
@@ -10556,9 +10559,36 @@ function catProyItems(tipo){
   const me=((typeof userProfile!=='undefined'&&userProfile&&userProfile.nombre)||'').toLowerCase();
   return (CAT_PROY||[]).filter(c=>c.tipo_servicio===tipo&&(!c.solo_para||me.includes(c.solo_para.toLowerCase())));
 }
+// Jp, 2026-11-28: precio del catálogo para autollenar el subtotal (null si no tiene).
+function catProyPrecio(tipo,nombre){
+  if(!tipo||!nombre) return null;
+  const it=(CAT_PROY||[]).find(c=>c.tipo_servicio===tipo&&c.nombre===nombre);
+  const p=it&&it.precio!=null?Number(it.precio):null;
+  return (p!=null&&!isNaN(p)&&p>0)?p:null;
+}
+// Recalcula el monto total de la negociación como la suma de las partidas que
+// tienen importe conocido (producto principal con precio de catálogo + partidas).
+// Solo actúa cuando hay algún importe: así no borra un total leído de la cotización.
+function pipeRecalcTotal(){
+  const tipoP=document.getElementById('pTipo')?.value||'';
+  const prodP=document.getElementById('pProducto')?.value||'';
+  let suma=0,hay=false;
+  const pp=catProyPrecio(tipoP,prodP);
+  if(pp!=null){ suma+=pp; hay=true; }
+  document.querySelectorAll('#pPartidasLista .pPartida').forEach(r=>{
+    const m=parseFloat(r.querySelector('.ptMonto')?.value)||0;
+    if(m>0){ suma+=m; hay=true; }
+  });
+  if(hay){ const el=document.getElementById('pMonto'); if(el){ el.value=Math.round(suma*100)/100; el.dispatchEvent(new Event('input',{bubbles:true})); } }
+}
 // Jp, 2026-11-17: en estos tipos NO se puede escribir a mano: solo se elige del catálogo
 // (cursos en vivo con generación vigente en Academia, cursos 24/7 y membresías) para no crear productos de más.
-const TIPOS_SOLO_CATALOGO=['Curso o Diplomado en Vivo','24/7','Membresías','Servicio de soporte Aspel','Licenciamiento Aspel','Timbres'];
+// Jp, 2026-11-28: se cierran TODOS los tipos que ya tienen catálogo cargado (Póliza —incl.
+// Resguardo—, Suscripción Aspel, Servidor Cloud, Curso Empresarial, IT). Así no se puede
+// escribir un concepto libre como "Elite + Resguardo INN3": cada producto se elige del
+// catálogo y, si son dos, se agregan como dos partidas. El ÚNICO que sigue abierto es
+// "Servicio por Evento" porque todavía no tiene catálogo (hay que estructurarlo).
+const TIPOS_SOLO_CATALOGO=['Curso o Diplomado en Vivo','24/7','Membresías','Servicio de soporte Aspel','Licenciamiento Aspel','Timbres','Póliza','Suscripción Aspel','Servidor Cloud','Curso Empresarial','IT'];
 function catProyLlenar(tipo,sel,inp,actual){
   if(!sel||!inp) return;
   const soloCat=TIPOS_SOLO_CATALOGO.includes(tipo);
@@ -10590,17 +10620,18 @@ function catProyElegir(){
   inp.style.display='none'; inp.value=sel.value; inp.dispatchEvent(new Event('input',{bubbles:true}));
   const tipo=document.getElementById('pTipo')?.value;
   opsPintarFicha(tipo==='Servicio de soporte Aspel'?inp.value:'', document.getElementById('opsFichaVenta'));
+  pipeRecalcTotal();
 }
 // ── Partidas adicionales (varios productos/servicios en una misma venta o cotización) ──
 function pipePartidaHtml(pt){
   pt=pt||{};
   const st="padding:7px 10px;border:1px solid var(--border);border-radius:var(--radsm);font-size:12px;width:100%;box-sizing:border-box;margin-bottom:5px;";
   return `<div class="pPartida" data-prod="${String(pt.producto||'').replace(/"/g,'&quot;')}" style="border:1px dashed var(--teal);border-radius:8px;padding:9px 11px;margin-top:8px;background:#f8fcfc;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;"><b style="font-size:11px;color:var(--teal);">➕ Otra partida de la misma venta</b><span onclick="this.closest('.pPartida').remove()" style="cursor:pointer;font-size:11px;color:var(--text3);">✕ quitar</span></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;"><b style="font-size:11px;color:var(--teal);">➕ Otra partida de la misma venta</b><span onclick="this.closest('.pPartida').remove();pipeRecalcTotal()" style="cursor:pointer;font-size:11px;color:var(--text3);">✕ quitar</span></div>
     <select class="ptTipo" onchange="pipePartidaPintar(this.closest('.pPartida'),'')" style="${st}">${TIPOS_SERVICIO.map(t=>`<option ${pt.tipo_servicio===t?'selected':''}>${t}</option>`).join('')}</select>
     <select class="ptSel" onchange="pipePartidaElegir(this.closest('.pPartida'))" style="${st}display:none;"></select>
     <input class="ptInp" type="text" value="${String(pt.producto||'').replace(/"/g,'&quot;')}" placeholder="Producto o servicio" style="${st}">
-    <input class="ptMonto" type="number" step="0.01" min="0" value="${pt.subtotal||''}" placeholder="Subtotal de esta partida (opcional)" style="${st}margin-bottom:0;">
+    <input class="ptMonto" type="number" step="0.01" min="0" value="${pt.subtotal||''}" oninput="pipeRecalcTotal()" placeholder="Subtotal de esta partida" style="${st}margin-bottom:0;">
     <div class="ptFicha"></div>
   </div>`;
 }
@@ -10617,6 +10648,10 @@ function pipePartidaElegir(row){
   inp.style.display='none'; inp.value=sel.value;
   const f=row.querySelector('.ptFicha');
   if(f) opsPintarFicha(row.querySelector('.ptTipo').value==='Servicio de soporte Aspel'?inp.value:'', f);
+  const precio=catProyPrecio(row.querySelector('.ptTipo').value,inp.value);
+  const mInp=row.querySelector('.ptMonto');
+  if(precio!=null && mInp && !(parseFloat(mInp.value)>0)) mInp.value=precio;
+  pipeRecalcTotal();
 }
 async function pipeAgregarPartida(pt){
   await catProyCargar();
