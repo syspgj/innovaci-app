@@ -10581,6 +10581,46 @@ function pipeRecalcTotal(){
   });
   if(hay){ const el=document.getElementById('pMonto'); if(el){ el.value=Math.round(suma*100)/100; el.dispatchEvent(new Event('input',{bubbles:true})); } }
 }
+// Jp, 2026-11-28: editor de precios del catálogo (solo Dirección). Carga los precios
+// que luego autollenan el subtotal de la partida.
+async function catProyPreciosModal(){
+  solModal('<div style="font-size:13px;color:var(--text3);">Cargando catálogo…</div>',760);
+  const {data,error}=await sb.from('catalogo_proyeccion').select('id,tipo_servicio,nombre,grupo,precio,orden').eq('activo',true).order('tipo_servicio').order('orden');
+  if(error){ solModal('<div style="color:#c0392b;">No se pudo cargar: '+solEsc(error.message)+'<br><span style="font-size:11px;">Si dice que falta la columna "precio", corre la migración primero.</span></div>'); return; }
+  window._catPrecios=data||[];
+  const porTipo={};
+  (data||[]).forEach(c=>{(porTipo[c.tipo_servicio]=porTipo[c.tipo_servicio]||[]).push(c);});
+  const secciones=Object.keys(porTipo).sort().map(t=>`
+    <div style="margin-bottom:12px;">
+      <div style="font-size:12px;font-weight:700;color:var(--navy);margin-bottom:4px;">${solEsc(t)}</div>
+      ${porTipo[t].map(c=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+        <span style="flex:1;font-size:12px;">${solEsc(c.nombre)}${c.grupo?` <span style="color:var(--text3);">· ${solEsc(c.grupo)}</span>`:''}</span>
+        <span style="font-size:12px;color:var(--text3);">$</span>
+        <input type="number" step="0.01" min="0" data-catprecio="${c.id}" value="${c.precio!=null?c.precio:''}" placeholder="—" style="width:120px;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;text-align:right;">
+      </div>`).join('')}
+    </div>`).join('');
+  solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">💲 Precios del catálogo</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:10px;">El precio sirve para autollenar el subtotal de la partida al elegir el producto. Deja vacío lo que no quieras precargar.</div>
+    <div style="max-height:52vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:10px;">${secciones||'Sin productos.'}</div>
+    <div style="display:flex;gap:8px;margin-top:10px;align-items:center;"><button onclick="catProyPreciosGuardar()" style="background:var(--teal);color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar precios</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cerrar</button><span id="catPreciosMsg" style="font-size:11px;"></span></div>`,780);
+}
+async function catProyPreciosGuardar(){
+  const inputs=[...document.querySelectorAll('[data-catprecio]')];
+  const prev={}; (window._catPrecios||[]).forEach(c=>{prev[c.id]=c.precio!=null?Number(c.precio):null;});
+  const cambios=[];
+  inputs.forEach(i=>{
+    const id=i.dataset.catprecio; const val=i.value.trim()===''?null:Number(i.value);
+    if(val!==prev[id] && !(val==null&&prev[id]==null)) cambios.push({id,precio:(val!=null&&!isNaN(val))?val:null});
+  });
+  const msg=document.getElementById('catPreciosMsg');
+  if(!cambios.length){ if(msg){msg.style.color='var(--text3)';msg.textContent='Sin cambios.';} return; }
+  if(msg){msg.style.color='var(--text3)';msg.textContent='Guardando '+cambios.length+'…';}
+  let ok=0;
+  for(const c of cambios){ const {error}=await sb.from('catalogo_proyeccion').update({precio:c.precio}).eq('id',c.id); if(!error) ok++; }
+  CAT_PROY=null; CAT_PROY_AT=0; // fuerza recarga del catálogo con los nuevos precios
+  if(msg){msg.style.color=ok===cambios.length?'#1E8449':'#c0392b';msg.textContent=`Guardados ${ok}/${cambios.length}.`;}
+  uiToast('Precios actualizados ('+ok+')');
+}
 // Jp, 2026-11-17: en estos tipos NO se puede escribir a mano: solo se elige del catálogo
 // (cursos en vivo con generación vigente en Academia, cursos 24/7 y membresías) para no crear productos de más.
 // Jp, 2026-11-28: se cierran TODOS los tipos que ya tienen catálogo cargado (Póliza —incl.
@@ -38986,8 +39026,12 @@ function solCorregirModal(id){
   solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">✏️ Corregir y reenviar</div>
     <div style="font-size:12px;color:#9a3412;background:#fff1e6;border:1px solid #f5a35a;border-radius:8px;padding:7px 11px;margin-bottom:10px;"><b>Motivo de la devolución:</b> ${solEsc(r.devuelta_motivo||'')}</div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(r.cliente_nombre)}</div>
-    ${solFld('Tipo de servicio',`<select id="srTipoServ" onchange="solAcadToggle('sr')" style="${SOL_INPUT_STYLE}"><option value="">— Elige el tipo —</option>${TIPOS_SERVICIO.map(t=>`<option value="${solEsc(t)}" ${t===tipoIni?'selected':''}>${solEsc(t)}</option>`).join('')}</select>`)}
-    ${solFld('Concepto / curso o servicio',`<input id="srConcepto" value="${solEsc(r.concepto||'')}" style="${SOL_INPUT_STYLE}" onchange="solSugerirGensPorConcepto('sr',this.value)">`)}
+    ${solFld('Tipo de servicio',`<select id="srTipoServ" onchange="solAcadToggle('sr');srProductoCatalogo('')" style="${SOL_INPUT_STYLE}"><option value="">— Elige el tipo —</option>${TIPOS_SERVICIO.map(t=>`<option value="${solEsc(t)}" ${t===tipoIni?'selected':''}>${solEsc(t)}</option>`).join('')}</select>`)}
+    ${solFld('Producto / servicio (elige del catálogo)',`<select id="srProductoSel" onchange="srProductoElegir()" style="${SOL_INPUT_STYLE}display:none;margin-bottom:6px;"></select><input id="srConcepto" value="${solEsc(r.concepto||'')}" style="${SOL_INPUT_STYLE}" onchange="solSugerirGensPorConcepto('sr',this.value)">`)}
+    <div style="margin:4px 0 10px;">
+      <div id="srPartidasLista"></div>
+      <button type="button" onclick="srAgregarPartida()" style="background:#fff;border:1px dashed var(--teal);color:var(--teal);border-radius:6px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;">➕ Agregar otra partida (otro producto de la misma factura)</button>
+    </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 12px;">
       ${solFld('Total a facturar (con IVA)',`<input id="srTotal" type="number" step="0.01" value="${solEsc(r.monto_total||'')}" style="${SOL_INPUT_STYLE}">`)}
       ${solFld('RFC del cliente',`<input id="srRfc" value="${solEsc(r.rfc||'')}" style="${SOL_INPUT_STYLE}text-transform:uppercase;">`)}
@@ -39011,6 +39055,11 @@ function solCorregirModal(id){
   window._srFactA=null;window._srRazones=[];
   solCorregirCargarRazones(r);
   (async()=>{
+    try{ await catProyCargar(); }catch(e){}
+    try{ srProductoCatalogo(r.concepto||''); }catch(e){}
+    // Partidas ya guardadas (si la solicitud ya trae varias): la primera es el producto
+    // principal (arriba); las demás van en la lista de partidas.
+    try{ if(Array.isArray(r.partidas)&&r.partidas.length>1){ for(const p of r.partidas.slice(1)) await srAgregarPartida(p); } }catch(e){}
     try{ if(!window._solGens) await solCargarGeneraciones(); if(!((ac.generaciones||[]).length)) await solSugerirGensPorConcepto('sr',r.concepto); }catch(e){}
     solAcadCargarGens('sr');
     if(r.shopify_pedido_id&&!shpEsDir()){
@@ -39020,6 +39069,34 @@ function solCorregirModal(id){
     }
     solAcadToggle('sr');
   })();
+}
+// Jp, 2026-11-28: selector de catálogo + partidas en Corregir y reenviar (reutiliza
+// la maquinaria de Proyección: catProyLlenar y las partidas .pPartida).
+function srProductoCatalogo(actual){
+  const tipo=document.getElementById('srTipoServ')?.value||'';
+  const sel=document.getElementById('srProductoSel'), inp=document.getElementById('srConcepto');
+  catProyLlenar(tipo,sel,inp,actual);
+}
+function srProductoElegir(){
+  const sel=document.getElementById('srProductoSel'), inp=document.getElementById('srConcepto');
+  if(!sel||!inp) return;
+  if(sel.value==='__otro'){inp.style.display='';inp.focus();return;}
+  if(sel.value==='__anterior') return;
+  inp.style.display='none'; inp.value=sel.value;
+  try{ solSugerirGensPorConcepto('sr',inp.value); }catch(e){}
+}
+async function srAgregarPartida(pt){
+  await catProyCargar();
+  const lista=document.getElementById('srPartidasLista'); if(!lista) return;
+  lista.insertAdjacentHTML('beforeend',pipePartidaHtml(pt));
+  const row=lista.lastElementChild; pipePartidaPintar(row, pt&&pt.producto!==undefined?pt.producto:undefined);
+}
+function srLeerPartidas(){
+  return [...document.querySelectorAll('#srPartidasLista .pPartida')].map(r=>({
+    tipo_servicio:r.querySelector('.ptTipo').value,
+    producto:(r.querySelector('.ptInp').value||'').trim(),
+    subtotal:parseFloat(r.querySelector('.ptMonto').value)||null,
+  })).filter(x=>x.producto);
 }
 // Jp, 2026-11-28: al corregir una solicitud devuelta por "no coincide la razón
 // social", el vendedor necesitaba poder cambiar a qué razón social se factura.
@@ -39116,6 +39193,14 @@ async function solCorregirGuardar(id){
     asistente:ac.asistentes[0]?{...ac.asistentes[0],curso:ac.generaciones.map(g=>g.clave).join(' + ')}:null,
     generacion_id:ac.generaciones[0]?.id||null,
     devuelta_motivo:null,reenviada_at:new Date().toISOString()};
+  // Partidas: producto principal (arriba) + las agregadas. Se guarda el arreglo
+  // estructurado y el concepto queda como el resumen legible de los productos.
+  const partidasExtra=srLeerPartidas();
+  if(partidasExtra.length){
+    const partidas=[{tipo_servicio:tipoServ,producto:concepto,subtotal:null},...partidasExtra];
+    upd.partidas=partidas;
+    upd.concepto=partidas.map(p=>p.producto).join(' + ');
+  }else{ upd.partidas=null; }
   if(factA&&factA.regimen_fiscal) upd.regimen=factA.regimen_fiscal;
   if(factA&&factA.uso_cfdi) upd.uso_cfdi=factA.uso_cfdi;
   if(factA){
@@ -39151,7 +39236,8 @@ async function solCorregirGuardar(id){
       if(cfch) upd.pago_fecha=cfch;
     }
   }catch(e){ return alert('No se pudo subir el archivo: '+(e?.message||e)); }
-  const {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
+  let {error}=await sb.from('solicitudes_factura').update(upd).eq('id',id);
+  if(error&&/partidas/.test(error.message||'')){ delete upd.partidas; ({error}=await sb.from('solicitudes_factura').update(upd).eq('id',id)); } // la columna aún no existe
   if(error) return alert('No se pudo reenviar: '+error.message);
   try{const {data:sess}=await sb.auth.getSession();fetch('/api/facturacion-avisar-telegram',{method:'POST',headers:{'content-type':'application/json','Authorization':'Bearer '+(sess?.session?.access_token||'')},body:JSON.stringify({solicitud_id:id})}).catch(()=>{});}catch(e){}
   // Si el pago ya estaba validado, al corregir se inscribe en Academia de inmediato (igual que "Guardar e inscribir").
