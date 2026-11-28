@@ -10428,11 +10428,15 @@ async function catProyCargar(){
   if(CAT_PROY&&(Date.now()-CAT_PROY_AT)<CAT_PROY_TTL) return CAT_PROY;
   CAT_PROY_AT=Date.now();
   try{
-    // Jp, 2026-11-28: se agrega 'precio' para autollenar el subtotal. Con fallback por
-    // si la columna aún no existe (no rompe el catálogo antes de correr la migración).
-    let {data,error}=await sb.from('catalogo_proyeccion').select('tipo_servicio,nombre,orden,solo_para,grupo,precio').eq('activo',true).order('orden');
-    if(error){ ({data,error}=await sb.from('catalogo_proyeccion').select('tipo_servicio,nombre,orden,solo_para,grupo').eq('activo',true).order('orden')); }
-    CAT_PROY=error?[]:(data||[]);
+    // Jp, 2026-11-28: catálogo UNIFICADO (catalogo_productos) con clave + precio +
+    // observaciones. Los cursos 24/7 y en vivo NO viven aquí (son dinámicos de
+    // Academia/tienda) y se agregan abajo; Servicio de soporte Aspel se toma de
+    // operaciones (ficha rica) abajo, así que aquí se excluye para no duplicar.
+    const {data,error}=await sb.from('catalogo_productos')
+      .select('clave,familia,grupo,nombre,precio,observaciones,consideraciones_venta,requisitos_cliente,aplica_poliza,solo_para,orden')
+      .eq('activo',true).neq('familia','Servicio de soporte Aspel').order('orden');
+    CAT_PROY=error?[]:((data||[]).map(c=>({tipo_servicio:c.familia,nombre:c.nombre,grupo:c.grupo,precio:c.precio,clave:c.clave,solo_para:c.solo_para,orden:c.orden||0,
+      obs:c.observaciones,cons:c.consideraciones_venta,req:c.requisitos_cliente,pol:c.aplica_poliza})));
     // Jp, 2026-11-11: los cursos/talleres/diplomados se eligen del catálogo único (el mismo que Shopify),
     // para que la solicitud de facturación llegue ya ligada a su generación de Academia.
     try{
@@ -10509,18 +10513,8 @@ async function catProyCargar(){
       CAT_PROY.push({tipo_servicio:'Servicio de soporte Aspel',nombre:s.nombre,orden:0,solo_para:null,grupo:s.categoria||'Servicios Aspel'});
     });
   }catch(e){console.error('catProy ops',e);}
-  // Jp, 2026-11-25: licencias de compra Aspel (catalogo_items familia "Sistemas
-  // Aspel") y timbres (familia "Timbres") entran como opciones de sus tipos, para
-  // que al elegir "Licenciamiento Aspel" o "Timbres" se despliegue el catálogo.
-  try{
-    if(!Array.isArray(CAT_PROY)) CAT_PROY=[];
-    const {data:lic}=await sb.from('catalogo_items').select('nombre,familia,atributos').eq('activo',true).in('familia',['Sistemas Aspel','Timbres']).order('nombre');
-    CAT_PROY=CAT_PROY.filter(c=>c.tipo_servicio!=='Licenciamiento Aspel'&&c.tipo_servicio!=='Timbres');
-    (lic||[]).forEach(x=>{
-      const tipo=x.familia==='Timbres'?'Timbres':'Licenciamiento Aspel';
-      CAT_PROY.push({tipo_servicio:tipo,nombre:x.nombre,orden:0,solo_para:null,grupo:(x.atributos&&x.atributos.sistema)||x.familia});
-    });
-  }catch(e){console.error('catProy licencias/timbres',e);}
+  // Jp, 2026-11-28: Licenciamiento Aspel y Timbres ya vienen del catálogo unificado
+  // (catalogo_productos), así que se quitó el bloque que los traía de catalogo_items.
   return CAT_PROY;
 }
 // Ficha de ventas de un servicio Aspel (se muestra sola al elegirlo en el cotizador).
