@@ -38325,7 +38325,20 @@ async function solPedidoMatchInfo(sfShop,total,generaciones){
   if(genMismatch) motivos.push(`El producto/las generaciones no coinciden con el pedido (${pedidoConcepto}).`);
   return {coincide:!motivos.length, pedidoTotal, pedidoConcepto, montoMismatch, genMismatch, motivos};
 }
+// Jp, 2026-11-28: candado anti doble-envío. El pedido #1816 (Hector Aragón) se
+// duplicó porque solEnviar corrió 2 veces con 10 ms de diferencia (doble clic /
+// doble disparo mientras los await de control de precio cedían el hilo): dos
+// solicitudes del MISMO pedido de Shopify, ambas autovalidadas. Este candado en
+// memoria serializa los envíos; el pre-chequeo y el índice único (abajo) son la
+// red de seguridad definitiva.
+let _solEnviando=false;
 async function solEnviar(){
+  if(_solEnviando){ const m=document.getElementById('sfMsg'); if(m){m.style.color='#c0392b';m.textContent='Ya se está enviando esta solicitud, espera…';} return; }
+  _solEnviando=true;
+  try{ return await solEnviarInt(); }
+  finally{ setTimeout(()=>{_solEnviando=false;},1000); }
+}
+async function solEnviarInt(){
   const msg=document.getElementById('sfMsg');
   const v=id=>document.getElementById(id)?.value?.trim()||'';
   const tipo=v('sfTipo');
@@ -38429,9 +38442,18 @@ async function solEnviar(){
     if(shopPedido) row.shopify_pedido=shopPedido; // columna nueva (sql_shopify_pedido.sql)
     if(acad.asistentes.length||acad.generaciones.length||acad.no_aplica) row.academia=acad; // columna nueva (sql_academia_solicitud.sql)
     if(solId) row.id=solId;
+    // Pre-chequeo anti-duplicado del pedido de Shopify (red con el índice único).
+    if(row.shopify_pedido_id){
+      try{
+        const {data:ya}=await sb.from('solicitudes_factura').select('id').eq('shopify_pedido_id',row.shopify_pedido_id).neq('estado','cancelada').limit(1);
+        if(ya&&ya.length){ btn.disabled=false; return err('⛔ Este pedido de la tienda ya tiene una solicitud de factura. No se envió de nuevo (para evitar duplicados).'); }
+      }catch(e){}
+    }
     let {error}=await sb.from('solicitudes_factura').insert(row);
     for(let k=0;k<6&&error;k++){
       const m=error.message||'';
+      // Violación de índice único (duplicado de pedido): no se reintenta quitando columnas.
+      if((error.code==='23505')||/duplicate key|ya existe|already exists/i.test(m)){ error={message:'⛔ Este pedido ya tiene una solicitud de factura (duplicado bloqueado).'}; break; }
       if(/precio_/.test(m)&&('precio_alerta' in row)){['precio_alerta','precio_detalle','precio_autorizado_por','precio_autorizado_at','precio_autorizado_motivo'].forEach(c=>delete row[c]);}
       else if(/pedido_alerta|pedido_detalle/.test(m)){delete row.pedido_alerta;delete row.pedido_detalle;}
       else if(/academia/.test(m)&&'academia' in row) delete row.academia;
@@ -39628,6 +39650,7 @@ async function solLeerCaptura(input){
       est.textContent=`${_solMovs.length} movimientos leídos${files.length>1?' de '+files.length+' capturas':''}${resumen?' ('+resumen+')':''}.`+(data.aviso?' ⚠ '+data.aviso:'');
       est.style.color=data.aviso?'#b45309':'var(--text3)';
     }
+    try{ window._pgGrupos=await pgGruposPorValidarCargar(); }catch(e){}
     solMostrarCasado();
   }catch(e){if(est){est.textContent='Error: '+(e?.message||e);est.style.color='#c0392b';}}
 }
@@ -39792,11 +39815,58 @@ async function solConfirmarShopify(i,j){
   await solValidarPago(r.id,mov,`Validado con pedido de Shopify ${p.pedido} (${p.cliente}) · pagado`,false,true);
   solMostrarShopify();
 }
+// Jp, 2026-11-28 (#1): un depósito único que cubre VARIAS facturas no casa 1:1
+// con ninguna sola, pero sí con la SUMA de un grupo de pago (las que el vendedor
+// marcó juntas). Aquí se cruza cada grupo pendiente contra los movimientos leídos
+// y, si el monto cuadra, se ofrece validar el grupo completo desde la captura.
+function solCasarGrupos(){
+  const grupos=(window._pgGrupos||[]);
+  if(!grupos.length) return [];
+  const cons=solConsumidos();
+  const disponible=m=>!cons.has(m);
+  return grupos.map(g=>{
+    const total=Number(g.total||0);
+    const cands=_solMovs.filter(m=>Math.abs(Number(m.monto)-total)<=1&&disponible(m));
+    return {g,total,cands};
+  }).filter(x=>x.cands.length);
+}
+async function solValidarGrupoCaptura(i,j){
+  const x=(window._solCasadoGrupos||[])[i];if(!x) return;
+  const m=x.cands[j];if(!m) return;
+  const mov={fecha:m.fecha,descripcion:('Casado con captura del banco: '+(m.descripcion||'')).trim(),fuente:'banco',monto:m.monto,hora:m.hora,banco_origen:m.banco_origen};
+  const res=await pgValidarGrupo(x.g.grupo,mov,mov.descripcion,userProfile?.nombre||'Dirección');
+  if(!res.ok) return alert('No se pudo validar el grupo: '+(res.error||''));
+  let msgs=[];
+  for(const sid of (res.solIds||[])){
+    const r=_solRows.find(z=>z.id===sid); if(!r) continue;
+    r.pago_validado=true; r.estado='cerrada'; r.pago_movimiento=mov;
+    try{ if(!r.timbres_estado&&timCantidadDeConcepto(r.concepto)) msgs.push(timMensajeResultado(r,await timAsignar(r))); }catch(e){}
+    try{ if(!r.licencia_estado&&licPlanDeConcepto(r.concepto)){ const mm=await licAsignarAutomatica(r); if(mm) msgs.push(mm);} }catch(e){}
+    try{ const mm=await solInscribirAcademia(r); if(mm) msgs.push(mm); }catch(e){}
+  }
+  try{ window._pgGrupos=await pgGruposPorValidarCargar(); }catch(e){}
+  solMostrarCasadoTrasValidar();
+  uiToast(`✅ ${res.n} facturas validadas con el depósito`);
+  const _m=msgs.filter(Boolean).join('\n\n'); if(_m) setTimeout(()=>alert(_m),250);
+}
 function solMostrarCasado(){
   const res=solCasar();
   window._solCasado=res;
+  const grupoRes=solCasarGrupos();
+  window._solCasadoGrupos=grupoRes;
   const etiqueta={coincide:['✅ Coincide','#2E7D32'],varios:['⚠️ Hay varios parecidos','#B45309'],diferencia:['⚠️ Diferencia de pesos','#B45309'],fecha:['⚠️ Monto igual, fecha distinta','#B45309'],ninguno:['❌ No encontrado','#c0392b']};
   const movTxt=m=>`${solFecha(m.fecha)}${m.hora?' '+m.hora:''} · <b>${fmt(m.monto)}</b> · ${solEsc(m.descripcion||'')}${m.banco_origen?' ('+solEsc(m.banco_origen)+')':''}`;
+  const grupoHtml=grupoRes.length?`<div style="margin-bottom:14px;">
+    <div style="font-size:12px;font-weight:700;color:#7C3AED;margin-bottom:6px;">🔗 Un depósito cubre varias facturas</div>
+    ${grupoRes.map((x,i)=>{
+      const folios=pgAgrupaPorFolio(x.g.facturas);
+      return `<div style="border:1px solid #d7c7f0;border-left:4px solid #7C3AED;border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+        <div style="font-size:12px;font-weight:700;color:var(--navy);">${solEsc(x.g.cliente||'—')} · ${folios.length} facturas · ${fmt(x.total)}</div>
+        <div style="font-size:11px;color:var(--text3);margin:3px 0;">${folios.map(f=>solEsc(((f.serie||'')+(f.folio||''))||'—')+' ('+fmt(f.total)+')').join(' · ')}</div>
+        ${x.cands.map((m,j)=>`<button onclick="solValidarGrupoCaptura(${i},${j})" style="margin:4px 6px 0 0;background:var(--teal);color:#fff;border:none;border-radius:6px;padding:5px 11px;font-size:11px;font-weight:700;cursor:pointer;">Validar las ${folios.length} con este depósito</button><span style="font-size:11px;color:var(--text2);">${movTxt(m)}</span><br>`).join('')}
+      </div>`;
+    }).join('')}
+  </div>`:'';
   const filas=res.length?res.map((x,i)=>{
     const [l,c]=etiqueta[x.tipo];
     const botones=x.cands.map((m,j)=>`<button onclick="solConfirmarCasado(${i},${j})" style="margin:4px 6px 0 0;background:${x.tipo==='coincide'?'var(--teal)':'#fff'};color:${x.tipo==='coincide'?'#fff':'var(--text2)'};border:1px solid ${x.tipo==='coincide'?'var(--teal)':'var(--border)'};border-radius:6px;padding:5px 11px;font-size:11px;font-weight:600;cursor:pointer;">${x.tipo==='coincide'?'Confirmar pago':'Es este'}</button><span style="font-size:11px;color:var(--text2);">${movTxt(m)}</span><br>`).join('');
@@ -39808,6 +39878,7 @@ function solMostrarCasado(){
   solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">📷 Casado con la captura del banco</div>
     <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">${_solMovs.length} movimientos leídos de la imagen. Revisa que la lectura sea correcta; nada se valida hasta que confirmes.</div>
     <details style="margin-bottom:12px;"><summary style="cursor:pointer;font-size:12px;color:var(--teal);font-weight:600;">Ver movimientos leídos</summary><div style="font-size:11px;margin-top:6px;">${(()=>{const cons=solConsumidos();return _solMovs.map(m=>cons.has(m)?`<div style="color:var(--text3);">✅ <s>${movTxt(m)}</s> · ya validado con ${solEsc(cons.get(m).cliente_nombre||'otra solicitud')}</div>`:`<div>${movTxt(m)}</div>`).join('')||'Ninguno';})()}</div></details>
+    ${grupoHtml}
     ${filas}
     <div style="text-align:right;"><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 18px;font-size:12px;cursor:pointer;">Cerrar</button></div>`,680);
 }
