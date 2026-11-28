@@ -34597,9 +34597,24 @@ async function procesarExcelBancoIng(){
   const ingRegistrados=(window._fiRows||[]).filter(r=>r.cobrado).map(r=>({...r,_usado:false}));
   const totalRegistrado=ingRegistrados.reduce((s,r)=>s+(r.total||0),0);
 
+  // Jp, 2026-11-28 (#1): grupos de pago — un depósito cubre VARIAS facturas.
+  // Antes del cruce 1:1, se cruza cada grupo (facturas con el mismo pago_grupo_id)
+  // contra UN abono igual a la SUMA del grupo (±1). Si cuadra, ese abono queda
+  // conciliado y TODAS las facturas del grupo se marcan usadas (si no, el depósito
+  // salía como "sin registrar" y las facturas como "en sistema no banco").
+  const _abonosUsadosGrupo=new Set();
+  const gruposMap={};
+  ingRegistrados.forEach(r=>{ if(r.pago_grupo_id) (gruposMap[r.pago_grupo_id]=gruposMap[r.pago_grupo_id]||[]).push(r); });
+  Object.values(gruposMap).forEach(fs=>{
+    if(fs.length<2) return;
+    const totG=fs.reduce((s,r)=>s+(r.total||0),0);
+    const mb=abonosBanco.find(m=>!_abonosUsadosGrupo.has(m)&&Math.abs(totG-m.abono)<=1);
+    if(mb){ _abonosUsadosGrupo.add(mb); fs.forEach(r=>{r._usado=true;}); }
+  });
   // Cruce por monto (±1 peso)
   const enBancoNoSistema=[]; let cuadrados=0;
   abonosBanco.forEach(mb=>{
+    if(_abonosUsadosGrupo.has(mb)){ cuadrados++; return; } // ya casó contra un grupo de pago
     const match=ingRegistrados.find(r=>!r._usado&&Math.abs((r.total||0)-mb.abono)<=1);
     if(match){match._usado=true;cuadrados++;}
     else enBancoNoSistema.push(mb);
@@ -37591,6 +37606,18 @@ async function solTipoServCambio(){
     if(items.length&&!items.some(x=>x.nombre===c.value)&&req) uiToast('Ese concepto no está en el catálogo vigente de "'+t+'". Elige uno de la lista o revisa con Capacitación.',true);
   }
 }
+// Jp, 2026-11-28: mostrar/ocultar el bloque de Academia según el tipo de servicio.
+// Reutilizable por cualquier formulario con prefijo p ('sf' principal, 'sr' corregir):
+// solo cursos/diplomados/talleres (24/7 o en vivo) llevan alumnos; en lo demás se oculta.
+function solAcadToggle(p){
+  const t=document.getElementById(p+'TipoServ')?.value||'';
+  const req=t==='24/7'||t==='Curso o Diplomado en Vivo';
+  const caja=document.getElementById(p+'AcadBox');
+  if(caja) caja.style.display=(!t||req)?'':'none';
+  const lab=document.getElementById(p+'AcadNALabel'),na=document.getElementById(p+'AcadNA');
+  if(lab) lab.style.display=req?'none':'';
+  if(na&&req) na.checked=false;
+}
 function solComprobanteHtml(){
   return `<input id="sfComprobante" type="file" accept="image/*,.pdf" style="display:none;" onchange="solComprobanteCambio(this)">
   <div id="sfCompZona" ondragover="event.preventDefault();this.style.background='#e6f6f5'" ondragleave="this.style.background='#fff'" ondrop="event.preventDefault();this.style.background='#fff';solComprobanteSet(event.dataTransfer.files[0])" style="border:2px dashed var(--teal);border-radius:10px;padding:12px;text-align:center;background:#fff;">
@@ -38440,6 +38467,15 @@ async function solEnviarInt(){
       ...precioCampos,
     };
     if(shopPedido) row.shopify_pedido=shopPedido; // columna nueva (sql_shopify_pedido.sql)
+    // Jp, 2026-11-28: razón social a facturar en campos propios (no solo en notas).
+    if(window._sfFactA&&!publicoGral){
+      const fa=window._sfFactA;
+      row.facturar_rs_id=fa.es_rs?fa.id:null;
+      row.facturar_razon_social=fa.razon_social||null;
+      row.facturar_rfc=(fa.rfc||'').toUpperCase()||null;
+      row.facturar_regimen=fa.regimen_fiscal||null;
+      row.facturar_uso=fa.uso_cfdi||null;
+    }
     if(acad.asistentes.length||acad.generaciones.length||acad.no_aplica) row.academia=acad; // columna nueva (sql_academia_solicitud.sql)
     if(solId) row.id=solId;
     // Pre-chequeo anti-duplicado del pedido de Shopify (red con el índice único).
@@ -38459,6 +38495,7 @@ async function solEnviarInt(){
       else if(/academia/.test(m)&&'academia' in row) delete row.academia;
       else if(/shopify_pedido_id/.test(m)&&'shopify_pedido_id' in row) delete row.shopify_pedido_id;
       else if(/shopify_pedido/.test(m)&&'shopify_pedido' in row) delete row.shopify_pedido;
+      else if(/facturar_/.test(m)){['facturar_rs_id','facturar_razon_social','facturar_rfc','facturar_regimen','facturar_uso'].forEach(c=>delete row[c]);}
       else break;
       ({error}=await sb.from('solicitudes_factura').insert(row));
     }
@@ -38768,6 +38805,7 @@ function solTarjeta(r,modo){
     <div style="font-size:11px;color:var(--text3);margin-top:2px;">${solEsc(r.rfc)} · ${solEsc(r.forma_pago)} · ${solEsc(r.metodo_pago)} · ${solEsc(r.uso_cfdi)} · ${solEsc(r.regimen)}</div>
     ${r.shopify_pedido?`<div style="font-size:11px;color:#5b3fa0;margin-top:3px;">🛍 Pedido de Shopify: <b>${solEsc(r.shopify_pedido)}</b></div>`:''}
     ${String(r.notas||'').startsWith(SOL_PG_MARCA)?`<div style="font-size:11px;font-weight:700;color:#8a6d00;background:#fffbea;border:1px solid #f3dc8a;border-radius:6px;padding:3px 8px;margin-top:5px;display:inline-block;">🧾 FACTURAR A VIOLETA — el cliente no requiere factura · C.P. ${SOL_VIOLETA.cp}</div>`:''}
+    ${r.facturar_razon_social?`<div style="font-size:11px;font-weight:700;color:#1b4f72;background:#eaf2fb;border:1px solid #9cc3e8;border-radius:6px;padding:3px 8px;margin-top:5px;display:inline-block;">🧾 Facturar a: ${solEsc(r.facturar_razon_social)}${r.facturar_rfc?' · RFC '+solEsc(r.facturar_rfc):''} <span style="font-weight:500;color:var(--text3);">(la venta es de ${solEsc(r.cliente_nombre)})</span></div>`:''}
     ${pago}${avisoCheque}${solAvisoPagoVencido(r,esVend)}${fact}
     ${solPrecioBannerHtml(r,esDir)}${solPedidoBannerHtml(r,esDir)}${solCancelBannerHtml(r,esDir,esAdm)}
     ${cancel?'':timTarjetaHtml(r,esDir,esVend)}
@@ -38913,12 +38951,13 @@ function solCorregirModal(id){
   solModal(`<div style="font-size:15px;font-weight:700;margin-bottom:4px;">✏️ Corregir y reenviar</div>
     <div style="font-size:12px;color:#9a3412;background:#fff1e6;border:1px solid #f5a35a;border-radius:8px;padding:7px 11px;margin-bottom:10px;"><b>Motivo de la devolución:</b> ${solEsc(r.devuelta_motivo||'')}</div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:10px;">${solEsc(r.cliente_nombre)}</div>
-    ${solFld('Tipo de servicio',`<select id="srTipoServ" onchange="(function(){const t=document.getElementById('srTipoServ').value;const q=t==='24/7'||t==='Curso o Diplomado en Vivo';const l=document.getElementById('srAcadNALabel');if(l)l.style.display=q?'none':'';if(q){const n=document.getElementById('srAcadNA');if(n)n.checked=false;}})()" style="${SOL_INPUT_STYLE}"><option value="">— Elige el tipo —</option>${TIPOS_SERVICIO.map(t=>`<option value="${solEsc(t)}" ${t===tipoIni?'selected':''}>${solEsc(t)}</option>`).join('')}</select>`)}
+    ${solFld('Tipo de servicio',`<select id="srTipoServ" onchange="solAcadToggle('sr')" style="${SOL_INPUT_STYLE}"><option value="">— Elige el tipo —</option>${TIPOS_SERVICIO.map(t=>`<option value="${solEsc(t)}" ${t===tipoIni?'selected':''}>${solEsc(t)}</option>`).join('')}</select>`)}
     ${solFld('Concepto / curso o servicio',`<input id="srConcepto" value="${solEsc(r.concepto||'')}" style="${SOL_INPUT_STYLE}" onchange="solSugerirGensPorConcepto('sr',this.value)">`)}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 12px;">
       ${solFld('Total a facturar (con IVA)',`<input id="srTotal" type="number" step="0.01" value="${solEsc(r.monto_total||'')}" style="${SOL_INPUT_STYLE}">`)}
       ${solFld('RFC del cliente',`<input id="srRfc" value="${solEsc(r.rfc||'')}" style="${SOL_INPUT_STYLE}text-transform:uppercase;">`)}
     </div>
+    <div id="srFactABox" style="margin-bottom:8px;"></div>
     ${solFld('Notas para facturación (opcional)',`<input id="srNotas" value="${solEsc(r.notas||'')}" style="${SOL_INPUT_STYLE}">`)}
     ${solAcadHtml('sr',ac)}
     <div style="border-top:1px solid var(--border);margin:12px 0 10px;padding-top:10px;">
@@ -38934,6 +38973,8 @@ function solCorregirModal(id){
       </div>
     </div>
     <div style="display:flex;gap:8px;"><button onclick="solCorregirGuardar('${id}')" style="background:#ea580c;color:#fff;border:none;border-radius:7px;padding:8px 18px;font-weight:700;font-size:12px;cursor:pointer;">Guardar y reenviar</button><button onclick="solCerrarModal()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:8px 14px;font-size:12px;cursor:pointer;">Cancelar</button></div>`,720);
+  window._srFactA=null;window._srRazones=[];
+  solCorregirCargarRazones(r);
   (async()=>{
     try{ if(!window._solGens) await solCargarGeneraciones(); if(!((ac.generaciones||[]).length)) await solSugerirGensPorConcepto('sr',r.concepto); }catch(e){}
     solAcadCargarGens('sr');
@@ -38942,9 +38983,76 @@ function solCorregirModal(id){
       const sl=document.getElementById('srAcadNivel');
       if(nt&&sl){sl.value=nt;sl.disabled=true;sl.title='Lo compró así el cliente en la tienda; solo Dirección puede cambiarlo';}
     }
-    const t=document.getElementById('srTipoServ')?.value||'';
-    const l=document.getElementById('srAcadNALabel'); if(l&&(t==='24/7'||t==='Curso o Diplomado en Vivo')) l.style.display='none';
+    solAcadToggle('sr');
   })();
+}
+// Jp, 2026-11-28: al corregir una solicitud devuelta por "no coincide la razón
+// social", el vendedor necesitaba poder cambiar a qué razón social se factura.
+// Antes solo podía editar el RFC a mano; ahora reutiliza las razones sociales de
+// la cuenta (cuenta_razones_sociales) igual que el formulario de Solicitar factura.
+async function solCorregirCargarRazones(r){
+  const box=document.getElementById('srFactABox'); if(!box) return;
+  const ccId=r.cliente_cartera_id; if(!ccId){ box.innerHTML=''; return; }
+  try{
+    const {data:cc}=await sb.from('clientes_cartera').select('id,razon_social,num_cliente,rfc,uso_cfdi,regimen_fiscal,cliente_padre_id').eq('id',ccId).maybeSingle();
+    const padreId=cc?.cliente_padre_id||ccId;
+    window._srCC={id:ccId,padreId,nombre:cc?.razon_social||r.cliente_nombre||''};
+    const [{data:g},{data:rs}]=await Promise.all([
+      sb.from('clientes_cartera').select('id,razon_social,num_cliente,rfc,uso_cfdi,regimen_fiscal,cliente_padre_id').or(`id.eq.${padreId},cliente_padre_id.eq.${padreId}`),
+      sb.from('cuenta_razones_sociales').select('*').eq('activo',true).in('cliente_cartera_id',[ccId,padreId]).order('razon_social')
+    ]);
+    window._srGrupo=g||[]; window._srRazones=rs||[];
+    const otras=(g||[]).filter(x=>x.id!==ccId);
+    const optsRs=(rs||[]).map(x=>`<option value="rs:${x.id}">💼 ${solEsc(x.razon_social)}${x.rfc?' · '+solEsc(x.rfc):''}</option>`).join('');
+    const optsSub=otras.map(x=>`<option value="${x.id}">${x.id===padreId?'🏢 ':'↳ '}${solEsc(x.razon_social)}${x.num_cliente?' · #'+solEsc(x.num_cliente):''}</option>`).join('');
+    box.innerHTML=`<div style="padding:8px 10px;border:1px dashed var(--teal);border-radius:8px;background:#f4fbfb;">
+      <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:4px;">🧾 ¿A qué razón social se factura?</div>
+      <select id="srFactASel" onchange="solCorregirFacturarAElegir(this.value)" style="${SOL_INPUT_STYLE}"><option value="">Esta misma cuenta (${solEsc(window._srCC.nombre)})</option>${optsRs}${optsSub}<option value="__nueva">➕ Agregar otra razón social a esta cuenta…</option></select>
+      <div id="srNuevaRS"></div>
+      <div style="font-size:10px;color:var(--text3);margin-top:3px;">La venta se queda en la cuenta; la factura sale con el RFC y datos fiscales de la razón social que escojas. 💼 = razón social de la cuenta · ↳ = subcuenta.</div></div>`;
+  }catch(e){ box.innerHTML=''; }
+}
+function solCorregirFacturarAElegir(id){
+  const nueva=document.getElementById('srNuevaRS'); if(nueva) nueva.innerHTML='';
+  if(id==='__nueva'){ solCorregirNuevaRS(); return; }
+  let x=null;
+  if(String(id).startsWith('rs:')){const rr=(window._srRazones||[]).find(z=>z.id===id.slice(3)); if(rr) x={...rr,es_rs:true};}
+  else if(id) x=(window._srGrupo||[]).find(g=>g.id===id)||null;
+  window._srFactA=x;
+  if(x){
+    const el=document.getElementById('srRfc'); if(el&&x.rfc) el.value=(x.rfc||'').toUpperCase();
+    if(!x.rfc) uiToast('Esa razón social no tiene RFC — captúralo a mano.');
+  }
+}
+function solCorregirNuevaRS(){
+  const box=document.getElementById('srNuevaRS'); if(!box) return;
+  const f=(id,lbl,ph)=>`<div><div style="font-size:10px;font-weight:600;color:var(--text2);margin:6px 0 2px;">${lbl}</div><input id="${id}" placeholder="${ph||''}" style="${SOL_INPUT_STYLE}"></div>`;
+  box.innerHTML=`<div style="margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:8px;background:#fff;">
+    ${f('srnrsNombre','Razón social (como en su constancia fiscal)','Ej. DOMINIO SA DE CV')}
+    ${f('srnrsRfc','RFC','XAXX010101000')}
+    <div style="font-size:10px;font-weight:600;color:var(--text2);margin:6px 0 2px;">Régimen fiscal</div>${solSelect('srnrsReg',SOL_REGIMENES,SOL_REGIMENES[0])}
+    <div style="font-size:10px;font-weight:600;color:var(--text2);margin:6px 0 2px;">Uso de CFDI</div>${solSelect('srnrsUso',SOL_USOS,'Gastos en general')}
+    ${f('srnrsCp','Código postal fiscal (opcional)','')}
+    <div style="display:flex;gap:6px;margin-top:8px;"><button type="button" onclick="solCorregirNuevaRSGuardar()" style="background:var(--teal);color:#fff;border:none;border-radius:6px;padding:6px 12px;font-size:12px;font-weight:700;cursor:pointer;">Guardar razón social</button>
+    <button type="button" onclick="document.getElementById('srNuevaRS').innerHTML='';document.getElementById('srFactASel').value='';window._srFactA=null;" style="background:none;border:1px solid var(--border);border-radius:6px;padding:6px 12px;font-size:12px;cursor:pointer;">Cancelar</button></div>
+    <div id="srnrsMsg" style="font-size:11px;margin-top:4px;color:#c0392b;"></div></div>`;
+}
+async function solCorregirNuevaRSGuardar(){
+  const v=id=>document.getElementById(id)?.value?.trim()||'';
+  const msg=document.getElementById('srnrsMsg');
+  const cc=window._srCC; if(!cc){if(msg)msg.textContent='No encuentro la cuenta.';return;}
+  const nombre=v('srnrsNombre').toUpperCase(), rfc=v('srnrsRfc').toUpperCase();
+  if(!nombre){if(msg)msg.textContent='Falta la razón social.';return;}
+  if(!/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(rfc)){if(msg)msg.textContent='Revisa el RFC (12 o 13 caracteres).';return;}
+  const dup=(window._srRazones||[]).find(x=>(x.rfc||'').toUpperCase()===rfc);
+  if(dup){if(msg)msg.textContent='Ya existe esa razón social: '+dup.razon_social;return;}
+  const {data,error}=await sb.from('cuenta_razones_sociales').insert({cliente_cartera_id:cc.padreId||cc.id,razon_social:nombre,rfc,regimen_fiscal:v('srnrsReg'),uso_cfdi:v('srnrsUso'),codigo_postal:v('srnrsCp')||null,creado_por:userProfile?.id||currentUser.id}).select().single();
+  if(error){if(msg)msg.textContent='No se pudo guardar: '+error.message;return;}
+  window._srRazones=[...(window._srRazones||[]),data];
+  const sel=document.getElementById('srFactASel');
+  if(sel){ sel.insertAdjacentHTML('afterbegin',`<option value="rs:${data.id}">💼 ${solEsc(data.razon_social)} · ${solEsc(data.rfc)}</option>`); sel.value='rs:'+data.id; }
+  solCorregirFacturarAElegir('rs:'+data.id);
+  uiToast('Razón social guardada en la cuenta.');
 }
 async function solCorregirGuardar(id){
   const r=_solRows.find(z=>z.id===id);if(!r) return;
@@ -38959,12 +39067,29 @@ async function solCorregirGuardar(id){
   if(r.shopify_pedido_id&&!shpEsDir()){ const nt=await solNivelDeTienda(r.shopify_pedido_id); if(nt) ac.nivel=nt; }
   const errAc=solAcadValidar(ac,concepto,tipoServ);
   if(errAc) return alert(errAc);
-  const nota=v('srNotas');
-  const upd={concepto,monto_total:total,rfc,
-    notas:((nota?nota+' ':'')+`[↩ Corregida el ${todayLocal()} tras devolución: ${r.devuelta_motivo}]`).slice(0,900),
+  const nota=v('srNotas').replace(/🧾 FACTURAR A OTRA RAZÓN SOCIAL:[^\n]*?\.\s*/g,'').trim();
+  // Razón social a facturar elegida en el selector (se guarda como nota estructurada,
+  // igual que el formulario original, y se ajustan RFC + datos fiscales).
+  const factA=window._srFactA;
+  let notaFactA='',rfcFinal=rfc;
+  if(factA){
+    rfcFinal=(factA.rfc||rfc).toUpperCase();
+    notaFactA=`🧾 FACTURAR A OTRA RAZÓN SOCIAL: ${factA.razon_social||''}${factA.num_cliente?' (#'+factA.num_cliente+')':''} · RFC ${rfcFinal} — la venta es de ${r.cliente_nombre}. `;
+  }
+  const upd={concepto,monto_total:total,rfc:rfcFinal,
+    notas:(notaFactA+(nota?nota+' ':'')+`[↩ Corregida el ${todayLocal()} tras devolución: ${r.devuelta_motivo}]`).slice(0,900),
     asistente:ac.asistentes[0]?{...ac.asistentes[0],curso:ac.generaciones.map(g=>g.clave).join(' + ')}:null,
     generacion_id:ac.generaciones[0]?.id||null,
     devuelta_motivo:null,reenviada_at:new Date().toISOString()};
+  if(factA&&factA.regimen_fiscal) upd.regimen=factA.regimen_fiscal;
+  if(factA&&factA.uso_cfdi) upd.uso_cfdi=factA.uso_cfdi;
+  if(factA){
+    upd.facturar_rs_id=factA.es_rs?factA.id:null;
+    upd.facturar_razon_social=factA.razon_social||null;
+    upd.facturar_rfc=rfcFinal||null;
+    upd.facturar_regimen=factA.regimen_fiscal||null;
+    upd.facturar_uso=factA.uso_cfdi||null;
+  }
   if(ac.asistentes.length||ac.generaciones.length||ac.no_aplica) upd.academia=ac;
   if(!r.shopify_pedido_id){
     const cp=await solControlPrecio({concepto,tipoServ,total,pagoMonto:r.tipo==='con_pago'?Number(r.pago_monto)||null:null,pagoFecha:r.pago_fecha,nivel:ac.nivel,asistentes:ac.asistentes});
